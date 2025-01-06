@@ -49,3 +49,7 @@ class VideoCompressionProtocol(Synapse):
             reference_video_url=self.miner_payload.reference_video_url,
             compressed_video_url=self.miner_response.compressed_video_url,
         )
+
+
+class Ping(Synapse):
+    pass
