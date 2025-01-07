@@ -1,0 +1,13 @@
+__pycache__/
+*.txt
+*.log
+*.db
+*.mp4
+*.lock
+*.egg-info
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+*.py
