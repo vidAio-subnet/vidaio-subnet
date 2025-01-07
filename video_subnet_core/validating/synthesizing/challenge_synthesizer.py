@@ -1,12 +1,12 @@
 from ...protocol import VideoCompressionProtocol, MinerPayload
-import aiohttp
-import os
+from ...global_config import CONFIG
+import httpx
 
 
 class Synthesizer:
     def __init__(self):
-        self.session = aiohttp.ClientSession(
-            base_url=f"http://{os.getenv('VIDEO_SCHEDULER_HOST')}:{os.getenv('VIDEO_SCHEDULER_PORT')}"
+        self.session = httpx.AsyncClient(
+            base_url=f"http://{CONFIG.video_scheduler.host}:{CONFIG.video_scheduler.port}"
         )
 
     async def build_protocol(self) -> VideoCompressionProtocol:

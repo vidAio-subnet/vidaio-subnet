@@ -4,9 +4,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from loguru import logger
 from sqlalchemy.ext.declarative import declarative_base
+import numpy as np
 from .sql_schemas import MinerMetadata
 from .serving_counter import ServingCounter
 from ...global_config import CONFIG
+from ...ultilities.rate_limit import build_rate_limit
 
 
 class MinerManager:
@@ -30,17 +32,18 @@ class MinerManager:
         logger.success("MinerManager initialization complete")
 
     def initialize_serving_counter(self, uids: list[int]):
+        rate_limit = build_rate_limit(self.metagraph, self.uid)
         logger.info(f"Creating serving counters for {len(uids)} UIDs")
         self.serving_counters = {
             uid: ServingCounter(
-                rate_limit=CONFIG.rate_limit,
+                rate_limit=rate_limit,
                 uid=uid,
                 redis_client=self.redis_client,
             )
             for uid in uids
         }
         logger.debug(
-            f"Serving counters initialized with rate limit: {CONFIG.rate_limit}"
+            f"Serving counters initialized with rate limit: {self.serving_counters}"
         )
 
     def query(self, uids: list[int] = []) -> dict[int, MinerMetadata]:
@@ -78,3 +81,15 @@ class MinerManager:
         filtered_uids = [uid for uid in uids if self.serving_counters[uid].increment()]
         logger.info(f"Filtered to {len(filtered_uids)} UIDs after rate limiting")
         return filtered_uids
+
+    @property
+    def weights(self):
+        uids = []
+        scores = []
+        for uid, miner in self.query().items():
+            uids.append(uid)
+            scores.append(miner.accumulate_score)
+
+        scores = np.array(scores)
+        scores = scores / scores.sum()
+        return uids, scores

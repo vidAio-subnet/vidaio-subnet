@@ -2,4 +2,4 @@ from pydantic import BaseModel, Field
 
 
 class SQLConfig(BaseModel):
-    url: str = Field(env="SQL_URL")
+    url: str = Field(default="sqlite:///video_subnet.db")

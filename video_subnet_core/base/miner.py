@@ -1,9 +1,7 @@
 import bittensor as bt
 from abc import ABC, abstractmethod
 import threading
-import structlog
-
-logger = structlog.get_logger()
+from loguru import logger
 
 
 class BaseMiner(ABC):
