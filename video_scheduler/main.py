@@ -23,6 +23,12 @@ class InsertOrganicRequest(BaseModel):
     url: str
 
 
+class InsertResultRequest(BaseModel):
+    compressed_video_url: str
+    original_video_url: str
+    score: float
+
+
 @app.post("/api/insert_organic_chunk")
 def api_insert_organic_chunk(payload: InsertOrganicRequest):
     """
@@ -60,4 +66,39 @@ def api_queue_sizes():
         "organic_queue_size": get_organic_queue_size(r),
         "synthetic_queue_size": get_synthetic_queue_size(r),
         "max_chunk_in_queue": MAX_CHUNK_IN_QUEUE,
+    }
+
+
+@app.post("/api/push_result")
+def api_push_result(payload: InsertResultRequest):
+    """
+    Save video processing result to Redis.
+    """
+    r = get_redis_connection()
+    result_key = f"result:{payload.original_video_url}"
+    result_data = {
+        "compressed_video_url": payload.compressed_video_url,
+        "original_video_url": payload.original_video_url,
+        "score": payload.score
+    }
+    r.hmset(result_key, result_data)
+    return {"message": "Result saved successfully"}
+
+
+@app.get("/api/get_result/{original_video_url:path}")
+def api_get_result(original_video_url: str):
+    """
+    Retrieve processing result for a specific video URL.
+    """
+    r = get_redis_connection()
+    result_key = f"result:{original_video_url}"
+    result = r.hgetall(result_key)
+    
+    if not result:
+        return {"message": "No result found for this video"}
+        
+    return {
+        "compressed_video_url": result[b"compressed_video_url"].decode(),
+        "original_video_url": result[b"original_video_url"].decode(),
+        "score": float(result[b"score"])
     }
