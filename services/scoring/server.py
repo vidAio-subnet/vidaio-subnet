@@ -1,8 +1,5 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import subprocess
-import json
-import re
 from typing import Optional
 from loguru import logger
 import cv2
