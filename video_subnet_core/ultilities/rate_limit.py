@@ -14,5 +14,5 @@ def build_rate_limit(metagraph, uid: int) -> int:
     w_stakes = [stake_array[i] for i in w_uids]
     total_stake = sum(w_stakes)
     normalized_stakes = [stake / total_stake for stake in w_stakes]
-    rate_limit = CONFIG.rate_limit * normalized_stakes[w_uids.index(uid)]
+    rate_limit = CONFIG.bandwidth.total_requests * normalized_stakes[w_uids.index(uid)]
     return rate_limit

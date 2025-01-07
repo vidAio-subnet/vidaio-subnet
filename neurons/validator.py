@@ -42,7 +42,7 @@ class Validator(base.BaseValidator):
 
         for batch_idx, batch in enumerate(miner_batches):
             logger.info(f"Processing batch {batch_idx + 1}/{len(miner_batches)}")
-            synapse = self.challenge_synthesizer.build_protocol()
+            synapse = await self.challenge_synthesizer.build_protocol()
             logger.debug("Built challenge protocol")
             uids, axons = zip(*batch)
             logger.debug(f"Processing UIDs in batch: {uids}")
