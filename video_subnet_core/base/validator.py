@@ -81,7 +81,7 @@ class BaseValidator(ABC):
         logger.info(
             f"Serving axon on network: {self.config.subtensor.network} with netuid: {self.config.netuid}"
         )
-        self.axon.serve(netuid=self.config.netuid, subtensor=self.subtensor)
+        # self.axon.serve(netuid=self.config.netuid, subtensor=self.subtensor)
         logger.info(f"Axon: {self.axon}")
         logger.info(f"Starting axon server on port: {self.config.axon.port}")
         self.axon.start()

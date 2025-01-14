@@ -1,6 +1,0 @@
-2025-01-06 12:00:17.051 | INFO     | __main__:main:31 - Starting worker
-2025-01-06 12:00:17.051 | INFO     | __main__:clear_queues:24 - Clearing queues
-2025-01-06 12:00:17.058 | INFO     | __main__:main:35 - Synthetic URLs: ['https://huggingface.co/datasets/vicombybyte/Subnet-Assets/resolve/main/60fps/UHD/1.mp4', 'https://huggingface.co/datasets/vicombybyte/Subnet-Assets/resolve/main/60fps/UHD/2.mp4', 'https://huggingface.co/datasets/vicombybyte/Subnet-Assets/resolve/main/60fps/UHD/3.mp4']
-2025-01-06 12:01:15.208 | INFO     | __main__:main:31 - Starting worker
-2025-01-06 12:01:15.209 | INFO     | __main__:clear_queues:24 - Clearing queues
-2025-01-06 12:01:15.213 | INFO     | __main__:main:35 - Synthetic URLs: ['https://huggingface.co/datasets/vicombybyte/Subnet-Assets/resolve/main/60fps/UHD/1.mp4', 'https://huggingface.co/datasets/vicombybyte/Subnet-Assets/resolve/main/60fps/UHD/2.mp4', 'https://huggingface.co/datasets/vicombybyte/Subnet-Assets/resolve/main/60fps/UHD/3.mp4']

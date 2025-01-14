@@ -27,9 +27,7 @@ class ScoringPayload(BaseModel):
 
 
 class ScoringResponse(BaseModel):
-    score: float = Field(
-        description="The score of the compressed video", default=0.0
-    )
+    score: float = Field(description="The score of the compressed video", default=0.0)
 
 
 class VideoCompressionProtocol(Synapse):
@@ -48,7 +46,3 @@ class VideoCompressionProtocol(Synapse):
             reference_video_url=self.miner_payload.reference_video_url,
             compressed_video_url=self.miner_response.compressed_video_url,
         )
-
-
-class Ping(Synapse):
-    pass

@@ -12,7 +12,8 @@ class Synthesizer:
     async def build_protocol(self) -> VideoCompressionProtocol:
         response = await self.session.get("/api/get_prioritized_chunk")
         response.raise_for_status()
-        data = await response.json()
+        data = response.json()
+        print(data)
         chunk_url = data["chunk_url"]
         return VideoCompressionProtocol(
             miner_payload=MinerPayload(reference_video_url=chunk_url)

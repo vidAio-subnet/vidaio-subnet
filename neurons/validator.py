@@ -44,7 +44,11 @@ class Validator(base.BaseValidator):
             logger.info(f"Processing batch {batch_idx + 1}/{len(miner_batches)}")
             synapse = await self.challenge_synthesizer.build_protocol()
             logger.debug("Built challenge protocol")
-            uids, axons = zip(*batch)
+            uids = []
+            axons = []
+            for miner in batch:
+                uids.append(miner[1])
+                axons.append(miner[0])
             logger.debug(f"Processing UIDs in batch: {uids}")
             responses = await self.dendrite.forward(
                 axons=axons, synapse=synapse, timeout=12
@@ -59,12 +63,16 @@ class Validator(base.BaseValidator):
         scores = []
         for uid, response in zip(uids, responses):
             logger.debug(f"Scoring miner {uid}")
-            async with self.score_client.post(
-                "/score", json={"uid": uid, "response": response}
-            ) as resp:
-                score: float = await resp.json()
-                logger.debug(f"Miner {uid} received score: {score}")
-                scores.append(score)
+            response = await self.score_client.post(
+                "/score",
+                json={
+                    "distorted_url": response.miner_response.compressed_video_url,
+                    "reference_url": response.miner_payload.reference_video_url,
+                },
+            )
+            score: float = await response.json()
+            logger.debug(f"Miner {uid} received score: {score}")
+            scores.append(score)
 
         logger.info(f"Updating miner manager with {len(scores)} scores")
         self.miner_manager.step(scores, uids)
