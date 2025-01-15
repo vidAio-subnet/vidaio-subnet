@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 from bittensor import Synapse
-from typing import Optional  # Added for better type hinting
+from typing import Optional 
 
 
 class MinerPayload(BaseModel):
