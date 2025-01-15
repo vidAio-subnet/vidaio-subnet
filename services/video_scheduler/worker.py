@@ -1,5 +1,11 @@
 import time
 import random
+from typing import Optional, Dict, Any, List
+import httpx
+import asyncio
+
+
+
 
 from redis_utils import (
     get_redis_connection,
@@ -24,6 +30,64 @@ def read_synthetic_urls(config_path: str) -> list[str]:
         config = yaml.safe_load(file)
     return config.get("synthetic_urls", [])
 
+async def get_next_challenge_with_retry(hotkey: str, max_retries: int = 2, initial_delay: float = 5.0, num_needed: int = 2) -> Optional[List[str]]:
+    """
+    Attempt to fetch the next synthetic request urls from the API with retries.
+    
+    Args:
+        hotkey (str): The validator's hotkey.
+        max_retries (int): Maximum number of retry attempts.
+        initial_delay (float): Initial delay in seconds between retries.
+    
+    Returns:
+        Optional[dict]: video url if successful, None otherwise.
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            logger.info(f"Fetching synthetic urls from API (Attempt {attempt + 1}/{max_retries + 1})...")
+            fetched_urls = await get_synthetic_urls(hotkey, num_needed)
+            if fetched_urls:
+                logger.info(f"Successfully fetched {num_needed} urls.")
+                return fetched_urls
+            else:
+                logger.warning("No urls available from API")
+        except Exception as e:
+            logger.error(f"Error fetching synthetic urls: {str(e)}")
+        
+        if attempt < max_retries:
+            delay = initial_delay * (2 ** attempt)  # Exponential backoff
+            logger.info(f"Retrying in {delay:.2f} seconds...")
+            await asyncio.sleep(delay)
+    
+    logger.warning("Failed to fetch challenge after all retry attempts")
+    return None
+
+async def get_synthetic_urls(validator_address: str, num_needed: int) -> Optional[List[int]]:
+    """
+    Fetch the synthetic request urls from the API.
+    
+    Args:
+        validator_address: The validator's ss58 address
+    
+    Returns:
+        video_urls list, or None if no challenge available
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{VIDAIO_API}/api/synthetic_urls/?validator_hotkey={validator_address}/num_needed={num_needed}")
+            response.raise_for_status()
+            
+            data = response.json()
+            logger.debug(f"Got synthetic urls from API: {data}")
+            
+            # Only return the fields we need
+            return data["synthetic_urls"]
+            
+    except Exception as e:
+        logger.error(f"Error fetching synthetic urls: {str(e)}")
+        if isinstance(e, httpx.HTTPError):
+            logger.error(f"HTTP Error response: {e.response.text if hasattr(e, 'response') else 'No response'}")
+        return None
 
 def main():
     r = get_redis_connection()
