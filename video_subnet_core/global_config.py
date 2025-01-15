@@ -5,6 +5,7 @@ from .configs import (
     BandwidthConfig,
     ScoreConfig,
     SQLConfig,
+    MinioConfig,
 )
 from loguru import logger
 
@@ -15,6 +16,7 @@ class GlobalConfig(BaseSettings):
     bandwidth: BandwidthConfig = BandwidthConfig()
     score: ScoreConfig = ScoreConfig()
     sql: SQLConfig = SQLConfig(url="sqlite:///video_subnet.db")
+    minio: MinioConfig = MinioConfig()
 
     class Config:
         env_nested_delimiter = "__"
