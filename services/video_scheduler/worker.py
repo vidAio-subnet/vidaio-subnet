@@ -1,6 +1,6 @@
 import time
 import random
-from typing import Optional, Dict, Any, List
+from typing import Optional, List
 import httpx
 import asyncio
 
@@ -8,7 +8,7 @@ from redis_utils import (
     get_redis_connection,
     get_organic_queue_size,
     get_synthetic_queue_size,
-    push_synthetic_chunk,
+    push_synthetic_chunks,
 )
 from video_subnet_core import CONFIG
 from loguru import logger
@@ -135,9 +135,8 @@ def main():
         if total_size < threshold:
             # Fill with synthetic chunks
             needed = fill_target - total_size
-            for _ in range(needed):
-                url = random.choice(synthetic_urls)
-                push_synthetic_chunk(r, url)
+            needed_urls = asyncio.run(get_synthetic_urls_with_retry(hotkey = hotkey, num_needed = needed))
+            push_synthetic_chunks(r, needed_urls)
 
         # Sleep for some time, e.g. 5 seconds, then re-check
         time.sleep(5)
