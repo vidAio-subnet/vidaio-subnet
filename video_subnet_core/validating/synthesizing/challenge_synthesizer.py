@@ -15,6 +15,10 @@ class Synthesizer:
         data = response.json()
         print(data)
         chunk_url = data["chunk_url"]
-        return VideoCompressionProtocol(
-            miner_payload=MinerPayload(reference_video_url=chunk_url)
-        )
+        
+        video_reference_url_4k = chunk_url + "_4k.mp4"
+        video_reference_url_hd = chunk_url + "_hd.mp4"
+        
+        return video_reference_url_4k, VideoCompressionProtocol(
+            miner_payload=MinerPayload(reference_video_url=video_reference_url_hd)
+        ) 
