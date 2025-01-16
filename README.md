@@ -93,5 +93,5 @@ Real-world video data uploaded by users is processed as follows:
 - Industry reports, research papers, and technical documentation.
 
 ### C. Contact Information
-- **Website**: [Insert Website URL]
-- **Email**: [Insert Email Address]
+- **Website**: 
+- **Email**: 
