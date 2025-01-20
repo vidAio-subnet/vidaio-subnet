@@ -33,7 +33,7 @@ class BaseMiner(ABC):
         self.should_exit = False
     
     def chain_sync(self):
-        bt.logging.info("resync_metagraph()")
+        logger.info("resync_metagraph()")
         self.metagraph.sync(subtensor=self.subtensor)
 
     @abstractmethod
@@ -104,12 +104,12 @@ class BaseMiner(ABC):
         # If someone intentionally stops the miner, it'll safely terminate operations.
         except KeyboardInterrupt:
             self.axon.stop()
-            bt.logging.success("Miner killed by keyboard interrupt.")
+            logger.success("Miner killed by keyboard interrupt.")
             exit()
 
         # In case of unforeseen errors, the miner will log the error and continue operations.
         except Exception as e:
-            bt.logging.error(traceback.format_exc())
+            logger.error(traceback.format_exc())
 
     def sync(self):
         """
@@ -137,24 +137,24 @@ class BaseMiner(ABC):
         This is useful for non-blocking operations.
         """
         if not self.is_running:
-            bt.logging.debug("Starting miner in background thread.")
+            logger.debug("Starting miner in background thread.")
             self.should_exit = False
             self.thread = threading.Thread(target=self.run, daemon=True)
             self.thread.start()
             self.is_running = True
-            bt.logging.debug("Started")
+            logger.debug("Started")
 
     def stop_run_thread(self):
         """
         Stops the miner's operations that are running in the background thread.
         """
         if self.is_running:
-            bt.logging.debug("Stopping miner in background thread.")
+            logger.debug("Stopping miner in background thread.")
             self.should_exit = True
             if self.thread is not None:
                 self.thread.join(5)
             self.is_running = False
-            bt.logging.debug("Stopped")
+            logger.debug("Stopped")
 
     def __enter__(self):
         """
