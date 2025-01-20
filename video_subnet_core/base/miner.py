@@ -4,7 +4,7 @@ import threading
 from loguru import logger
 import time
 import traceback
-
+from protocol import VideoUpscalingProtocol
 
 class BaseMiner(ABC):
     def __init__(self, config: bt.Config):
@@ -37,13 +37,13 @@ class BaseMiner(ABC):
         self.metagraph.sync(subtensor=self.subtensor)
 
     @abstractmethod
-    async def forward_upscaling_requests(self, synapse: bt.Synapse) -> bt.Synapse: ...
+    async def forward_upscaling_requests(self, synapse: VideoUpscalingProtocol) -> bt.Synapse: ...
 
     @abstractmethod
-    async def blacklist(self, synapse: bt.Synapse) -> bool: ...
+    async def blacklist(self, synapse: VideoUpscalingProtocol) -> bool: ...
 
     @abstractmethod
-    async def priority(self, synapse: bt.synapse) -> float: ...
+    async def priority(self, synapse: VideoUpscalingProtocol) -> float: ...
 
     def run(self):
         """

@@ -3,12 +3,13 @@ from video_subnet_core.base.miner import BaseMiner
 from typing import Tuple
 import time
 from loguru import logger
-
+from video_subnet_core.protocol import VideoUpscalingProtocol
 
 class Miner(BaseMiner):
 
-    async def forward_upscaling_requests(self, synapse: bt.synapse):
-        pass
+    async def forward_upscaling_requests(self, synapse: VideoUpscalingProtocol):
+        payload_url = synapse.miner_payload.reference_video_url
+        allowed_maximum_size = synapse.miner_payload.maximum_optimized_size_mb
 
 
     async def blacklist(self, synapse: bt.synapse) -> Tuple[bool, str]:
