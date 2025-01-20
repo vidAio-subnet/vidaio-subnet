@@ -10,6 +10,7 @@ class Miner(BaseMiner):
     async def forward_upscaling_requests(self, synapse: VideoUpscalingProtocol):
         payload_url = synapse.miner_payload.reference_video_url
         allowed_maximum_size = synapse.miner_payload.maximum_optimized_size_mb
+        
 
 
     async def blacklist(self, synapse: bt.synapse) -> Tuple[bool, str]:
