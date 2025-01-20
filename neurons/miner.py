@@ -1,8 +1,15 @@
 import bittensor as bt
 from video_subnet_core.base.miner import BaseMiner
 from typing import Tuple
+import time
+from loguru import logger
+
 
 class Miner(BaseMiner):
+
+    async def forward_upscaling_requests(self, synapse: bt.synapse):
+        pass
+
 
     async def blacklist(self, synapse: bt.synapse) -> Tuple[bool, str]:
         """
@@ -36,7 +43,7 @@ class Miner(BaseMiner):
         """
 
         if synapse.dendrite is None or synapse.dendrite.hotkey is None:
-            bt.logging.warning(
+            logger.warning(
                 "Received a request without a dendrite or hotkey."
             )
             return True, "Missing dendrite or hotkey"
@@ -48,7 +55,7 @@ class Miner(BaseMiner):
             and synapse.dendrite.hotkey not in self.metagraph.hotkeys
         ):
             # Ignore requests from un-registered entities.
-            bt.logging.trace(
+            logger.trace(
                 f"Blacklisting un-registered hotkey {synapse.dendrite.hotkey}"
             )
             return True, "Unrecognized hotkey"
@@ -56,12 +63,12 @@ class Miner(BaseMiner):
         if self.config.blacklist.force_validator_permit:
             # If the config is set to force validator permit, then we should only allow requests from validators.
             if not self.metagraph.validator_permit[uid]:
-                bt.logging.warning(
+                logger.warning(
                     f"Blacklisting a request from non-validator hotkey {synapse.dendrite.hotkey}"
                 )
                 return True, "Non-validator hotkey"
 
-        bt.logging.trace(
+        logger.trace(
             f"Not Blacklisting recognized hotkey {synapse.dendrite.hotkey}"
         )
         return False, "Hotkey recognized!"
@@ -87,7 +94,7 @@ class Miner(BaseMiner):
         - A higher stake results in a higher priority value.
         """
         if synapse.dendrite is None or synapse.dendrite.hotkey is None:
-            bt.logging.warning(
+            logger.warning(
                 "Received a request without a dendrite or hotkey."
             )
             return 0.0
@@ -99,7 +106,14 @@ class Miner(BaseMiner):
         priority = float(
             self.metagraph.S[caller_uid]
         )  # Return the stake as the priority.
-        bt.logging.trace(
+        logger.trace(
             f"Prioritizing {synapse.dendrite.hotkey} with value: {priority}"
         )
         return priority
+    
+    
+if __name__ == "__main__":
+    with Miner() as miner:
+        while True:
+            logger.info(f"Miner running... {time.time()}")
+            time.sleep(30)

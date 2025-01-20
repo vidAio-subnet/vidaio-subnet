@@ -19,17 +19,17 @@ class BaseMiner(ABC):
         logger.info(f"Metagraph: {self.metagraph}")
         self.axon = bt.axon(config=self.config)
         self.axon.attach(
-            forward_fn=self.forward,
+            forward_fn=self.forward_upscaling_requests,
             blacklist_fn=self.blacklist,
             priority_fn=self.priority,
         )
 
         self.check_registered()
-
+        self.block = self.subtensor.get_current_block()
         self.my_subnet_uid = self.metagraph.hotkeys.index(
             self.wallet.hotkey.ss58_address
         )
-        logger.info(f"Running Miner on uid: {self.my_subnet_uid}")
+        logger.info(f"Running Miner on uid: {self.my_subnet_uid} at block {self.block}")
         self.should_exit = False
     
     def chain_sync(self):
@@ -37,7 +37,7 @@ class BaseMiner(ABC):
         self.metagraph.sync(subtensor=self.subtensor)
 
     @abstractmethod
-    async def forward(self, synapse: bt.Synapse) -> bt.Synapse: ...
+    async def forward_upscaling_requests(self, synapse: bt.Synapse) -> bt.Synapse: ...
 
     @abstractmethod
     async def blacklist(self, synapse: bt.Synapse) -> bool: ...
@@ -119,10 +119,7 @@ class BaseMiner(ABC):
         self.check_registered()
 
         if self.should_sync_metagraph():
-            self.resync_metagraph()
-
-        if self.should_set_weights():
-            self.set_weights()
+            self.chain_sync()
 
     def check_registered(self):
         if self.wallet.hotkey.ss58_address not in self.metagraph.hotkeys:
@@ -130,6 +127,14 @@ class BaseMiner(ABC):
                 f"\nYour Miner: {self.wallet} is not registered to the subnet{self.config.netuid} \nRun 'btcli register' and try again."
             )
             exit()
+
+    def should_sync_metagraph(self):
+        """
+        Check if enough epoch blocks have elapsed since the last checkpoint to sync.
+        """
+        return (
+            self.block - self.metagraph.last_update[self.uid]
+        ) > self.config.neuron.epoch_length
 
     def run_in_background_thread(self):
         """
