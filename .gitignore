@@ -6,3 +6,4 @@ __pycache__/
 *.lock
 *.egg-info
 *.pyc
+.DS_Store
