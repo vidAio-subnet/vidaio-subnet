@@ -111,6 +111,64 @@ def video_upscaler(input_file_path: str):
 
     return None
 
+import os
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+from google.auth.transport.requests import Request
+from google.oauth2.service_account import Credentials
+from tqdm import tqdm
+from dotenv import load_dotenv
+
+# Load environment variables from .env
+load_dotenv()
+
+def upload_video(local_file_path: str) -> str:
+    """
+    Uploads a video to Google Drive with progress tracking and returns the public download link.
+    
+    Args:
+        local_file_path (str): The path of the video file to upload.
+
+    Returns:
+        str: Public URL of the uploaded video file.
+    """
+    try:
+        service_account_file = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
+
+        if not service_account_file or not os.path.exists(service_account_file):
+            raise FileNotFoundError("Service account file not found. Ensure it's configured in .env.")
+        
+        credentials = Credentials.from_service_account_file(service_account_file, scopes=["https://www.googleapis.com/auth/drive"])
+
+        service = build("drive", "v3", credentials=credentials)
+
+        file_size = os.path.getsize(local_file_path)
+
+        file_metadata = {"name": os.path.basename(local_file_path)}  # File name for Google Drive
+
+        media = MediaFileUpload(local_file_path, resumable=True)
+
+        request = service.files().create(body=file_metadata, media_body=media, fields="id")
+
+        with tqdm(total=file_size, unit="B", unit_scale=True, desc="Uploading video") as progress_bar:
+            response = None
+            while response is None:
+                status, response = request.next_chunk()
+                if status:
+                    progress_bar.update(status.resumable_progress)
+
+        file_id = response.get("id")
+
+        service.permissions().create(
+            fileId=file_id,
+            body={"type": "anyone", "role": "reader"},
+        ).execute()
+
+        return f"https://drive.google.com/uc?id={file_id}&export=download"
+
+    except Exception as e:
+        raise Exception(f"Failed to upload video: {str(e)}")
+
 
 if __name__ == "__main__":
     url = "https://www.pexels.com/download/video/3173312/"
