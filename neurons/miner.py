@@ -4,13 +4,26 @@ from typing import Tuple
 import time
 from loguru import logger
 from video_subnet_core.protocol import VideoUpscalingProtocol
+from services.miner_utilities.miner_utils import download_video, video_upscaler, upload_video
+
+import traceback
 
 class Miner(BaseMiner):
 
     async def forward_upscaling_requests(self, synapse: VideoUpscalingProtocol):
-        payload_url = synapse.miner_payload.reference_video_url
-        allowed_maximum_size = synapse.miner_payload.maximum_optimized_size_mb
-        
+        try:
+            payload_url = synapse.miner_payload.reference_video_url
+            allowed_maximum_size = synapse.miner_payload.maximum_optimized_size_mb
+            payload_video_path = download_video(payload_url)
+            processed_video_path = await video_upscaler(payload_video_path)  
+            uploaded_video_url = upload_video(processed_video_path)
+            synapse.miner_response = uploaded_video_url
+            
+            return synapse
+            
+        except Exception as e:
+            logger.error(f"Failed to run forward_upscaling_request: {e}")
+            traceback.print_exc()
 
 
     async def blacklist(self, synapse: bt.synapse) -> Tuple[bool, str]:

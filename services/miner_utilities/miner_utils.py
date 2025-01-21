@@ -4,6 +4,7 @@ from pathlib import Path
 from tqdm import tqdm
 from typing import Optional
 from requests.exceptions import RequestException
+import httpx
 
 class DownloadError(Exception):
     """Custom exception for download-related errors"""
@@ -17,7 +18,7 @@ def download_video(url: str) -> Optional[str]:
         url (str): Direct video URL to download
         
     Returns:
-        str: Generated video filename if successful
+        str: Full path of the downloaded video file if successful
         
     Raises:
         DownloadError: If download fails or path issues occur
@@ -40,7 +41,7 @@ def download_video(url: str) -> Optional[str]:
 
         # Initialize download
         try:
-            response = requests.get(url, stream=True, timeout=10)
+            response = requests.get(url, stream=True, timeout=20)
             response.raise_for_status()
             total_size = int(response.headers.get('content-length', 0))
         except RequestException as e:
@@ -71,10 +72,45 @@ def download_video(url: str) -> Optional[str]:
             output_path.unlink()
             raise DownloadError("Downloaded file is empty")
 
-        return filename
+        # Return the full path of the downloaded file
+        return str(output_path)
 
     except Exception as e:
         raise DownloadError(f"Download failed: {str(e)}")
+
+
+
+def video_upscaler(input_file_path: str):
+    """
+    Calls the local FastAPI endpoint to upscale the video.
+    
+    Args:
+        input_file_path (str): The full path of the input video file.
+    
+    Returns:
+        str: Full path of the upscaled video, if successful.
+    """
+    try:
+        # Define the API URL
+        url = "http://0.0.0.0:8000/upscale-video"
+        
+        # Define the payload
+        payload = {"task_file_path": input_file_path}
+        
+        # Send the POST request
+        response = httpx.post(url, json=payload)
+
+        # Check the response status
+        if response.status_code == 200:
+            result = response.json()
+            return result["upscaled_video_path"]
+        else:
+            print(f"Error: {response.status_code} - {response.json().get('detail', 'Unknown error')}")
+    except Exception as e:
+        print(f"Exception occurred: {e}")
+
+    return None
+
 
 if __name__ == "__main__":
     url = "https://www.pexels.com/download/video/3173312/"
