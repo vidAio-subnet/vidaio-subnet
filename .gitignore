@@ -6,3 +6,9 @@ __pycache__/
 *.lock
 *.egg-info
 *.pyc
+.DS_Store
+*.json
+.env
+venv/
+services/video_scheduler/videos/
+services/upscaling/model/
