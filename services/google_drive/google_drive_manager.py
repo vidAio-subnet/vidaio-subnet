@@ -4,9 +4,13 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from googleapiclient.http import MediaIoBaseDownload
+from dotenv import load_dotenv
+load_dotenv()
+
+service_account_file = os.getenv("GOOGLE_KEY_FILE")
 
 class GoogleDriveManager:
-    def __init__(self, service_account_file):
+    def __init__(self):
         """Initialize the Google Drive Manager with service account credentials."""
         self.SCOPES = ['https://www.googleapis.com/auth/drive']
         self.SERVICE_ACCOUNT_FILE = service_account_file
@@ -104,8 +108,12 @@ class GoogleDriveManager:
             print(f"Error deleting file/folder with ID: {file_or_folder_id}")
             print(f"Error details: {str(e)}")
 
-    def upload_file(self, local_file_path, folder_id=None):
+    def upload_file(self, local_file_path):
         """Upload a file to Google Drive and make it publicly accessible."""
+        
+        folder_id = self.create_folder("uploaded_video")
+        self.list_files(parent_folder_id=folder_id)
+        
         if not os.path.exists(local_file_path):
             print(f"File not found: {local_file_path}")
             return None, None
@@ -152,14 +160,8 @@ class GoogleDriveManager:
 # if __name__ == '__main__':
 #     gdrive = GoogleDriveManager("video-448518-c557bc123b1b.json")
     
-#     folder_id = gdrive.create_folder("uploaded_video")
-    
-#     gdrive.list_files(parent_folder_id=folder_id)
-    
 #     uploaded_file_id, sharing_link = gdrive.upload_file(
-#         "/Users/mac/Documents/work/video-streaming/vidaio-subnet/services/upscaling/videos/7dacc160-ef37-40a6-a7c4-2da0cc8f2e8b.mp4", 
-#         folder_id
-#     )
+#         "/Users/mac/Documents/work/video-streaming/vidaio-subnet/services/upscaling/videos/7dacc160-ef37-40a6-a7c4-2da0cc8f2e8b.mp4")
 
 #     if sharing_link:
 #         print(f"Public download link: {sharing_link}")
