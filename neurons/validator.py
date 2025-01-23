@@ -6,7 +6,7 @@ import asyncio
 from loguru import logger
 import traceback
 import pandas as pd
-
+from typing import List
 
 class Validator(base.BaseValidator):
     def __init__(self):
@@ -42,7 +42,7 @@ class Validator(base.BaseValidator):
 
         for batch_idx, batch in enumerate(miner_batches):
             logger.info(f"Processing batch {batch_idx + 1}/{len(miner_batches)}")
-            synapse = await self.challenge_synthesizer.build_protocol()
+            reference_url_4k, synapse = await self.challenge_synthesizer.build_protocol()
             logger.debug("Built challenge protocol")
             uids = []
             axons = []
@@ -54,28 +54,30 @@ class Validator(base.BaseValidator):
                 axons=axons, synapse=synapse, timeout=12
             )
             logger.info(f"Received {len(responses)} responses from miners")
-            await self.score(uids, responses)
+            await self.score(uids, responses, reference_url_4k)
             logger.debug("Waiting 4 seconds before next batch")
             await asyncio.sleep(4)
 
-    async def score(self, uids: list[int], responses: list[protocol.Synapse]):
+    async def score(self, uids: list[int], responses: list[protocol.Synapse], reference_url_4k: str):
         logger.info(f"Starting scoring for {len(uids)} miners")
-        scores = []
+        
+        distorted_urls = []
+        
         for uid, response in zip(uids, responses):
-            logger.debug(f"Scoring miner {uid}")
-            response = await self.score_client.post(
-                "/score",
-                json={
-                    "distorted_url": response.miner_response.compressed_video_url,
-                    "reference_url": response.miner_payload.reference_video_url,
-                },
-            )
-            score: float = await response.json()
-            logger.debug(f"Miner {uid} received score: {score}")
-            scores.append(score)
-
+            distorted_urls.append(response.miner_response.compressed_video_url)
+            
+        score_response = await self.score_client.post(
+            "/score",
+            json = {
+                "distorted_urls": distorted_urls,
+                "reference_url": reference_url_4k
+            }
+        )
+        scores: List[float] = await score_response.json()
+        
         logger.info(f"Updating miner manager with {len(scores)} scores")
         self.miner_manager.step(scores, uids)
+
 
     def set_weights(self):
         self.current_block = self.subtensor.get_current_block()
