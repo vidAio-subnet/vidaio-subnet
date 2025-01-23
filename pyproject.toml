@@ -17,6 +17,9 @@ dependencies = [
     "httpx",
     "pydantic-settings",
     "firerequests",
+    "tqdm",
+    "moviepy==1.0.3",
+    "python-dotenv",
 ]
 
 
