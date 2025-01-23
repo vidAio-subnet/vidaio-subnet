@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-def download_and_trim_video(clip_duration=10, min_video_len=0, max_video_len=600, output_dir="4k_videos"):
+def download_trim_downscale_video(clip_duration=10, min_video_len=0, max_video_len=600, output_dir="4k_videos"):
     """
     Download a 4K video and trim to specified duration from random position
     clip_duration: desired clip duration in seconds
