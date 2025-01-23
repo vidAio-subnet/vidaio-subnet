@@ -9,4 +9,6 @@ __pycache__/
 .DS_Store
 *.json
 .env
-services/upscaling/video
+venv/
+services/video_scheduler/videos/
+services/upscaling/model/

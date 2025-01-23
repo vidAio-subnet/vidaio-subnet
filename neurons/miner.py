@@ -4,20 +4,40 @@ from typing import Tuple
 import time
 from loguru import logger
 from video_subnet_core.protocol import VideoUpscalingProtocol
-from services.miner_utilities.miner_utils import download_video, video_upscaler, upload_video
-
+from services.miner_utilities.miner_utils import download_video, video_upscaler
+from services.google_drive.google_drive_manager import GoogleDriveManager
 import traceback
+import asyncio
 
 class Miner(BaseMiner):
 
     async def forward_upscaling_requests(self, synapse: VideoUpscalingProtocol):
+        
         try:
             payload_url = synapse.miner_payload.reference_video_url
             allowed_maximum_size = synapse.miner_payload.maximum_optimized_size_mb
             payload_video_path = download_video(payload_url)
-            processed_video_path = await video_upscaler(payload_video_path)  
-            uploaded_video_url = upload_video(processed_video_path)
-            synapse.miner_response = uploaded_video_url
+            processed_video_path = await video_upscaler(payload_video_path)
+            
+            gdrive = GoogleDriveManager("video-448518-c557bc123b1b.json")
+            
+            folder_id = gdrive.create_folder("uploaded_video")
+            
+            gdrive.list_files(parent_folder_id=folder_id)
+            # uploaded_file_id, sharing_link = gdrive.upload_file(
+            #     "/Users/mac/Documents/work/video-streaming/vidaio-subnet/services/upscaling/videos/7dacc160-ef37-40a6-a7c4-2da0cc8f2e8b.mp4", 
+            #     folder_id
+            # )
+            
+            uploaded_file_id, sharing_link = gdrive.upload_file(processed_video_path, folder_id)
+        
+            if sharing_link:
+                print(f"Public download link: {sharing_link}")  
+                synapse.miner_response = sharing_link
+                
+                # Schedule the deletion of the uploaded file after 60 seconds
+                await asyncio.sleep(60)
+                gdrive.delete_files(uploaded_file_id)
             
             return synapse
             
