@@ -3,16 +3,21 @@ import random
 from typing import Optional, List
 import httpx
 import asyncio
-
+import os
 from redis_utils import (
     get_redis_connection,
     get_organic_queue_size,
     get_synthetic_queue_size,
     push_synthetic_chunks,
 )
+from video_utils import download_and_trim_video
+from google_drive.google_drive_manager import GoogleDriveManager
 from video_subnet_core import CONFIG
 from loguru import logger
 import yaml
+from dotenv import load_dotenv
+
+load_dotenv()
 
 def clear_queues(redis_conn):
     """Clear both organic and synthetic queues before starting."""
@@ -79,7 +84,8 @@ async def get_synthetic_urls(hotkey: str, num_needed: int) -> Optional[List[str]
     Raises:
         httpx.HTTPError: If the API request fails
     """
-    api_url = f"{VIDAIO_API}/api/synthetic_urls"
+    vidaio_api_endpoint = os.getenv("VIDAIO_API_ENDPOINT")
+    api_url = f"{vidaio_api_endpoint}/api/synthetic_urls"
     params = {
         "validator_hotkey": hotkey,
         "num_needed": num_needed
@@ -114,6 +120,35 @@ async def get_synthetic_urls(hotkey: str, num_needed: int) -> Optional[List[str]
         logger.error(f"Unexpected error fetching synthetic urls: {str(e)}", exc_info=True)
         return None
 
+async def get_synthetic_gdrive_urls(num_needed):
+
+    sharing_video_urls = []
+    sharing_file_ids = []
+    
+    count = num_needed
+    
+    while count:
+        
+        challenge_local_path = download_and_trim_video(
+            clip_duration=CONFIG.video_scheduler.clip_duration,
+            min_video_len=CONFIG.video_scheduler.min_video_len, 
+            max_video_len=CONFIG.video_scheduler.max_video_len)
+        
+        if challenge_local_path is None:
+            continue
+        
+        gdrive = GoogleDriveManager()
+        uploaded_file_id, sharing_link = gdrive.upload_file(challenge_local_path)
+        
+        if uploaded_file_id is None or sharing_link is None:
+            continue
+        
+        sharing_video_urls.append(sharing_link)
+        sharing_file_ids.append(uploaded_file_id)
+        
+        count = count - 1
+        
+    return sharing_video_urls, sharing_file_ids
 
 def main():
     r = get_redis_connection()
@@ -135,7 +170,8 @@ def main():
         if total_size < threshold:
             # Fill with synthetic chunks
             needed = fill_target - total_size
-            needed_urls = asyncio.run(get_synthetic_urls_with_retry(hotkey = hotkey, num_needed = needed))
+            # needed_urls = asyncio.run(get_synthetic_urls_with_retry(hotkey = hotkey, num_needed = needed))
+            needed_urls = asyncio.run(get_synthetic_gdrive_urls(num_needed = needed))
             push_synthetic_chunks(r, needed_urls)
 
         # Sleep for some time, e.g. 5 seconds, then re-check

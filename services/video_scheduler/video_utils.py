@@ -8,14 +8,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-def download_and_trim_video(api_key, clip_duration=10, min_video_len=0, max_video_len=600, output_dir="4k_videos"):
+def download_and_trim_video(clip_duration=10, min_video_len=0, max_video_len=600, output_dir="4k_videos"):
     """
     Download a 4K video and trim to specified duration from random position
-    api_key: Pexels API key
     clip_duration: desired clip duration in seconds
     min_video_len: minimum video length in seconds
     max_video_len: maximum video length in seconds
     """
+    
+    api_key = os.getenv("PEXELS_API_KEY")
     
     os.makedirs(output_dir, exist_ok=True)
     
@@ -126,6 +127,8 @@ def download_and_trim_video(api_key, clip_duration=10, min_video_len=0, max_vide
         hd_clip.close()
         
         print(f"\nDone! Saved to: {temp_path}, {clipped_path}, {hd_path}, and {hevc_path}")
+        
+        return hevc_path
         
     except Exception as e:
         print(f"Error: {str(e)}")
