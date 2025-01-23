@@ -1,6 +1,6 @@
 import redis
 from video_subnet_core import CONFIG
-
+from typing import List
 REDIS_CONFIG = CONFIG.redis
 
 
@@ -29,6 +29,17 @@ def push_synthetic_chunk(r: redis.Redis, url: str):
     Push a synthetic chunk URL to the queue (FIFO).
     """
     r.rpush(REDIS_CONFIG.synthetic_queue_key, url)
+
+
+def push_synthetic_chunks(r: redis.Redis, urls: List[str]):
+    """
+    Push multiple synthetic chunk URLs to the queue (FIFO).
+    
+    Args:
+        r (redis.Redis): Redis connection
+        urls (List[str]): List of synthetic chunk URLs to push
+    """
+    r.rpush(REDIS_CONFIG.synthetic_queue_key, *urls)
 
 
 def pop_organic_chunk(r: redis.Redis) -> str:
