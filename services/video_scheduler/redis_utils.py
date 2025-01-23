@@ -1,6 +1,6 @@
 import redis
 from video_subnet_core import CONFIG
-from typing import List
+from typing import Dict, List
 REDIS_CONFIG = CONFIG.redis
 
 
@@ -17,45 +17,47 @@ def get_redis_connection():
     )
 
 
-def push_organic_chunk(r: redis.Redis, url: str):
+def push_organic_chunk(r: redis.Redis, data: Dict[str, str]):
     """
-    Push an organic chunk URL to the queue (FIFO).
+    Push an organic chunk dictionary to the queue (FIFO).
     """
-    r.rpush(REDIS_CONFIG.organic_queue_key, url)
+    r.rpush(REDIS_CONFIG.organic_queue_key, str(data))
 
 
-def push_synthetic_chunk(r: redis.Redis, url: str):
+def push_synthetic_chunk(r: redis.Redis, data: Dict[str, str]):
     """
-    Push a synthetic chunk URL to the queue (FIFO).
+    Push a synthetic chunk dictionary to the queue (FIFO).
     """
-    r.rpush(REDIS_CONFIG.synthetic_queue_key, url)
+    r.rpush(REDIS_CONFIG.synthetic_queue_key, str(data))
 
 
-def push_synthetic_chunks(r: redis.Redis, urls: List[str]):
+def push_synthetic_chunks(r: redis.Redis, data_list: List[Dict[str, str]]):
     """
-    Push multiple synthetic chunk URLs to the queue (FIFO).
+    Push multiple synthetic chunk dictionaries to the queue (FIFO).
     
     Args:
         r (redis.Redis): Redis connection
-        urls (List[str]): List of synthetic chunk URLs to push
+        data_list (List[Dict[str, str]]): List of synthetic chunk dictionaries to push
     """
-    r.rpush(REDIS_CONFIG.synthetic_queue_key, *urls)
+    r.rpush(REDIS_CONFIG.synthetic_queue_key, *[str(data) for data in data_list])
 
 
-def pop_organic_chunk(r: redis.Redis) -> str:
+def pop_organic_chunk(r: redis.Redis) -> Dict[str, str]:
     """
-    Pop the oldest organic chunk URL (FIFO).
-    Returns a URL or None if queue is empty.
+    Pop the oldest organic chunk dictionary (FIFO).
+    Returns a dictionary or None if queue is empty.
     """
-    return r.lpop(REDIS_CONFIG.organic_queue_key)
+    data = r.lpop(REDIS_CONFIG.organic_queue_key)
+    return eval(data) if data else None
 
 
-def pop_synthetic_chunk(r: redis.Redis) -> str:
+def pop_synthetic_chunk(r: redis.Redis) -> Dict[str, str]:
     """
-    Pop the oldest synthetic chunk URL (FIFO).
-    Returns a URL or None if queue is empty.
+    Pop the oldest synthetic chunk dictionary (FIFO).
+    Returns a dictionary or None if queue is empty.
     """
-    return r.lpop(REDIS_CONFIG.synthetic_queue_key)
+    data = r.lpop(REDIS_CONFIG.synthetic_queue_key)
+    return eval(data) if data else None
 
 
 def get_organic_queue_size(r: redis.Redis) -> int:

@@ -1,6 +1,6 @@
 import time
 import random
-from typing import Optional, List
+from typing import List, Dict, Optional
 import httpx
 import asyncio
 import os
@@ -10,7 +10,7 @@ from redis_utils import (
     get_synthetic_queue_size,
     push_synthetic_chunks,
 )
-from video_utils import download_and_trim_video
+from video_utils import download_trim_downscale_video
 from google_drive.google_drive_manager import GoogleDriveManager
 from video_subnet_core import CONFIG
 from loguru import logger
@@ -120,35 +120,46 @@ async def get_synthetic_urls(hotkey: str, num_needed: int) -> Optional[List[str]
         logger.error(f"Unexpected error fetching synthetic urls: {str(e)}", exc_info=True)
         return None
 
-async def get_synthetic_gdrive_urls(num_needed):
+def get_synthetic_gdrive_urls(num_needed: int) -> List[Dict[str, str]]:
+    """
+    Generate synthetic Google Drive URLs by uploading trimmed videos.
 
-    sharing_video_urls = []
-    sharing_file_ids = []
-    
-    count = num_needed
-    
-    while count:
+    Args:
+        num_needed (int): The number of synthetic URLs needed.
+
+    Returns:
+        List[Dict[str, str]]: A list of dictionaries mapping file IDs to sharing links.
+    """
+    sharing_video_urls_ids: List[Dict[str, str]] = []
+    remaining_count: int = num_needed
+
+    while remaining_count > 0:
         
-        challenge_local_path = download_and_trim_video(
+        # Download and trim video
+        challenge_local_path: Optional[str] = download_trim_downscale_video(
             clip_duration=CONFIG.video_scheduler.clip_duration,
-            min_video_len=CONFIG.video_scheduler.min_video_len, 
-            max_video_len=CONFIG.video_scheduler.max_video_len)
-        
+            min_video_len=CONFIG.video_scheduler.min_video_len,
+            max_video_len=CONFIG.video_scheduler.max_video_len
+        )
+
         if challenge_local_path is None:
+            print("Failed to download and trim video. Retrying...")
             continue
-        
+
+        # Upload file to Google Drive
         gdrive = GoogleDriveManager()
         uploaded_file_id, sharing_link = gdrive.upload_file(challenge_local_path)
-        
+
         if uploaded_file_id is None or sharing_link is None:
+            print("Upload failed. Retrying...")
             continue
-        
-        sharing_video_urls.append(sharing_link)
-        sharing_file_ids.append(uploaded_file_id)
-        
-        count = count - 1
-        
-    return sharing_video_urls, sharing_file_ids
+
+        # Append result to the list
+        sharing_video_urls_ids.append({uploaded_file_id: sharing_link})
+
+        remaining_count -= 1
+
+    return sharing_video_urls_ids
 
 def main():
     r = get_redis_connection()
@@ -171,7 +182,7 @@ def main():
             # Fill with synthetic chunks
             needed = fill_target - total_size
             # needed_urls = asyncio.run(get_synthetic_urls_with_retry(hotkey = hotkey, num_needed = needed))
-            needed_urls = asyncio.run(get_synthetic_gdrive_urls(num_needed = needed))
+            needed_urls = get_synthetic_gdrive_urls(num_needed = needed)
             push_synthetic_chunks(r, needed_urls)
 
         # Sleep for some time, e.g. 5 seconds, then re-check
