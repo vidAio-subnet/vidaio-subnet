@@ -103,9 +103,9 @@ class GoogleDriveManager:
         """Delete a file or folder in Google Drive by ID."""
         try:
             self.drive_service.files().delete(fileId=file_or_folder_id).execute()
-            print(f"Successfully deleted file/folder with ID: {file_or_folder_id}")
+            print(f"Successfully deleted file with ID: {file_or_folder_id}")
         except Exception as e:
-            print(f"Error deleting file/folder with ID: {file_or_folder_id}")
+            print(f"Error deleting file with ID: {file_or_folder_id}")
             print(f"Error details: {str(e)}")
 
     def upload_file(self, local_file_path):

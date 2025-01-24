@@ -8,7 +8,7 @@ import traceback
 import pandas as pd
 from typing import List
 from services.google_drive.google_drive_manager import GoogleDriveManager
-from services.video_scheduler.video_utils import get_4k_vide_path
+from services.video_scheduler.video_utils import get_4k_vide_path, delete_videos_with_fileid
 
 class Validator(base.BaseValidator):
     def __init__(self):
@@ -56,10 +56,16 @@ class Validator(base.BaseValidator):
                 axons=axons, synapse=synapse, timeout=12
             )
             logger.info(f"Received {len(responses)} responses from miners, deleting uploaded_file")
+            
             gdrive = GoogleDriveManager()
+            
             video_4k_path = get_4k_vide_path(video_id)
             
             await self.score(uids, responses, video_4k_path)
+            
+            gdrive.delete_files(uploaded_file_id)
+            delete_videos_with_fileid(video_id)
+            
             logger.debug("Waiting 4 seconds before next batch")
             await asyncio.sleep(4)
 
