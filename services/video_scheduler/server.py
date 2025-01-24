@@ -41,13 +41,13 @@ def api_get_prioritized_chunk():
     2) Otherwise, pop the oldest synthetic chunk.
     """
     r = get_redis_connection()
-    chunk_url = pop_organic_chunk(r)
-    if not chunk_url:
-        chunk_url = pop_synthetic_chunk(r)
+    chunk = pop_organic_chunk(r)
+    if not chunk:
+        chunk = pop_synthetic_chunk(r)
 
-    if not chunk_url:
+    if not chunk:
         return {"message": "No chunks available"}
-    return {"chunk_url": chunk_url}
+    return {"chunk": chunk}
 
 
 @app.get("/api/queue_sizes")

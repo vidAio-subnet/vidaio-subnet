@@ -7,6 +7,8 @@ from loguru import logger
 import traceback
 import pandas as pd
 from typing import List
+from services.google_drive.google_drive_manager import GoogleDriveManager
+from services.video_scheduler.video_utils import get_4k_vide_path
 
 class Validator(base.BaseValidator):
     def __init__(self):
@@ -42,7 +44,7 @@ class Validator(base.BaseValidator):
 
         for batch_idx, batch in enumerate(miner_batches):
             logger.info(f"Processing batch {batch_idx + 1}/{len(miner_batches)}")
-            reference_url_4k, synapse = await self.challenge_synthesizer.build_protocol()
+            video_id, uploaded_file_id, synapse = await self.challenge_synthesizer.build_protocol()
             logger.debug("Built challenge protocol")
             uids = []
             axons = []
@@ -53,24 +55,27 @@ class Validator(base.BaseValidator):
             responses = await self.dendrite.forward(
                 axons=axons, synapse=synapse, timeout=12
             )
-            logger.info(f"Received {len(responses)} responses from miners")
-            await self.score(uids, responses, reference_url_4k)
+            logger.info(f"Received {len(responses)} responses from miners, deleting uploaded_file")
+            gdrive = GoogleDriveManager()
+            video_4k_path = get_4k_vide_path(video_id)
+            
+            await self.score(uids, responses, video_4k_path)
             logger.debug("Waiting 4 seconds before next batch")
             await asyncio.sleep(4)
 
-    async def score(self, uids: list[int], responses: list[protocol.Synapse], reference_url_4k: str):
+    async def score(self, uids: list[int], responses: list[protocol.Synapse], reference_4k_path: str):
         logger.info(f"Starting scoring for {len(uids)} miners")
         
         distorted_urls = []
         
         for uid, response in zip(uids, responses):
-            distorted_urls.append(response.miner_response.compressed_video_url)
+            distorted_urls.append(response.miner_response.optimized_video_url)
             
         score_response = await self.score_client.post(
             "/score",
             json = {
                 "distorted_urls": distorted_urls,
-                "reference_url": reference_url_4k
+                "reference_url": reference_4k_path
             }
         )
         scores: List[float] = await score_response.json()

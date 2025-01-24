@@ -14,7 +14,7 @@ fire_requests = FireRequests()
 
 class ScoringRequest(BaseModel):
     disorted_urls: List[str]
-    reference_url: str
+    reference_path: str
     fps: Optional[float] = None
     subsample: Optional[int] = 1
     verbose: Optional[bool] = False
@@ -76,7 +76,7 @@ async def score(request: ScoringRequest):
     
     try:
         # Download reference video only once since all references are same
-        ref_path = await download_video(request.reference_url, request.verbose)
+        ref_path = request.reference_path
         ref_cap = cv2.VideoCapture(ref_path)
         
         if not ref_cap.isOpened():

@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-def download_trim_downscale_video(clip_duration=10, min_video_len=0, max_video_len=600, output_dir="4k_videos"):
+def download_trim_downscale_video(clip_duration=1, min_video_len=10, max_video_len=20, output_dir="videos"):
     """
     Download a 4K video and trim to specified duration from random position
     clip_duration: desired clip duration in seconds
@@ -56,10 +56,11 @@ def download_trim_downscale_video(clip_duration=10, min_video_len=0, max_video_l
         video, video_file = random.choice(k4_videos)
         video_url = video_file["link"]
         
-        temp_path = f"{output_dir}/temp_{video['id']}_4k.mp4"  # Downloaded 4K file
-        clipped_path = f"{output_dir}/{video['id']}_{clip_duration}sec_clipped.mp4"  # Clipped 4K file
-        hd_path = f"{output_dir}/{video['id']}_{clip_duration}sec_hd.mp4"  # Downscaled HD file
-        hevc_path = f"{output_dir}/{video['id']}_{clip_duration}sec_hd.hevc"  # HEVC file
+        temp_path = f"{output_dir}/{video['id']}_4k_original.mp4"  # Downloaded 4K file
+        clipped_path = f"{output_dir}/{video['id']}_4k.mp4"  # Clipped 4K file
+        hd_path = f"{output_dir}/{video['id']}_hd.mp4"  # Downscaled HD file
+        hevc_path = f"{output_dir}/{video['id']}_hd.hevc"  # HEVC file
+        video_id = video['id']
         
         # Step 4: Download video
         print(f"\nDownloading 4K video...")
@@ -128,16 +129,45 @@ def download_trim_downscale_video(clip_duration=10, min_video_len=0, max_video_l
         
         print(f"\nDone! Saved to: {temp_path}, {clipped_path}, {hd_path}, and {hevc_path}")
         
-        return hevc_path
+        return hevc_path, video_id
         
     except Exception as e:
         print(f"Error: {str(e)}")
 
+def get_4k_vide_path(file_id, dir_path="videos"):
+    
+    clipped_path = f"{dir_path}/{file_id}_4k.mp4"
+    
+    return clipped_path
+
+
+def delete_videos_with_fileid(file_id, dir_path="videos"):
+    # Define file paths
+    temp_path = f"{dir_path}/{file_id}_4k_original.mp4"  # Downloaded 4K file
+    clipped_path = f"{dir_path}/{file_id}_4k.mp4"  # Clipped 4K file
+    hd_path = f"{dir_path}/{file_id}_hd.mp4"  # Downscaled HD file
+    hevc_path = f"{dir_path}/{file_id}_hd.hevc"  # HEVC file
+
+    # List of files to delete
+    files_to_delete = [temp_path, clipped_path, hd_path, hevc_path]
+
+    # Delete each file if it exists
+    for file_path in files_to_delete:
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                print(f"Deleted: {file_path}")
+            else:
+                print(f"File not found: {file_path}")
+        except Exception as e:
+            print(f"Error deleting {file_path}: {e}")
+
+
 if __name__ == "__main__":
     PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
     print(PEXELS_API_KEY)
-    CLIP_DURATION = 5
-    MIN_VIDEO_LEN = 23  # Set minimum video length in seconds
-    MAX_VIDEO_LEN = 24  # Set maximum video length in seconds
+    CLIP_DURATION = 1
+    MIN_VIDEO_LEN = 10  # Set minimum video length in seconds
+    MAX_VIDEO_LEN = 20  # Set maximum video length in seconds
     
-    download_and_trim_video(PEXELS_API_KEY, CLIP_DURATION, MIN_VIDEO_LEN, MAX_VIDEO_LEN)
+    download_trim_downscale_video(CLIP_DURATION, MIN_VIDEO_LEN, MAX_VIDEO_LEN)
