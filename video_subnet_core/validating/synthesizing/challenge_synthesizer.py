@@ -1,7 +1,7 @@
 from ...protocol import VideoCompressionProtocol, MinerPayload
 from ...global_config import CONFIG
 import httpx
-
+from typing import Dict, Tuple
 
 class Synthesizer:
     def __init__(self):
@@ -9,16 +9,32 @@ class Synthesizer:
             base_url=f"http://{CONFIG.video_scheduler.host}:{CONFIG.video_scheduler.port}"
         )
 
-    async def build_protocol(self) -> VideoCompressionProtocol:
-        response = await self.session.get("/api/get_prioritized_chunk")
-        response.raise_for_status()
-        data = response.json()
-        print(data)
-        chunk_url = data["chunk_url"]
+    async def build_protocol(self) -> Tuple[str, VideoCompressionProtocol]:
+        """Fetches the prioritized video chunk and builds the video compression protocol.
+
+        Returns:
+            Tuple[str, VideoCompressionProtocol]: A tuple containing the uploaded video ID and the
+            corresponding VideoCompressionProtocol instance.
         
-        video_reference_url_4k = chunk_url + "_4k.mp4"
-        video_reference_url_hd = chunk_url + "_hd.mp4"
-        
-        return video_reference_url_4k, VideoCompressionProtocol(
-            miner_payload=MinerPayload(reference_video_url=video_reference_url_hd)
-        ) 
+        Raises:
+            httpx.HTTPStatusError: If the request to the video scheduler fails.
+        """
+        try:
+            response = await self.session.get("/api/get_prioritized_chunk")
+            response.raise_for_status()
+            data = response.json()
+            chunk: Dict = data["chunk"]
+
+            video_id = chunk["video_id"]
+            uploaded_file_id = chunk["uploaded_file_id"]
+            sharing_link = chunk["sharing_link"]
+
+            return video_id, uploaded_file_id, VideoCompressionProtocol(
+                miner_payload=MinerPayload(reference_video_url=sharing_link)
+            )
+        except httpx.HTTPStatusError as e:
+            print(f"Error fetching prioritized chunk: {e}")
+            raise
+        except Exception as e:
+            print(f"An unexpected error occurred: {e}")
+            raise

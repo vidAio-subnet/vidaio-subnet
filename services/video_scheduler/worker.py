@@ -130,13 +130,13 @@ def get_synthetic_gdrive_urls(num_needed: int) -> List[Dict[str, str]]:
     Returns:
         List[Dict[str, str]]: A list of dictionaries mapping file IDs to sharing links.
     """
-    sharing_video_urls_ids: List[Dict[str, str]] = []
+    uploaded_video_chunks: List[Dict[str, str]] = []
     remaining_count: int = num_needed
 
     while remaining_count > 0:
         
         # Download and trim video
-        challenge_local_path: Optional[str] = download_trim_downscale_video(
+        challenge_local_path, video_id = download_trim_downscale_video(
             clip_duration=CONFIG.video_scheduler.clip_duration,
             min_video_len=CONFIG.video_scheduler.min_video_len,
             max_video_len=CONFIG.video_scheduler.max_video_len
@@ -155,11 +155,15 @@ def get_synthetic_gdrive_urls(num_needed: int) -> List[Dict[str, str]]:
             continue
 
         # Append result to the list
-        sharing_video_urls_ids.append({uploaded_file_id: sharing_link})
+        uploaded_video_chunks = {
+            "video_id": video_id,
+            "uploaded_file_id": uploaded_file_id,
+            "sharing_link": sharing_link
+        }
 
         remaining_count -= 1
 
-    return sharing_video_urls_ids
+    return uploaded_video_chunks
 
 def main():
     r = get_redis_connection()
