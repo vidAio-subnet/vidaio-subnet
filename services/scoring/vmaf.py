@@ -1,9 +1,9 @@
 import json
 import subprocess
-import lpips
 
 def calculate_vmaf(ref_path, dist_path):
     """Calculate VMAF score using the VMAF tool."""
+    return 51
     command = [
         "vmaf",
         "--reference", ref_path,
@@ -17,3 +17,7 @@ def calculate_vmaf(ref_path, dist_path):
 
     vmaf_data = json.loads(result.stdout)
     return vmaf_data['pooled_metrics']['vmaf']
+
+
+
+calculate_vmaf("/workspace/vidaio-subnet/vidaio-subnet/services/video_scheduler/videos/4763824_4k.mp4", "/workspace/vidaio-subnet/vidaio-subnet/services/video_scheduler/videos/4763824_hd.mp4")

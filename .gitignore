@@ -13,3 +13,4 @@ venv/
 services/video_scheduler/videos/
 services/upscaling/videos/
 services/upscaling/model/
+services/scoring/vmaf

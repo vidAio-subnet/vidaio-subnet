@@ -8,12 +8,15 @@ from firerequests import FireRequests
 import tempfile
 import os
 import random
+from vmaf import calculate_vmaf
+from lpips_metric import calculate_lpips
+import asyncio
 
 app = FastAPI()
 fire_requests = FireRequests()
 
 class ScoringRequest(BaseModel):
-    disorted_urls: List[str]
+    distorted_urls: List[str]
     reference_path: str
     fps: Optional[float] = None
     subsample: Optional[int] = 1
@@ -46,7 +49,7 @@ def calculate_psnr(ref_frame: np.ndarray, dist_frame: np.ndarray) -> float:
         return 1000
     return 10 * np.log10((255.0**2) / mse)
 
-@app.post("/score", response_model=ScoringResponse)
+# @app.post("/score", response_model=ScoringResponse)
 async def score(request: ScoringRequest):
     ref_path = request.reference_path
     ref_cap = cv2.VideoCapture(ref_path)
@@ -59,7 +62,7 @@ async def score(request: ScoringRequest):
         raise HTTPException(status_code=500, detail="Invalid reference video: no frames found")
 
     scores = []
-    for dist_url in request.disorted_urls:
+    for dist_url in request.distorted_urls:
         ref_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         dist_path = await download_video(dist_url, request.verbose)
         dist_cap = cv2.VideoCapture(dist_path)
@@ -123,3 +126,14 @@ async def score(request: ScoringRequest):
     ref_cap.release()
 
     return ScoringResponse(scores=scores)
+
+if __name__ == "__main__":
+
+    #usecase testing
+    urls = ScoringRequest(
+        distorted_urls=["https://drive.google.com/uc?id=1gn9RdmmgpqADF9Qu1B4I14sPT6nUa4Xk&export=download",],
+        reference_path="/workspace/vidaio-subnet/vidaio-subnet/services/video_scheduler/videos/857020_4k.mp4"
+    )
+
+    scores = asyncio.run(score(urls))  
+    print(scores)
