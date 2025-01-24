@@ -105,10 +105,10 @@ def download_trim_downscale_video(clip_duration=1, min_video_len=10, max_video_l
         elapsed_time = time.time() - start_time
         print(f"Time taken to clip video: {elapsed_time:.2f} seconds")
         
-        # Step 6: Downscale to HD and save as .mp4
+        # Step 6: Downscale to HD and save as .mp4 using the clipped video
         print("\nSaving HD version...")
         start_time = time.time()
-        hd_clip = video_clip.resize(height=720)  # Resize to HD (720p)
+        hd_clip = clipped_clip.resize(height=720)  # Resize to HD (720p) using the clipped video
         hd_clip.write_videofile(hd_path, codec='libx264')  # Save as HD .mp4
         
         elapsed_time = time.time() - start_time
@@ -133,6 +133,7 @@ def download_trim_downscale_video(clip_duration=1, min_video_len=10, max_video_l
         
     except Exception as e:
         print(f"Error: {str(e)}")
+
 
 def get_4k_vide_path(file_id, dir_path="videos"):
     

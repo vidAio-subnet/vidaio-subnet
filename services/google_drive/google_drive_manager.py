@@ -157,21 +157,21 @@ class GoogleDriveManager:
             print(f"Error downloading file: {str(e)}")
 
 
-# if __name__ == '__main__':
-#     gdrive = GoogleDriveManager("video-448518-c557bc123b1b.json")
+if __name__ == '__main__':
+    gdrive = GoogleDriveManager()
     
-#     uploaded_file_id, sharing_link = gdrive.upload_file(
-#         "/Users/mac/Documents/work/video-streaming/vidaio-subnet/services/upscaling/videos/7dacc160-ef37-40a6-a7c4-2da0cc8f2e8b.mp4")
+    uploaded_file_id, sharing_link = gdrive.upload_file("/workspace/vidaio-subnet/vidaio-subnet/services/video_scheduler/videos/857020_hd.mp4")
 
-#     if sharing_link:
-#         print(f"Public download link: {sharing_link}")
+    if sharing_link:
+        print(f"Public download link: {sharing_link}")
 
-#     if uploaded_file_id:
-#         gdrive.download_file(
-#             uploaded_file_id,
-#             "/Users/mac/Documents/work/video-streaming/vidaio-subnet/services/upscaling/videos/downloaded_file.mp4"
-#         )
+    if uploaded_file_id:
+        gdrive.download_file(
+            uploaded_file_id,
+            "/workspace/vidaio-subnet/vidaio-subnet/services/upscaling/videos/downloaded_file.mp4"
+        )
+        
+    
 
-    # uncomment to delete the file
     # if uploaded_file_id:
     #     gdrive.delete_files(uploaded_file_id)
