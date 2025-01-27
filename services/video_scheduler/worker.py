@@ -192,7 +192,7 @@ def main():
             push_synthetic_chunks(r, needed_urls)
 
         # Sleep for some time, e.g. 5 seconds, then re-check
-        time.sleep(10)
+        time.sleep(20)
 
 
 if __name__ == "__main__":
