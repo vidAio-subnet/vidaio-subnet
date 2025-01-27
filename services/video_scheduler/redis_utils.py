@@ -45,6 +45,7 @@ def push_synthetic_chunks(r: redis.Redis, data_list: List[Dict[str, str]]) -> No
         data_list (List[Dict[str, str]]): List of synthetic chunk dictionaries to push
     """
     r.rpush(REDIS_CONFIG.synthetic_queue_key, *data_list)
+    print("Pushed all urls correctly in the Redis queue")
 
 def pop_organic_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
     """

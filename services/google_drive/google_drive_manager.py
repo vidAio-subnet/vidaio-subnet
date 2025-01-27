@@ -155,23 +155,64 @@ class GoogleDriveManager:
             print(f"File downloaded to: {destination_path}")
         except Exception as e:
             print(f"Error downloading file: {str(e)}")
+            
+    def init_drive(self):
+        """Delete all files and directories in Google Drive."""
+        query = "trashed=false"
+        
+        results = self.drive_service.files().list(
+            q=query,
+            fields='files(id, name, mimeType)',
+            pageSize=1000
+        ).execute()
+        
+        items = results.get('files', [])
+        
+        for item in items:
+            if item['mimeType'] == 'application/vnd.google-apps.folder':
+                self.init_drive_folder(item['id'])
+                self.delete_files(item['id'])  
+            else:
+                self.delete_files(item['id']) 
+
+        print("All files and directories deleted.")
+
+    def init_drive_folder(self, folder_id):
+        """Helper function to delete contents of a folder."""
+        query = f"'{folder_id}' in parents and trashed=false"
+        
+        results = self.drive_service.files().list(
+            q=query,
+            fields='files(id, name, mimeType)',
+            pageSize=1000
+        ).execute()
+        
+        items = results.get('files', [])
+        
+        for item in items:
+            if item['mimeType'] == 'application/vnd.google-apps.folder':
+                self.init_drive_folder(item['id']) 
+                self.delete_files(item['id']) 
+            else:
+                self.delete_files(item['id']) 
+
 
 
 if __name__ == '__main__':
     gdrive = GoogleDriveManager()
     
-    uploaded_file_id, sharing_link = gdrive.upload_file("/workspace/vidaio-subnet/vidaio-subnet/services/video_scheduler/videos/857020_hd.mp4")
+    # uploaded_file_id, sharing_link = gdrive.upload_file("/workspace/vidaio-subnet/vidaio-subnet/services/video_scheduler/videos/857020_hd.mp4")
 
-    if sharing_link:
-        print(f"Public download link: {sharing_link}")
+    # if sharing_link:
+    #     print(f"Public download link: {sharing_link}")
 
-    if uploaded_file_id:
-        gdrive.download_file(
-            uploaded_file_id,
-            "/workspace/vidaio-subnet/vidaio-subnet/services/upscaling/videos/downloaded_file.mp4"
-        )
+    # if uploaded_file_id:
+    #     gdrive.download_file(
+    #         uploaded_file_id,
+    #         "/workspace/vidaio-subnet/vidaio-subnet/services/upscaling/videos/downloaded_file.mp4"
+    #     )
         
-    
+    # gdrive.init_drive()    
 
     # if uploaded_file_id:
     #     gdrive.delete_files(uploaded_file_id)

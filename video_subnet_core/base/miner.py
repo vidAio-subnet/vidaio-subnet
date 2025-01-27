@@ -4,7 +4,7 @@ import threading
 from loguru import logger
 import time
 import traceback
-from protocol import VideoUpscalingProtocol
+from video_subnet_core.protocol import VideoUpscalingProtocol
 
 class BaseMiner(ABC):
     def __init__(self, config: bt.Config):
