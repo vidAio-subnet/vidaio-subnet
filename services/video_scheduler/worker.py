@@ -120,6 +120,8 @@ async def get_synthetic_urls(hotkey: str, num_needed: int) -> Optional[List[str]
         logger.error(f"Unexpected error fetching synthetic urls: {str(e)}", exc_info=True)
         return None
 
+from typing import List, Dict
+
 def get_synthetic_gdrive_urls(num_needed: int) -> List[Dict[str, str]]:
     """
     Generate synthetic Google Drive URLs by uploading trimmed videos.
@@ -155,15 +157,16 @@ def get_synthetic_gdrive_urls(num_needed: int) -> List[Dict[str, str]]:
             continue
 
         # Append result to the list
-        uploaded_video_chunks = {
+        uploaded_video_chunks.append({
             "video_id": video_id,
             "uploaded_file_id": uploaded_file_id,
             "sharing_link": sharing_link
-        }
+        })
 
         remaining_count -= 1
 
     return uploaded_video_chunks
+
 
 def main():
     r = get_redis_connection()
@@ -187,7 +190,7 @@ def main():
             # Fill with synthetic chunks
             needed = fill_target - total_size
             # needed_urls = asyncio.run(get_synthetic_urls_with_retry(hotkey = hotkey, num_needed = needed))
-            print(f"need {needed} synthetic chunks.....")
+            print(f"need {needed} aa chunks.....")
             needed_urls = get_synthetic_gdrive_urls(num_needed = needed)
             push_synthetic_chunks(r, needed_urls)
 

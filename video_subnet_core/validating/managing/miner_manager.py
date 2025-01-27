@@ -30,21 +30,22 @@ class MinerManager:
         logger.info("Initializing serving counters")
         self.initialize_serving_counter(self.metagraph.uids)
         logger.success("MinerManager initialization complete")
-
+        
     def initialize_serving_counter(self, uids: list[int]):
         rate_limit = build_rate_limit(self.metagraph, self.uid)
-        logger.info(f"Creating serving counters for {len(uids)} UIDs")
+        logger.info(f"Creating serving counters for {len(uids)} UIDs with rate_limit {rate_limit}")
         self.serving_counters = {
             uid: ServingCounter(
-                rate_limit=rate_limit,
+                rate_limit=build_rate_limit(self.metagraph, uid),  # Use uid here
                 uid=uid,
                 redis_client=self.redis_client,
             )
             for uid in uids
         }
-        logger.debug(
-            f"Serving counters initialized with rate limit: {self.serving_counters}"
-        )
+        logger.debug("Serving counters initialized with rate limits")  # Fixed closing brace
+        for uid in uids:
+            print(f"{uid}: {self.serving_counters[uid].rate_limit}")    
+    
 
     def query(self, uids: list[int] = []) -> dict[int, MinerMetadata]:
         logger.debug(f"Querying metadata for UIDs: {uids if uids else 'all'}")

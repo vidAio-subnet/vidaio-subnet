@@ -25,6 +25,7 @@ class Synthesizer:
             data = response.json()
             chunk: Dict = data["chunk"]
 
+            print(f"received chunk from video-scheduler api: {chunk}")
             video_id = chunk["video_id"]
             uploaded_file_id = chunk["uploaded_file_id"]
             sharing_link = chunk["sharing_link"]

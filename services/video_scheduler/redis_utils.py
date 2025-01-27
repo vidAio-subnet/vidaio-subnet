@@ -1,4 +1,5 @@
 import redis
+import json
 from video_subnet_core import CONFIG
 from typing import Dict, List, Optional
 
@@ -24,7 +25,7 @@ def push_organic_chunk(r: redis.Redis, data: Dict[str, str]) -> None:
         r (redis.Redis): Redis connection
         data (Dict[str, str]): Organic chunk dictionary to push
     """
-    r.rpush(REDIS_CONFIG.organic_queue_key, data)
+    r.rpush(REDIS_CONFIG.organic_queue_key, json.dumps(data))
 
 def push_synthetic_chunk(r: redis.Redis, data: Dict[str, str]) -> None:
     """
@@ -34,7 +35,7 @@ def push_synthetic_chunk(r: redis.Redis, data: Dict[str, str]) -> None:
         r (redis.Redis): Redis connection
         data (Dict[str, str]): Synthetic chunk dictionary to push
     """
-    r.rpush(REDIS_CONFIG.synthetic_queue_key, data)
+    r.rpush(REDIS_CONFIG.synthetic_queue_key, json.dumps(data))
 
 def push_synthetic_chunks(r: redis.Redis, data_list: List[Dict[str, str]]) -> None:
     """
@@ -44,8 +45,8 @@ def push_synthetic_chunks(r: redis.Redis, data_list: List[Dict[str, str]]) -> No
         r (redis.Redis): Redis connection
         data_list (List[Dict[str, str]]): List of synthetic chunk dictionaries to push
     """
-    r.rpush(REDIS_CONFIG.synthetic_queue_key, *data_list)
-    print("Pushed all urls correctly in the Redis queue")
+    r.rpush(REDIS_CONFIG.synthetic_queue_key, *[json.dumps(data) for data in data_list])
+    print("Pushed all URLs correctly in the Redis queue")
 
 def pop_organic_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
     """
@@ -59,7 +60,7 @@ def pop_organic_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
         Optional[Dict[str, str]]: The popped organic chunk or None if empty.
     """
     data = r.lpop(REDIS_CONFIG.organic_queue_key)
-    return data if data is None else eval(data)
+    return json.loads(data) if data else None
 
 def pop_synthetic_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
     """
@@ -73,7 +74,7 @@ def pop_synthetic_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
         Optional[Dict[str, str]]: The popped synthetic chunk or None if empty.
     """
     data = r.lpop(REDIS_CONFIG.synthetic_queue_key)
-    return data if data is None else eval(data)
+    return json.loads(data) if data else None
 
 def get_organic_queue_size(r: redis.Redis) -> int:
     """
