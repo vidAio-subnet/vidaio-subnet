@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
+from video_subnet_core import CONFIG
 
 from redis_utils import (
     get_redis_connection,
@@ -40,11 +41,13 @@ def api_get_prioritized_chunk():
     1) Pop the oldest organic chunk, if available.
     2) Otherwise, pop the oldest synthetic chunk.
     """
+    print("got the request correctoy")
     r = get_redis_connection()
     chunk = pop_organic_chunk(r)
+    print("organic queue is empty, checking synthetic queue...")
     if not chunk:
         chunk = pop_synthetic_chunk(r)
-
+        print(f"processing synthetic queue. {chunk}")
     if not chunk:
         return {"message": "No chunks available"}
     return {"chunk": chunk}
@@ -95,3 +98,12 @@ def api_get_result(original_video_url: str):
         "original_video_url": result[b"original_video_url"].decode(),
         "score": float(result[b"score"]),
     }
+
+
+
+if __name__ == "__main__":
+    
+    import uvicorn
+    host = CONFIG.video_scheduler.host
+    port = CONFIG.video_scheduler.port
+    uvicorn.run(app, host=host, port=port)

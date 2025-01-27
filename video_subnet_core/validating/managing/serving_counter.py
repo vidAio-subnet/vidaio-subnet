@@ -30,7 +30,7 @@ class ServingCounter:
 
         if count == 1:
             self.redis_client.expire(self.key, CONFIG.bandwidth.request_interval)
-
+        print(f"rate_limit is {self.rate_limit}")
         if count <= self.rate_limit:
             return True
 
