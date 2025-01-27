@@ -24,30 +24,19 @@ def is_cuda_available():
     return "cpu"
 
 
-def check_config(cls, config: "bt.Config"):
-    r"""Checks/validates the config namespace object."""
-    bt.logging.check_config(config)
-
-    full_path = os.path.expanduser(
-        "{}/{}/{}/netuid{}/{}".format(
-            config.logging.logging_dir,  # TODO: change from ~/.bittensor/miners to ~/.bittensor/neurons
-            config.wallet.name,
-            config.wallet.hotkey,
-            config.netuid,
-            config.neuron.name,
-        )
-    )
-    print("full path:", full_path)
-    config.neuron.full_path = os.path.expanduser(full_path)
-    if not os.path.exists(config.neuron.full_path):
-        os.makedirs(config.neuron.full_path, exist_ok=True)
-
-def add_args(cls, parser):
+def add_args(parser):
     """
     Adds relevant arguments to the parser for operation.
     """
 
     parser.add_argument("--netuid", type=int, help="Subnet netuid", default=1)
+
+    parser.add_argument(
+        "--neuron.name",
+        type=str,
+        help="Trials for this neuron go in neuron.root / (wallet_cold - wallet_hot) / neuron.name. ",
+        default="validator",
+    )
 
     parser.add_argument(
         "--neuron.device",
@@ -106,15 +95,8 @@ def add_args(cls, parser):
     )
 
 
-def add_miner_args(cls, parser):
+def add_miner_args(parser):
     """Add miner specific arguments to the parser."""
-
-    parser.add_argument(
-        "--neuron.name",
-        type=str,
-        help="Trials for this neuron go in neuron.root / (wallet_cold - wallet_hot) / neuron.name. ",
-        default="miner",
-    )
 
     parser.add_argument(
         "--blacklist.force_validator_permit",
@@ -130,30 +112,9 @@ def add_miner_args(cls, parser):
         default=False,
     )
 
-    parser.add_argument(
-        "--wandb.project_name",
-        type=str,
-        default="template-miners",
-        help="Wandb project to log to.",
-    )
 
-    parser.add_argument(
-        "--wandb.entity",
-        type=str,
-        default="opentensor-dev",
-        help="Wandb entity to log to.",
-    )
-
-
-def add_validator_args(cls, parser):
+def add_validator_args(parser):
     """Add validator specific arguments to the parser."""
-
-    parser.add_argument(
-        "--neuron.name",
-        type=str,
-        help="Trials for this neuron go in neuron.root / (wallet_cold - wallet_hot) / neuron.name. ",
-        default="validator",
-    )
 
     parser.add_argument(
         "--neuron.timeout",
@@ -222,14 +183,14 @@ def add_validator_args(cls, parser):
     )
 
 
-def add_common_config(cls):
+def add_common_config(parser: argparse.ArgumentParser):
     """
-    Returns the configuration object specific to this miner or validator after adding relevant arguments.
+    Adds relevant common arguments to the parser for this miner or validator.
+    Returns the updated parser.
     """
-    parser = argparse.ArgumentParser()
     bt.wallet.add_args(parser)
     bt.subtensor.add_args(parser)
     bt.logging.add_args(parser)
     bt.axon.add_args(parser)
-    cls.add_args(parser)
-    return bt.config(parser)
+    add_args(parser)  # Call the add_args function defined earlier
+    return parser  # Return the updated parser
