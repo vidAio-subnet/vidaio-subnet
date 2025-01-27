@@ -11,7 +11,7 @@ from redis_utils import (
     push_synthetic_chunks,
 )
 from video_utils import download_trim_downscale_video
-from google_drive.google_drive_manager import GoogleDriveManager
+from services.google_drive.google_drive_manager import GoogleDriveManager
 from video_subnet_core import CONFIG
 from loguru import logger
 import yaml
@@ -169,14 +169,15 @@ def main():
     r = get_redis_connection()
     logger.info("Starting worker")
     clear_queues(r)
-    synthetic_urls = read_synthetic_urls("video_samples.yaml")
-    logger.info(f"Synthetic URLs: {synthetic_urls}")
+    # synthetic_urls = read_synthetic_urls("video_samples.yaml")
+    # logger.info(f"Synthetic URLs: {synthetic_urls}")
 
     while True:
         organic_size = get_organic_queue_size(r)
         synthetic_size = get_synthetic_queue_size(r)
         total_size = organic_size + synthetic_size
-
+        print(f"The organic queue size is {organic_size}")
+        print(f"The synthetic queue size is {synthetic_size}")
         # If total queue is below some threshold, push synthetic chunks
         # Adjust threshold as needed. Example: If queue < 500, fill it up to 1000 with synthetic.
         threshold = CONFIG.video_scheduler.refill_threshold
@@ -186,11 +187,12 @@ def main():
             # Fill with synthetic chunks
             needed = fill_target - total_size
             # needed_urls = asyncio.run(get_synthetic_urls_with_retry(hotkey = hotkey, num_needed = needed))
+            print(f"need {needed} synthetic chunks.....")
             needed_urls = get_synthetic_gdrive_urls(num_needed = needed)
             push_synthetic_chunks(r, needed_urls)
 
         # Sleep for some time, e.g. 5 seconds, then re-check
-        time.sleep(5)
+        time.sleep(10)
 
 
 if __name__ == "__main__":
