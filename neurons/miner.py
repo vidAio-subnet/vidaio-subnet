@@ -10,6 +10,9 @@ import traceback
 import asyncio
 
 class Miner(BaseMiner):
+    
+    def __init__(self, config=None):
+        super(Miner, self).__init__()
 
     async def forward_upscaling_requests(self, synapse: VideoUpscalingProtocol):
         

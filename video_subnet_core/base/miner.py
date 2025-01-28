@@ -5,10 +5,15 @@ from loguru import logger
 import time
 import traceback
 from video_subnet_core.protocol import VideoUpscalingProtocol
+import argparse
+from .config import add_common_config
+import os
+
 
 class BaseMiner(ABC):
-    def __init__(self, config: bt.Config):
-        self.config = config
+    def __init__(self   ):
+        self.config = self.get_config()
+        self.init_bittensor()
 
     def init_bittensor(self):
         self.subtensor = bt.subtensor(config=self.config)
@@ -30,7 +35,25 @@ class BaseMiner(ABC):
             self.wallet.hotkey.ss58_address
         )
         logger.info(f"Running Miner on uid: {self.my_subnet_uid} at block {self.block}")
-        self.should_exit = False
+        self.should_exit: bool = False
+        self.is_running: bool = False
+    
+    def get_config(self):
+        parser = argparse.ArgumentParser()
+        parser = add_common_config(parser)
+        config = bt.config(parser)
+        config.full_path = os.path.expanduser(
+            "{}/{}/{}/netuid{}/{}".format(
+                config.logging.logging_dir,
+                config.wallet.name,
+                config.wallet.hotkey_str,
+                config.netuid,
+                "validator",
+            )
+        )
+        os.makedirs(config.full_path, exist_ok=True)
+        return config
+
     
     def chain_sync(self):
         logger.info("resync_metagraph()")
