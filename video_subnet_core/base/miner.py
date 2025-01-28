@@ -23,10 +23,12 @@ class BaseMiner(ABC):
         self.metagraph = self.subtensor.metagraph(netuid=self.config.netuid)
         logger.info(f"Metagraph: {self.metagraph}")
         self.axon = bt.axon(config=self.config)
+        self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
+        logger.info(f"Running Miner with UID {self.uid}")
         self.axon.attach(
             forward_fn=self.forward_upscaling_requests,
-            blacklist_fn=self.blacklist,
-            priority_fn=self.priority,
+            blacklist_fn=self.blacklist_upscaling_requests,
+            priority_fn=self.priority_upscaling_requests,
         )
 
         self.check_registered()
@@ -63,10 +65,10 @@ class BaseMiner(ABC):
     async def forward_upscaling_requests(self, synapse: VideoUpscalingProtocol) -> bt.Synapse: ...
 
     @abstractmethod
-    async def blacklist(self, synapse: VideoUpscalingProtocol) -> bool: ...
+    async def blacklist_upscaling_requests(self, synapse: VideoUpscalingProtocol) -> bool: ...
 
     @abstractmethod
-    async def priority(self, synapse: VideoUpscalingProtocol) -> float: ...
+    async def priority_upscaling_requests(self, synapse: VideoUpscalingProtocol) -> float: ...
 
     def run(self):
         """

@@ -49,7 +49,7 @@ class Miner(BaseMiner):
             traceback.print_exc()
 
 
-    async def blacklist(self, synapse: bt.synapse) -> Tuple[bool, str]:
+    async def blacklist_upscaling_requests(self, synapse: VideoUpscalingProtocol) -> Tuple[bool, str]:
         """
         Determines whether an incoming request should be blacklisted and thus ignored. Your implementation should
         define the logic for blacklisting requests based on your needs and desired security parameters.
@@ -111,7 +111,7 @@ class Miner(BaseMiner):
         )
         return False, "Hotkey recognized!"
 
-    async def priority(self, synapse: bt.synapse) -> float:
+    async def priority_upscaling_requests(self, synapse: VideoUpscalingProtocol) -> float:
         """
         The priority function determines the order in which requests are handled. More valuable or higher-priority
         requests are processed before others. You should design your own priority mechanism with care.
