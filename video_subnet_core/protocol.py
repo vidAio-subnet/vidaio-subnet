@@ -20,7 +20,6 @@ class MinerResponse(BaseModel):
     optimized_video_url: str = Field(
         description="The URL of the processed video (compressed/upscaled)",
         default="",
-        min_length=1  
     )
 
 
