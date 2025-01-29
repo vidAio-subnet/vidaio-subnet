@@ -16,6 +16,7 @@ class Miner(BaseMiner):
 
     async def forward_upscaling_requests(self, synapse: VideoUpscalingProtocol):
         
+        logger.info(f"Receiving Request: {synapse}")
         try:
             payload_url = synapse.miner_payload.reference_video_url
             allowed_maximum_size = synapse.miner_payload.maximum_optimized_size_mb

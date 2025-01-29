@@ -1,4 +1,4 @@
-from ...protocol import VideoCompressionProtocol, MinerPayload
+from ...protocol import VideoUpscalingProtocol, MinerPayload
 from ...global_config import CONFIG
 import httpx
 from typing import Dict, Tuple
@@ -9,12 +9,12 @@ class Synthesizer:
             base_url=f"http://{CONFIG.video_scheduler.host}:{CONFIG.video_scheduler.port}"
         )
 
-    async def build_protocol(self) -> Tuple[str, VideoCompressionProtocol]:
+    async def build_protocol(self) -> Tuple[str, VideoUpscalingProtocol]:
         """Fetches the prioritized video chunk and builds the video compression protocol.
 
         Returns:
-            Tuple[str, VideoCompressionProtocol]: A tuple containing the uploaded video ID and the
-            corresponding VideoCompressionProtocol instance.
+            Tuple[str, VideoUpscalingProtocol]: A tuple containing the uploaded video ID and the
+            corresponding VideoUpscalingProtocol instance.
         
         Raises:
             httpx.HTTPStatusError: If the request to the video scheduler fails.
@@ -30,7 +30,7 @@ class Synthesizer:
             uploaded_file_id = chunk["uploaded_file_id"]
             sharing_link = chunk["sharing_link"]
 
-            return video_id, uploaded_file_id, VideoCompressionProtocol(
+            return video_id, uploaded_file_id, VideoUpscalingProtocol(
                 miner_payload=MinerPayload(reference_video_url=sharing_link)
             )
         except httpx.HTTPStatusError as e:

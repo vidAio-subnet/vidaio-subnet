@@ -6,7 +6,7 @@ import time
 import traceback
 from video_subnet_core.protocol import VideoUpscalingProtocol
 import argparse
-from .config import add_common_config
+from .config import add_common_config, add_miner_args
 import os
 
 
@@ -39,10 +39,12 @@ class BaseMiner(ABC):
         logger.info(f"Running Miner on uid: {self.my_subnet_uid} at block {self.block}")
         self.should_exit: bool = False
         self.is_running: bool = False
+        self.step = 0
     
     def get_config(self):
         parser = argparse.ArgumentParser()
         parser = add_common_config(parser)
+        add_miner_args(parser)
         config = bt.config(parser)
         config.full_path = os.path.expanduser(
             "{}/{}/{}/netuid{}/{}".format(
@@ -157,6 +159,7 @@ class BaseMiner(ABC):
         """
         Check if enough epoch blocks have elapsed since the last checkpoint to sync.
         """
+        return False
         return (
             self.block - self.metagraph.last_update[self.uid]
         ) > self.config.neuron.epoch_length
