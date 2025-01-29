@@ -129,7 +129,8 @@ def download_trim_downscale_video(clip_duration=1, min_video_len=10, max_video_l
         
         print(f"\nDone! Saved to: {temp_path}, {clipped_path}, {hd_path}, and {hevc_path}")
         
-        return hevc_path, video_id
+        # return hevc_path, video_id
+        return hd_path, video_id
         
     except Exception as e:
         print(f"Error: {str(e)}")
