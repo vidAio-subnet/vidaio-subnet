@@ -112,3 +112,8 @@ def video_upscaler(input_file_path: str):
 
     return None
 
+
+if __name__ == "__main__":
+    video_url = "https://drive.google.com/uc?id=1AGHgiWkdJ2EKLjguCsKE4IZGoIP8Ifpw&export=download"
+    download_video(video_url)
+
