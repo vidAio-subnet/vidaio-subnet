@@ -43,6 +43,8 @@ async def video_upscaler(request: UpscaleRequest):
             "-c:v", "libx265",
             "-preset", "slow",
             "-crf", "24",
+            "-fps_mode", "cfr",  # Ensure constant frame rate
+            "-r", "25",          # Explicitly set frame rate
             str(intermediate_file_hevc)
         ]
         conversion_to_hevc_process = subprocess.run(conversion_to_hevc_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -87,6 +89,8 @@ async def video_upscaler(request: UpscaleRequest):
             "-c:v", "libx264",
             "-preset", "fast",
             "-crf", "24",
+            "-fps_mode", "cfr",  # Ensure constant frame rate
+            "-r", "25",          # Explicitly set frame rate
             str(output_file_mp4)
         ]
         conversion_to_mp4_process = subprocess.run(conversion_to_mp4_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -120,7 +124,7 @@ if __name__ == "__main__":
 
     
     # video = UpscaleRequest
-    # video.task_file_path = "/workspace/vidaio-subnet/services/upscaling/videos/7579959_hd.mp4"
+    # video.task_file_path = "/workspace/vidaio-subnet/services/upscaling/videos/6153734_hd.mp4"
     # asyncio.run(video_upscaler(video))
 
 
