@@ -4,12 +4,16 @@ __pycache__/
 *.db
 *.mp4
 *.lock
+.hevc
+.y4m
 *.egg-info
 *.pyc
 .DS_Store
 *.json
 .env
 venv/
+video2x/
+vmaf/
 services/video_scheduler/videos/
 services/upscaling/videos/
 services/upscaling/model/
