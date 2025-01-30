@@ -172,8 +172,6 @@ def main():
     r = get_redis_connection()
     logger.info("Starting worker")
     clear_queues(r)
-    # synthetic_urls = read_synthetic_urls("video_samples.yaml")
-    # logger.info(f"Synthetic URLs: {synthetic_urls}")
 
     while True:
         organic_size = get_organic_queue_size(r)

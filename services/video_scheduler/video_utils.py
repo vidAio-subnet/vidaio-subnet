@@ -10,7 +10,7 @@ load_dotenv()
 
 def download_trim_downscale_video(clip_duration=1, min_video_len=10, max_video_len=20, output_dir="videos"):
     """
-    Download a 4K video and trim to specified duration from random position
+    Download a DCI 4K video and trim to specified duration from a random position.
     clip_duration: desired clip duration in seconds
     min_video_len: minimum video length in seconds
     max_video_len: maximum video length in seconds
@@ -23,7 +23,7 @@ def download_trim_downscale_video(clip_duration=1, min_video_len=10, max_video_l
     headers = {"Authorization": api_key}
     url = "https://api.pexels.com/videos/search"
     params = {
-        "query": "nature",
+        "query": "technology",
         "per_page": 80,
         "size": "large"
     }
@@ -40,30 +40,31 @@ def download_trim_downscale_video(clip_duration=1, min_video_len=10, max_video_l
             print("No videos found or API error")
             return
         
-        # Step 2: Filter 4K videos based on length
-        k4_videos = []
+        # Step 2: Filter DCI 4K videos based on length
+        dci4k_videos = []
         for video in data["videos"]:
             video_length = video["duration"]
-            k4_files = [f for f in video["video_files"] if f["height"] >= 2160]
-            if k4_files and min_video_len <= video_length <= max_video_len:
-                k4_videos.append((video, k4_files[0]))
+            # Filter for DCI 4K videos (4096x2160)
+            dci4k_files = [f for f in video["video_files"] if f["width"] == 4096 and f["height"] == 2160]
+            if dci4k_files and min_video_len <= video_length <= max_video_len:
+                dci4k_videos.append((video, dci4k_files[0]))
         
-        if not k4_videos:
-            print("No suitable 4K videos found")
+        if not dci4k_videos:
+            print("No suitable DCI 4K videos found")
             return
         
         # Step 3: Randomly select one video
-        video, video_file = random.choice(k4_videos)
+        video, video_file = random.choice(dci4k_videos)
         video_url = video_file["link"]
         
-        temp_path = f"{output_dir}/{video['id']}_4k_original.mp4"  # Downloaded 4K file
-        clipped_path = f"{output_dir}/{video['id']}_4k.mp4"  # Clipped 4K file
+        temp_path = f"{output_dir}/{video['id']}_dci4k_original.mp4"  # Downloaded DCI 4K file
+        clipped_path = f"{output_dir}/{video['id']}_dci4k.mp4"  # Clipped DCI 4K file
         hd_path = f"{output_dir}/{video['id']}_hd.mp4"  # Downscaled HD file
         hevc_path = f"{output_dir}/{video['id']}_hd.hevc"  # HEVC file
         video_id = video['id']
         
         # Step 4: Download video
-        print(f"\nDownloading 4K video...")
+        print(f"\nDownloading DCI 4K video...")
         print(f"Resolution: {video_file['width']}x{video_file['height']}")
         print(f"Original duration: {video['duration']}s")
         
@@ -134,6 +135,7 @@ def download_trim_downscale_video(clip_duration=1, min_video_len=10, max_video_l
         
     except Exception as e:
         print(f"Error: {str(e)}")
+
 
 
 def get_4k_vide_path(file_id, dir_path="videos"):
