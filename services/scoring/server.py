@@ -49,7 +49,7 @@ def calculate_psnr(ref_frame: np.ndarray, dist_frame: np.ndarray) -> float:
         return 1000
     return 10 * np.log10((255.0**2) / mse)
 
-# @app.post("/score", response_model=ScoringResponse)
+@app.post("/score", response_model=ScoringResponse)
 async def score(request: ScoringRequest):
     ref_path = request.reference_path
     ref_cap = cv2.VideoCapture(ref_path)
