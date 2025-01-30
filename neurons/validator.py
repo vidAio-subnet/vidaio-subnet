@@ -33,6 +33,7 @@ class Validator(base.BaseValidator):
         uids = list(range(len(self.metagraph.hotkeys)))
         logger.debug(f"Initial UIDs: {uids}")
         uids = self.miner_manager.consume(uids)
+        # uids.append(2)
         logger.info(f"Filtered UIDs after consumption: {uids}")
         axons = [self.metagraph.axons[uid] for uid in uids]
         miners = list(zip(axons, uids))
@@ -45,7 +46,7 @@ class Validator(base.BaseValidator):
         for batch_idx, batch in enumerate(miner_batches):
             logger.info(f"Processing batch {batch_idx + 1}/{len(miner_batches)}")
             video_id, uploaded_file_id, synapse = await self.challenge_synthesizer.build_protocol()
-            logger.debug("Built challenge protocol")
+            logger.debug(f"Built challenge protocol {synapse.__dict__}")
             uids = []
             axons = []
             for miner in batch:

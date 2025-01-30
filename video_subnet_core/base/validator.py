@@ -65,6 +65,8 @@ class BaseValidator(ABC):
         logger.info(f"Dendrite: {self.dendrite}")
         self.metagraph = self.subtensor.metagraph(self.config.netuid)
         logger.info(f"Metagraph: {self.metagraph}")
+        self.resync_metagraph()
+        logger.info(f"Sync Metagraph")
         if self.wallet.hotkey.ss58_address not in self.metagraph.hotkeys:
             logger.error(
                 f"\nYour validator: {self.wallet} is not registered to chain connection: {self.subtensor} \nRun 'btcli register' and try again."
