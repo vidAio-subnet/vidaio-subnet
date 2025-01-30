@@ -108,16 +108,16 @@ def download_trim_downscale_video(clip_duration=1, min_video_len=10, max_video_l
         # Step 6: Downscale to HD and save as .mp4 using the clipped video
         print("\nSaving HD version...")
         start_time = time.time()
-        hd_clip = clipped_clip.resize(height=720)  # Resize to HD (720p) using the clipped video
+        hd_clip = clipped_clip.resize(height=1080)  # Resize to HD (1080p) using the clipped video
         hd_clip.write_videofile(hd_path, codec='libx264')  # Save as HD .mp4
         
         elapsed_time = time.time() - start_time
         print(f"Time taken to save HD version: {elapsed_time:.2f} seconds")
         
         # Step 7: Convert to HEVC
-        print("\nConverting to HEVC...")
-        start_time = time.time()
-        hd_clip.write_videofile(hevc_path, codec='libx265')  # Convert to HEVC
+        # print("\nConverting to HEVC...")
+        # start_time = time.time()
+        # hd_clip.write_videofile(hevc_path, codec='libx265')  # Convert to HEVC
         
         elapsed_time = time.time() - start_time
         print(f"Time taken to convert to HEVC: {elapsed_time:.2f} seconds")
