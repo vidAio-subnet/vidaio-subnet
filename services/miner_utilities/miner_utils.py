@@ -75,13 +75,14 @@ def download_video(url: str) -> Optional[str]:
             raise DownloadError("Downloaded file is empty")
 
         # Return the full path of the downloaded file
+        print(f"File Downloading Success, Pass: {str(output_path)}")
         return str(output_path)
 
     except Exception as e:
         raise DownloadError(f"Download failed: {str(e)}")
 
 
-def video_upscaler(input_file_path: str):
+async def video_upscaler(input_file_path: str):
     """
     Calls the local FastAPI endpoint to upscale the video.
     
@@ -91,6 +92,8 @@ def video_upscaler(input_file_path: str):
     Returns:
         str: Full path of the upscaled video, if successful.
     """
+    
+    return input_file_path
     try:
         # Define the API URL
         url = "http://0.0.0.0:8000/upscale-video"
@@ -114,6 +117,6 @@ def video_upscaler(input_file_path: str):
 
 
 if __name__ == "__main__":
-    video_url = "https://drive.google.com/uc?id=1AGHgiWkdJ2EKLjguCsKE4IZGoIP8Ifpw&export=download"
+    video_url = "https://drive.google.com/uc?id=1QN9B54sYl7ZeI2KyZDwFmlZc_dW2ybyE&export=download"
     download_video(video_url)
 

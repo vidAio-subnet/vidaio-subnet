@@ -23,26 +23,19 @@ class Miner(BaseMiner):
             payload_video_path = download_video(payload_url)
             processed_video_path = await video_upscaler(payload_video_path)
             
-            gdrive = GoogleDriveManager("video-448518-c557bc123b1b.json")
+            gdrive = GoogleDriveManager()
             
-            folder_id = gdrive.create_folder("uploaded_video")
-            
-            gdrive.list_files(parent_folder_id=folder_id)
-            # uploaded_file_id, sharing_link = gdrive.upload_file(
-            #     "/Users/mac/Documents/work/video-streaming/vidaio-subnet/services/upscaling/videos/7dacc160-ef37-40a6-a7c4-2da0cc8f2e8b.mp4", 
-            #     folder_id
-            # )
-            
-            uploaded_file_id, sharing_link = gdrive.upload_file(processed_video_path, folder_id)
+            uploaded_file_id, sharing_link = gdrive.upload_file(processed_video_path)
         
             if sharing_link:
                 print(f"Public download link: {sharing_link}")  
-                synapse.miner_response = sharing_link
+                synapse.miner_response.optimized_video_url = sharing_link
                 
                 # Schedule the deletion of the uploaded file after 60 seconds
-                await asyncio.sleep(60)
+                # await asyncio.sleep(60)
                 gdrive.delete_files(uploaded_file_id)
             
+            logger.info("Returning Response")
             return synapse
             
         except Exception as e:
@@ -156,3 +149,9 @@ if __name__ == "__main__":
         while True:
             logger.info(f"Miner running... {time.time()}")
             time.sleep(30)
+    # miner = Miner()
+    # synapse = VideoUpscalingProtocol()
+    # synapse.miner_payload.reference_video_url = "https://drive.google.com/uc?id=1Kg29t3GLL04Sxy_FzmYsxKRCHf9guVZK&export=download"
+    # synapse.miner_payload.maximum_optimized_size_mb=100
+    # asyncio.run(miner.forward_upscaling_requests(synapse)) 
+            
