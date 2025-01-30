@@ -170,7 +170,7 @@ def delete_videos_with_fileid(file_id, dir_path="videos"):
 if __name__ == "__main__":
     PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
     print(PEXELS_API_KEY)
-    CLIP_DURATION = 1
+    CLIP_DURATION = 2
     MIN_VIDEO_LEN = 10  # Set minimum video length in seconds
     MAX_VIDEO_LEN = 20  # Set maximum video length in seconds
     
