@@ -1,4 +1,4 @@
-# Decentralized Video Processing Miner
+# Running Miner
 
 A high-performance decentralized video processing miner that leverages **Video2X** for AI-powered video upscaling. This guide provides detailed instructions to set up, configure, and run the miner effectively
 
@@ -72,12 +72,27 @@ pip install .
 
 ### 4. Configure Environment Variables
 
-Create a `.env` file in the project root directory and define the necessary environment variables, reference .env.template file:
-```env
-REDIS_HOST=localhost
-REDIS_PORT=6379
-DATABASE_URL=sqlite:///example.db
-```
+To configure environment variables, follow these steps:
+
+1. Create a `.env` file in the project root directory by referencing the provided `.env.template` file:
+   ```bash
+   cp .env.template .env
+   ```
+
+2. Add the required variables to the `.env` file. For example:
+   ```env
+   GOOGLE_KEY_FILE_NAME="Your Google Drive Key File"
+   ```
+
+3. The `GOOGLE_KEY_FILE_NAME` should point to the **Google OAuth2 client secret JSON file** required for integrating Google Drive. This file is used to authenticate and upload video files to your Google Drive account.
+
+4. To generate the **Google OAuth2 Client Secret JSON file**, follow these steps:
+   - Use the Google Cloud Console UI to create the file. Refer to this [Google Support Guide](https://support.google.com/a/answer/7378726) for detailed instructions.
+   - Download the JSON file and place it in the **project root directory**.
+   - Ensure the `GOOGLE_KEY_FILE_NAME` in the `.env` file matches the name of the downloaded JSON file.
+
+5. Once the `.env` file is properly configured, the application will use the specified credentials for Google Drive integration.
+
 
 ---
 
@@ -152,32 +167,51 @@ Once the build is complete, the `.deb` package will be located in the current di
 #### 4. Install the Built Package
 Install the `.deb` package using:
 ```bash
-sudo dpkg -i <package>.deb
+sudo dpkg -i video2x-linux-ubuntu-amd64.deb
 ```
 
 For additional details, refer to the [Video2X Documentation](https://docs.video2x.org/building/linux.html).
 
 ---
 
+## Running the Video Upscaling Endpoint
 
-
-## Running the Miner
-
-Once the setup is complete, you can start the miner using PM2. Here’s an example command to start the miner:
+You can run the video upscaling endpoint using **PM2** to manage the process:
 
 ```bash
-pm2 start miner.py --name "video-miner"
+pm2 start "python services/upscaling/server.py" --name video-upscaler
 ```
 
-To monitor the miner logs:
+### Notes:
+- The `video-upscaler` process will handle video upscaling requests.
+- Use the following PM2 commands to manage the process:
+  - **View Logs**: `pm2 logs video-upscaler`
+  - **Restart**: `pm2 restart video-upscaler`
+  - **Stop**: `pm2 stop video-upscaler`
+
+---
+
+## Running the Miner with PM2
+
+To run the miner, use the following command:
+
 ```bash
-pm2 logs video-miner
+pm2 start "python3 neurons/miner.py --wallet.name [Your_Wallet_Name] --wallet.hotkey [Your_Hotkey_Name] --subtensor.network test --netuid 292 --axon.port [port] --logging.debug" --name video-miner
 ```
 
-To stop the miner:
-```bash
-pm2 stop video-miner
-```
+### Parameters:
+- **`--wallet.name`**: Replace `[Your_Wallet_Name]` with your wallet name.
+- **`--wallet.hotkey`**: Replace `[Your_Hotkey_Name]` with your hotkey name.
+- **`--subtensor.network`**: Specify the target network (e.g., `finney`).
+- **`--netuid`**: Specify the network UID (e.g., `292`).
+- **`--axon.port`**: Replace `[port]` with the desired port number.
+- **`--logging.debug`**: Enables debug-level logging for detailed output.
+
+### Managing the Miner Process:
+- **Start the Miner**: The above command will start the miner as a PM2 process named `video-miner`.
+- **View Logs**: Use `pm2 logs video-miner` to monitor miner logs in real time.
+- **Restart the Miner**: Use `pm2 restart video-miner` to restart the process.
+- **Stop the Miner**: Use `pm2 stop video-miner` to stop the process.
 
 ---
 
@@ -186,38 +220,3 @@ pm2 stop video-miner
 - Ensure all dependencies are installed and configured correctly before running the miner.
 - Use a high-performance GPU and sufficient system resources for optimal performance.
 - For troubleshooting and debugging, refer to the logs available in PM2.
-
----
-
-## License
-
-This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
-
----
-
-## Contributing
-
-Contributions are welcome! To contribute:
-1. Fork the repository.
-2. Create a new branch for your feature or bug fix.
-3. Submit a pull request with a detailed explanation.
-
----
-
-## Contact
-
-For questions or support, feel free to reach out:
-- **Author**: Your Name
-- **Email**: your.email@example.com
-
----
-
-## Acknowledgments
-
-This project uses the following libraries and tools:
-- [FastAPI](https://fastapi.tiangolo.com/)
-- [Bittensor](https://bittensor.com/)
-- [Video2X](https://github.com/k4yt3x/video2x)
-- [FFMPEG](https://www.ffmpeg.org/)
-- And many more!
-
