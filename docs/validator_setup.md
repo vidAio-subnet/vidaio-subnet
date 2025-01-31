@@ -15,7 +15,7 @@ To achieve optimal results, we recommend the following setup:
 
 ## Install PM2 (Process Manager)
 
-**PM2** is used to manage and monitor the miner process. If you haven’t installed PM2 yet, follow these steps:
+**PM2** is used to manage and monitor the validator process. If you haven’t installed PM2 yet, follow these steps:
 
 1. Install `npm` and PM2:
    ```bash
@@ -208,13 +208,36 @@ Generate HTML documentation:
 ninja -vC build doc/html
 ```
 
+## Install LPIPS
 
-## Running the Miner with PM2
+....
 
-To run the miner, use the following command:
+
+## Running the Scoring endpoint
+
+You can run the video upscaling endpoint using **PM2** to manage the process:
 
 ```bash
-pm2 start "python3 neurons/miner.py --wallet.name [Your_Wallet_Name] --wallet.hotkey [Your_Hotkey_Name] --subtensor.network test --netuid 292 --axon.port [port] --logging.debug" --name video-miner
+pm2 start "python services/scoring/server.py" --name scoring-endpoint
+```
+
+### Notes:
+- The `scoring-endpoint` process will handle video upscaling requests.
+- Use the following PM2 commands to manage the process:
+  - **View Logs**: `pm2 logs scoring-endpoint`
+  - **Restart**: `pm2 restart scoring-endpoint`
+  - **Stop**: `pm2 stop scoring-endpoint`
+
+---
+
+
+
+## Running the Validator with PM2
+
+To run the validator, use the following command:
+
+```bash
+pm2 start "python3 neurons/validator.py --wallet.name [Your_Wallet_Name] --wallet.hotkey [Your_Hotkey_Name] --subtensor.network test --netuid 292 --axon.port [port] --logging.debug" --name video-validator
 ```
 
 ### Parameters:
@@ -225,10 +248,10 @@ pm2 start "python3 neurons/miner.py --wallet.name [Your_Wallet_Name] --wallet.ho
 - **`--axon.port`**: Replace `[port]` with the desired port number.
 - **`--logging.debug`**: Enables debug-level logging for detailed output.
 
-### Managing the Miner Process:
-- **Start the Miner**: The above command will start the miner as a PM2 process named `video-miner`.
-- **View Logs**: Use `pm2 logs video-miner` to monitor miner logs in real time.
-- **Restart the Miner**: Use `pm2 restart video-miner` to restart the process.
-- **Stop the Miner**: Use `pm2 stop video-miner` to stop the process.
+### Managing the validator Process:
+- **Start the validator**: The above command will start the validator as a PM2 process named `video-validator`.
+- **View Logs**: Use `pm2 logs vidaio-validator` to monitor validator logs in real time.
+- **Restart the Validator**: Use `pm2 restart video-validator` to restart the process.
+- **Stop the Validator**: Use `pm2 stop video-validator` to stop the process.
 
 ---
