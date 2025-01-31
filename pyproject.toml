@@ -1,9 +1,24 @@
 [project]
-name = "decentralized-video-precessing"
+name = "decentralized-video-processing"
 version = "0.1.0"
-description = ""
+description = "A decentralized system for video processing leveraging Bittensor ecosystem."
 readme = "README.md"
-requires-python = ">=3.10,<4.0"
+requires-python = ">=3.10"
+license = "MIT"  # Add license information
+authors = [
+    { name = "Arnold", email = "" } 
+]
+keywords = ["decentralized", "video processing", "bittensor"]  
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]  
+
 dependencies = [
     "fastapi",
     "pydantic",
@@ -21,7 +36,6 @@ dependencies = [
     "moviepy==1.0.3",
     "python-dotenv",
 ]
-
 
 [build-system]
 requires = ["setuptools", "wheel"]
