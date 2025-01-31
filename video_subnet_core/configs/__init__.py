@@ -4,6 +4,7 @@ from .bandwidth import BandwidthConfig
 from .score import ScoreConfig
 from .sql import SQLConfig
 from .minio import MinioConfig
+from .video_upscaler import VideoUpscalerConfig
 
 __all__ = [
     "RedisConfig",
@@ -12,4 +13,5 @@ __all__ = [
     "ScoreConfig",
     "SQLConfig",
     "MinioConfig",
+    "VideoUpscalerConfig",
 ]

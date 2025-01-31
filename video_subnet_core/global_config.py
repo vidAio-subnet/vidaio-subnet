@@ -6,6 +6,7 @@ from .configs import (
     ScoreConfig,
     SQLConfig,
     MinioConfig,
+    VideoUpscalerConfig,
 )
 from loguru import logger
 
@@ -17,6 +18,7 @@ class GlobalConfig(BaseSettings):
     score: ScoreConfig = ScoreConfig()
     sql: SQLConfig = SQLConfig(url="sqlite:///video_subnet.db")
     minio: MinioConfig = MinioConfig()
+    video_upscaler: VideoUpscalerConfig = VideoSchedulerConfig()
 
     class Config:
         env_nested_delimiter = "__"

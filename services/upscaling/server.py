@@ -4,8 +4,8 @@ from pathlib import Path
 import subprocess
 import time
 import asyncio
+from video_subnet_core import CONFIG
 
-# Initialize FastAPI
 app = FastAPI()
 
 class UpscaleRequest(BaseModel):
@@ -120,7 +120,11 @@ async def video_upscaler(request: UpscaleRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    
+    host = CONFIG.video_upscaler.host
+    port = CONFIG.video_upscaler.port
+    
+    uvicorn.run(app, host=host, port=port)
 
     
     # video = UpscaleRequest
