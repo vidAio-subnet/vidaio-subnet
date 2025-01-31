@@ -1,1 +1,1 @@
-miner
+For running miner, you need to install pm2 
