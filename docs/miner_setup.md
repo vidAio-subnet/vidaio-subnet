@@ -87,7 +87,7 @@ To configure environment variables, follow these steps:
 3. The `GOOGLE_KEY_FILE_NAME` should point to the **Google OAuth2 client secret JSON file** required for integrating Google Drive. This file is used to authenticate and upload video files to your Google Drive account.
 
 4. To generate the **Google OAuth2 Client Secret JSON file**, follow these steps:
-   - Use the Google Cloud Console UI to create the file. Refer to this [Google Support Guide](https://support.google.com/a/answer/7378726) for detailed instructions.
+   - Use the Google Cloud Console UI to create the file. Refer to this [Google Support Guide](https://ragug.medium.com/how-to-upload-files-using-the-google-drive-api-in-python-ebefdfd63eab) for detailed instructions.
    - Download the JSON file and place it in the **project root directory**.
    - Ensure the `GOOGLE_KEY_FILE_NAME` in the `.env` file matches the name of the downloaded JSON file.
 
