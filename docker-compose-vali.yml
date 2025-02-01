@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  video_scheduler_worker:
+    image: python:3.9-slim  # Use the official Python image
+    container_name: video_scheduler_worker
+    command: python3 services/video_scheduler/worker.py
+    volumes:
+      - .:/app
+    working_dir: /app
+
+  video_scheduler_api:
+    image: python:3.9-slim
+    container_name: video_scheduler_api
+    command: python3 services/video_scheduler/server.py
+    volumes:
+      - .:/app
+    working_dir: /app
+
+  scoring_endpoint:
+    image: python:3.9-slim
+    container_name: scoring_endpoint
+    command: python3 services/scoring/server.py
+    volumes:
+      - .:/app
+    working_dir: /app
