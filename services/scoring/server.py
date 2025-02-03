@@ -8,7 +8,8 @@ from firerequests import FireRequests
 import tempfile
 import os
 import random
-from vmaf import calculate_vmaf
+from video_subnet_core import CONFIG
+from vmaf_metric import calculate_vmaf
 from lpips_metric import calculate_lpips
 import asyncio
 
@@ -129,11 +130,19 @@ async def score(request: ScoringRequest):
 
 if __name__ == "__main__":
 
-    #usecase testing
-    urls = ScoringRequest(
-        distorted_urls=["https://drive.google.com/uc?id=1gn9RdmmgpqADF9Qu1B4I14sPT6nUa4Xk&export=download",],
-        reference_path="/workspace/vidaio-subnet/vidaio-subnet/services/video_scheduler/videos/857020_4k.mp4"
-    )
+    import uvicorn
+    
+    host = CONFIG.score.host
+    port = CONFIG.score.port
+    
+    uvicorn.run(app, host=host, port=port)
+    
+    
+    #testing
+    # urls = ScoringRequest(
+    #     distorted_urls=["https://drive.google.com/uc?id=1gn9RdmmgpqADF9Qu1B4I14sPT6nUa4Xk&export=download",],
+    #     reference_path="/workspace/vidaio-subnet/vidaio-subnet/services/video_scheduler/videos/857020_4k.mp4"
+    # )
 
-    scores = asyncio.run(score(urls))  
-    print(scores)
+    # scores = asyncio.run(score(urls))  
+    # print(scores)
