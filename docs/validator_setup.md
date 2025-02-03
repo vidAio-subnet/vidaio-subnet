@@ -218,15 +218,15 @@ ninja -vC build doc/html
 You can run the video upscaling endpoint using **PM2** to manage the process:
 
 ```bash
-pm2 start "python services/scoring/server.py" --name scoring-endpoint
+pm2 start "python services/scoring/server.py" --name scoring_endpoint
 ```
 
 ### Notes:
-- The `scoring-endpoint` process will handle video upscaling requests.
+- The `scoring_endpoint` process will handle video upscaling requests.
 - Use the following PM2 commands to manage the process:
-  - **View Logs**: `pm2 logs scoring-endpoint`
-  - **Restart**: `pm2 restart scoring-endpoint`
-  - **Stop**: `pm2 stop scoring-endpoint`
+  - **View Logs**: `pm2 logs scoring_endpoint`
+  - **Restart**: `pm2 restart scoring_endpoint`
+  - **Stop**: `pm2 stop scoring_endpoint`
 
 ---
 
