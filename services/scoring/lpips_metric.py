@@ -1,4 +1,3 @@
-import lpips
 
 
 def calculate_lpips(ref_frame, dist_frame):
