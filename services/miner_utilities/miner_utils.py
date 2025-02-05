@@ -5,14 +5,14 @@ from tqdm import tqdm
 from typing import Optional
 from requests.exceptions import RequestException
 import httpx
-
+import asyncio
 
 class DownloadError(Exception):
     """Custom exception for download-related errors"""
     pass
 
 
-def download_video(url: str) -> Optional[str]:
+async def download_video(url: str) -> Optional[str]:
     """
     Downloads video from URL to the upscaling/videos directory with progress tracking.
     
@@ -117,6 +117,6 @@ async def video_upscaler(input_file_path: str):
 
 
 if __name__ == "__main__":
-    video_url = "https://drive.google.com/uc?id=1QN9B54sYl7ZeI2KyZDwFmlZc_dW2ybyE&export=download"
-    download_video(video_url)
+    video_url = "https://drive.google.com/uc?id=1J4ZIdx0QfiauLJDicq1lt5gqf_-pzMBk&export=download"
+    asyncio.run(download_video(video_url))
 
