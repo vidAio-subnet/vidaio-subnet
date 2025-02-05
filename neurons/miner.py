@@ -20,7 +20,7 @@ class Miner(BaseMiner):
         try:
             payload_url = synapse.miner_payload.reference_video_url
             allowed_maximum_size = synapse.miner_payload.maximum_optimized_size_mb
-            payload_video_path = download_video(payload_url)
+            payload_video_path = await download_video(payload_url)
             processed_video_path = await video_upscaler(payload_video_path)
             
             gdrive = GoogleDriveManager()
