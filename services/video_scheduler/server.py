@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from video_subnet_core import CONFIG
+from vidaio_subnet_core import CONFIG
 
 from redis_utils import (
     get_redis_connection,

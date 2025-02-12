@@ -8,7 +8,7 @@ from firerequests import FireRequests
 import tempfile
 import os
 import random
-from video_subnet_core import CONFIG
+from vidaio_subnet_core import CONFIG
 from vmaf_metric import calculate_vmaf
 from lpips_metric import calculate_lpips
 import asyncio

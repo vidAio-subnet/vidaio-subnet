@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess
 import time
 import asyncio
-from video_subnet_core import CONFIG
+from vidaio_subnet_core import CONFIG
 
 app = FastAPI()
 

@@ -1,9 +1,9 @@
 import bittensor as bt
-from video_subnet_core.base.miner import BaseMiner
+from vidaio_subnet_core.base.miner import BaseMiner
 from typing import Tuple
 import time
 from loguru import logger
-from video_subnet_core.protocol import VideoUpscalingProtocol
+from vidaio_subnet_core.protocol import VideoUpscalingProtocol
 from services.miner_utilities.miner_utils import download_video, video_upscaler
 from services.google_drive.google_drive_manager import GoogleDriveManager
 import traceback

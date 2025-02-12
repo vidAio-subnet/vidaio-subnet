@@ -8,7 +8,7 @@ import numpy as np
 from .sql_schemas import MinerMetadata
 from .serving_counter import ServingCounter
 from ...global_config import CONFIG
-from ...ultilities.rate_limit import build_rate_limit
+from ...utilities.rate_limit import build_rate_limit
 
 
 class MinerManager:
