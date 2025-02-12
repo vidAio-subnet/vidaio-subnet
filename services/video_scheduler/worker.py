@@ -12,7 +12,8 @@ from redis_utils import (
 )
 from video_utils import download_trim_downscale_video
 from services.google_drive.google_drive_manager import GoogleDriveManager
-from video_subnet_core import CONFIG
+from vidaio_subnet_core.utilities.minio_client import minio_client
+from vidaio_subnet_core import CONFIG
 from loguru import logger
 import yaml
 from dotenv import load_dotenv

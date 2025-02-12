@@ -1,6 +1,6 @@
 import redis
 import json
-from video_subnet_core import CONFIG
+from vidaio_subnet_core import CONFIG
 from typing import Dict, List, Optional
 
 REDIS_CONFIG = CONFIG.redis

@@ -1,4 +1,4 @@
-from video_subnet_core import validating, CONFIG, base, protocol
+from vidaio_subnet_core import validating, CONFIG, base, protocol
 import bittensor as bt
 import random
 import httpx

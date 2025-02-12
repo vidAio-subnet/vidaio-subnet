@@ -4,7 +4,7 @@ import threading
 from loguru import logger
 import time
 import traceback
-from video_subnet_core.protocol import VideoUpscalingProtocol
+from vidaio_subnet_core.protocol import VideoUpscalingProtocol
 import argparse
 from .config import add_common_config, add_miner_args
 import os
