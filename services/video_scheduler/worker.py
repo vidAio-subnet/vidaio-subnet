@@ -12,11 +12,12 @@ from redis_utils import (
 )
 from video_utils import download_trim_downscale_video
 from services.google_drive.google_drive_manager import GoogleDriveManager
-from vidaio_subnet_core.utilities.minio_client import minio_client
-from vidaio_subnet_core import CONFIG
+from video_subnet_core import CONFIG
 from loguru import logger
 import yaml
 from dotenv import load_dotenv
+from video_subnet_core.ultilities.minio_client import minio_client
+import uuid
 
 load_dotenv()
 
@@ -123,7 +124,7 @@ async def get_synthetic_urls(hotkey: str, num_needed: int) -> Optional[List[str]
 
 from typing import List, Dict
 
-def get_synthetic_requests_urls(num_needed: int) -> List[Dict[str, str]]:
+async def get_synthetic_requests_urls(num_needed: int) -> List[Dict[str, str]]:
     """
     Generate synthetic Google Drive URLs by uploading trimmed videos.
 
@@ -152,7 +153,12 @@ def get_synthetic_requests_urls(num_needed: int) -> List[Dict[str, str]]:
         # Upload file to Google Drive
         # gdrive = GoogleDriveManager()
         # uploaded_file_id, sharing_link = gdrive.upload_file(challenge_local_path)
-        uploaded_file_id = 
+        
+        uploaded_file_id = uuid.uuid4()
+        object_name = f"{uploaded_file_id}.mp4"
+        
+        await minio_client.upload_file(object_name, challenge_local_path)
+        sharing_link = await minio_client.get_presigned_url(object_name)
 
         if uploaded_file_id is None or sharing_link is None:
             print("Upload failed. Retrying...")
@@ -161,7 +167,7 @@ def get_synthetic_requests_urls(num_needed: int) -> List[Dict[str, str]]:
         # Append result to the list
         uploaded_video_chunks.append({
             "video_id": video_id,
-            "uploaded_file_id": uploaded_file_id,
+            "uploaded_object_name": object_name,
             "sharing_link": sharing_link
         })
 
@@ -170,7 +176,7 @@ def get_synthetic_requests_urls(num_needed: int) -> List[Dict[str, str]]:
     return uploaded_video_chunks
 
 
-def main():
+async def main():
     r = get_redis_connection()
     logger.info("Starting worker")
     clear_queues(r)
@@ -190,8 +196,8 @@ def main():
             # Fill with synthetic chunks
             needed = fill_target - total_size
             # needed_urls = asyncio.run(get_synthetic_urls_with_retry(hotkey = hotkey, num_needed = needed))
-            print(f"need {needed} aa chunks.....")
-            needed_urls = get_synthetic_requests_urls(num_needed = needed)
+            print(f"need {needed} chunks.....")
+            needed_urls = await get_synthetic_requests_urls(num_needed = needed)
             push_synthetic_chunks(r, needed_urls)
 
         # Sleep for some time, e.g. 5 seconds, then re-check
