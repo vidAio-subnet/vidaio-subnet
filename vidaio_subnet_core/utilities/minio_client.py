@@ -17,7 +17,7 @@ class VideoSubnetMinioClient:
             secure=secure,
             region=region,
         )
-        self.loop = asyncio.get_running_loop()
+        self.loop = asyncio.get_event_loop()
         self.executor = ThreadPoolExecutor()
 
 
