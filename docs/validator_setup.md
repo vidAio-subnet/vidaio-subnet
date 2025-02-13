@@ -63,7 +63,7 @@ source venv/bin/activate
 
 Install the project and its dependencies using `pip`:
 ```bash
-pip install .
+pip install -e .
 ```
 
 ---
@@ -145,16 +145,8 @@ cd vmaf
 
 2. Install system dependencies:
    ```bash
-   sudo [package-manager] install nasm ninja-build doxygen xxd
+   sudo apt-get install nasm ninja-build doxygen xxd
    ```
-
-   Replace `[package-manager]` with the appropriate package manager for your system:
-   - **Ubuntu/Debian**: `apt-get`
-   - **CentOS/RHEL**: `yum`
-   - **Fedora**: `dnf`
-   - **openSUSE**: `zypper`
-   - **MacOS**: `brew` (no `sudo` required)
-
    For Ninja, verify whether the package name is `ninja` or `ninja-build` before running the install command.
 
 ---
@@ -164,7 +156,8 @@ cd vmaf
 
 1. Set up the build environment:
    ```bash
-   meson setup build --buildtype release
+   cd libvmaf
+   meson setup build --buildtype release -Denable_avx512=true
    ```
 
 2. Optional flags:
