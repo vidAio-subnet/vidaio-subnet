@@ -29,6 +29,18 @@ To achieve optimal results, we recommend the following setup:
 
 ---
 
+## Install Redis
+
+1. Install 'redis'
+   ```bash
+   sudo apt update
+   sudo apt install redis-server
+   sudo systemctl start redis
+   sudo systemctl enable redis-server
+   sudo systemctl status redis
+   ```
+
+
 ## Install Project Dependencies
 
 ### Prerequisites
