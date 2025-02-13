@@ -27,10 +27,10 @@ class Synthesizer:
 
             print(f"received chunk from video-scheduler api: {chunk}")
             video_id = chunk["video_id"]
-            uploaded_file_id = chunk["uploaded_file_id"]
+            uploaded_object_name = chunk["uploaded_object_name"]
             sharing_link = chunk["sharing_link"]
 
-            return video_id, uploaded_file_id, VideoUpscalingProtocol(
+            return video_id, uploaded_object_name, VideoUpscalingProtocol(
                 miner_payload=MinerPayload(reference_video_url=sharing_link)
             )
         except httpx.HTTPStatusError as e:
