@@ -23,6 +23,7 @@ dependencies = [
     "fastapi",
     "pydantic",
     "numpy",
+    "minio",
     "opencv-python",
     "loguru",
     "bittensor==8.5.2",
