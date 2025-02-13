@@ -177,6 +177,7 @@ async def get_synthetic_requests_urls(num_needed: int) -> List[Dict[str, str]]:
 
 
 async def main():
+    print("starting")
     r = get_redis_connection()
     logger.info("Starting worker")
     clear_queues(r)
@@ -205,4 +206,5 @@ async def main():
 
 
 if __name__ == "__main__":
-    main()
+    # print("here")
+    asyncio.run(main())

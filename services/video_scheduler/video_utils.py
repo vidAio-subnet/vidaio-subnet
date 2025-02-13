@@ -23,7 +23,7 @@ def download_trim_downscale_video(clip_duration=1, min_video_len=10, max_video_l
     headers = {"Authorization": api_key}
     url = "https://api.pexels.com/videos/search"
     params = {
-        "query": "technology",
+        "query": "nature",
         "per_page": 80,
         "size": "large"
     }
@@ -57,8 +57,8 @@ def download_trim_downscale_video(clip_duration=1, min_video_len=10, max_video_l
         video, video_file = random.choice(dci4k_videos)
         video_url = video_file["link"]
         
-        temp_path = f"{output_dir}/{video['id']}_dci4k_original.mp4"  # Downloaded DCI 4K file
-        clipped_path = f"{output_dir}/{video['id']}_dci4k.mp4"  # Clipped DCI 4K file
+        temp_path = f"{output_dir}/{video['id']}_4k_original.mp4"  # Downloaded DCI 4K file
+        clipped_path = f"{output_dir}/{video['id']}_4k.mp4"  # Clipped DCI 4K file
         hd_path = f"{output_dir}/{video['id']}_hd.mp4"  # Downscaled HD file
         hevc_path = f"{output_dir}/{video['id']}_hd.hevc"  # HEVC file
         video_id = video['id']
@@ -150,7 +150,7 @@ def delete_videos_with_fileid(file_id, dir_path="videos"):
     temp_path = f"{dir_path}/{file_id}_4k_original.mp4"  # Downloaded 4K file
     clipped_path = f"{dir_path}/{file_id}_4k.mp4"  # Clipped 4K file
     hd_path = f"{dir_path}/{file_id}_hd.mp4"  # Downscaled HD file
-    hevc_path = f"{dir_path}/{file_id}_hd.hevc"  # HEVC file
+    # hevc_path = f"{dir_path}/{file_id}_hd.hevc"  # HEVC file
 
     # List of files to delete
     files_to_delete = [temp_path, clipped_path, hd_path, hevc_path]
