@@ -123,7 +123,7 @@ async def get_synthetic_urls(hotkey: str, num_needed: int) -> Optional[List[str]
 
 from typing import List, Dict
 
-def get_synthetic_gdrive_urls(num_needed: int) -> List[Dict[str, str]]:
+def get_synthetic_requests_urls(num_needed: int) -> List[Dict[str, str]]:
     """
     Generate synthetic Google Drive URLs by uploading trimmed videos.
 
@@ -150,8 +150,9 @@ def get_synthetic_gdrive_urls(num_needed: int) -> List[Dict[str, str]]:
             continue
 
         # Upload file to Google Drive
-        gdrive = GoogleDriveManager()
-        uploaded_file_id, sharing_link = gdrive.upload_file(challenge_local_path)
+        # gdrive = GoogleDriveManager()
+        # uploaded_file_id, sharing_link = gdrive.upload_file(challenge_local_path)
+        uploaded_file_id = 
 
         if uploaded_file_id is None or sharing_link is None:
             print("Upload failed. Retrying...")
@@ -190,7 +191,7 @@ def main():
             needed = fill_target - total_size
             # needed_urls = asyncio.run(get_synthetic_urls_with_retry(hotkey = hotkey, num_needed = needed))
             print(f"need {needed} aa chunks.....")
-            needed_urls = get_synthetic_gdrive_urls(num_needed = needed)
+            needed_urls = get_synthetic_requests_urls(num_needed = needed)
             push_synthetic_chunks(r, needed_urls)
 
         # Sleep for some time, e.g. 5 seconds, then re-check

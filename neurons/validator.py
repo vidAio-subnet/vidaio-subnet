@@ -7,7 +7,8 @@ from loguru import logger
 import traceback
 import pandas as pd
 from typing import List
-from services.google_drive.google_drive_manager import GoogleDriveManager
+# from services.google_drive.google_drive_manager import GoogleDriveManager
+from vidaio_subnet_core.utilities.minio_client import minio_client
 from services.video_scheduler.video_utils import get_4k_vide_path, delete_videos_with_fileid
 
 class Validator(base.BaseValidator):
@@ -45,7 +46,7 @@ class Validator(base.BaseValidator):
 
         for batch_idx, batch in enumerate(miner_batches):
             logger.info(f"Processing batch {batch_idx + 1}/{len(miner_batches)}")
-            video_id, uploaded_file_id, synapse = await self.challenge_synthesizer.build_protocol()
+            video_id, uploaded_object_name, synapse = await self.challenge_synthesizer.build_protocol()
             logger.debug(f"Built challenge protocol {synapse.__dict__}")
             uids = []
             axons = []
@@ -58,13 +59,14 @@ class Validator(base.BaseValidator):
             )
             logger.info(f"Received {len(responses)} responses from miners, deleting uploaded_file")
             
-            gdrive = GoogleDriveManager()
+            # gdrive = GoogleDriveManager()
             
             video_4k_path = get_4k_vide_path(video_id)
             
             await self.score(uids, responses, video_4k_path)
             
-            gdrive.delete_files(uploaded_file_id)
+            # gdrive.delete_files(uploaded_file_id)
+            minio_client.delete_file(uploaded_object_name)
             delete_videos_with_fileid(video_id)
             
             logger.debug("Waiting 4 seconds before next batch")
