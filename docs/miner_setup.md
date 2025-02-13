@@ -123,7 +123,7 @@ Ensure your CUDA drivers and NVCC (NVIDIA Compiler) are properly installed and c
    nvcc --version
    ```
 
-2. Install or update CUDA drivers if necessary:
+2. Install or update the CUDA drivers if they are not already installed:
    ```bash
    sudo apt update
    sudo apt install nvidia-cuda-toolkit -y
@@ -146,6 +146,7 @@ cargo install just
 ```
 
 #### 2. Clone the Video2X Repository
+you can clone this repository within the current vidaio-subnet package
 ```bash
 git clone --recurse-submodules https://github.com/k4yt3x/video2x.git
 cd video2x

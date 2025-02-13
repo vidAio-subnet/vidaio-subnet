@@ -35,11 +35,12 @@ def calculate_vmaf(ref_path, dist_path, output_file="vmaf_output.xml"):
         print(f"Error in calculate_vmaf: {e}")
         raise
 
-try:
-    vmaf_min_value = calculate_vmaf(
-        "/workspace/vidaio-subnet/output.y4m", 
-        "/workspace/vidaio-subnet/output1.y4m"
-    )
-    print(f"VMAF harmonic_mean Value as Float: {vmaf_min_value}")
-except Exception as e:
-    print(f"Failed to calculate VMAF: {e}")
+if __name__ == "__main__":
+    try:
+        vmaf_min_value = calculate_vmaf(
+            "/workspace/vidaio-subnet/output.y4m", 
+            "/workspace/vidaio-subnet/output1.y4m"
+        )
+        print(f"VMAF harmonic_mean Value as Float: {vmaf_min_value}")
+    except Exception as e:
+        print(f"Failed to calculate VMAF: {e}")
