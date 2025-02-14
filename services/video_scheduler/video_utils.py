@@ -153,7 +153,7 @@ def delete_videos_with_fileid(file_id, dir_path="videos"):
     # hevc_path = f"{dir_path}/{file_id}_hd.hevc"  # HEVC file
 
     # List of files to delete
-    files_to_delete = [temp_path, clipped_path, hd_path, hevc_path]
+    files_to_delete = [temp_path, clipped_path, hd_path]
 
     # Delete each file if it exists
     for file_path in files_to_delete:
