@@ -5,11 +5,37 @@ import subprocess
 import time
 import asyncio
 from vidaio_subnet_core import CONFIG
-
+import re
 app = FastAPI()
 
 class UpscaleRequest(BaseModel):
     task_file_path: str
+    
+
+def get_frame_rate(input_file: Path) -> float:
+    """
+    Extracts the frame rate of the input video using FFmpeg.
+
+    Args:
+        input_file (Path): The path to the video file.
+
+    Returns:
+        float: The frame rate of the video.
+    """
+    frame_rate_command = [
+        "ffmpeg",
+        "-i", str(input_file),
+        "-hide_banner"
+    ]
+    process = subprocess.run(frame_rate_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    output = process.stderr  # Frame rate is usually in stderr
+
+    # Extract frame rate using regex
+    match = re.search(r"(\d+(?:\.\d+)?) fps", output)
+    if match:
+        return float(match.group(1))
+    else:
+        raise HTTPException(status_code=500, detail="Unable to determine frame rate of the video.")
 
 
 @app.post("/upscale-video")
@@ -30,6 +56,13 @@ async def video_upscaler(request: UpscaleRequest):
         if not input_file.exists() or not input_file.is_file():
             raise HTTPException(status_code=400, detail="Input file does not exist or is not a valid file.")
 
+        # Get the frame rate of the video
+        frame_rate = get_frame_rate(input_file)
+        print(f"Frame rate detected: {frame_rate} fps")
+
+        # Calculate the duration to duplicate 2 frames
+        stop_duration = 2 / frame_rate
+
         # Generate output file paths
         output_file_with_extra_frames = input_file.with_name(f"{input_file.stem}_extra_frames.mp4")
         output_file_upscaled = input_file.with_name(f"4k_{input_file.stem}.mp4")
@@ -41,7 +74,7 @@ async def video_upscaler(request: UpscaleRequest):
         duplicate_last_frame_command = [
             "ffmpeg",
             "-i", str(input_file),
-            "-vf", "tpad=stop_mode=clone:stop_duration=0.08",  # Duplicate the last frame for 2 frames (assuming 25fps)
+            "-vf", f"tpad=stop_mode=clone:stop_duration={stop_duration}",  # Dynamically calculated duration
             "-c:v", "libx264",  # Ensure proper encoding
             "-crf", "18",  # High-quality encoding
             "-preset", "fast",  # Fast encoding preset
