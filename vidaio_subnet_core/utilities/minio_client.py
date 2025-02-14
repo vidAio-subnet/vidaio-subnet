@@ -3,7 +3,7 @@ import asyncio
 import datetime
 import os
 from concurrent.futures import ThreadPoolExecutor
-from ..global_config import CONFIG
+# from ..global_config import CONFIG
 
 
 class VideoSubnetMinioClient:
@@ -17,7 +17,8 @@ class VideoSubnetMinioClient:
             secure=secure,
             region=region,
         )
-        self.loop = asyncio.get_event_loop()
+        # self.loop = asyncio.get_event_loop()
+        self.loop = asyncio.get_running_loop()
         self.executor = ThreadPoolExecutor()
 
 
@@ -95,17 +96,21 @@ class VideoSubnetMinioClient:
         self.executor.shutdown(wait=False)
 
 
+
+endpoint =os.getenv("S3_COMPATIBLE_ENDPOINT", "localhost:9000")
+access_key =os.getenv("S3_COMPATIBLE_ACCESS_KEY", "minioadmin")
+secret_key =os.getenv("S3_COMPATIBLE_SECRET_KEY", "minioadmin")
+secure=True
+bucket_name =os.getenv("BUCKET_NAME", "vidaio-subnet")
 minio_client = VideoSubnetMinioClient(
-    endpoint=CONFIG.minio.endpoint,
-    access_key=CONFIG.minio.access_key,
-    secret_key=CONFIG.minio.secret_key,
-    bucket_name=CONFIG.minio.bucket_name,
+    endpoint= endpoint,
+    access_key= access_key,
+    secret_key= secret_key,
+    bucket_name= bucket_name,
 )
-
-
 async def main():
     await minio_client.ensure_bucket_exists()
-    await minio_client.upload_file("123.md", "/Users/mac/Documents/work/video-streaming/vidaio-subnet/README.md")
+    await minio_client.upload_file("345.mp4", "/root/workspace/vidaio-subnet/videos/4k_4887282_hd.mp4")
     result = await minio_client.list_objects()
     print(result)
     # await minio_client.download_file
