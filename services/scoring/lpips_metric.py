@@ -17,6 +17,8 @@ def calculate_lpips(ref_frame: np.ndarray, dist_frame: np.ndarray) -> float:
         float: LPIPS score (lower is better).
     """
     # Convert BGR to RGB
+    print("calculationg lpips")
+    
     ref_frame = cv2.cvtColor(ref_frame, cv2.COLOR_BGR2RGB)
     dist_frame = cv2.cvtColor(dist_frame, cv2.COLOR_BGR2RGB)
 
@@ -30,5 +32,5 @@ def calculate_lpips(ref_frame: np.ndarray, dist_frame: np.ndarray) -> float:
 
     # Compute LPIPS score
     lpips_score = iqa_metric(ref_tensor, dist_tensor)
-
+    print(lpips_score)
     return lpips_score.item()
