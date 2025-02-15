@@ -280,7 +280,7 @@ async def main():
     # await minio_client.set_bucket_public_policy()
 
     # Generate a presigned URL
-    url = await minio_client.get_presigned_url("111.mp4")
+    url = await minio_client.get_presigned_url("345.mp4")
     # print(f"Presigned URL: {url}")
 
 if __name__ == "__main__":
