@@ -29,19 +29,34 @@ class ScoringResponse(BaseModel):
 
 async def download_video(video_url, verbose) -> str:
     """Download reference and distorted videos to temporary files."""
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as vid_temp:
-        file_path = vid_temp.name
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as vid_temp:
+            file_path = vid_temp.name  # Path to the temporary file
 
-    logger.info(f"Downloading video from {video_url}")
-    await fire_requests.download_file(
-        video_url,
-        file_path,
-        max_files=10,
-        chunk_size=2 * 1024 * 1024,
-        show_progress=verbose,
-    )
-    
-    return file_path
+        logger.info(f"Downloading video from {video_url}")
+        
+        file_path = "2.mp4"
+        
+        # Attempt to download the file
+        await fire_requests.download_file(
+            video_url,
+            file_path,
+            max_files=1,
+            chunk_size=2 * 1024 * 1024,  # 2 MB chunks
+            show_progress=verbose,
+        )
+
+        # Check if the file was successfully downloaded
+        if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+            raise Exception(f"Download failed or file is empty: {file_path}")
+
+        logger.info(f"File successfully downloaded to: {file_path}")
+        return file_path
+
+    except Exception as e:
+        logger.error(f"Failed to download video from {video_url}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error downloading video: {str(e)}")
+
 
 def calculate_psnr(ref_frame: np.ndarray, dist_frame: np.ndarray) -> float:
     """Calculate PSNR between reference and distorted frames."""
@@ -50,7 +65,7 @@ def calculate_psnr(ref_frame: np.ndarray, dist_frame: np.ndarray) -> float:
         return 1000
     return 10 * np.log10((255.0**2) / mse)
 
-@app.post("/score", response_model=ScoringResponse)
+# @app.post("/score", response_model=ScoringResponse)
 async def score(request: ScoringRequest):
     ref_path = request.reference_path
     ref_cap = cv2.VideoCapture(ref_path)
@@ -59,13 +74,15 @@ async def score(request: ScoringRequest):
         raise HTTPException(status_code=500, detail="Error opening reference video file")
 
     ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    print(ref_total_frames)
     if ref_total_frames <= 0:
         raise HTTPException(status_code=500, detail="Invalid reference video: no frames found")
 
     scores = []
     for dist_url in request.distorted_urls:
         ref_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-        dist_path = await download_video(dist_url, request.verbose)
+        # dist_path = await download_video(dist_url, request.verbose)
+        dist_path = "/root/workspace/vidaio-subnet/videos/4k_4887282_hd.mp4"
         dist_cap = cv2.VideoCapture(dist_path)
 
         if not dist_cap.isOpened():
@@ -74,6 +91,7 @@ async def score(request: ScoringRequest):
             continue  # Skip to the next distorted video
 
         dist_total_frames = int(dist_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        print(dist_total_frames)
         if dist_total_frames != ref_total_frames:
             logger.warning(
                 f"Video length mismatch for {dist_url}: ref({ref_total_frames}) != dist({dist_total_frames}). Assigning score of 0."
@@ -90,7 +108,7 @@ async def score(request: ScoringRequest):
             logger.warning(f"Failed to calculate VMAF for {dist_url}: {str(e)}. Assigning score of 0.")
             scores.append(0.0)
             dist_cap.release()
-            os.unlink(dist_path)
+            # os.unlink(dist_path)
             continue  # Skip to the next distorted video
 
         # Select two random frames for LPIPS calculation
@@ -110,7 +128,7 @@ async def score(request: ScoringRequest):
 
             lpips_score = calculate_lpips(ref_frame, dist_frame)
             lpips_scores.append(lpips_score)
-
+        print(lpips_score)
         if lpips_scores:
             average_lpips = sum(lpips_scores) / len(lpips_scores)
         else:
@@ -121,7 +139,7 @@ async def score(request: ScoringRequest):
         scores.append(final_score)
 
         dist_cap.release()
-        os.unlink(dist_path)
+        # os.unlink(dist_path)
 
     # Cleanup
     ref_cap.release()
@@ -130,19 +148,19 @@ async def score(request: ScoringRequest):
 
 if __name__ == "__main__":
 
-    import uvicorn
+    # import uvicorn
     
-    host = CONFIG.score.host
-    port = CONFIG.score.port
+    # host = CONFIG.score.host
+    # port = CONFIG.score.port
     
-    uvicorn.run(app, host=host, port=port)
+    # uvicorn.run(app, host=host, port=port)
     
     
     #testing
-    # urls = ScoringRequest(
-    #     distorted_urls=["https://drive.google.com/uc?id=1gn9RdmmgpqADF9Qu1B4I14sPT6nUa4Xk&export=download",],
-    #     reference_path="/workspace/vidaio-subnet/vidaio-subnet/services/video_scheduler/videos/857020_4k.mp4"
-    # )
+    urls = ScoringRequest(
+        distorted_urls=["/root/workspace/vidaio-subnet/videos/4k_4887282_hd.mp4",],
+        reference_path="/root/workspace/vidaio-subnet/videos/4887282_dci4k.mp4"
+    )
 
-    # scores = asyncio.run(score(urls))  
-    # print(scores)
+    scores = asyncio.run(score(urls))  
+    print(scores)

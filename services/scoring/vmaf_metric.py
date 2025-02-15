@@ -32,7 +32,7 @@ def convert_mp4_to_y4m(input_path, output_path):
         print(f"Error in convert_mp4_to_y4m: {e}")
         raise
 
-def calculate_vmaf(ref_path, dist_path, output_file="vmaf_output.xml"):
+def vmaf_metric(ref_path, dist_path, output_file="vmaf_output.xml"):
     """
     Calculate VMAF score using the VMAF tool and parse the harmonic mean value from the output.
     
@@ -75,15 +75,16 @@ def calculate_vmaf(ref_path, dist_path, output_file="vmaf_output.xml"):
         print(f"Error in calculate_vmaf: {e}")
         raise
 
-if __name__ == "__main__":
+def calculate_vmaf(ref_mp4_path, dist_mp4_path):
     try:
+        print(ref_mp4_path, dist_mp4_path)
         # Paths to the input MP4 files
-        ref_mp4_path = "/root/workspace/vidaio-subnet/videos/4887282_dci4k.mp4"
-        dist_mp4_path = "/root/workspace/vidaio-subnet/videos/4k_4887282_hd.mp4"
+        # ref_mp4_path = "/root/workspace/vidaio-subnet/videos/4887282_dci4k.mp4"
+        # dist_mp4_path = "/root/workspace/vidaio-subnet/videos/4k_4887282_hd.mp4"
         
         # Paths to the converted Y4M files
-        ref_y4m_path = "/root/workspace/vidaio-subnet/output.y4m"
-        dist_y4m_path = "/root/workspace/vidaio-subnet/output1.y4m"
+        ref_y4m_path = "ref.y4m"
+        dist_y4m_path = "dist.y4m"
         
         # Step 1: Convert MP4 to Y4M
         print("Converting reference MP4 to Y4M...")
@@ -93,13 +94,23 @@ if __name__ == "__main__":
         
         # Step 2: Calculate VMAF
         print("Calculating VMAF score...")
-        vmaf_min_value = calculate_vmaf(ref_y4m_path, dist_y4m_path)
-        print(f"VMAF harmonic_mean Value as Float: {vmaf_min_value}")
+        vmaf_harmonic_mean = vmaf_metric(ref_y4m_path, dist_y4m_path)
+        print(f"VMAF harmonic_mean Value as Float: {vmaf_harmonic_mean}")
         
         # Optional: Clean up intermediate Y4M files
         os.remove(ref_y4m_path)
         os.remove(dist_y4m_path)
         print("Intermediate Y4M files deleted.")
+        return vmaf_harmonic_mean
         
     except Exception as e:
         print(f"Failed to calculate VMAF: {e}")
+
+if __name__ == "__main__":
+    ref_mp4_path = "/root/workspace/vidaio-subnet/videos/4887282_dci4k.mp4"
+    dist_mp4_path = "/root/workspace/vidaio-subnet/videos/4k_4887282_hd.mp4"
+    
+    # ref_y4m_path = "ref.y4m"
+    # dist_y4m_path = "dist.y4m"
+    vmaf_harmonic_mean = calculate_vmaf(ref_mp4_path, dist_mp4_path)
+    print(vmaf_harmonic_mean)   
