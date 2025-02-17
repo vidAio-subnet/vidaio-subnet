@@ -26,7 +26,7 @@ dependencies = [
     "minio",
     "opencv-python",
     "loguru",
-    "bittensor==8.5.2",
+    "bittensor==9.0.0",
     "redis",
     "sqlalchemy",
     "pandas",

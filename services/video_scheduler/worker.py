@@ -150,10 +150,6 @@ async def get_synthetic_requests_urls(num_needed: int) -> List[Dict[str, str]]:
             print("Failed to download and trim video. Retrying...")
             continue
 
-        # Upload file to Google Drive
-        # gdrive = GoogleDriveManager()
-        # uploaded_file_id, sharing_link = gdrive.upload_file(challenge_local_path)
-        
         uploaded_file_id = uuid.uuid4()
         object_name = f"{uploaded_file_id}.mp4"
         
