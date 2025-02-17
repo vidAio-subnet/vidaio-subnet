@@ -59,15 +59,12 @@ class Validator(base.BaseValidator):
             )
             logger.info(f"Received {len(responses)} responses from miners, deleting uploaded_file")
             
-            # gdrive = GoogleDriveManager()
-            
             video_4k_path = get_4k_vide_path(video_id)
             
             await self.score(uids, responses, video_4k_path)
             
-            # gdrive.delete_files(uploaded_file_id)
-            minio_client.delete_file(uploaded_object_name)
-            delete_videos_with_fileid(video_id)
+            # minio_client.delete_file(uploaded_object_name)
+            # delete_videos_with_fileid(video_id)
             
             logger.debug("Waiting 4 seconds before next batch")
             await asyncio.sleep(4)

@@ -60,7 +60,9 @@ def pop_organic_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
         Optional[Dict[str, str]]: The popped organic chunk or None if empty.
     """
     data = r.lpop(REDIS_CONFIG.organic_queue_key)
-    return json.loads(data) if data else None
+    chunk = json.loads(data) if data else None
+    r.rpush(REDIS_CONFIG.synthetic_queue_key, json.dumps(chunk))
+    return chunk
 
 def pop_synthetic_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
     """
