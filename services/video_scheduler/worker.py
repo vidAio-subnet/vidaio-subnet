@@ -18,7 +18,7 @@ import yaml
 from dotenv import load_dotenv
 from vidaio_subnet_core.utilities.minio_client import minio_client
 import uuid
-
+from loguru import logger
 load_dotenv()
 
 def clear_queues(redis_conn):
@@ -147,7 +147,7 @@ async def get_synthetic_requests_urls(num_needed: int) -> List[Dict[str, str]]:
         )
 
         if challenge_local_path is None:
-            print("Failed to download and trim video. Retrying...")
+            logger.info("Failed to download and trim video. Retrying...")
             continue
 
         uploaded_file_id = uuid.uuid4()
@@ -157,7 +157,7 @@ async def get_synthetic_requests_urls(num_needed: int) -> List[Dict[str, str]]:
         sharing_link = await minio_client.get_presigned_url(object_name)
 
         if uploaded_file_id is None or sharing_link is None:
-            print("Upload failed. Retrying...")
+            logger.info("Upload failed. Retrying...")
             continue
 
         # Append result to the list
@@ -173,7 +173,7 @@ async def get_synthetic_requests_urls(num_needed: int) -> List[Dict[str, str]]:
 
 
 async def main():
-    print("starting")
+    logger.info("starting")
     r = get_redis_connection()
     logger.info("Starting worker")
     clear_queues(r)
@@ -182,8 +182,8 @@ async def main():
         organic_size = get_organic_queue_size(r)
         synthetic_size = get_synthetic_queue_size(r)
         total_size = organic_size + synthetic_size
-        print(f"The organic queue size is {organic_size}")
-        print(f"The synthetic queue size is {synthetic_size}")
+        logger.info(f"The organic queue size is {organic_size}")
+        logger.info(f"The synthetic queue size is {synthetic_size}")
         # If total queue is below some threshold, push synthetic chunks
         # Adjust threshold as needed. Example: If queue < 500, fill it up to 1000 with synthetic.
         threshold = CONFIG.video_scheduler.refill_threshold
@@ -193,7 +193,7 @@ async def main():
             # Fill with synthetic chunks
             needed = fill_target - total_size
             # needed_urls = asyncio.run(get_synthetic_urls_with_retry(hotkey = hotkey, num_needed = needed))
-            print(f"need {needed} chunks.....")
+            logger.info(f"need {needed} chunks.....")
             needed_urls = await get_synthetic_requests_urls(num_needed = needed)
             push_synthetic_chunks(r, needed_urls)
 
@@ -202,5 +202,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    # print("here")
     asyncio.run(main())
