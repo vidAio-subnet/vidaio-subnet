@@ -36,11 +36,11 @@ class Validator(base.BaseValidator):
         uids = list(range(len(self.metagraph.hotkeys)))
         logger.debug(f"Initial UIDs: {uids}")
         uids = self.miner_manager.consume(uids)
-        uids = [2]
+        # uids = [2]
         logger.info(f"Filtered UIDs after consumption: {uids}")
         axons = [self.metagraph.axons[uid] for uid in uids]
         miners = list(zip(axons, uids))
-        batch_size = 4
+        batch_size = 20
         miner_batches = [
             miners[i : i + batch_size] for i in range(0, len(miners), batch_size)
         ]
@@ -57,10 +57,10 @@ class Validator(base.BaseValidator):
                 axons.append(miner[0])
             logger.debug(f"Processing UIDs in batch: {uids}")
             responses = await self.dendrite.forward(
-                axons=axons, synapse=synapse, timeout=100
+                axons=axons, synapse=synapse, timeout=200
             )
             logger.info(f"Received {len(responses)} responses from miners, deleting uploaded_file")
-            logger.info(responses[0])
+            logger.info(responses)
             video_4k_path = get_4k_vide_path(video_id)
             
             await self.score(uids, responses, video_4k_path)
