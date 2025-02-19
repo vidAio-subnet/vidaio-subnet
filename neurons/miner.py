@@ -5,11 +5,9 @@ import time
 from loguru import logger
 from vidaio_subnet_core.protocol import VideoUpscalingProtocol
 from services.miner_utilities.miner_utils import download_video, video_upscaler
-# from services.google_drive.google_drive_manager import GoogleDriveManager
 from vidaio_subnet_core.utilities.minio_client import minio_client
 import traceback
 import uuid
-import asyncio
 
 class Miner(BaseMiner):
     
@@ -35,7 +33,6 @@ class Miner(BaseMiner):
 
             if uploaded_file_id is None or sharing_link is None:
                 logger.error("Upload failed")
-                
             
             if sharing_link:
                 logger.info(f"Public download link: {sharing_link}")  
@@ -159,9 +156,3 @@ if __name__ == "__main__":
         while True:
             logger.info(f"Miner running... {time.time()}")
             time.sleep(30)
-    # miner = Miner()
-    # synapse = VideoUpscalingProtocol()
-    # synapse.miner_payload.reference_video_url = "https://drive.google.com/uc?id=1Kg29t3GLL04Sxy_FzmYsxKRCHf9guVZK&export=download"
-    # synapse.miner_payload.maximum_optimized_size_mb=100
-    # asyncio.run(miner.forward_upscaling_requests(synapse)) 
-            

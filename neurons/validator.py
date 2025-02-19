@@ -7,9 +7,10 @@ from loguru import logger
 import traceback
 import pandas as pd
 from typing import List
-# from services.google_drive.google_drive_manager import GoogleDriveManager
 from vidaio_subnet_core.utilities.minio_client import minio_client
 from services.video_scheduler.video_utils import get_4k_vide_path, delete_videos_with_fileid
+from concurrent.futures import ThreadPoolExecutor
+
 
 class Validator(base.BaseValidator):
     def __init__(self):
@@ -28,6 +29,7 @@ class Validator(base.BaseValidator):
         logger.info(
             f"Initialized score client with base URL: {CONFIG.score.host}:{CONFIG.score.port}"
         )
+        self.set_weights_executor = ThreadPoolExecutor(max_workers=1)
 
     async def start_epoch(self):
         logger.info("Starting forward pass")
