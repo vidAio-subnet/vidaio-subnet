@@ -32,5 +32,5 @@ def calculate_lpips(ref_frame: np.ndarray, dist_frame: np.ndarray) -> float:
 
     # Compute LPIPS score
     lpips_score = iqa_metric(ref_tensor, dist_tensor)
-    print(lpips_score)
+    print(f"Calculated LPIPS score is : {lpips_score.item()}")
     return lpips_score.item()
