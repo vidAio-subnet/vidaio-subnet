@@ -36,8 +36,7 @@ dependencies = [
     "tqdm",
     "moviepy==1.0.3",
     "python-dotenv",
-    "opencv-python-headless",
-    "pyiqa",
+    "tabulate"
 ]
 
 [build-system]
