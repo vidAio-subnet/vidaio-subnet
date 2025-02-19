@@ -1,14 +1,13 @@
 import uuid
 import requests
 from pathlib import Path
-from requests.exceptions import RequestException
 import httpx
 import asyncio
 from fastapi import HTTPException
 from loguru import logger
 import aiohttp
 import json
-
+from vidaio_subnet_core import CONFIG
 
 async def download_video(url: str) -> Path:
     """
@@ -44,7 +43,7 @@ async def download_video(url: str) -> Path:
             # Generate a UUID filename
             filename = f"{uuid.uuid4()}.mp4"
             output_path = video_dir / filename
-            output_path.unlink(missing_ok=True)
+            
             # Save the video content to the output path
             with open(output_path, "wb") as video_file:
                 video_file.write(response.content)
@@ -63,7 +62,7 @@ async def download_video(url: str) -> Path:
 
 
 async def video_upscaler(input_file_path):
-    url = "http://localhost:29115/upscale-video"
+    url=f"http://{CONFIG.video_upscaler.host}:{CONFIG.video_upscaler.port}/upscale-video"
     headers = {"Content-Type": "application/json"}
     data = {"task_file_path": str(input_file_path)}
     
