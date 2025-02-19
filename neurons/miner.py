@@ -24,7 +24,7 @@ class Miner(BaseMiner):
             allowed_maximum_size = synapse.miner_payload.maximum_optimized_size_mb
             payload_video_path = await download_video(payload_url)
             processed_video_path = await video_upscaler(payload_video_path)
-
+            logger.info(f"Proceesed video path: {processed_video_path}")
             # gdrive = GoogleDriveManager()
             # uploaded_file_id, sharing_link = gdrive.upload_file(processed_video_path)
 
@@ -32,6 +32,7 @@ class Miner(BaseMiner):
             object_name = f"{uploaded_file_id}.mp4"
             
             await minio_client.upload_file(object_name, processed_video_path)
+            logger.info("Video uploaded successfully.")
             sharing_link = await minio_client.get_presigned_url(object_name)
 
             if uploaded_file_id is None or sharing_link is None:
@@ -44,9 +45,9 @@ class Miner(BaseMiner):
                 
                 # Schedule the deletion of the uploaded file after 60 seconds
                 # await asyncio.sleep(60)
-                minio_client.delete_file(object_name)
+                # minio_client.delete_file(object_name)
             
-            logger.info("Returning Response")
+            logger.info(f"Returning Response{synapse}")
             return synapse
             
         except Exception as e:

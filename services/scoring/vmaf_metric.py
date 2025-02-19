@@ -78,14 +78,21 @@ def vmaf_metric(ref_path, dist_path, output_file="vmaf_output.xml"):
 def calculate_vmaf(ref_mp4_path, dist_mp4_path):
     try:
         print(ref_mp4_path, dist_mp4_path)
-        # Paths to the input MP4 files
-        # ref_mp4_path = "/root/workspace/vidaio-subnet/videos/4887282_dci4k.mp4"
-        # dist_mp4_path = "/root/workspace/vidaio-subnet/videos/4k_4887282_hd.mp4"
-        
-        # Paths to the converted Y4M files
+
+        # Define paths to the Y4M files
         ref_y4m_path = "ref.y4m"
         dist_y4m_path = "dist.y4m"
         
+        # Check if ref_y4m_path exists and delete it
+        if os.path.exists(ref_y4m_path):
+            print(f"Deleting existing reference Y4M file: {ref_y4m_path}")
+            os.remove(ref_y4m_path)
+        
+        # Check if dist_y4m_path exists and delete it
+        if os.path.exists(dist_y4m_path):
+            print(f"Deleting existing distorted Y4M file: {dist_y4m_path}")
+            os.remove(dist_y4m_path)
+            
         # Step 1: Convert MP4 to Y4M
         print("Converting reference MP4 to Y4M...")
         convert_mp4_to_y4m(ref_mp4_path, ref_y4m_path)
@@ -107,8 +114,8 @@ def calculate_vmaf(ref_mp4_path, dist_mp4_path):
         print(f"Failed to calculate VMAF: {e}")
 
 if __name__ == "__main__":
-    ref_mp4_path = "/root/workspace/vidaio-subnet/videos/4887282_dci4k.mp4"
-    dist_mp4_path = "/root/workspace/vidaio-subnet/videos/4k_4887282_hd.mp4"
+    ref_mp4_path = "/workspace/vidaio-subnet/4k.mp4"
+    dist_mp4_path = "/workspace/vidaio-subnet/4k1.mp4"
     
     # ref_y4m_path = "ref.y4m"
     # dist_y4m_path = "dist.y4m"
