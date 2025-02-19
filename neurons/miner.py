@@ -25,8 +25,6 @@ class Miner(BaseMiner):
             payload_video_path = await download_video(payload_url)
             processed_video_path = await video_upscaler(payload_video_path)
             logger.info(f"Proceesed video path: {processed_video_path}")
-            # gdrive = GoogleDriveManager()
-            # uploaded_file_id, sharing_link = gdrive.upload_file(processed_video_path)
 
             uploaded_file_id = uuid.uuid4()
             object_name = f"{uploaded_file_id}.mp4"
