@@ -9,6 +9,7 @@ from loguru import logger
 import aiohttp
 import json
 
+
 async def download_video(url: str) -> Path:
     """
     Download video with retries and proper redirect handling.
@@ -60,8 +61,6 @@ async def download_video(url: str) -> Path:
         logger.error(f"Error downloading video: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to download video: {str(e)}")
 
-# curl -X POST "http://localhost:29115/upscale-video" -H "Content-Type: application/json" -d '{"task_file_path": "/root/workspace/vidaio-subnet/services/upscaling/videos/7a4297c6-970b-4f62-8aef-f4fb4f40156f.mp4"}'
-
 
 async def video_upscaler(input_file_path):
     url = "http://localhost:29115/upscale-video"
@@ -78,7 +77,6 @@ async def video_upscaler(input_file_path):
             else:
                 print("Error:", response.status)
                 return None
-
 
 
 if __name__ == "__main__":
