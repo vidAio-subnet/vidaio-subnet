@@ -73,21 +73,22 @@ class Validator(base.BaseValidator):
 
     async def score(self, uids: list[int], responses: list[protocol.Synapse], reference_4k_path: str):
         logger.info(f"Starting scoring for {len(uids)} miners")
-        
         distorted_urls = []
-        
+        print(responses, uids)
         for uid, response in zip(uids, responses):
             distorted_urls.append(response.miner_response.optimized_video_url)
-            
+        logger.info(f"distored_urls: {distorted_urls}")
         score_response = await self.score_client.post(
             "/score",
             json = {
                 "distorted_urls": distorted_urls,
-                "reference_url": reference_4k_path
-            }
+                "reference_path": reference_4k_path
+            },
+            timeout=60
         )
-        scores: List[float] = score_response.json()
-        
+        response_json = score_response.json()  # Get the full JSON response
+        scores: List[float] = response_json.get("scores", [])  # Extract only the list
+        logger.info(f"Scores: {scores}")
         logger.info(f"Updating miner manager with {len(scores)} scores")
         self.miner_manager.step(scores, uids)
 
