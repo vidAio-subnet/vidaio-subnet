@@ -96,12 +96,13 @@ class Validator(base.BaseValidator):
     def set_weights(self):
         self.current_block = self.subtensor.get_current_block()
         self.last_update = self.metagraph.last_update[self.uid]
-        weights = self.miner_manager.weights
+        uids, weights = self.miner_manager.weights
         (
             processed_weight_uids,
             processed_weights,
         ) = bt.utils.weight_utils.process_weights_for_netuid(
-            uids=self.metagraph.uids,
+            # uids=self.metagraph.uids,
+            uids = uids,
             weights=weights,
             netuid=self.config.netuid,
             subtensor=self.subtensor,
@@ -113,7 +114,7 @@ class Validator(base.BaseValidator):
         ) = bt.utils.weight_utils.convert_weights_and_uids_for_emit(
             uids=processed_weight_uids, weights=processed_weights
         )
-        if self.current_block > self.last_update + CONFIG.subnet_tempo:
+        if self.current_block > self.last_update + CONFIG.SUBNET_TEMPO:
             weight_info = list(zip(uint_uids, uint_weights))
             weight_info_df = pd.DataFrame(weight_info, columns=["uid", "weight"])
             logger.info(f"Weight info:\n{weight_info_df.to_markdown()}")
@@ -129,6 +130,8 @@ class Validator(base.BaseValidator):
                 success, msg = future.result(timeout=120)
                 if not success:
                     logger.error(f"Failed to set weights: {msg}")
+                else: 
+                    logger.debug("Set weights successfully 😎")
             except Exception as e:
                 logger.error(f"Failed to set weights: {e}")
                 traceback.print_exc()
@@ -136,7 +139,7 @@ class Validator(base.BaseValidator):
             logger.info(f"Set weights result: {success}")
         else:
             logger.info(
-                f"Not setting weights because current block {self.current_block} is not greater than last update {self.last_update} + tempo {constants.SUBNET_TEMPO}"
+                f"Not setting weights because current block {self.current_block} is not greater than last update {self.last_update} + tempo {CONFIG.SUBNET_TEMPO}"
             )
 
 
