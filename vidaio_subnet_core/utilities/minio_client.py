@@ -304,7 +304,7 @@ if __name__ == "__main__":
 #     await minio_client.ensure_bucket_exists()
 
 #     # Upload a file
-#     # await minio_client.upload_file("375.mp4", "/root/workspace/vidaio-subnet/videos/4k_4887282_hd.mp4")
+#     # await minio_client.upload_file("345.mp4", "/root/workspace/vidaio-subnet/videos/4k_4887282_hd.mp4")
 
 #     # List objects
 #     objects = await minio_client.list_objects()
@@ -316,10 +316,11 @@ if __name__ == "__main__":
 #     print(f"Objects are : {objects}")
 
 #     # Set bucket public policy
+#     # await minio_client.set_bucket_public_policy()
 
 #     # Generate a presigned URL
-#     url = await minio_client.get_presigned_url("375.mp4")
-#     print(f"Presigned URL: {url}")
+#     # url = await minio_client.get_presigned_url("345.mp4")
+#     # print(f"Presigned URL: {url}")
 
 # if __name__ == "__main__":
 #     asyncio.run(main())

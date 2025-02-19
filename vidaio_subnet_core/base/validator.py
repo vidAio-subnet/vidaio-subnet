@@ -63,6 +63,7 @@ class BaseValidator(ABC):
         logger.info(f"Subtensor: {self.subtensor}")
         self.dendrite = bt.dendrite(wallet=self.wallet)
         logger.info(f"Dendrite: {self.dendrite}")
+        logger.info(self.config.netuid)
         self.metagraph = self.subtensor.metagraph(self.config.netuid)
         logger.info(f"Metagraph: {self.metagraph}")
         self.resync_metagraph()
@@ -97,6 +98,7 @@ class BaseValidator(ABC):
         while not self.should_exit:
             try:
                 await self.start_epoch()
+                self.set_weights()
             except Exception as e:
                 logger.error(f"Forward error: {e}")
                 traceback.print_exc()
