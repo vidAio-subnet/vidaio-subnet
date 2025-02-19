@@ -17,47 +17,45 @@ class VideoSubnetMinioClient:
             secure=secure,
             region=region,
         )
-        self.loop = asyncio.get_event_loop()
         self.executor = ThreadPoolExecutor()
-
 
     async def upload_file(self, object_name, file_path):
         func = self.client.fput_object
         args = (self.bucket_name, object_name, file_path)
         print("Attempting to upload")
         try:
-            result = await self.loop.run_in_executor(self.executor, func, *args)
+            loop = asyncio.get_running_loop()  # Get the current event loop dynamically
+            result = await loop.run_in_executor(self.executor, func, *args)
             print(f"The bucket_name is {self.bucket_name} and the result was {result}")
             return result
         except Exception as e:
             print(f"There was an issue with uploading: {e}")
 
-
     async def download_file(self, object_name, file_path):
         func = self.client.fget_object
         args = (self.bucket_name, object_name, file_path)
         print("Attempting to download")
-        return await self.loop.run_in_executor(self.executor, func, *args)
-
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self.executor, func, *args)
 
     async def delete_file(self, object_name):
         func = self.client.remove_object
         args = (self.bucket_name, object_name)
-        return await self.loop.run_in_executor(self.executor, func, *args)
-
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self.executor, func, *args)
 
     async def list_objects(self, prefix=None, recursive=True):
         func = self.client.list_objects
         args = (self.bucket_name, prefix, recursive)
         print("Listing objects")
-        return await self.loop.run_in_executor(self.executor, func, *args)
-
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self.executor, func, *args)
 
     async def ensure_bucket_exists(self):
-        exists = await self.loop.run_in_executor(self.executor, self.client.bucket_exists, self.bucket_name)
+        loop = asyncio.get_running_loop()
+        exists = await loop.run_in_executor(self.executor, self.client.bucket_exists, self.bucket_name)
         if not exists:
-            await self.loop.run_in_executor(self.executor, self.client.make_bucket, self.bucket_name)
-
+            await loop.run_in_executor(self.executor, self.client.make_bucket, self.bucket_name)
 
     async def set_bucket_public_policy(self):
         """Sets the bucket policy to allow public read access."""
@@ -74,11 +72,11 @@ class VideoSubnetMinioClient:
         }
         
         try:
-            await self.loop.run_in_executor(self.executor, self.client.set_bucket_policy, self.bucket_name, policy)
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(self.executor, self.client.set_bucket_policy, self.bucket_name, policy)
             print(f"Public policy set for bucket: {self.bucket_name}")
         except Exception as e:
             print(f"Failed to set public policy for bucket {self.bucket_name}: {e}")
-
 
     async def delete_all_items(self):
         """Deletes all items in the Minio bucket."""
@@ -98,17 +96,15 @@ class VideoSubnetMinioClient:
         except Exception as e:
             print(f"Error deleting all items in bucket: {e}")
 
-
     async def get_presigned_url(self, object_name, expires=604800):
         expires_duration = datetime.timedelta(seconds=expires)
         func = self.client.presigned_get_object
         args = (self.bucket_name, object_name, expires_duration)
-        return await self.loop.run_in_executor(self.executor, func, *args)
-
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self.executor, func, *args)
 
     def get_public_url(self, object_name):
         return f"https://{self.endpoint}/{self.bucket_name}/{object_name}"
-
 
     def __del__(self):
         self.executor.shutdown(wait=False)
@@ -135,7 +131,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
 
 
 
@@ -309,7 +304,7 @@ if __name__ == "__main__":
 #     await minio_client.ensure_bucket_exists()
 
 #     # Upload a file
-#     # await minio_client.upload_file("345.mp4", "/root/workspace/vidaio-subnet/videos/4k_4887282_hd.mp4")
+#     # await minio_client.upload_file("375.mp4", "/root/workspace/vidaio-subnet/videos/4k_4887282_hd.mp4")
 
 #     # List objects
 #     objects = await minio_client.list_objects()
@@ -321,11 +316,10 @@ if __name__ == "__main__":
 #     print(f"Objects are : {objects}")
 
 #     # Set bucket public policy
-#     # await minio_client.set_bucket_public_policy()
 
 #     # Generate a presigned URL
-#     # url = await minio_client.get_presigned_url("345.mp4")
-#     # print(f"Presigned URL: {url}")
+#     url = await minio_client.get_presigned_url("375.mp4")
+#     print(f"Presigned URL: {url}")
 
 # if __name__ == "__main__":
 #     asyncio.run(main())

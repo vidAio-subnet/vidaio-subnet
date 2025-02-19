@@ -23,7 +23,7 @@ class Validator(base.BaseValidator):
         self.dendrite = bt.dendrite(wallet=self.wallet)
         logger.info("Initialized dendrite")
         self.score_client = httpx.AsyncClient(
-            base_url=f"{CONFIG.score.host}:{CONFIG.score.port}"
+            base_url=f"http://{CONFIG.score.host}:{CONFIG.score.port}"
         )
         logger.info(
             f"Initialized score client with base URL: {CONFIG.score.host}:{CONFIG.score.port}"
@@ -34,7 +34,7 @@ class Validator(base.BaseValidator):
         uids = list(range(len(self.metagraph.hotkeys)))
         logger.debug(f"Initial UIDs: {uids}")
         uids = self.miner_manager.consume(uids)
-        # uids.append(2)
+        uids = [2]
         logger.info(f"Filtered UIDs after consumption: {uids}")
         axons = [self.metagraph.axons[uid] for uid in uids]
         miners = list(zip(axons, uids))
@@ -55,10 +55,10 @@ class Validator(base.BaseValidator):
                 axons.append(miner[0])
             logger.debug(f"Processing UIDs in batch: {uids}")
             responses = await self.dendrite.forward(
-                axons=axons, synapse=synapse, timeout=12
+                axons=axons, synapse=synapse, timeout=100
             )
             logger.info(f"Received {len(responses)} responses from miners, deleting uploaded_file")
-            
+            logger.info(responses[0])
             video_4k_path = get_4k_vide_path(video_id)
             
             await self.score(uids, responses, video_4k_path)
@@ -84,7 +84,7 @@ class Validator(base.BaseValidator):
                 "reference_url": reference_4k_path
             }
         )
-        scores: List[float] = await score_response.json()
+        scores: List[float] = score_response.json()
         
         logger.info(f"Updating miner manager with {len(scores)} scores")
         self.miner_manager.step(scores, uids)

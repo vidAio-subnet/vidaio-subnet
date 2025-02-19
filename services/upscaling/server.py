@@ -2,14 +2,19 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from pathlib import Path
 import subprocess
+from fastapi.responses import JSONResponse
 import time
 import asyncio
 from vidaio_subnet_core import CONFIG
 import re
+from pydantic import BaseModel
+from typing import Optional
+
 app = FastAPI()
 
 class UpscaleRequest(BaseModel):
     task_file_path: str
+    # output_file_upscaled: Optional[str] = None
     
 
 def get_frame_rate(input_file: Path) -> float:
@@ -39,7 +44,7 @@ def get_frame_rate(input_file: Path) -> float:
 
 
 @app.post("/upscale-video")
-async def video_upscaler(request: UpscaleRequest):
+def video_upscaler(request: UpscaleRequest):
     """
     Upscales a video using the video2x tool and returns the full paths of the upscaled video and the converted mp4 file.
 
@@ -121,11 +126,9 @@ async def video_upscaler(request: UpscaleRequest):
         if output_file_with_extra_frames.exists():
             output_file_with_extra_frames.unlink()
             print(f"Intermediate file {output_file_with_extra_frames} deleted.")
-
-        return {
-            "upscaled_video_path": str(output_file_upscaled)
-        }
-
+        
+        print(f"Returning from FastAPI: {output_file_upscaled}")
+        return {"upscaled_video_path": str(output_file_upscaled)}
     except Exception as e:
         print(f"Error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
@@ -133,16 +136,16 @@ async def video_upscaler(request: UpscaleRequest):
 
 if __name__ == "__main__":
     
-    # import uvicorn
+    import uvicorn
     
-    # host = CONFIG.video_upscaler.host
-    # port = CONFIG.video_upscaler.port
+    host = CONFIG.video_upscaler.host
+    port = CONFIG.video_upscaler.port
     
-    # uvicorn.run(app, host=host, port=port)
+    uvicorn.run(app, host=host, port=port)
 
-    class TestRequest:
-        task_file_path = "videos/4887282_hd.mp4"
+    # class TestRequest:
+    #     task_file_path = "/root/workspace/vidaio-subnet/videos/4887282_hd.mp4"
 
-    # Simulate a request
-    video = TestRequest()
-    asyncio.run(video_upscaler(UpscaleRequest(task_file_path=video.task_file_path)))
+    # # Simulate a request
+    # video = TestRequest()
+    # asyncio.run(video_upscaler(UpscaleRequest(task_file_path=video.task_file_path)))
