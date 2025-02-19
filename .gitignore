@@ -21,3 +21,4 @@ services/upscaling/videos/
 services/upscaling/model/
 services/scoring/vmaf
 videos/
+pexel_scraper.py
