@@ -19,6 +19,7 @@ class GlobalConfig(BaseSettings):
     sql: SQLConfig = SQLConfig(url="sqlite:///video_subnet.db")
     minio: MinioConfig = MinioConfig()
     video_upscaler: VideoUpscalerConfig = VideoUpscalerConfig()
+    SUBNET_TEMPO: int = 100
 
     class Config:
         env_nested_delimiter = "__"
