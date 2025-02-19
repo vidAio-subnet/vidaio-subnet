@@ -11,7 +11,6 @@ import random
 from vidaio_subnet_core import CONFIG
 from vmaf_metric import calculate_vmaf
 from lpips_metric import calculate_lpips
-import asyncio
 import aiohttp
 import logging
 from loguru import logger
@@ -78,6 +77,7 @@ def calculate_psnr(ref_frame: np.ndarray, dist_frame: np.ndarray) -> float:
     if mse == 0:
         return 1000
     return 10 * np.log10((255.0**2) / mse)
+
 
 
 @app.post("/score")
