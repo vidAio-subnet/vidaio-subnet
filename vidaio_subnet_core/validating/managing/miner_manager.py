@@ -3,9 +3,9 @@ import redis
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from loguru import logger
-from sqlalchemy.ext.declarative import declarative_base
+# from sqlalchemy.ext.declarative import declarative_base
 import numpy as np
-from .sql_schemas import MinerMetadata
+from .sql_schemas import MinerMetadata, Base
 from .serving_counter import ServingCounter
 from ...global_config import CONFIG
 from ...utilities.rate_limit import build_rate_limit
@@ -24,7 +24,7 @@ class MinerManager:
         )
         logger.info(f"Creating SQL engine with URL: {CONFIG.sql.url}")
         self.engine = create_engine(CONFIG.sql.url)
-        declarative_base().metadata.create_all(self.engine)
+        Base.metadata.create_all(self.engine)
         Session = sessionmaker(bind=self.engine)
         self.session = Session()
         logger.info("Initializing serving counters")
@@ -60,7 +60,8 @@ class MinerManager:
         logger.info(f"Updating scores for {len(total_uids)} miners")
         for uid, score in zip(total_uids, scores):
             logger.debug(f"Processing UID {uid} with score {score}")
-            miner = self.query([uid])
+            miner = self.query([uid]).get(uid, None)
+            logger.info(f"Miner: {miner}")
             if miner is None:
                 logger.info(f"Creating new metadata record for UID {uid}")
                 miner = MinerMetadata(uid=uid)
@@ -87,10 +88,21 @@ class MinerManager:
     def weights(self):
         uids = []
         scores = []
+        
+        # Collect uids and scores
         for uid, miner in self.query().items():
             uids.append(uid)
             scores.append(miner.accumulate_score)
 
+        # Convert to NumPy array
         scores = np.array(scores)
+
+        # Normalize scores
         scores = scores / scores.sum()
+
+        # Sort uids and rearrange scores accordingly
+        sorted_indices = np.argsort(uids)  # Get sorting indices for uids
+        uids = np.array(uids)[sorted_indices]  # Apply sorting to uids
+        scores = scores[sorted_indices]  # Reorder scores to match sorted uids
+
         return uids, scores
