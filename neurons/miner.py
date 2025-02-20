@@ -6,8 +6,8 @@ from loguru import logger
 import bittensor as bt
 from vidaio_subnet_core.base.miner import BaseMiner
 from vidaio_subnet_core.protocol import VideoUpscalingProtocol
-from services.miner_utilities.miner_utils import download_video, video_upscaler
-from vidaio_subnet_core.utilities.minio_client import minio_client
+from services.miner_utilities.miner_utils import video_upscaler
+from vidaio_subnet_core.utilities import minio_client, download_video
 
 class Miner(BaseMiner):
     def __init__(self, config: dict | None = None) -> None:

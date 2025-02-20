@@ -55,7 +55,7 @@ async def download_video(url: str) -> tuple[str, float, str]:
 
         download_time = time.time() - start_time
         logger.info(f"Time taken to download: {download_time:.2f} seconds")
-        return file_path, download_time, ""
+        return file_path
     except Exception as e:
         return "", time.time() - debug_start_time, "Download failed: " + str(e)
 
