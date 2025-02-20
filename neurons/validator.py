@@ -26,12 +26,13 @@ class Validator(base.BaseValidator):
             base_url=f"http://{CONFIG.score.host}:{CONFIG.score.port}"
         )
         logger.info(
-            f"Initialized score client with base URL: {CONFIG.score.host}:{CONFIG.score.port}"
+            f"Initialized score client with base URL: http://{CONFIG.score.host}:{CONFIG.score.port}"
         )
         self.set_weights_executor = ThreadPoolExecutor(max_workers=1)
+        logger.info("Initialized setting weights executor")
 
     async def start_epoch(self):
-        logger.info("Starting forward pass")
+        logger.info("✅ Starting forward ✅")
         uids = list(range(len(self.metagraph.hotkeys)))
         logger.debug(f"Initial UIDs: {uids}")
         uids = self.miner_manager.consume(uids)
@@ -39,7 +40,7 @@ class Validator(base.BaseValidator):
         logger.info(f"Filtered UIDs after consumption: {uids}")
         axons = [self.metagraph.axons[uid] for uid in uids]
         miners = list(zip(axons, uids))
-        batch_size = 20
+        batch_size = CONFIG.bandwidth.request_per_interval
         miner_batches = [
             miners[i : i + batch_size] for i in range(0, len(miners), batch_size)
         ]
@@ -58,17 +59,17 @@ class Validator(base.BaseValidator):
             responses = await self.dendrite.forward(
                 axons=axons, synapse=synapse, timeout=200
             )
-            logger.info(f"Received {len(responses)} responses from miners, deleting uploaded_file")
+            logger.info(f"🎲 Received {len(responses)} responses from miners 🎲")
             logger.info(responses)
             video_4k_path = get_4k_video_path(video_id)
             
             await self.score(uids, responses, video_4k_path)
             
-            # minio_client.delete_file(uploaded_object_name)
-            # delete_videos_with_fileid(video_id)
+            minio_client.delete_file(uploaded_object_name)
+            delete_videos_with_fileid(video_id)
             
-            logger.debug("Waiting 4 seconds before next batch")
-            await asyncio.sleep(4)
+            logger.debug("Waiting 5 seconds before next batch")
+            await asyncio.sleep(5)
 
     async def score(self, uids: list[int], responses: list[protocol.Synapse], reference_4k_path: str):
         logger.info(f"Starting scoring for {len(uids)} miners")
@@ -83,12 +84,12 @@ class Validator(base.BaseValidator):
                 "distorted_urls": distorted_urls,
                 "reference_path": reference_4k_path
             },
-            timeout=60
+            timeout=210
         )
         response_json = score_response.json()  # Get the full JSON response
         scores: List[float] = response_json.get("scores", [])  # Extract only the list
         logger.info(f"Scores: {scores}")
-        logger.info(f"Updating miner manager with {len(scores)} scores")
+        logger.info(f"Updating miner manager with {len(scores)} miner scores")
         self.miner_manager.step(scores, uids)
 
 
@@ -128,9 +129,9 @@ class Validator(base.BaseValidator):
                 )
                 success, msg = future.result(timeout=120)
                 if not success:
-                    logger.error(f"Failed to set weights: {msg}")
+                    logger.error(f"😠 Failed to set weights: {msg}")
                 else: 
-                    logger.debug("Set weights successfully 😎")
+                    logger.debug("😎 Set weights successfully ")
             except Exception as e:
                 logger.error(f"Failed to set weights: {e}")
                 traceback.print_exc()
