@@ -1,6 +1,5 @@
 from vidaio_subnet_core import validating, CONFIG, base, protocol
 import bittensor as bt
-import random
 import httpx
 import asyncio
 from loguru import logger

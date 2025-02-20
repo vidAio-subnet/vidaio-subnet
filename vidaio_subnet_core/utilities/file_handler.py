@@ -35,16 +35,16 @@ def _generate_filename(url: str) -> str:
     return os.path.join("tmp", str(uuid.uuid4()))
 
 
-async def _download(url: str) -> tuple[str, float, str]:
+async def download_video(url: str) -> tuple[str, float, str]:
     """Download file using hf_transfer."""
     debug_start_time = time.time()
     try:
-        filename = _generate_filename(url)
+        file_path = _generate_filename(url)
         start_time = time.time()
 
         await fire_downloader.download_file(
             url=url,
-            filename=filename,
+            filename=file_path,
             max_files=10,  # Number of parallel downloads
             chunk_size=1024 * 1024,  # 1 MB chunks
             parallel_failures=3,
@@ -55,7 +55,7 @@ async def _download(url: str) -> tuple[str, float, str]:
 
         download_time = time.time() - start_time
         logger.info(f"Time taken to download: {download_time:.2f} seconds")
-        return filename, download_time, ""
+        return file_path, download_time, ""
     except Exception as e:
         return "", time.time() - debug_start_time, "Download failed: " + str(e)
 

@@ -3,9 +3,6 @@ import subprocess
 import argparse
 import bittensor as bt
 
-len_limit = int(1e4)
-
-
 def is_cuda_available():
     try:
         output = subprocess.check_output(
@@ -46,44 +43,9 @@ def add_args(parser):
     )
 
     parser.add_argument(
-        "--neuron.epoch_length",
-        type=int,
-        help="The default epoch length (how often we set weights, measured in 12 second blocks).",
-        default=100,
-    )
-
-    parser.add_argument(
-        "--mock",
-        action="store_true",
-        help="Mock neuron and all network components.",
-        default=False,
-    )
-
-    parser.add_argument(
-        "--neuron.events_retention_size",
-        type=str,
-        help="Events retention size.",
-        default=2 * 1024 * 1024 * 1024,  # 2 GB
-    )
-
-    parser.add_argument(
-        "--neuron.dont_save_events",
-        action="store_true",
-        help="If set, we dont save events to a log file.",
-        default=False,
-    )
-
-    parser.add_argument(
         "--wandb.off",
         action="store_true",
         help="Turn off wandb.",
-        default=False,
-    )
-
-    parser.add_argument(
-        "--wandb.offline",
-        action="store_true",
-        help="Runs wandb in offline mode.",
         default=False,
     )
 
@@ -117,41 +79,6 @@ def add_validator_args(parser):
     """Add validator specific arguments to the parser."""
 
     parser.add_argument(
-        "--neuron.timeout",
-        type=float,
-        help="The timeout for each forward call in seconds.",
-        default=10,
-    )
-
-    parser.add_argument(
-        "--neuron.num_concurrent_forwards",
-        type=int,
-        help="The number of concurrent forwards running at any time.",
-        default=1,
-    )
-
-    parser.add_argument(
-        "--neuron.sample_size",
-        type=int,
-        help="The number of miners to query in a single step.",
-        default=1,
-    )
-
-    parser.add_argument(
-        "--neuron.disable_set_weights",
-        action="store_true",
-        help="Disables setting weights.",
-        default=False,
-    )
-
-    parser.add_argument(
-        "--neuron.moving_average_alpha",
-        type=float,
-        help="Moving average alpha parameter, how much to add of the new observation.",
-        default=0.1,
-    )
-
-    parser.add_argument(
         "--neuron.axon_off",
         "--axon_off",
         action="store_true",
@@ -172,14 +99,14 @@ def add_validator_args(parser):
         "--wandb.project_name",
         type=str,
         help="The name of the project where you are sending the new run.",
-        default="template-validators",
+        default="vidaio",
     )
 
     parser.add_argument(
         "--wandb.entity",
         type=str,
         help="The name of the project where you are sending the new run.",
-        default="opentensor-dev",
+        default="vidaio-validators",
     )
 
 
