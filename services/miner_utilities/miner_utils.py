@@ -96,8 +96,9 @@ import aiohttp
 from fastapi import HTTPException
 from loguru import logger
 from vidaio_subnet_core import CONFIG
+import os
 
-async def download_video(url: str) -> Path:
+async def download_video(video_url: str) -> Path:
     """
     Downloads a video from the given URL with retries and redirect handling.
     
@@ -111,39 +112,36 @@ async def download_video(url: str) -> Path:
         HTTPException: If the download fails.
     """
     try:
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            response = await client.get(url)
-            
-            if "drive.google.com" in url:
-                if "drive.usercontent.google.com" in response.url.path:
-                    download_url = str(response.url)
-                else:
-                    file_id = url.split("id=")[1].split("&")[0]
-                    download_url = f"https://drive.usercontent.google.com/download?id={file_id}&export=download"
-                response = await client.get(download_url)
-            
-            response.raise_for_status()
-            
-            # Define video directory and ensure it exists
-            video_dir = Path(__file__).parent.parent / "upscaling" / "videos"
-            video_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Generate a unique filename
-            filename = f"{uuid.uuid4()}.mp4"
-            output_path = video_dir / filename
-            
-            # Save video content to file
-            output_path.write_bytes(response.content)
-            
-            logger.info(f"Video downloaded successfully to {output_path}")
-            return output_path
-    
-    except httpx.HTTPStatusError as e:
-        logger.error(f"HTTP error downloading video: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to download video: {e}")
+        video_dir = Path(__file__).parent.parent / "upscaling" / "videos"
+        video_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Generate a unique filename
+        filename = f"{uuid.uuid4()}.mp4"
+        output_path = video_dir / filename
+        
+        logger.info(f"Downloading video from {video_url} to {output_path}")
+        # Download the file using aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.get(video_url) as response:
+                if response.status != 200:
+                    raise Exception(f"Failed to download video. HTTP status: {response.status}")
+
+                # Write the content to the temp file in chunks
+                with open(output_path, "wb") as f:
+                    async for chunk in response.content.iter_chunked(1024 * 1024):  # 2 MB chunks
+                        f.write(chunk)
+
+        # Verify the file was successfully downloaded
+        if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+            raise Exception(f"Download failed or file is empty: {output_path}")
+
+        logger.info(f"File successfully downloaded to: {output_path}")
+        return output_path
+
     except Exception as e:
-        logger.error(f"Error downloading video: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to download video: {e}")
+        logger.error(f"Failed to download video from {video_url}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error downloading video: {str(e)}")
+
 
 async def video_upscaler(input_file_path: Path) -> str | None:
     """
