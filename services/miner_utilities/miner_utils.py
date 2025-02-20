@@ -97,6 +97,7 @@ from fastapi import HTTPException
 from loguru import logger
 from vidaio_subnet_core import CONFIG
 import os
+import time
 
 async def download_video(video_url: str) -> Path:
     """
@@ -120,6 +121,7 @@ async def download_video(video_url: str) -> Path:
         output_path = video_dir / filename
         
         logger.info(f"Downloading video from {video_url} to {output_path}")
+        start_time = time.time()
         # Download the file using aiohttp
         async with aiohttp.ClientSession() as session:
             async with session.get(video_url) as response:
@@ -128,8 +130,10 @@ async def download_video(video_url: str) -> Path:
 
                 # Write the content to the temp file in chunks
                 with open(output_path, "wb") as f:
-                    async for chunk in response.content.iter_chunked(1024 * 1024):  # 2 MB chunks
+                    async for chunk in response.content.iter_chunked(3 * 1024 * 1024):  # 2 MB chunks
                         f.write(chunk)
+        elapsed_time = time.time() - start_time
+        logger.info(f"Chunk download time: {elapsed_time:.2f} seconds")
 
         # Verify the file was successfully downloaded
         if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
