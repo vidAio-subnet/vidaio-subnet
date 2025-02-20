@@ -47,7 +47,7 @@ class Validator(base.BaseValidator):
         logger.info(f"Created {len(miner_batches)} batches of size {batch_size}")
 
         for batch_idx, batch in enumerate(miner_batches):
-            logger.info(f"Processing batch {batch_idx + 1}/{len(miner_batches)}")
+            logger.info(f"🧩 Processing batch {batch_idx + 1}/{len(miner_batches)} 🧩")
             video_id, uploaded_object_name, synapse = await self.challenge_synthesizer.build_protocol()
             logger.debug(f"Built challenge protocol {synapse.__dict__}")
             uids = []
@@ -86,8 +86,8 @@ class Validator(base.BaseValidator):
             },
             timeout=210
         )
-        response_json = score_response.json()  # Get the full JSON response
-        scores: List[float] = response_json.get("scores", [])  # Extract only the list
+        response_json = score_response.json()  
+        scores: List[float] = response_json.get("scores", [])  
         logger.info(f"Scores: {scores}")
         logger.info(f"Updating miner manager with {len(scores)} miner scores")
         self.miner_manager.step(scores, uids)
