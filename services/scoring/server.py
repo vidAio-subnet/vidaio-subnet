@@ -299,7 +299,7 @@ async def score(request: ScoringRequest) -> ScoringResponse:
         ScoringResponse: The response object containing a list of scores for each distorted video.
     """
     logger.info("Start scoring..........")
-    logger.debug(f"Request data: {request.dict()}")
+    logger.debug(f"Request data: {request.__dict__}")
     
     ref_path = request.reference_path
     ref_cap = cv2.VideoCapture(ref_path)
