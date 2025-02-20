@@ -2,7 +2,6 @@ import uuid
 import json
 import asyncio
 from pathlib import Path
-import httpx
 import aiohttp
 from fastapi import HTTPException
 from loguru import logger
@@ -78,10 +77,11 @@ async def video_upscaler(input_file_path: Path) -> str | None:
                 result = await response.json()
                 upscaled_video_path = result.get("upscaled_video_path")
                 logger.info(f"Upscaled video path: {upscaled_video_path}")
-                return upscaled_video_path
+                upscaled_video_name = Path(upscaled_video_path).name
+                return upscaled_video_name, upscaled_video_path
             
             logger.error(f"Upscaling service error: {response.status}")
-            return None
+            return None, None
 
 if __name__ == "__main__":
     video_url = "/root/workspace/vidaio-subnet/services/upscaling/videos/7a4297c6-970b-4f62-8aef-f4fb4f40156f.mp4"

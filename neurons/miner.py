@@ -26,26 +26,25 @@ class Miner(BaseMiner):
         try:
             payload_url: str = synapse.miner_payload.reference_video_url
             payload_video_path: str = await download_video(payload_url)
-            processed_video_path: str = await video_upscaler(payload_video_path)
+            processed_video_name, processed_video_path = await video_upscaler(payload_video_path)
             logger.info(f"Processed video path: {processed_video_path}")
+            if processed_video_path is not None:
+                object_name: str = processed_video_name
+                
+                await minio_client.upload_file(object_name, processed_video_path)
+                logger.info("Video uploaded successfully.")
+                
+                sharing_link: str | None = await minio_client.get_presigned_url(object_name)
+                if not sharing_link:
+                    logger.error("Upload failed")
+                    return synapse
+                
+                logger.info(f"Public download link: {sharing_link}")  
+                synapse.miner_response.optimized_video_url = sharing_link
 
-            uploaded_file_id: uuid.UUID = uuid.uuid4()
-            object_name: str = f"{uploaded_file_id}.mp4"
-            
-            await minio_client.upload_file(object_name, processed_video_path)
-            logger.info("Video uploaded successfully.")
-            
-            sharing_link: str | None = await minio_client.get_presigned_url(object_name)
-            if not sharing_link:
-                logger.error("Upload failed")
+                logger.info(f"Returning Response: {synapse}")
                 return synapse
             
-            logger.info(f"Public download link: {sharing_link}")  
-            synapse.miner_response.optimized_video_url = sharing_link
-
-            logger.info(f"Returning Response: {synapse}")
-            return synapse
-        
         except Exception as e:
             logger.error(f"Failed to process upscaling request: {e}")
             traceback.print_exc()
