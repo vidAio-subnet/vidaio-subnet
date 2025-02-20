@@ -26,4 +26,4 @@ class GlobalConfig(BaseSettings):
 
 
 CONFIG = GlobalConfig()
-logger.info(f"GlobalConfig: {CONFIG}")
+logger.info(f"Configuration loaded correctly")
