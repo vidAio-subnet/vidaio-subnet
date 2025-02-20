@@ -21,7 +21,7 @@ class Miner(BaseMiner):
         Processes a video upscaling request by downloading, upscaling,
         uploading, and returning a sharing link.
         """
-        logger.info(f"Receiving Request: {synapse}")
+        logger.info(f"Receiving Request from validator: {synapse.dendrite.hotkey}")
         
         try:
             payload_url: str = synapse.miner_payload.reference_video_url
