@@ -201,18 +201,3 @@ class GoogleDriveManager:
 if __name__ == '__main__':
     gdrive = GoogleDriveManager()
     
-    # uploaded_file_id, sharing_link = gdrive.upload_file("/workspace/vidaio-subnet/vidaio-subnet/services/video_scheduler/videos/857020_hd.mp4")
-
-    # if sharing_link:
-    #     print(f"Public download link: {sharing_link}")
-
-    # if uploaded_file_id:
-    #     gdrive.download_file(
-    #         uploaded_file_id,
-    #         "/workspace/vidaio-subnet/vidaio-subnet/services/upscaling/videos/downloaded_file.mp4"
-    #     )
-        
-    # gdrive.init_drive()    
-
-    # if uploaded_file_id:
-    #     gdrive.delete_files(uploaded_file_id)
