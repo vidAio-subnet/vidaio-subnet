@@ -74,7 +74,7 @@ def download_trim_downscale_video(
         video, video_file = random.choice(dci4k_videos)
         video_url = video_file["link"]
         original_video_id = video['id']
-        video_id = uuid.uuid()
+        video_id = uuid.uuid4()
 
         temp_path = Path(output_dir) / f"{video_id}_4k_original.mp4"
         clipped_path = Path(output_dir) / f"{video_id}_4k.mp4"
