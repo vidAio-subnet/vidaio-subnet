@@ -1,149 +1,209 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Optional
-from loguru import logger
+from typing import Optional, List
 import cv2
 import numpy as np
 from firerequests import FireRequests
 import tempfile
 import os
+import random
+from vidaio_subnet_core import CONFIG
+from vmaf_metric import calculate_vmaf
+from lpips_metric import calculate_lpips
+import aiohttp
+import logging
 
+# Set up logging
+logger = logging.getLogger(__name__)
 app = FastAPI()
 fire_requests = FireRequests()
 
-
 class ScoringRequest(BaseModel):
-    disorted_url: str
-    reference_url: str
+    """
+    Request model for scoring. Contains URLs for distorted videos and the reference video path.
+    """
+    distorted_urls: List[str]
+    reference_path: str
     fps: Optional[float] = None
     subsample: Optional[int] = 1
     verbose: Optional[bool] = False
     progress: Optional[bool] = False
 
-
 class ScoringResponse(BaseModel):
-    score: float
-
-
-async def download_videos(request: ScoringRequest) -> tuple[str, str]:
-    """Download reference and distorted videos to temporary files.
-    
-    Args:
-        request: The scoring request containing video URLs
-        
-    Returns:
-        Tuple of paths to downloaded reference and distorted videos
     """
-    with (
-        tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as ref_temp,
-        tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as dist_temp,
-    ):
-        ref_path = ref_temp.name
-        dist_path = dist_temp.name
+    Response model for scoring. Contains the list of calculated scores for each distorted video.
+    """
+    scores: List[float]
 
-    logger.info(f"Downloading videos from {request.reference_url} and {request.disorted_url}")
-    await fire_requests.download_file(
-        request.reference_url,
-        ref_path,
-        max_files=10,
-        chunk_size=2 * 1024 * 1024,
-        show_progress=request.verbose,
-    )
-    await fire_requests.download_file(
-        request.disorted_url,
-        dist_path,
-        max_files=10,
-        chunk_size=2 * 1024 * 1024,
-        show_progress=request.verbose,
-    )
-    
-    return ref_path, dist_path
+
+async def download_video(video_url: str, verbose: bool) -> str:
+    """
+    Download a video from the given URL and save it to a temporary file.
+
+    Args:
+        video_url (str): The URL of the video to download.
+        verbose (bool): Whether to show download progress.
+
+    Returns:
+        str: The path to the downloaded video file.
+
+    Raises:
+        HTTPException: If the download fails.
+    """
+    try:
+        # Create a temporary file for the video
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as vid_temp:
+            file_path = vid_temp.name  # Path to the temporary file
+        logger.info(f"Downloading video from {video_url} to {file_path}")
+
+        # Download the file using aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.get(video_url) as response:
+                if response.status != 200:
+                    raise Exception(f"Failed to download video. HTTP status: {response.status}")
+
+                # Write the content to the temp file in chunks
+                with open(file_path, "wb") as f:
+                    async for chunk in response.content.iter_chunked(2 * 1024 * 1024):  # 2 MB chunks
+                        f.write(chunk)
+
+        # Verify the file was successfully downloaded
+        if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+            raise Exception(f"Download failed or file is empty: {file_path}")
+
+        logger.info(f"File successfully downloaded to: {file_path}")
+        return file_path
+
+    except Exception as e:
+        logger.error(f"Failed to download video from {video_url}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error downloading video: {str(e)}")
 
 
 def calculate_psnr(ref_frame: np.ndarray, dist_frame: np.ndarray) -> float:
-    """Calculate PSNR between reference and distorted frames.
-    
+    """
+    Calculate Peak Signal-to-Noise Ratio (PSNR) between reference and distorted frames.
+
     Args:
-        ref_frame: Reference video frame
-        dist_frame: Distorted video frame
-        
+        ref_frame (np.ndarray): The reference video frame.
+        dist_frame (np.ndarray): The distorted video frame.
+
     Returns:
-        PSNR value in dB
+        float: The PSNR value between the reference and distorted frames.
     """
     mse = np.mean((ref_frame - dist_frame) ** 2)
     if mse == 0:
-        return 1000
+        return 1000  # Maximum PSNR value (perfect similarity)
     return 10 * np.log10((255.0**2) / mse)
 
 
-@app.post("/score", response_model=ScoringResponse)
-async def score(request: ScoringRequest):
-    try:
-        ref_path, dist_path = await download_videos(request)
+@app.post("/score")
+async def score(request: ScoringRequest) -> ScoringResponse:
+    """
+    Scores the distorted videos by comparing them with the reference video using VMAF and LPIPS.
 
-        # Open both videos
-        logger.info("Opening downloaded video files")
-        ref_cap = cv2.VideoCapture(ref_path)
+    Args:
+        request (ScoringRequest): The request object containing URLs for distorted videos 
+                                  and the reference video path.
+
+    Returns:
+        ScoringResponse: The response object containing a list of scores for each distorted video.
+    """
+    logger.info("Start scoring..........")
+    logger.debug(f"Request data: {request.__dict__}")
+    
+    ref_path = request.reference_path
+    ref_cap = cv2.VideoCapture(ref_path)
+
+    if not ref_cap.isOpened():
+        raise HTTPException(status_code=500, detail="Error opening reference video file")
+
+    ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    logger.info(f"Reference video has {ref_total_frames} frames.")
+    
+    if ref_total_frames <= 0:
+        raise HTTPException(status_code=500, detail="Invalid reference video: no frames found")
+
+    scores = []
+    for dist_url in request.distorted_urls:
+        ref_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        logger.info("Attempting to download video....")
+        dist_path = await download_video(dist_url, request.verbose)
         dist_cap = cv2.VideoCapture(dist_path)
 
-        if not ref_cap.isOpened() or not dist_cap.isOpened():
-            raise HTTPException(status_code=500, detail="Error opening video files")
+        if not dist_cap.isOpened():
+            logger.error(f"Error opening distorted video file from {dist_url}. Assigning score of 0.")
+            scores.append(0.0)
+            continue  # Skip to the next distorted video
 
-        psnr_values = []
-        frame_count = 0
+        dist_total_frames = int(dist_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        logger.info(f"Distorted video has {dist_total_frames} frames.")
+        
+        if dist_total_frames != ref_total_frames:
+            logger.warning(
+                f"Video length mismatch for {dist_url}: ref({ref_total_frames}) != dist({dist_total_frames}). Assigning score of 0."
+            )
+            scores.append(0.0)
+            dist_cap.release()
+            os.unlink(dist_path)
+            continue  # Skip to the next distorted video
 
-        while True:
+        # Calculate VMAF
+        try:
+            vmaf_score = calculate_vmaf(ref_path, dist_path)
+        except Exception as e:
+            logger.error(f"Failed to calculate VMAF for {dist_url}: {str(e)}. Assigning score of 0.")
+            scores.append(0.0)
+            dist_cap.release()
+            os.unlink(dist_path)
+            continue  # Skip to the next distorted video
+
+        # Select two random frames for LPIPS calculation
+        frame_indices = random.sample(range(ref_total_frames), 2)
+        lpips_scores = []
+
+        for idx in frame_indices:
+            ref_cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
             ret_ref, ref_frame = ref_cap.read()
+            dist_cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
             ret_dist, dist_frame = dist_cap.read()
 
             if not ret_ref or not ret_dist:
-                break
-
-            # Skip frames based on subsample rate
-            if frame_count % request.subsample != 0:
-                frame_count += 1
+                logger.error(f"Frames cannot be read for {dist_url} at index {idx}. Assigning score of 0.")
+                lpips_scores.append(1.0)  # Assign a high LPIPS score (bad quality)
                 continue
 
-            if ref_frame.shape != dist_frame.shape:
-                raise HTTPException(
-                    status_code=500, detail="Video dimensions do not match"
-                )
+            lpips_score = calculate_lpips(ref_frame, dist_frame)
+            lpips_scores.append(lpips_score)
 
-            psnr = calculate_psnr(ref_frame, dist_frame)
-            psnr_values.append(psnr)
-            frame_count += 1
-            logger.info(f"Processing frame {frame_count}, PSNR: {psnr}")
+        logger.info(f"LPIPS scores: {lpips_scores}")
+        average_lpips = sum(lpips_scores) / len(lpips_scores) if lpips_scores else 1.0  # Worst case
+        logger.info(f"Average LPIPS: {average_lpips}")
 
-            if request.progress and frame_count % 100 == 0:
-                logger.info(f"Processed {frame_count} frames...")
+        # Final score calculation
+        final_score = vmaf_score * 0.6 / 100 + (1 - average_lpips) * 0.4
+        scores.append(final_score)
 
-        # Release video captures and clean up temp files
-        ref_cap.release()
         dist_cap.release()
-        os.unlink(ref_path)
         os.unlink(dist_path)
 
-        if not psnr_values:
-            raise HTTPException(status_code=500, detail="No frames were processed")
+    # Cleanup
+    ref_cap.release()
 
-        average_psnr = np.mean(psnr_values)
+    return ScoringResponse(scores=scores)
 
-        if request.verbose:
-            logger.info(f"Average PSNR: {average_psnr:.2f} dB")
-            logger.info(f"Total frames processed: {frame_count}")
 
-        return ScoringResponse(score=float(average_psnr))
-
-    except Exception as e:
-        # Clean up temp files in case of error
-        if "ref_path" in locals():
-            try:
-                os.unlink(ref_path)
-            except:
-                pass
-        if "dist_path" in locals():
-            try:
-                os.unlink(dist_path)
-            except:
-                pass
-        raise HTTPException(status_code=500, detail=f"Scoring failed: {str(e)}")
+if __name__ == "__main__":
+    import uvicorn
+    
+    host = CONFIG.score.host
+    port = CONFIG.score.port
+    
+    uvicorn.run(app, host=host, port=port)
+    
+    # Testing (Uncomment and adjust if necessary)
+    # urls = ScoringRequest(
+    #     distorted_urls=[...],
+    #     reference_path="..."
+    # )
+    # scores = asyncio.run(score(urls))  
+    # print(scores)
