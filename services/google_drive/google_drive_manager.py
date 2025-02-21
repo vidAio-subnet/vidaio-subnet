@@ -4,9 +4,13 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from googleapiclient.http import MediaIoBaseDownload
+from dotenv import load_dotenv
+load_dotenv()
+
+service_account_file = os.getenv("GOOGLE_KEY_FILE")
 
 class GoogleDriveManager:
-    def __init__(self, service_account_file):
+    def __init__(self):
         """Initialize the Google Drive Manager with service account credentials."""
         self.SCOPES = ['https://www.googleapis.com/auth/drive']
         self.SERVICE_ACCOUNT_FILE = service_account_file
@@ -99,13 +103,17 @@ class GoogleDriveManager:
         """Delete a file or folder in Google Drive by ID."""
         try:
             self.drive_service.files().delete(fileId=file_or_folder_id).execute()
-            print(f"Successfully deleted file/folder with ID: {file_or_folder_id}")
+            print(f"Successfully deleted file with ID: {file_or_folder_id}")
         except Exception as e:
-            print(f"Error deleting file/folder with ID: {file_or_folder_id}")
+            print(f"Error deleting file with ID: {file_or_folder_id}")
             print(f"Error details: {str(e)}")
 
-    def upload_file(self, local_file_path, folder_id=None):
+    def upload_file(self, local_file_path):
         """Upload a file to Google Drive and make it publicly accessible."""
+        
+        folder_id = self.create_folder("uploaded_video")
+        self.list_files(parent_folder_id=folder_id)
+        
         if not os.path.exists(local_file_path):
             print(f"File not found: {local_file_path}")
             return None, None
@@ -147,29 +155,49 @@ class GoogleDriveManager:
             print(f"File downloaded to: {destination_path}")
         except Exception as e:
             print(f"Error downloading file: {str(e)}")
+            
+    def init_drive(self):
+        """Delete all files and directories in Google Drive."""
+        query = "trashed=false"
+        
+        results = self.drive_service.files().list(
+            q=query,
+            fields='files(id, name, mimeType)',
+            pageSize=1000
+        ).execute()
+        
+        items = results.get('files', [])
+        
+        for item in items:
+            if item['mimeType'] == 'application/vnd.google-apps.folder':
+                self.init_drive_folder(item['id'])
+                self.delete_files(item['id'])  
+            else:
+                self.delete_files(item['id']) 
+
+        print("All files and directories deleted.")
+
+    def init_drive_folder(self, folder_id):
+        """Helper function to delete contents of a folder."""
+        query = f"'{folder_id}' in parents and trashed=false"
+        
+        results = self.drive_service.files().list(
+            q=query,
+            fields='files(id, name, mimeType)',
+            pageSize=1000
+        ).execute()
+        
+        items = results.get('files', [])
+        
+        for item in items:
+            if item['mimeType'] == 'application/vnd.google-apps.folder':
+                self.init_drive_folder(item['id']) 
+                self.delete_files(item['id']) 
+            else:
+                self.delete_files(item['id']) 
 
 
-# if __name__ == '__main__':
-#     gdrive = GoogleDriveManager("video-448518-c557bc123b1b.json")
+
+if __name__ == '__main__':
+    gdrive = GoogleDriveManager()
     
-#     folder_id = gdrive.create_folder("uploaded_video")
-    
-#     gdrive.list_files(parent_folder_id=folder_id)
-    
-#     uploaded_file_id, sharing_link = gdrive.upload_file(
-#         "/Users/mac/Documents/work/video-streaming/vidaio-subnet/services/upscaling/videos/7dacc160-ef37-40a6-a7c4-2da0cc8f2e8b.mp4", 
-#         folder_id
-#     )
-
-#     if sharing_link:
-#         print(f"Public download link: {sharing_link}")
-
-#     if uploaded_file_id:
-#         gdrive.download_file(
-#             uploaded_file_id,
-#             "/Users/mac/Documents/work/video-streaming/vidaio-subnet/services/upscaling/videos/downloaded_file.mp4"
-#         )
-
-    # uncomment to delete the file
-    # if uploaded_file_id:
-    #     gdrive.delete_files(uploaded_file_id)

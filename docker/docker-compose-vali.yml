@@ -1,0 +1,33 @@
+version: '3.9'
+services:
+  redis:
+    image: redis:latest
+    container_name: redis
+    ports:
+      - "6379:6379"
+  scoring_server:
+    build:
+      context: ./  
+      dockerfile: Docker/Dockerfile
+    container_name: vali_scoring_server
+    command: ["python", "services/scoring/server.py"]
+    volumes:
+      - ../services:/app/services
+
+  video_scheduler_worker:
+    build:
+      context: ./  
+      dockerfile: Docker/Dockerfile
+    container_name: vali_video_scheduler_worker
+    command: ["python", "services/video_scheduler/worker.py"]
+    volumes:
+      - ../services:/app/services
+
+  video_scheduler_server:
+    build:
+      context: ./  
+      dockerfile: Docker/Dockerfile
+    container_name: vali_video_scheduler_server
+    command: ["python", "services/video_scheduler/server.py"]
+    volumes:
+      - ../services:/app/services

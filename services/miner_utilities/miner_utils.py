@@ -1,114 +1,88 @@
 import uuid
-import requests
+import json
+import asyncio
 from pathlib import Path
-from tqdm import tqdm
-from typing import Optional
-from requests.exceptions import RequestException
-import httpx
+import aiohttp
+from fastapi import HTTPException
+from loguru import logger
+from vidaio_subnet_core import CONFIG
+import os
+import time
 
-
-class DownloadError(Exception):
-    """Custom exception for download-related errors"""
-    pass
-
-
-def download_video(url: str) -> Optional[str]:
+async def download_video(video_url: str) -> Path:
     """
-    Downloads video from URL to the upscaling/videos directory with progress tracking.
+    Downloads a video from the given URL with retries and redirect handling.
     
     Args:
-        url (str): Direct video URL to download
-        
+        url (str): The URL of the video to download.
+    
     Returns:
-        str: Full path of the downloaded video file if successful
-        
+        Path: The local path of the downloaded video.
+    
     Raises:
-        DownloadError: If download fails or path issues occur
-        ValueError: If URL is invalid or empty
+        HTTPException: If the download fails.
     """
     try:
-        if not url:
-            raise ValueError("URL cannot be empty")
-
-        # Construct and validate video directory path
-        try:
-            video_dir = Path(__file__).parent.parent / "upscaling" / "videos"
-            video_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            raise DownloadError(f"Failed to create directory structure: {str(e)}")
-
-        # Generate unique filename
+        video_dir = Path(__file__).parent.parent / "upscaling" / "videos"
+        video_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Generate a unique filename
         filename = f"{uuid.uuid4()}.mp4"
         output_path = video_dir / filename
+        
+        logger.info(f"Downloading video from {video_url} to {output_path}")
+        start_time = time.time()
+        # Download the file using aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.get(video_url) as response:
+                if response.status != 200:
+                    raise Exception(f"Failed to download video. HTTP status: {response.status}")
 
-        # Initialize download
-        try:
-            response = requests.get(url, stream=True, timeout=20)
-            response.raise_for_status()
-            total_size = int(response.headers.get('content-length', 0))
-        except RequestException as e:
-            raise DownloadError(f"Failed to initialize download: {str(e)}")
+                # Write the content to the temp file in chunks
+                with open(output_path, "wb") as f:
+                    async for chunk in response.content.iter_chunked(3 * 1024 * 1024):  # 2 MB chunks
+                        f.write(chunk)
+        elapsed_time = time.time() - start_time
+        logger.info(f"Chunk download time: {elapsed_time:.2f} seconds")
 
-        # Download with progress tracking
-        try:
-            with open(output_path, 'wb') as f:
-                with tqdm(
-                    total=total_size,
-                    unit='iB',
-                    unit_scale=True,
-                    unit_divisor=1024,
-                    desc=f"Downloading {filename}",
-                    bar_format='{desc}: {percentage:3.0f}%|{bar:30}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]'
-                ) as pbar:
-                    for data in response.iter_content(chunk_size=8192):
-                        size = f.write(data)
-                        pbar.update(size)
-        except Exception as e:
-            # Clean up partially downloaded file if it exists
-            if output_path.exists():
-                output_path.unlink()
-            raise DownloadError(f"Download failed: {str(e)}")
+        # Verify the file was successfully downloaded
+        if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+            raise Exception(f"Download failed or file is empty: {output_path}")
 
-        # Verify download
-        if output_path.stat().st_size == 0:
-            output_path.unlink()
-            raise DownloadError("Downloaded file is empty")
-
-        # Return the full path of the downloaded file
-        return str(output_path)
+        logger.info(f"File successfully downloaded to: {output_path}")
+        return output_path
 
     except Exception as e:
-        raise DownloadError(f"Download failed: {str(e)}")
+        logger.error(f"Failed to download video from {video_url}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error downloading video: {str(e)}")
 
 
-def video_upscaler(input_file_path: str):
+async def video_upscaler(input_file_path: Path) -> str | None:
     """
-    Calls the local FastAPI endpoint to upscale the video.
+    Sends a video file path to the upscaling service and retrieves the processed video path.
     
     Args:
-        input_file_path (str): The full path of the input video file.
+        input_file_path (Path): The path of the video to be upscaled.
     
     Returns:
-        str: Full path of the upscaled video, if successful.
+        str | None: The path of the upscaled video or None if an error occurs.
     """
-    try:
-        # Define the API URL
-        url = "http://0.0.0.0:8000/upscale-video"
-        
-        # Define the payload
-        payload = {"task_file_path": input_file_path}
-        
-        # Send the POST request
-        response = httpx.post(url, json=payload)
+    url = f"http://{CONFIG.video_upscaler.host}:{CONFIG.video_upscaler.port}/upscale-video"
+    headers = {"Content-Type": "application/json"}
+    data = {"task_file_path": str(input_file_path)}
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, headers=headers, data=json.dumps(data)) as response:
+            if response.status == 200:
+                result = await response.json()
+                upscaled_video_path = result.get("upscaled_video_path")
+                logger.info(f"Upscaled video path: {upscaled_video_path}")
+                upscaled_video_name = Path(upscaled_video_path).name
+                return upscaled_video_name, upscaled_video_path
+            
+            logger.error(f"Upscaling service error: {response.status}")
+            return None, None
 
-        # Check the response status
-        if response.status_code == 200:
-            result = response.json()
-            return result["upscaled_video_path"]
-        else:
-            print(f"Error: {response.status_code} - {response.json().get('detail', 'Unknown error')}")
-    except Exception as e:
-        print(f"Exception occurred: {e}")
-
-    return None
-
+if __name__ == "__main__":
+    video_url = "/root/workspace/vidaio-subnet/services/upscaling/videos/7a4297c6-970b-4f62-8aef-f4fb4f40156f.mp4"
+    asyncio.run(video_upscaler(video_url))
