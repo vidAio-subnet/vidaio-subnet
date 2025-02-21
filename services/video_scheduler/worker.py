@@ -85,7 +85,7 @@ async def get_synthetic_urls(hotkey: str, num_needed: int) -> Optional[List[str]
         logger.error(f"Unexpected error fetching synthetic URLs: {str(e)}", exc_info=True)
     return None
 
-async def get_synthetic_requests_urls(num_needed: int) -> List[Dict[str, str]]:
+async def get_synthetic_requests_paths(num_needed: int) -> List[Dict[str, str]]:
     """Generate synthetic Google Drive URLs by uploading trimmed videos."""
     uploaded_video_chunks = []
     remaining_count = num_needed
@@ -101,7 +101,7 @@ async def get_synthetic_requests_urls(num_needed: int) -> List[Dict[str, str]]:
             logger.info("Failed to download and trim video. Retrying...")
             continue
 
-        uploaded_file_id = uuid.uuid4()
+        uploaded_file_id = video_id
         object_name = f"{uploaded_file_id}.mp4"
         
         await minio_client.upload_file(object_name, challenge_local_path)
@@ -140,7 +140,7 @@ async def main():
         if total_size < threshold:
             needed = fill_target - total_size
             logger.info(f"Need {needed} chunks...")
-            needed_urls = await get_synthetic_requests_urls(num_needed=needed)
+            needed_urls = await get_synthetic_requests_paths(num_needed=needed)
             push_synthetic_chunks(redis_conn, needed_urls)
 
         await asyncio.sleep(20)

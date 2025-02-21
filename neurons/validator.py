@@ -40,7 +40,7 @@ class Validator(base.BaseValidator):
         logger.info(f"Filtered UIDs after consumption: {uids}")
         axons = [self.metagraph.axons[uid] for uid in uids]
         miners = list(zip(axons, uids))
-        batch_size = CONFIG.bandwidth.request_per_interval
+        batch_size = CONFIG.bandwidth.requests_per_interval
         miner_batches = [
             miners[i : i + batch_size] for i in range(0, len(miners), batch_size)
         ]
