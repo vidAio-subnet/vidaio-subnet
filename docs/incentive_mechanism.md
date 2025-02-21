@@ -37,7 +37,7 @@ This formula ensures that frames with lower scores have a greater impact on the 
 LPIPS is another metric used by validators to assess the perceptual similarity between the original and processed videos. Unlike VMAF, which focuses on overall video quality, LPIPS evaluates the perceptual differences between selected image patches, simulating how humans perceive visual similarity.
 
 #### **How LPIPS is Used**
-- Validators randomly select **three frames** from both the original and processed videos.
+- Validators randomly select **two frames** from both the original and processed videos.
 - The LPIPS score is computed by comparing these frames using a deep learning-based perceptual similarity model.
 
 #### **What LPIPS Score Implies**
@@ -53,13 +53,13 @@ Let:
 - `F'_i`: Corresponding frame `i` from the processed video
 - `d(F_i, F'_i)`: Perceptual difference between the two frames, as calculated by the LPIPS model
 
-The LPIPS score `L` for the three selected frames is calculated as:
+The LPIPS score `L` for the two selected frames is calculated as:
 
 ```
-L = (d(F_1, F'_1) + d(F_2, F'_2) + d(F_3, F'_3)) / 3
+L = (d(F_1, F'_1) + d(F_2, F'_2)) / 2
 ```
 
-This formula averages the perceptual differences across the three sampled frames, providing a robust measure of perceptual similarity.
+This formula averages the perceptual differences across the two sampled frames, providing a robust measure of perceptual similarity.
 
 ---
 
@@ -97,7 +97,7 @@ Validators prioritize miners who can process videos quickly without compromising
    - Compares every frame of the original and processed videos.
    - Uses the harmonic mean of frame scores to penalize poor-quality frames.
 2. **LPIPS Assessment**:
-   - Randomly samples three frames from the original and processed videos.
+   - Randomly samples two frames from the original and processed videos.
    - Computes perceptual similarity using a deep learning-based model.
 3. **Quality Score Calculation**:
    - Combines VMAF and LPIPS scores to produce a single quality score.
