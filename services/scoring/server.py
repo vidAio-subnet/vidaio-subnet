@@ -180,7 +180,7 @@ async def score(request: ScoringRequest) -> ScoringResponse:
         logger.info(f"Average LPIPS: {average_lpips}")
 
         # Final score calculation
-        final_score = vmaf_score * 0.6 + (1 - average_lpips) * 100 * 0.4
+        final_score = vmaf_score * 0.6 / 100 + (1 - average_lpips) * 0.4
         scores.append(final_score)
 
         dist_cap.release()
