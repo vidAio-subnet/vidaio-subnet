@@ -3,6 +3,12 @@ from bittensor import Synapse
 from typing import Optional 
 
 
+class Version(BaseModel):
+    major: int
+    minor: int
+    patch: int
+
+
 class MinerPayload(BaseModel):
     reference_video_url: str = Field(
         description="The URL of the reference video to be optimized",

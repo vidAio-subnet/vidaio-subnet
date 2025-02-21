@@ -1,5 +1,5 @@
 __pycache__/
-*.txt
+note.txt
 *.log
 *.db
 *.mp4
