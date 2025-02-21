@@ -1,0 +1,17 @@
+fastapi
+pydantic
+numpy
+minio
+opencv-python
+loguru
+bittensor==9.0.0
+redis
+sqlalchemy
+pandas
+httpx
+pydantic-settings
+firerequests
+tqdm
+moviepy==1.0.3
+python-dotenv
+tabulate
