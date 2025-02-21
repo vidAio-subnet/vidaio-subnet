@@ -81,17 +81,15 @@ To configure environment variables, follow these steps:
 
 2. Add the required variables to the `.env` file. For example:
    ```env
-   GOOGLE_KEY_FILE_NAME="Your Google Drive Key File"
+   BUCKET_NAME="S3 buckent name"
+   S3_COMPATIBLE_ENDPOINT="S3 bucket endpoint"
+   S3_COMPATIBLE_ACCESS_KEY="S3 bucket personal access key"
+   S3_COMPATIBLE_SECRET_KEY="S3 bucket personal secret key"
    ```
 
-3. The `GOOGLE_KEY_FILE_NAME` should point to the **Google OAuth2 client secret JSON file** required for integrating Google Drive. This file is used to authenticate and upload video files to your Google Drive account.
+3. Ensure that the S3 bucket is configured with the appropriate permissions to allow file uploads and enable public access for downloads via presigned URLs.
 
-4. To generate the **Google OAuth2 Client Secret JSON file**, follow these steps:
-   - Use the Google Cloud Console UI to create the file. Refer to this [Google Support Guide](https://ragug.medium.com/how-to-upload-files-using-the-google-drive-api-in-python-ebefdfd63eab) for detailed instructions.
-   - Download the JSON file and place it in the **project root directory**.
-   - Ensure the `GOOGLE_KEY_FILE_NAME` in the `.env` file matches the name of the downloaded JSON file.
-
-5. Once the `.env` file is properly configured, the application will use the specified credentials for Google Drive integration.
+4. Once the `.env` file is properly configured, the application will use the specified credentials for S3 bucket and Pexels.
 
 
 ---
