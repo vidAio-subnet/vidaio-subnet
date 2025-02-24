@@ -219,7 +219,7 @@ ninja -vC build doc/html
 
 ## Running the Scoring endpoint
 
-You can run the video upscaling endpoint using **PM2** to manage the process:
+You can run the video upscaling validation endpoint using **PM2** to manage the process:
 
 ```bash
 pm2 start "python services/scoring/server.py" --name scoring_endpoint
@@ -234,7 +234,17 @@ pm2 start "python services/scoring/server.py" --name scoring_endpoint
 
 ---
 
+## Video Scheduler Setup
 
+### start worker:
+```bash
+pm2 start "python services/video_scheduler/worker.py" --name video_scheduler_worker
+```
+
+### start endpoint:
+```bash
+pm2 start "python services/video_scheduler/server.py" --name video_scheduler_endpoint
+```
 
 ## Running the Validator with PM2
 
