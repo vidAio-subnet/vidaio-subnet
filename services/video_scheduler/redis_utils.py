@@ -101,4 +101,14 @@ def get_synthetic_queue_size(r: redis.Redis) -> int:
     """
     return r.llen(REDIS_CONFIG.synthetic_queue_key)
 
+def push_pexels_video_ids(r: redis.Redis, id_list: List[int]) -> None:
+    """
+    Push multiple Pexels video IDs to the queue (FIFO).
 
+    Args:
+        r (redis.Redis): Redis connection instance.
+        id_list (List[int]): List of Pexels video IDs to push.
+    """
+    r.rpush(REDIS_CONFIG.synthetic_queue_key, *[json.dumps(vid) for vid in id_list])
+    print("Pushed all Pexels video IDs correctly in the Redis queue")
+    
