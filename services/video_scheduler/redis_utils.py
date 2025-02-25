@@ -76,20 +76,6 @@ def pop_synthetic_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
     # Pop the oldest item from the queue
     data = r.lpop(REDIS_CONFIG.synthetic_queue_key)
     return json.loads(data) if data else None
-    
-    # if data:
-    #     # Parse the JSON string into a dictionary
-    #     chunk = json.loads(data)
-        
-    #     # Push the chunk back to the right of the queue
-    #     r.rpush(REDIS_CONFIG.synthetic_queue_key, json.dumps(chunk))
-        
-    #     # Return the parsed chunk
-    #     return chunk
-    # else:
-    #     # If the queue is empty, return None
-    #     return None
-
 
 def get_organic_queue_size(r: redis.Redis) -> int:
     """
@@ -114,3 +100,5 @@ def get_synthetic_queue_size(r: redis.Redis) -> int:
         int: Size of the synthetic queue.
     """
     return r.llen(REDIS_CONFIG.synthetic_queue_key)
+
+
