@@ -12,6 +12,8 @@ from redis_utils import (
     get_organic_queue_size,
     get_synthetic_queue_size,
     push_synthetic_chunks,
+    push_pexels_video_ids,
+    get_pexels_queue_size,
 )
 from video_utils import download_trim_downscale_video
 from services.google_drive.google_drive_manager import GoogleDriveManager
@@ -134,14 +136,24 @@ async def main():
         logger.info(f"Organic queue size: {organic_size}")
         logger.info(f"Synthetic queue size: {synthetic_size}")
         
-        threshold = CONFIG.video_scheduler.refill_threshold
+        scheduler_threshold = CONFIG.video_scheduler.refill_threshold
         fill_target = CONFIG.video_scheduler.refill_target
 
-        if total_size < threshold:
+        if total_size < scheduler_threshold:
             needed = fill_target - total_size
             logger.info(f"Need {needed} chunks...")
             needed_urls = await get_synthetic_requests_paths(num_needed=needed)
             push_synthetic_chunks(redis_conn, needed_urls)
+        
+        pexels_queue_threshold = CONFIG.video_scheduler.pexels_threshold
+        pexels_queue_max_size = CONFIG.video_scheduler.pexels_max_size
+        pexels_queue_size = get_pexels_queue_size(redis_conn)
+        
+        if pexels_queue_size < pexels_queue_threshold:
+            needed = pexels_queue_max_size - pexels_queue_size
+            logger.info(f"Need {needed} pexels video ids")
+            needed_vids = await get_pexels_random_vids(num_needed = needed)
+            push_pexels_video_ids(needed_vids)
 
         await asyncio.sleep(20)
 
