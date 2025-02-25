@@ -6,9 +6,10 @@ from loguru import logger
 import traceback
 import pandas as pd
 from typing import List
-from vidaio_subnet_core.utilities.minio_client import minio_client
-from services.video_scheduler.video_utils import get_4k_video_path, delete_videos_with_fileid
 from concurrent.futures import ThreadPoolExecutor
+from vidaio_subnet_core.utilities.minio_client import minio_client
+from vidaio_subnet_core.utilities import WandbManager
+from services.video_scheduler.video_utils import get_4k_video_path, delete_videos_with_fileid
 
 
 class Validator(base.BaseValidator):
@@ -17,19 +18,27 @@ class Validator(base.BaseValidator):
         self.miner_manager = validating.managing.MinerManager(
             uid=self.uid, wallet=self.wallet, metagraph=self.metagraph
         )
-        logger.info("Initialized miner manager")
+        logger.info("💧 Initialized miner manager 💧")
+        
         self.challenge_synthesizer = validating.synthesizing.Synthesizer()
         logger.info("Initialized challenge synthesizer")
+        
         self.dendrite = bt.dendrite(wallet=self.wallet)
-        logger.info("Initialized dendrite")
+        logger.info("💧 Initialized dendrite 💧")
+        
         self.score_client = httpx.AsyncClient(
             base_url=f"http://{CONFIG.score.host}:{CONFIG.score.port}"
         )
         logger.info(
-            f"Initialized score client with base URL: http://{CONFIG.score.host}:{CONFIG.score.port}"
+            f"💧 Initialized score client with base URL: http://{CONFIG.score.host}:{CONFIG.score.port} 💧"
         )
+        
         self.set_weights_executor = ThreadPoolExecutor(max_workers=1)
-        logger.info("Initialized setting weights executor")
+        logger.info("💙 Initialized setting weights executor 💙")
+        
+        self.wandb_manager = WandbManager(validator=self)
+        logger.info("🔑 Initialized Wandb Manager 🔑")
+        
 
     async def start_epoch(self):
         logger.info("✅ Starting forward ✅")
