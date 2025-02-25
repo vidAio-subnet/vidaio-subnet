@@ -10,3 +10,5 @@ class VideoSchedulerConfig(BaseModel):
     clip_duration: int = Field(default=1)
     min_video_len: int = Field(default=1)
     max_video_len: int = Field(default=5)
+    pexels_max_size: int = Field(default = 500)
+    pexels_threshold: int = Field(default = 498)
