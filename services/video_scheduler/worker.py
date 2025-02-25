@@ -1,11 +1,14 @@
 import asyncio
 import os
-import uuid
 import yaml
 from typing import List, Dict, Optional
 import httpx
 from dotenv import load_dotenv
 from loguru import logger
+import random
+import requests
+import time
+import yaml
 
 from redis_utils import (
     get_redis_connection,
@@ -20,8 +23,10 @@ from services.google_drive.google_drive_manager import GoogleDriveManager
 from vidaio_subnet_core import CONFIG
 from vidaio_subnet_core.utilities.minio_client import minio_client
 
-# Load environment variables
 load_dotenv()
+
+script_dir = os.path.dirname(os.path.abspath(__file__))
+yaml_file_path = os.path.join(script_dir, "pexels_categories.yaml")
 
 def clear_queues(redis_conn) -> None:
     """Clear both organic and synthetic queues before starting."""
@@ -87,6 +92,99 @@ async def get_synthetic_urls(hotkey: str, num_needed: int) -> Optional[List[str]
         logger.error(f"Unexpected error fetching synthetic URLs: {str(e)}", exc_info=True)
     return None
 
+def get_pexels_random_vids(
+    num_needed: int, 
+    min_len: int, 
+    max_len: int, 
+    width: int = 4096, 
+    height: int = 2160, 
+    max_results: int = None
+):
+    """
+    Fetch video IDs of a specific resolution from Pexels API with randomized selection.
+
+    Args:
+        num_needed (int): Number of video IDs required.
+        min_len (int): Minimum video length in seconds.
+        max_len (int): Maximum video length in seconds.
+        width (int): Required video width (default: 4096).
+        height (int): Required video height (default: 2160).
+        max_results (int, optional): Max videos to fetch before selecting randomly (default: num_needed * 10).
+
+    Returns:
+        list: A shuffled list of `num_needed` video IDs.
+    """
+    api_key = os.getenv("PEXELS_API_KEY")
+    if not api_key:
+        logger.error("[ERROR] Missing Pexels API Key")
+        return []
+    
+    start_time = time.time()
+    headers = {"Authorization": api_key}
+
+    with open(yaml_file_path, "r") as file:
+        yaml_data = yaml.safe_load(file)
+        query_list = yaml_data.get("pexels_categories", [])
+
+    random.shuffle(query_list) 
+    
+    max_results = max_results or num_needed * 7
+    valid_video_ids = []
+    
+    per_page = 80
+    
+    logger.info(f"[INFO] Fetching {num_needed} video IDs with resolution {width}x{height}")
+    logger.info(f"[INFO] Searching through a maximum of {max_results} potential videos")
+    
+    for query in query_list:
+        page = random.randint(1, 10)  
+        logger.info(f"[INFO] Searching for query: '{query}', starting from page {page}")
+        while len(valid_video_ids) < max_results:
+            params = {
+                "query": query,
+                "per_page": per_page,
+                "page": page,
+                "size": "large",
+            }
+            
+            try:
+                response = requests.get("https://api.pexels.com/videos/search", headers=headers, params=params)
+                response.raise_for_status()
+                data = response.json()
+                
+                if "videos" not in data or not data["videos"]:
+                    logger.info(f"[WARNING] No videos found for query '{query}' on page {page}")
+                    break  
+                
+                logger.info(f"[INFO] Found {len(data['videos'])} videos for query '{query}' on page {page}")
+                
+                for video in data["videos"]:
+                    if min_len <= video["duration"] <= max_len:
+                        matching_files = [
+                            f for f in video["video_files"] if f["width"] == width and f["height"] == height
+                        ]
+                        if matching_files:
+                            valid_video_ids.append(video["id"])
+                            logger.info(f"[INFO] Video ID {video['id']} matches criteria")
+                
+                if len(data["videos"]) < per_page:
+                    logger.info(f"[INFO] No more pages available for query '{query}'")
+                    break 
+                
+                page += random.randint(1, 3)  
+            
+            except requests.exceptions.RequestException as e:
+                logger.info(f"[ERROR] Error fetching videos for '{query}': {e}")
+                break  
+    
+    logger.info(f"[INFO] Total matching videos found: {len(valid_video_ids)}")
+    elapsed_time = time.time() - start_time
+    logger.info(f"Time taken to get {num_needed} vids: {elapsed_time:.2f} seconds")
+    
+    random.shuffle(valid_video_ids)
+    return valid_video_ids[:num_needed]
+    
+
 async def get_synthetic_requests_paths(num_needed: int) -> List[Dict[str, str]]:
     """Generate synthetic Google Drive URLs by uploading trimmed videos."""
     uploaded_video_chunks = []
@@ -124,10 +222,20 @@ async def get_synthetic_requests_paths(num_needed: int) -> List[Dict[str, str]]:
 
 async def main():
     """Main function to manage video processing and synthetic queue handling."""
+    
     logger.info("Starting worker...")
     redis_conn = get_redis_connection()
+    
     clear_queues(redis_conn)
+    
+    scheduler_threshold = CONFIG.video_scheduler.refill_threshold
+    fill_target = CONFIG.video_scheduler.refill_target
 
+    pexels_queue_threshold = CONFIG.video_scheduler.pexels_threshold
+    pexels_queue_max_size = CONFIG.video_scheduler.pexels_max_size
+    video_min_len = CONFIG.video_scheduler.min_video_len
+    video_max_len = CONFIG.video_scheduler.max_video_len
+    
     while True:
         organic_size = get_organic_queue_size(redis_conn)
         synthetic_size = get_synthetic_queue_size(redis_conn)
@@ -136,23 +244,18 @@ async def main():
         logger.info(f"Organic queue size: {organic_size}")
         logger.info(f"Synthetic queue size: {synthetic_size}")
         
-        scheduler_threshold = CONFIG.video_scheduler.refill_threshold
-        fill_target = CONFIG.video_scheduler.refill_target
-
         if total_size < scheduler_threshold:
             needed = fill_target - total_size
             logger.info(f"Need {needed} chunks...")
             needed_urls = await get_synthetic_requests_paths(num_needed=needed)
             push_synthetic_chunks(redis_conn, needed_urls)
         
-        pexels_queue_threshold = CONFIG.video_scheduler.pexels_threshold
-        pexels_queue_max_size = CONFIG.video_scheduler.pexels_max_size
         pexels_queue_size = get_pexels_queue_size(redis_conn)
         
         if pexels_queue_size < pexels_queue_threshold:
             needed = pexels_queue_max_size - pexels_queue_size
             logger.info(f"Need {needed} pexels video ids")
-            needed_vids = await get_pexels_random_vids(num_needed = needed)
+            needed_vids = await get_pexels_random_vids(num_needed = needed, min_len = video_min_len, max_len = video_max_len)
             push_pexels_video_ids(needed_vids)
 
         await asyncio.sleep(20)
