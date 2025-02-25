@@ -153,7 +153,8 @@ def delete_videos_with_fileid(file_id: int, dir_path: str = "videos") -> None:
 
 
 if __name__ == "__main__":
-    print(f"PEXELS_API_KEY: {os.getenv('PEXELS_API_KEY')}")
+    
     CLIP_DURATION = 2
-
-    download_trim_downscale_video(CLIP_DURATION, 2257054)
+    vid = 2257054
+    
+    download_trim_downscale_video(CLIP_DURATION, vid)
