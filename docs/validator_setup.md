@@ -96,12 +96,13 @@ To configure environment variables, follow these steps:
    S3_COMPATIBLE_ACCESS_KEY="S3 bucket personal access key"
    S3_COMPATIBLE_SECRET_KEY="S3 bucket personal secret key"
    PEXELS_API_KEY="Your Pexels account api key"
+   WANDB_API_KEY="Your WANDB account api key"
    ```
 
 3. Ensure that the S3 bucket is configured with the appropriate permissions to allow file uploads and enable public access for downloads via presigned URLs.
 
 4. Create your Pexels API key and replace it
-5. Once the `.env` file is properly configured, the application will use the specified credentials for S3 bucket and Pexels.
+5. Once the `.env` file is properly configured, the application will use the specified credentials for S3 bucket, Pexels and Wandb.
 
 
 ---
@@ -219,7 +220,7 @@ ninja -vC build doc/html
 
 ## Running the Scoring endpoint
 
-You can run the video upscaling endpoint using **PM2** to manage the process:
+You can run the video upscaling validation endpoint using **PM2** to manage the process:
 
 ```bash
 pm2 start "python services/scoring/server.py" --name scoring_endpoint
@@ -234,7 +235,17 @@ pm2 start "python services/scoring/server.py" --name scoring_endpoint
 
 ---
 
+## Video Scheduler Setup
 
+### start worker:
+```bash
+pm2 start "python services/video_scheduler/worker.py" --name video_scheduler_worker
+```
+
+### start endpoint:
+```bash
+pm2 start "python services/video_scheduler/server.py" --name video_scheduler_endpoint
+```
 
 ## Running the Validator with PM2
 

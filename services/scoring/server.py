@@ -200,7 +200,7 @@ if __name__ == "__main__":
     
     uvicorn.run(app, host=host, port=port)
     
-    # Testing (Uncomment and adjust if necessary)
+    # Testing
     # urls = ScoringRequest(
     #     distorted_urls=[...],
     #     reference_path="..."

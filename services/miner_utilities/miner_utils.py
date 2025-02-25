@@ -82,7 +82,3 @@ async def video_upscaler(input_file_path: Path) -> str | None:
             
             logger.error(f"Upscaling service error: {response.status}")
             return None, None
-
-if __name__ == "__main__":
-    video_url = "/root/workspace/vidaio-subnet/services/upscaling/videos/7a4297c6-970b-4f62-8aef-f4fb4f40156f.mp4"
-    asyncio.run(video_upscaler(video_url))

@@ -11,24 +11,23 @@ import uuid
 
 load_dotenv()
 
+
 def download_trim_downscale_video(
-    clip_duration: int = 1,
-    min_video_len: int = 10,
-    max_video_len: int = 20,
+    clip_duration: int,
+    vid: int,
     output_dir: str = "videos"
 ) -> Optional[Tuple[str, int]]:
     """
-    Downloads a DCI 4K video from Pexels, trims it to the specified duration, 
+    Downloads a specified DCI 4K video from Pexels, trims it to the specified duration,
     and downscales it to HD resolution.
 
     Args:
         clip_duration (int): Desired clip duration in seconds.
-        min_video_len (int): Minimum video length in seconds.
-        max_video_len (int): Maximum video length in seconds.
+        vid (int): Pexels video ID to download.
         output_dir (str): Directory to save the processed videos.
 
     Returns:
-        Optional[Tuple[str, int]]: Path to the HD video and the video ID, or None on failure.
+        Optional[Tuple[str, int]]: Path to the HD video and the generated video ID, or None on failure.
     """
 
     api_key = os.getenv("PEXELS_API_KEY")
@@ -39,41 +38,31 @@ def download_trim_downscale_video(
     os.makedirs(output_dir, exist_ok=True)
 
     headers = {"Authorization": api_key}
-    url = "https://api.pexels.com/videos/search"
-    params = {
-        "query": "nature",
-        "per_page": 80,
-        "size": "large"
-    }
+    url = f"https://api.pexels.com/videos/videos/{vid}"
 
     try:
-        # Fetch video list
+        # Fetch video details
         start_time = time.time()
-        response = requests.get(url, headers=headers, params=params)
+        response = requests.get(url, headers=headers)
         elapsed_time = time.time() - start_time
-        print(f"Time taken to fetch videos: {elapsed_time:.2f} seconds")
+        print(f"Time taken to fetch video details: {elapsed_time:.2f} seconds")
 
         data = response.json()
-        if "videos" not in data:
-            print("No videos found or API error")
+        if "video_files" not in data:
+            print("No video found or API error")
             return None
 
-        # Filter DCI 4K videos based on length
-        dci4k_videos = [
-            (video, video_file)
-            for video in data["videos"]
-            for video_file in video["video_files"]
-            if video_file["width"] == 4096 and video_file["height"] == 2160 and min_video_len <= video["duration"] <= max_video_len
-        ]
+        # Find DCI 4K version of the video
+        video_file = next(
+            (vf for vf in data["video_files"] if vf["width"] == 4096 and vf["height"] == 2160),
+            None
+        )
 
-        if not dci4k_videos:
-            print("No suitable DCI 4K videos found")
+        if not video_file:
+            print("No DCI 4K version available for this video.")
             return None
 
-        # Select a random video
-        video, video_file = random.choice(dci4k_videos)
         video_url = video_file["link"]
-        original_video_id = video['id']
         video_id = uuid.uuid4()
 
         temp_path = Path(output_dir) / f"{video_id}_4k_original.mp4"
@@ -81,7 +70,7 @@ def download_trim_downscale_video(
         hd_path = Path(output_dir) / f"{video_id}_hd.mp4"
 
         # Download video
-        print(f"\nDownloading DCI 4K video (Resolution: {video_file['width']}x{video_file['height']}, Duration: {video['duration']}s)")
+        print(f"\nDownloading DCI 4K video (Resolution: {video_file['width']}x{video_file['height']})")
         
         start_time = time.time()
         response = requests.get(video_url, stream=True)
@@ -164,9 +153,8 @@ def delete_videos_with_fileid(file_id: int, dir_path: str = "videos") -> None:
 
 
 if __name__ == "__main__":
-    print(f"PEXELS_API_KEY: {os.getenv('PEXELS_API_KEY')}")
+    
     CLIP_DURATION = 2
-    MIN_VIDEO_LEN = 10
-    MAX_VIDEO_LEN = 20
-
-    download_trim_downscale_video(CLIP_DURATION, MIN_VIDEO_LEN, MAX_VIDEO_LEN)
+    vid = 2257054
+    
+    download_trim_downscale_video(CLIP_DURATION, vid)

@@ -8,6 +8,7 @@ from vidaio_subnet_core.base.miner import BaseMiner
 from vidaio_subnet_core.protocol import VideoUpscalingProtocol
 from services.miner_utilities.miner_utils import video_upscaler
 from vidaio_subnet_core.utilities import minio_client, download_video
+from vidaio_subnet_core.utilities.version import check_version
 
 class Miner(BaseMiner):
     def __init__(self, config: dict | None = None) -> None:
@@ -22,6 +23,8 @@ class Miner(BaseMiner):
         uploading, and returning a sharing link.
         """
         logger.info(f"Receiving Request from validator: {synapse.dendrite.hotkey}")
+        
+        check_version(synapse.version)
         
         try:
             payload_url: str = synapse.miner_payload.reference_video_url

@@ -142,11 +142,3 @@ if __name__ == "__main__":
     port = CONFIG.video_upscaler.port
     
     uvicorn.run(app, host=host, port=port)
-
-    # class TestRequest:
-    #     task_file_path = "/root/workspace/vidaio-subnet/videos/4887282_hd.mp4"
-
-    # # Simulate a request
-    # video = TestRequest()
-    # asyncio.run(video_upscaler(UpscaleRequest(task_file_path=video.task_file_path)))
-
