@@ -109,14 +109,14 @@ def push_pexels_video_ids(r: redis.Redis, id_list: List[int]) -> None:
         r (redis.Redis): Redis connection instance.
         id_list (List[int]): List of Pexels video IDs to push.
     """
-    r.rpush(REDIS_CONFIG.synthetic_queue_key, *[json.dumps(vid) for vid in id_list])
+    r.rpush(REDIS_CONFIG.pexels_video_ids_key, *[json.dumps(vid) for vid in id_list])
     print("Pushed all Pexels video IDs correctly in the Redis queue")
 
 def pop_pexels_video_id(r: redis.Redis) -> int:
     """
     Pop pexels video id from queue
     """
-    data = r.lpop(REDIS_CONFIG.synthetic_queue_key)
+    data = r.lpop(REDIS_CONFIG.pexels_video_ids_key)
     return json.loads(data) if data else None
 
 def get_pexels_queue_size(r: redis.Redis) -> int:
@@ -129,4 +129,4 @@ def get_pexels_queue_size(r: redis.Redis) -> int:
     Returns:
         int: Size of the pexels video ids queue.
     """
-    return r.llen(REDIS_CONFIG.synthetic_queue_key)
+    return r.llen(REDIS_CONFIG.pexels_video_ids_key)
