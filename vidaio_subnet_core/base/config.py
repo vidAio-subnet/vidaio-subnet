@@ -49,13 +49,6 @@ def add_args(parser):
         default=False,
     )
 
-    parser.add_argument(
-        "--wandb.notes",
-        type=str,
-        help="Notes to add to the wandb run.",
-        default="",
-    )
-
 
 def add_miner_args(parser):
     """Add miner specific arguments to the parser."""
@@ -82,18 +75,10 @@ def add_validator_args(parser):
         "--neuron.axon_off",
         "--axon_off",
         action="store_true",
-        # Note: the validator needs to serve an Axon with their IP or they may
-        #   be blacklisted by the firewall of serving peers on the network.
         help="Set this flag to not attempt to serve an Axon.",
         default=False,
     )
 
-    parser.add_argument(
-        "--neuron.vpermit_tao_limit",
-        type=int,
-        help="The maximum number of TAO allowed to query a validator with a vpermit.",
-        default=4096,
-    )
 
     parser.add_argument(
         "--wandb.project_name",
@@ -119,5 +104,5 @@ def add_common_config(parser: argparse.ArgumentParser):
     bt.subtensor.add_args(parser)
     bt.logging.add_args(parser)
     bt.axon.add_args(parser)
-    add_args(parser)  # Call the add_args function defined earlier
-    return parser  # Return the updated parser
+    add_args(parser) 
+    return parser  
