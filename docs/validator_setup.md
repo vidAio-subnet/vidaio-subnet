@@ -96,12 +96,13 @@ To configure environment variables, follow these steps:
    S3_COMPATIBLE_ACCESS_KEY="S3 bucket personal access key"
    S3_COMPATIBLE_SECRET_KEY="S3 bucket personal secret key"
    PEXELS_API_KEY="Your Pexels account api key"
+   WANDB_API_KEY="Your WANDB account api key"
    ```
 
 3. Ensure that the S3 bucket is configured with the appropriate permissions to allow file uploads and enable public access for downloads via presigned URLs.
 
 4. Create your Pexels API key and replace it
-5. Once the `.env` file is properly configured, the application will use the specified credentials for S3 bucket and Pexels.
+5. Once the `.env` file is properly configured, the application will use the specified credentials for S3 bucket, Pexels and Wandb.
 
 
 ---

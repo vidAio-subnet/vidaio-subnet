@@ -16,3 +16,4 @@ moviepy==1.0.3
 python-dotenv
 tabulate
 pyiqa
+wandb

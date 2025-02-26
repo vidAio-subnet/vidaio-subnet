@@ -76,6 +76,8 @@ class VideoCompressionProtocol(Synapse):
 class VideoUpscalingProtocol(Synapse):
     """Protocol for video upscaling operations."""
     
+    version: Optional[Version] = None
+    
     miner_payload: MinerPayload = Field(
         description="The payload for the miner. Cannot be modified after initialization.",
         default_factory=MinerPayload,
