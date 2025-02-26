@@ -1,11 +1,11 @@
 <div align="center">
 
-# **VIDAIo Subnet**: Revolutionizing Video Upscaling with AI-Driven Decentralization <!-- omit in toc -->
+# **vidAio Subnet**: Revolutionizing Video Upscaling with AI-Driven Decentralization <!-- omit in toc -->
 
 
 Please check our [Tweet](https://x.com/vidaio_τ) to follow us.
 
-[![VIDAIo](./docs/images/vidaio.png)](https://)
+[![vidAio](./docs/images/vidaio.png)](https://)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) 
 
 ---
