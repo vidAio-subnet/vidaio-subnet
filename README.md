@@ -1,8 +1,14 @@
-<div style="text-align: center;">
+<div align="center">
 
-# **VIDAIo Subnet**
+# **VIDAIo Subnet**: Revolutionizing Video Upscaling with AI-Driven Decentralization <!-- omit in toc -->
 
-**Revolutionizing Video Upscaling with AI-Driven Decentralization on the Bittensor Ecosystem**
+
+Please check our [Tweet](https://x.com/vidaio_τ) to follow us.
+
+[![VIDAIo](./docs/images/vidaio.png)](https://)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) 
+
+---
 
 </div>
 
