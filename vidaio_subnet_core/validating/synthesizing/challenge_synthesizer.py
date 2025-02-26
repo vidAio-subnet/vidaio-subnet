@@ -2,6 +2,7 @@ from ...protocol import VideoUpscalingProtocol, MinerPayload
 from ...global_config import CONFIG
 import httpx
 from typing import Dict, Tuple
+from vidaio_subnet_core.utilities.version import get_version
 
 class Synthesizer:
     def __init__(self):
@@ -30,8 +31,11 @@ class Synthesizer:
             uploaded_object_name = chunk["uploaded_object_name"]
             sharing_link = chunk["sharing_link"]
 
+            version = get_version()
+            
             return video_id, uploaded_object_name, VideoUpscalingProtocol(
-                miner_payload=MinerPayload(reference_video_url=sharing_link)
+                miner_payload=MinerPayload(reference_video_url=sharing_link),
+                version = version,
             )
         except httpx.HTTPStatusError as e:
             print(f"Error fetching prioritized chunk: {e}")
