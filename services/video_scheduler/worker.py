@@ -9,6 +9,7 @@ import random
 import requests
 import time
 import yaml
+import redis
 
 from redis_utils import (
     get_redis_connection,
@@ -17,6 +18,7 @@ from redis_utils import (
     push_synthetic_chunks,
     push_pexels_video_ids,
     get_pexels_queue_size,
+    pop_pexels_video_id,
 )
 from video_utils import download_trim_downscale_video
 from services.google_drive.google_drive_manager import GoogleDriveManager
@@ -185,16 +187,18 @@ def get_pexels_random_vids(
     return valid_video_ids[:num_needed]
     
 
-async def get_synthetic_requests_paths(num_needed: int) -> List[Dict[str, str]]:
+async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis) -> List[Dict[str, str]]:
     """Generate synthetic Google Drive URLs by uploading trimmed videos."""
     uploaded_video_chunks = []
     remaining_count = num_needed
 
     while remaining_count > 0:
+        
+        video_id = pop_pexels_video_id(redis_conn)
+        
         challenge_local_path, video_id = download_trim_downscale_video(
             clip_duration=CONFIG.video_scheduler.clip_duration,
-            min_video_len=CONFIG.video_scheduler.min_video_len,
-            max_video_len=CONFIG.video_scheduler.max_video_len
+            vid = video_id,
         )
 
         if not challenge_local_path:
@@ -247,7 +251,7 @@ async def main():
         if total_size < scheduler_threshold:
             needed = fill_target - total_size
             logger.info(f"Need {needed} chunks...")
-            needed_urls = await get_synthetic_requests_paths(num_needed=needed)
+            needed_urls = await get_synthetic_requests_paths(num_needed=needed, redis_conn = redis_conn)
             push_synthetic_chunks(redis_conn, needed_urls)
         
         pexels_queue_size = get_pexels_queue_size(redis_conn)
