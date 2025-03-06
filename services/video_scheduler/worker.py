@@ -10,6 +10,7 @@ import requests
 import time
 import yaml
 import redis
+import shutil
 
 from redis_utils import (
     get_redis_connection,
@@ -41,6 +42,23 @@ def read_synthetic_urls(config_path: str) -> List[str]:
     with open(config_path, "r") as file:
         config = yaml.safe_load(file)
     return config.get("synthetic_urls", [])
+
+def purge_cached_videos():
+    
+    videos_dir = os.path.join(os.getcwd(), "videos")
+
+    try:
+        if os.path.exists(videos_dir):
+            shutil.rmtree(videos_dir)
+            os.makedirs(videos_dir)
+            print(f"Successfully purged all files from {videos_dir}")
+        else:
+            print(f"Directory not found: {videos_dir}")
+            os.makedirs(videos_dir)
+            print(f"Created new videos directory at {videos_dir}")
+            
+    except Exception as e:
+        print(f"Error while purging videos: {str(e)}")
 
 async def get_synthetic_urls_with_retry(hotkey: str, max_retries: int = 2, initial_delay: float = 5.0, num_needed: int = 2) -> Optional[List[str]]:
     """Attempt to fetch synthetic request URLs with exponential backoff retry."""
@@ -251,6 +269,7 @@ async def main():
     redis_conn = get_redis_connection()
     
     clear_queues(redis_conn)
+    purge_cached_videos()
     
     scheduler_threshold = CONFIG.video_scheduler.refill_threshold
     fill_target = CONFIG.video_scheduler.refill_target
