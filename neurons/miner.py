@@ -28,8 +28,9 @@ class Miner(BaseMiner):
         
         try:
             payload_url: str = synapse.miner_payload.reference_video_url
+            task_type: str = synapse.miner_payload.task_type            
             payload_video_path: str = await download_video(payload_url)
-            processed_video_name, processed_video_path = await video_upscaler(payload_video_path)
+            processed_video_name, processed_video_path = await video_upscaler(payload_video_path, task_type)
             logger.info(f"Processed video path: {processed_video_path}")
             if processed_video_path is not None:
                 object_name: str = processed_video_name
