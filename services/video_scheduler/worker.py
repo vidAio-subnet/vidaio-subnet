@@ -36,6 +36,7 @@ def clear_queues(redis_conn) -> None:
     logger.info("Clearing queues")
     redis_conn.delete(CONFIG.redis.organic_queue_key)
     redis_conn.delete(CONFIG.redis.synthetic_queue_key)
+    redis_conn.delete(CONFIG.redis.pexels_video_ids_key)
 
 def read_synthetic_urls(config_path: str) -> List[str]:
     """Read synthetic URLs from a YAML configuration file."""
