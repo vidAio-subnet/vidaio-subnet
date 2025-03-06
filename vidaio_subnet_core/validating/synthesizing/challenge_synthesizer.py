@@ -30,11 +30,12 @@ class Synthesizer:
             video_id = chunk["video_id"]
             uploaded_object_name = chunk["uploaded_object_name"]
             sharing_link = chunk["sharing_link"]
+            task_type = chunk["task_type"]
 
             version = get_version()
             
             return video_id, uploaded_object_name, VideoUpscalingProtocol(
-                miner_payload=MinerPayload(reference_video_url=sharing_link),
+                miner_payload=MinerPayload(reference_video_url=sharing_link, task_type = task_type),
                 version = version,
             )
         except httpx.HTTPStatusError as e:
