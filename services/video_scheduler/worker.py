@@ -98,9 +98,10 @@ def get_pexels_random_vids(
     num_needed: int, 
     min_len: int, 
     max_len: int, 
-    width: int = 4096, 
-    height: int = 2160, 
-    max_results: int = None
+    width: int = None, 
+    height: int = None, 
+    max_results: int = None,
+    task_type: str = None
 ):
     """
     Fetch video IDs of a specific resolution from Pexels API with randomized selection.
@@ -112,10 +113,24 @@ def get_pexels_random_vids(
         width (int): Required video width (default: 4096).
         height (int): Required video height (default: 2160).
         max_results (int, optional): Max videos to fetch before selecting randomly (default: num_needed * 10).
-
+        task_type: The type of task
     Returns:
         list: A shuffled list of `num_needed` video IDs.
     """
+
+    DCI_4K_WIDTH = 4096
+    DCI_4K_HEIGHT = 2160
+    HD_WIDTH = 1920
+    HD_HEIGHT = 1080
+
+    if not width or not height:  
+        if task_type == "SD2HD":
+            width = HD_WIDTH
+            height = HD_HEIGHT
+        else:  
+            width = DCI_4K_WIDTH
+            height = DCI_4K_HEIGHT
+
     api_key = os.getenv("PEXELS_API_KEY")
     if not api_key:
         logger.error("[ERROR] Missing Pexels API Key")
@@ -240,6 +255,9 @@ async def main():
     video_min_len = CONFIG.video_scheduler.min_video_len
     video_max_len = CONFIG.video_scheduler.max_video_len
     
+    threshold_hd_to_4k = CONFIG.video_scheduler.weight_hd_to_4k
+    threshold_sd_to_hd = CONFIG.video_scheduler.weight_sd_to_hd + threshold_hd_to_4k
+
     while True:
         organic_size = get_organic_queue_size(redis_conn)
         synthetic_size = get_synthetic_queue_size(redis_conn)
@@ -258,9 +276,28 @@ async def main():
         
         if pexels_queue_size < pexels_queue_threshold:
             needed = pexels_queue_max_size - pexels_queue_size
-            logger.info(f"Need {needed} pexels video ids")
-            needed_vids = await get_pexels_random_vids(num_needed = needed, min_len = video_min_len, max_len = video_max_len)
-            push_pexels_video_ids(needed_vids)
+            
+            ran_num = random.random()
+
+            if ran_num < threshold_hd_to_4k:
+                task_type = "HD24K"
+            elif ran_num < threshold_sd_to_hd:
+                task_type = "SD2HD"
+            else:
+                task_type = "SD24K"
+            
+            logger.info(f"Need {needed} pexels video ids with task type: {task_type}")
+
+            needed_vids = await get_pexels_random_vids(num_needed = needed, min_len = video_min_len, max_len = video_max_len, task_type = task_type)
+
+            needed_vids_dict = []
+            for vid in needed_vids:
+                needed_vids_dict.append({
+                    "vid": vid,
+                    "task_type": task_type
+                })
+
+            push_pexels_video_ids(needed_vids_dict)
 
         await asyncio.sleep(20)
 
