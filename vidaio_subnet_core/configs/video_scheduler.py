@@ -12,7 +12,7 @@ class VideoSchedulerConfig(BaseModel):
     max_video_len: int = Field(default=30)
     pexels_max_size: int = Field(default = 100)
     pexels_threshold: int = Field(default = 85)
-    weight_hd_to_4k: int = Field(default = 3)
-    weight_sd_to_hd: int = Field(default = 2)
-    weight_sd_to_4k: int = Field(default = 1)
+    weight_hd_to_4k: int = Field(default = 0.5)
+    weight_sd_to_hd: int = Field(default = 0.3)
+    weight_sd_to_4k: int = Field(default = 0.2)
 
