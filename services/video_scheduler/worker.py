@@ -209,11 +209,15 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis)
 
     while remaining_count > 0:
         
-        video_id = pop_pexels_video_id(redis_conn)
+        video_id_data = pop_pexels_video_id(redis_conn)
         
+        video_id = video_id_data["vid"]
+        task_type = video_id_data["task_type"]
+
         challenge_local_path, video_id = download_trim_downscale_video(
             clip_duration=CONFIG.video_scheduler.clip_duration,
             vid = video_id,
+            task_type = task_type,
         )
 
         if not challenge_local_path:
@@ -233,7 +237,8 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis)
         uploaded_video_chunks.append({
             "video_id": video_id,
             "uploaded_object_name": object_name,
-            "sharing_link": sharing_link
+            "sharing_link": sharing_link,
+            "task_type": task_type,
         })
         remaining_count -= 1
 
@@ -259,21 +264,10 @@ async def main():
     threshold_sd_to_hd = CONFIG.video_scheduler.weight_sd_to_hd + threshold_hd_to_4k
 
     while True:
-        organic_size = get_organic_queue_size(redis_conn)
-        synthetic_size = get_synthetic_queue_size(redis_conn)
-        total_size = organic_size + synthetic_size
-
-        logger.info(f"Organic queue size: {organic_size}")
-        logger.info(f"Synthetic queue size: {synthetic_size}")
-        
-        if total_size < scheduler_threshold:
-            needed = fill_target - total_size
-            logger.info(f"Need {needed} chunks...")
-            needed_urls = await get_synthetic_requests_paths(num_needed=needed, redis_conn = redis_conn)
-            push_synthetic_chunks(redis_conn, needed_urls)
         
         pexels_queue_size = get_pexels_queue_size(redis_conn)
-        
+        logger.info(f"Pexels video id queue size: {pexels_queue_size}")
+
         if pexels_queue_size < pexels_queue_threshold:
             needed = pexels_queue_max_size - pexels_queue_size
             
@@ -297,9 +291,22 @@ async def main():
                     "task_type": task_type
                 })
 
-            push_pexels_video_ids(needed_vids_dict)
+            push_pexels_video_ids(redis_conn, needed_vids_dict)
+        
+        organic_size = get_organic_queue_size(redis_conn)
+        synthetic_size = get_synthetic_queue_size(redis_conn)
+        total_size = organic_size + synthetic_size
+       
+        logger.info(f"Organic queue size: {organic_size}")
+        logger.info(f"Synthetic queue size: {synthetic_size}")
 
-        await asyncio.sleep(20)
+        if total_size < scheduler_threshold:
+            needed = fill_target - total_size
+            logger.info(f"Need {needed} chunks...")
+            needed_urls = await get_synthetic_requests_paths(num_needed=needed, redis_conn = redis_conn)
+            push_synthetic_chunks(redis_conn, needed_urls)
+        
+        await asyncio.sleep(5)
 
 if __name__ == "__main__":
     asyncio.run(main())

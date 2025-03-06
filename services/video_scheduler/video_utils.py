@@ -15,6 +15,7 @@ load_dotenv()
 def download_trim_downscale_video(
     clip_duration: int,
     vid: int,
+    task_type : str,
     output_dir: str = "videos"
 ) -> Optional[Tuple[str, int]]:
     """
@@ -30,52 +31,49 @@ def download_trim_downscale_video(
         Optional[Tuple[str, int]]: Path to the HD video and the generated video ID, or None on failure.
     """
 
+    if task_type == "HD24K":
+        downscale_height = 1080
+    elif task_type == "SD2HD":
+        downscale_height = 540
+    elif task_type == "SD24k":
+        downscale_height = 540
+
     api_key = os.getenv("PEXELS_API_KEY")
+    
     if not api_key:
-        print("PEXELS_API_KEY is missing in the environment variables.")
-        return None
+        raise ValueError("PEXELS_API_KEY not found in environment variables")
 
+    # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
-
-    headers = {"Authorization": api_key}
+    
+    # API endpoint
     url = f"https://api.pexels.com/videos/videos/{vid}"
-
+    headers = {"Authorization": api_key}
+    
     try:
-        # Fetch video details
-        start_time = time.time()
+        # Get video details
         response = requests.get(url, headers=headers)
-        elapsed_time = time.time() - start_time
-        print(f"Time taken to fetch video details: {elapsed_time:.2f} seconds")
-
+        response.raise_for_status()  # Raise exception for bad status codes
+        
         data = response.json()
         if "video_files" not in data:
-            print("No video found or API error")
-            return None
-
-        # Find DCI 4K version of the video
-        video_file = next(
-            (vf for vf in data["video_files"] if vf["width"] == 4096 and vf["height"] == 2160),
-            None
-        )
-
-        if not video_file:
-            print("No DCI 4K version available for this video.")
-            return None
-
-        video_url = video_file["link"]
+            raise ValueError("No video found or API error")
+            
+        # Get video download URL (first video file)
+        video_url = data["video_files"][0]["link"]
+        
+        # Prepare output path
         video_id = uuid.uuid4()
 
-        temp_path = Path(output_dir) / f"{video_id}_4k_original.mp4"
-        clipped_path = Path(output_dir) / f"{video_id}_4k.mp4"
-        hd_path = Path(output_dir) / f"{video_id}_hd.mp4"
-
-        # Download video
-        print(f"\nDownloading DCI 4K video (Resolution: {video_file['width']}x{video_file['height']})")
+        temp_path = Path(output_dir) / f"{video_id}_original.mp4"
+        clipped_path = Path(output_dir) / f"{video_id}_trim.mp4"
+        hd_path = Path(output_dir) / f"{video_id}_downscale.mp4"
         
-        start_time = time.time()
+        # Download video with progress bar
+        print(f"\nDownloading video ID: {vid}")
         response = requests.get(video_url, stream=True)
         total_size = int(response.headers.get('content-length', 0))
-
+        
         with open(temp_path, 'wb') as f, tqdm(
             desc="Downloading",
             total=total_size,
@@ -86,9 +84,11 @@ def download_trim_downscale_video(
             for chunk in response.iter_content(chunk_size=1024):
                 size = f.write(chunk)
                 pbar.update(size)
-
+                
+        print(f"\nVideo downloaded successfully to: {temp_path}")
         elapsed_time = time.time() - start_time
         print(f"Time taken to download video: {elapsed_time:.2f} seconds")
+    
 
         # Trim video
         print("\nTrimming video...")
@@ -107,7 +107,7 @@ def download_trim_downscale_video(
         # Downscale to HD
         print("\nSaving HD version...")
         start_time = time.time()
-        hd_clip = clipped_clip.resize(height=1080)
+        hd_clip = clipped_clip.resize(height=downscale_height)
         hd_clip.write_videofile(str(hd_path), codec='libx264', verbose=False, logger=None)
 
         elapsed_time = time.time() - start_time
@@ -121,7 +121,9 @@ def download_trim_downscale_video(
         print(f"\nDone! Saved files:\n- {clipped_path}\n- {hd_path}")
 
         return str(hd_path), video_id
-
+    except requests.exceptions.RequestException as e:
+        print(f"Error downloading video: {e}")
+        return None
     except Exception as e:
         print(f"Error: {str(e)}")
         return None
