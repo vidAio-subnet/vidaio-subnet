@@ -77,7 +77,7 @@ def video_upscaler(request: UpscaleRequest):
 
         # Generate output file paths
         output_file_with_extra_frames = input_file.with_name(f"{input_file.stem}_extra_frames.mp4")
-        output_file_upscaled = input_file.with_name(f"4k_{input_file.stem}.mp4")
+        output_file_upscaled = input_file.with_name(f"{input_file.stem}_upscaled.mp4")
 
         # Step 1: Duplicate the last frame two times
         print("Step 1: Duplicating the last frame two times...")

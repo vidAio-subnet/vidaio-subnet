@@ -9,7 +9,7 @@ from typing import List
 from concurrent.futures import ThreadPoolExecutor
 from vidaio_subnet_core.utilities.minio_client import minio_client
 from vidaio_subnet_core.utilities import WandbManager
-from services.video_scheduler.video_utils import get_4k_video_path, delete_videos_with_fileid
+from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
 
 
 class Validator(base.BaseValidator):
@@ -70,9 +70,9 @@ class Validator(base.BaseValidator):
             )
             logger.info(f"🎲 Received {len(responses)} responses from miners 🎲")
             logger.info(responses)
-            video_4k_path = get_4k_video_path(video_id)
+            reference_video_path = get_trim_video_path(video_id)
             
-            await self.score(uids, responses, video_4k_path)
+            await self.score(uids, responses, reference_video_path)
             
             minio_client.delete_file(uploaded_object_name)
             delete_videos_with_fileid(video_id)
@@ -80,7 +80,7 @@ class Validator(base.BaseValidator):
             logger.debug("Waiting 5 seconds before next batch")
             await asyncio.sleep(5)
 
-    async def score(self, uids: list[int], responses: list[protocol.Synapse], reference_4k_path: str):
+    async def score(self, uids: list[int], responses: list[protocol.Synapse], reference_video_path: str):
         logger.info(f"Starting scoring for {len(uids)} miners")
         distorted_urls = []
         print(responses, uids)
@@ -91,7 +91,7 @@ class Validator(base.BaseValidator):
             "/score",
             json = {
                 "distorted_urls": distorted_urls,
-                "reference_path": reference_4k_path
+                "reference_path": reference_video_path
             },
             timeout=210
         )

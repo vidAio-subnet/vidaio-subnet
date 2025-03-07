@@ -128,18 +128,18 @@ def download_trim_downscale_video(
         return None
 
 
-def get_4k_video_path(file_id: int, dir_path: str = "videos") -> str:
-    """Returns the path of the clipped 4K video based on the file ID."""
-    return str(Path(dir_path) / f"{file_id}_4k.mp4")
+def get_trim_video_path(file_id: int, dir_path: str = "videos") -> str:
+    """Returns the path of the clipped trim video based on the file ID."""
+    return str(Path(dir_path) / f"{file_id}_trim.mp4")
 
 
 def delete_videos_with_fileid(file_id: int, dir_path: str = "videos") -> None:
     """Deletes all video files associated with the given file ID."""
 
     files_to_delete = [
-        Path(dir_path) / f"{file_id}_4k_original.mp4",
-        Path(dir_path) / f"{file_id}_4k.mp4",
-        Path(dir_path) / f"{file_id}_hd.mp4",
+        Path(dir_path) / f"{file_id}_original.mp4",
+        Path(dir_path) / f"{file_id}_trim.mp4",
+        Path(dir_path) / f"{file_id}_downscale.mp4",
     ]
 
     for file_path in files_to_delete:
