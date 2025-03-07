@@ -14,6 +14,7 @@ app = FastAPI()
 
 class UpscaleRequest(BaseModel):
     task_file_path: str
+    task_type: str
     # output_file_upscaled: Optional[str] = None
     
 
@@ -56,6 +57,12 @@ def video_upscaler(request: UpscaleRequest):
     """
     try:
         input_file = Path(request.task_file_path)
+        task_type = request.task_type
+
+        scale_factor = 2
+
+        if task_type == "SD24K":
+            scale_factor = 4
 
         # Validate input file
         if not input_file.exists() or not input_file.is_file():
@@ -70,7 +77,7 @@ def video_upscaler(request: UpscaleRequest):
 
         # Generate output file paths
         output_file_with_extra_frames = input_file.with_name(f"{input_file.stem}_extra_frames.mp4")
-        output_file_upscaled = input_file.with_name(f"4k_{input_file.stem}.mp4")
+        output_file_upscaled = input_file.with_name(f"{input_file.stem}_upscaled.mp4")
 
         # Step 1: Duplicate the last frame two times
         print("Step 1: Duplicating the last frame two times...")
@@ -107,7 +114,7 @@ def video_upscaler(request: UpscaleRequest):
             "-i", str(output_file_with_extra_frames),
             "-o", str(output_file_upscaled),
             "-p", "realesrgan",  # Use Real-ESRGAN for upscaling
-            "-s", "2",  # Scale factor of 2
+            "-s", scale_factor,  # Scale factor of 2 or 4
             "-c", "libx264",  # Encode with H.264
             "-e", "preset=slow",  # Slow preset for better quality
             "-e", "crf=24"  # Compression level
