@@ -73,7 +73,7 @@ def download_trim_downscale_video(
         print(f"\nDownloading video ID: {vid}")
         response = requests.get(video_url, stream=True)
         total_size = int(response.headers.get('content-length', 0))
-        
+
         with open(temp_path, 'wb') as f, tqdm(
             desc="Downloading",
             total=total_size,
@@ -123,6 +123,7 @@ def download_trim_downscale_video(
     except requests.exceptions.RequestException as e:
         print(f"Error downloading video: {e}")
         return None
+
     except Exception as e:
         print(f"Error: {str(e)}")
         return None

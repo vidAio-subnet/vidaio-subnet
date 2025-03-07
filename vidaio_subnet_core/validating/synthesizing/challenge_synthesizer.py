@@ -74,3 +74,4 @@ class Synthesizer:
                 await asyncio.sleep(self.retry_delay)
 
         raise RuntimeError(f"Failed to get valid response after {self.max_retries} attempts")
+

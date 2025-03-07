@@ -73,6 +73,7 @@ class Validator(base.BaseValidator):
             reference_video_path = get_trim_video_path(video_id)
             
             await self.score(uids, responses, reference_video_path)
+
             
             minio_client.delete_file(uploaded_object_name)
             delete_videos_with_fileid(video_id)

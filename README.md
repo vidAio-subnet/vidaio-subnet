@@ -6,6 +6,7 @@
 Please check our [Tweet](https://x.com/vidaio_τ) to follow us.
 
 [![vidAio](./docs/images/banner.png)](https://)
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) 
 
 ---
@@ -52,6 +53,7 @@ Validators ensure miners deliver consistent, high-quality results by evaluating 
 Validators benchmark miner performance using controlled datasets:
 - Downscale a high-resolution video to low-resolution.
 - Miners upscale the low-resolution video back to high.
+
 - Validators assess the upscaled output using metrics VMAF, LPIPS and latency.
 
 #### 2.4.2 Organic Query

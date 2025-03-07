@@ -12,6 +12,7 @@ import yaml
 import redis
 import shutil
 
+
 from redis_utils import (
     get_redis_connection,
     get_organic_queue_size,
@@ -121,6 +122,7 @@ def get_pexels_random_vids(
     height: int = None, 
     max_results: int = None,
     task_type: str = None
+
 ):
     """
     Fetch video IDs of a specific resolution from Pexels API with randomized selection.
@@ -287,6 +289,122 @@ async def main():
     threshold_hd_to_4k = CONFIG.video_scheduler.weight_hd_to_4k
     threshold_sd_to_hd = CONFIG.video_scheduler.weight_sd_to_hd + threshold_hd_to_4k
 
+    with open(yaml_file_path, "r") as file:
+        yaml_data = yaml.safe_load(file)
+        query_list = yaml_data.get("pexels_categories", [])
+
+    random.shuffle(query_list) 
+    
+    max_results = max_results or num_needed * 7
+    valid_video_ids = []
+    
+    per_page = 80
+    
+    logger.info(f"[INFO] Fetching {num_needed} video IDs with resolution {width}x{height}")
+    logger.info(f"[INFO] Searching through a maximum of {max_results} potential videos")
+    
+    for query in query_list:
+        page = random.randint(1, 10)  
+        logger.info(f"[INFO] Searching for query: '{query}', starting from page {page}")
+        while len(valid_video_ids) < max_results:
+            params = {
+                "query": query,
+                "per_page": per_page,
+                "page": page,
+                "size": "large",
+            }
+            
+            try:
+                response = requests.get("https://api.pexels.com/videos/search", headers=headers, params=params)
+                response.raise_for_status()
+                data = response.json()
+                
+                if "videos" not in data or not data["videos"]:
+                    logger.info(f"[WARNING] No videos found for query '{query}' on page {page}")
+                    break  
+                
+                logger.info(f"[INFO] Found {len(data['videos'])} videos for query '{query}' on page {page}")
+                
+                for video in data["videos"]:
+                    if min_len <= video["duration"] <= max_len:
+                        matching_files = [
+                            f for f in video["video_files"] if f["width"] == width and f["height"] == height
+                        ]
+                        if matching_files:
+                            valid_video_ids.append(video["id"])
+                            logger.info(f"[INFO] Video ID {video['id']} matches criteria")
+                
+                if len(data["videos"]) < per_page:
+                    logger.info(f"[INFO] No more pages available for query '{query}'")
+                    break 
+                
+                page += random.randint(1, 3)  
+            
+            except requests.exceptions.RequestException as e:
+                logger.info(f"[ERROR] Error fetching videos for '{query}': {e}")
+                break  
+    
+    logger.info(f"[INFO] Total matching videos found: {len(valid_video_ids)}")
+    elapsed_time = time.time() - start_time
+    logger.info(f"Time taken to get {num_needed} vids: {elapsed_time:.2f} seconds")
+    
+    random.shuffle(valid_video_ids)
+    return valid_video_ids[:num_needed]
+    
+
+async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis) -> List[Dict[str, str]]:
+    """Generate synthetic Google Drive URLs by uploading trimmed videos."""
+    uploaded_video_chunks = []
+    remaining_count = num_needed
+
+    while remaining_count > 0:
+        
+        video_id = pop_pexels_video_id(redis_conn)
+        
+        challenge_local_path, video_id = download_trim_downscale_video(
+            clip_duration=CONFIG.video_scheduler.clip_duration,
+            vid = video_id,
+        )
+
+        if not challenge_local_path:
+            logger.info("Failed to download and trim video. Retrying...")
+            continue
+
+        uploaded_file_id = video_id
+        object_name = f"{uploaded_file_id}.mp4"
+        
+        await minio_client.upload_file(object_name, challenge_local_path)
+        sharing_link = await minio_client.get_presigned_url(object_name)
+
+        if not sharing_link:
+            logger.info("Upload failed. Retrying...")
+            continue
+
+        uploaded_video_chunks.append({
+            "video_id": video_id,
+            "uploaded_object_name": object_name,
+            "sharing_link": sharing_link
+        })
+        remaining_count -= 1
+
+    return uploaded_video_chunks
+
+async def main():
+    """Main function to manage video processing and synthetic queue handling."""
+    
+    logger.info("Starting worker...")
+    redis_conn = get_redis_connection()
+    
+    clear_queues(redis_conn)
+    
+    scheduler_threshold = CONFIG.video_scheduler.refill_threshold
+    fill_target = CONFIG.video_scheduler.refill_target
+
+    pexels_queue_threshold = CONFIG.video_scheduler.pexels_threshold
+    pexels_queue_max_size = CONFIG.video_scheduler.pexels_max_size
+    video_min_len = CONFIG.video_scheduler.min_video_len
+    video_max_len = CONFIG.video_scheduler.max_video_len
+    
     while True:
         
         pexels_queue_size = get_pexels_queue_size(redis_conn)
