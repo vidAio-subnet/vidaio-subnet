@@ -109,7 +109,7 @@ def push_pexels_video_ids(r: redis.Redis, data_list: List[Dict[str, str]]) -> No
         r (redis.Redis): Redis connection instance.
         id_list (List[int]): List of Pexels video IDs to push.
     """
-    r.rpush(REDIS_CONFIG.synthetic_queue_key, *[json.dumps(data) for data in data_list])
+    r.rpush(REDIS_CONFIG.pexels_video_ids_key, *[json.dumps(data) for data in data_list])
     print("Pushed all Pexels video IDs with task_type correctly in the Redis queue")
 
 def pop_pexels_video_id(r: redis.Redis) -> int:

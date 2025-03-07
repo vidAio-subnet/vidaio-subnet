@@ -8,9 +8,10 @@ import pandas as pd
 from typing import List
 from concurrent.futures import ThreadPoolExecutor
 from vidaio_subnet_core.utilities.minio_client import minio_client
-from vidaio_subnet_core.utilities import WandbManager
+from vidaio_subnet_core.utilities.wandb_manager import WandbManager
+from vidaio_subnet_core.utilities.version import get_version
 from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
-
+import time
 
 class Validator(base.BaseValidator):
     def __init__(self):
@@ -58,6 +59,7 @@ class Validator(base.BaseValidator):
         for batch_idx, batch in enumerate(miner_batches):
             logger.info(f"🧩 Processing batch {batch_idx + 1}/{len(miner_batches)} 🧩")
             video_id, uploaded_object_name, synapse = await self.challenge_synthesizer.build_protocol()
+            synapse.version = get_version()
             logger.debug(f"Built challenge protocol {synapse.__dict__}")
             uids = []
             axons = []
@@ -155,6 +157,7 @@ class Validator(base.BaseValidator):
 
 if __name__ == "__main__":
     validator = Validator()
+    time.sleep(200) # wait till the video scheduler is ready
     asyncio.run(validator.run())
 
 

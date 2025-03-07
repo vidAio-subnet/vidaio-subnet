@@ -9,7 +9,6 @@ from loguru import logger
 import os
 import sys
 from pathlib import Path
-from tqdm import track
 
 fire_downloader = FireRequests()
 

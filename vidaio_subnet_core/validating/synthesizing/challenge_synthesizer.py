@@ -3,7 +3,6 @@ import httpx
 from typing import Tuple, Dict
 from ...protocol import VideoUpscalingProtocol, MinerPayload
 from ...global_config import CONFIG
-from vidaio_subnet_core.utilities.version import get_version
 
 class Synthesizer:
     def __init__(self):
@@ -51,14 +50,11 @@ class Synthesizer:
                 sharing_link = chunk["sharing_link"]
                 task_type = chunk["task_type"]
 
-                version = get_version()
-                
                 return video_id, uploaded_object_name, VideoUpscalingProtocol(
                     miner_payload=MinerPayload(
                         reference_video_url=sharing_link,
                         task_type=task_type
                     ),
-                    version=version,
                 )
 
             except httpx.HTTPStatusError as e:

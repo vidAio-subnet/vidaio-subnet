@@ -157,6 +157,7 @@ cd vmaf
 
 2. Install system dependencies:
    ```bash
+   sudo apt-get update
    sudo apt-get install nasm ninja-build doxygen xxd
    ```
    For Ninja, verify whether the package name is `ninja` or `ninja-build` before running the install command.
@@ -214,9 +215,17 @@ ninja -vC build doc/html
 ```
 
 ## Install LPIPS
-
+This functions properly after installing the dependencies
 ....
 
+### Step 7: Deactivate vmaf-venv, activate project venv
+
+```bash
+deactivate
+cd ..
+cd ..
+source venv/bin/activate
+```
 
 ## Running the Scoring endpoint
 

@@ -31,11 +31,8 @@ def download_trim_downscale_video(
         Optional[Tuple[str, int]]: Path to the downscaled video and the generated video ID, or None on failure.
     """
 
-    if task_type == "HD24K":
-        downscale_height = 1080
-    elif task_type == "SD2HD":
-        downscale_height = 540
-    elif task_type == "SD24k":
+    downscale_height = 1080
+    if task_type != "HD24K":
         downscale_height = 540
 
     api_key = os.getenv("PEXELS_API_KEY")
@@ -51,6 +48,7 @@ def download_trim_downscale_video(
     headers = {"Authorization": api_key}
     
     try:
+        start_time = time.time()
         # Get video details
         response = requests.get(url, headers=headers)
         response.raise_for_status()  # Raise exception for bad status codes
@@ -73,7 +71,7 @@ def download_trim_downscale_video(
         print(f"\nDownloading video ID: {vid}")
         response = requests.get(video_url, stream=True)
         total_size = int(response.headers.get('content-length', 0))
-
+        
         with open(temp_path, 'wb') as f, tqdm(
             desc="Downloading",
             total=total_size,
@@ -123,7 +121,6 @@ def download_trim_downscale_video(
     except requests.exceptions.RequestException as e:
         print(f"Error downloading video: {e}")
         return None
-
     except Exception as e:
         print(f"Error: {str(e)}")
         return None

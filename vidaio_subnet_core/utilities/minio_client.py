@@ -47,7 +47,7 @@ class VideoSubnetMinioClient:
     async def list_objects(self, prefix=None, recursive=True):
         func = self.client.list_objects
         args = (self.bucket_name, prefix, recursive)
-        print("Listing objects")
+        print("Listing objects in bucket...")
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self.executor, func, *args)
 
@@ -87,12 +87,14 @@ class VideoSubnetMinioClient:
             if not objects:
                 print("No objects to delete.")
                 return
-            
+
+            count = 0
             # Delete each object
-            for obj_name in objects:
-                print(f"Deleting object: {obj_name}")
-                await self.delete_file(obj_name)
-            print("All objects deleted successfully.")
+            for obj in objects:
+                print(f"Deleting object: {obj.object_name}")
+                await self.delete_file(obj.object_name)
+                count += 1
+            print(f"All {count} objects deleted successfully.")
         except Exception as e:
             print(f"Error deleting all items in bucket: {e}")
 
