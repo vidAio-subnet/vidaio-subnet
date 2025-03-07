@@ -67,7 +67,7 @@ def download_trim_downscale_video(
 
         temp_path = Path(output_dir) / f"{video_id}_original.mp4"
         clipped_path = Path(output_dir) / f"{video_id}_trim.mp4"
-        hd_path = Path(output_dir) / f"{video_id}_downscale.mp4"
+        downscale_path = Path(output_dir) / f"{video_id}_downscale.mp4"
         
         # Download video with progress bar
         print(f"\nDownloading video ID: {vid}")
@@ -89,7 +89,6 @@ def download_trim_downscale_video(
         elapsed_time = time.time() - start_time
         print(f"Time taken to download video: {elapsed_time:.2f} seconds")
     
-
         # Trim video
         print("\nTrimming video...")
         start_time = time.time()
@@ -104,23 +103,23 @@ def download_trim_downscale_video(
         elapsed_time = time.time() - start_time
         print(f"Time taken to clip video: {elapsed_time:.2f} seconds")
 
-        # Downscale to HD
-        print("\nSaving HD version...")
+        # Downscaling
+        print("\nSaving downscaled version...")
         start_time = time.time()
-        hd_clip = clipped_clip.resize(height=downscale_height)
-        hd_clip.write_videofile(str(hd_path), codec='libx264', verbose=False, logger=None)
+        downscale_clip = clipped_clip.resize(height=downscale_height)
+        downscale_clip.write_videofile(str(downscale_path), codec='libx264', verbose=False, logger=None)
 
         elapsed_time = time.time() - start_time
-        print(f"Time taken to save HD version: {elapsed_time:.2f} seconds")
+        print(f"Time taken to save downscale version: {elapsed_time:.2f} seconds")
 
         # Cleanup
         video_clip.close()
         clipped_clip.close()
-        hd_clip.close()
+        downscale_clip.close()
 
-        print(f"\nDone! Saved files:\n- {clipped_path}\n- {hd_path}")
+        print(f"\nDone! Saved files:\n- {clipped_path}\n- {downscale_path}")
 
-        return str(hd_path), video_id
+        return str(downscale_path), video_id
     except requests.exceptions.RequestException as e:
         print(f"Error downloading video: {e}")
         return None
