@@ -19,8 +19,8 @@ def download_trim_downscale_video(
     output_dir: str = "videos"
 ) -> Optional[Tuple[str, int]]:
     """
-    Downloads a specified DCI 4K video from Pexels, trims it to the specified duration,
-    and downscales it to HD resolution.
+    Downloads a specified videos with video id from Pexels, trims it to the specified duration,
+    and downscales it to required resolution.
 
     Args:
         clip_duration (int): Desired clip duration in seconds.
@@ -28,7 +28,7 @@ def download_trim_downscale_video(
         output_dir (str): Directory to save the processed videos.
 
     Returns:
-        Optional[Tuple[str, int]]: Path to the HD video and the generated video ID, or None on failure.
+        Optional[Tuple[str, int]]: Path to the downscaled video and the generated video ID, or None on failure.
     """
 
     if task_type == "HD24K":
