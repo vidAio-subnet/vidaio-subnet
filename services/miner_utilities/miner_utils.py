@@ -57,7 +57,7 @@ async def download_video(video_url: str) -> Path:
         raise HTTPException(status_code=500, detail=f"Error downloading video: {str(e)}")
 
 
-async def video_upscaler(input_file_path: Path) -> str | None:
+async def video_upscaler(input_file_path: Path, task_type: str) -> str | None:
     """
     Sends a video file path to the upscaling service and retrieves the processed video path.
     
@@ -69,7 +69,10 @@ async def video_upscaler(input_file_path: Path) -> str | None:
     """
     url = f"http://{CONFIG.video_upscaler.host}:{CONFIG.video_upscaler.port}/upscale-video"
     headers = {"Content-Type": "application/json"}
-    data = {"task_file_path": str(input_file_path)}
+    data = {
+        "task_file_path": str(input_file_path),
+        "task_type": task_type,
+    }
     
     async with aiohttp.ClientSession() as session:
         async with session.post(url, headers=headers, data=json.dumps(data)) as response:

@@ -119,15 +119,7 @@ minio_client = VideoSubnetMinioClient(
 
 
 async def main():
-    await minio_client.ensure_bucket_exists()
-    await minio_client.upload_file("345.mp4", "/root/workspace/vidaio-subnet/videos/4k_4887282_hd.mp4")
-    result = await minio_client.list_objects()
-    print(result)
-    # await minio_client.download_file
-    await minio_client.set_bucket_public_policy()
-    url = await minio_client.get_presigned_url("123.md")
-    print(url)
-
+    pass
 
 if __name__ == "__main__":
     asyncio.run(main())

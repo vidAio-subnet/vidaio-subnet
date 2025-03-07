@@ -13,12 +13,16 @@ class MinerPayload(BaseModel):
     reference_video_url: str = Field(
         description="The URL of the reference video to be optimized",
         default="",
-        min_length=1 
+        min_length=1,
     )
     maximum_optimized_size_mb: int = Field(
         description="The maximum size of the optimized video in MB",
         default=100,
-        gt=0  
+        gt=0,
+    )
+    task_type: str = Field(
+        description="The type of task: HD24K, SD2HD, SD24K",
+        default="HD24K",
     )
 
 
@@ -33,12 +37,12 @@ class ScoringPayload(BaseModel):
     reference_video_url: str = Field(
         description="The URL of the reference video",
         default="",
-        min_length=1  
+        min_length=1, 
     )
     optimized_video_url: str = Field(
         description="The URL of the processed video (compressed/upscaled)",
         default="",
-        min_length=1  
+        min_length=1,
     )
 
 
@@ -47,7 +51,7 @@ class ScoringResponse(BaseModel):
         description="Quality score of the processed video",
         default=0.0,
         ge=0.0,  
-        le=1.0  
+        le=1.0,  
     )
 
 
@@ -57,11 +61,11 @@ class VideoCompressionProtocol(Synapse):
     miner_payload: MinerPayload = Field(
         description="The payload for the miner. Cannot be modified after initialization.",
         default_factory=MinerPayload,
-        frozen=True
+        frozen=True,
     )
     miner_response: MinerResponse = Field(
         description="The response from the miner",
-        default_factory=MinerResponse
+        default_factory=MinerResponse,
     )
 
     @property
@@ -69,7 +73,7 @@ class VideoCompressionProtocol(Synapse):
         """Generate scoring payload from miner payload and response."""
         return ScoringPayload(
             reference_video_url=self.miner_payload.reference_video_url,
-            optimized_video_url=self.miner_response.optimized_video_url
+            optimized_video_url=self.miner_response.optimized_video_url,
         )
 
 
@@ -81,11 +85,11 @@ class VideoUpscalingProtocol(Synapse):
     miner_payload: MinerPayload = Field(
         description="The payload for the miner. Cannot be modified after initialization.",
         default_factory=MinerPayload,
-        frozen=True
+        frozen=True,
     )
     miner_response: MinerResponse = Field(
         description="The response from the miner",
-        default_factory=MinerResponse
+        default_factory=MinerResponse,
     )
 
     @property
@@ -93,5 +97,5 @@ class VideoUpscalingProtocol(Synapse):
         """Generate scoring payload from miner payload and response."""
         return ScoringPayload(
             reference_video_url=self.miner_payload.reference_video_url,
-            optimized_video_url=self.miner_response.optimized_video_url
+            optimized_video_url=self.miner_response.optimized_video_url,
         )
