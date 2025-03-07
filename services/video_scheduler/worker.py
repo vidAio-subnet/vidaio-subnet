@@ -230,6 +230,10 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis)
         
         video_id_data = pop_pexels_video_id(redis_conn)
         
+        if video_id_data == None:
+            time.sleep(10)
+            continue
+
         video_id = video_id_data["vid"]
         task_type = video_id_data["task_type"]
 
@@ -286,10 +290,14 @@ async def main():
     while True:
         
         pexels_queue_size = get_pexels_queue_size(redis_conn)
-        logger.info(f"Pexels video id queue size: {pexels_queue_size}")
+        logger.info(f"Pexels video ids queue size: {pexels_queue_size}")
 
         if pexels_queue_size < pexels_queue_threshold:
+
             needed = pexels_queue_max_size - pexels_queue_size
+
+            if pexels_queue_size == 0:
+                needed = 2
             
             ran_num = random.random()
 
@@ -308,7 +316,7 @@ async def main():
             for vid in needed_vids:
                 needed_vids_dict.append({
                     "vid": vid,
-                    "task_type": task_type
+                    "task_type": task_type,
                 })
 
             push_pexels_video_ids(redis_conn, needed_vids_dict)
@@ -321,7 +329,12 @@ async def main():
         logger.info(f"Synthetic queue size: {synthetic_size}")
 
         if total_size < scheduler_threshold:
+            
             needed = fill_target - total_size
+
+            if total_size == 0:
+                needed = 1
+            
             logger.info(f"Need {needed} chunks...")
             needed_urls = await get_synthetic_requests_paths(num_needed=needed, redis_conn = redis_conn)
             push_synthetic_chunks(redis_conn, needed_urls)
