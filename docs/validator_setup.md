@@ -138,12 +138,12 @@ cd vmaf
 
 1. Install `venv` if it’s not already installed:
    ```bash
-   python3 -m venv venv
+   python3 -m venv vmaf-venv
    ```
 
 2. Activate the virtual environment:
    ```bash
-   source venv/bin/activate
+   source vmaf-venv/bin/activate
    ```
 
 ---
