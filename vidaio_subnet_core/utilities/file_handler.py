@@ -59,4 +59,3 @@ async def download_video(url: str) -> tuple[str, float, str]:
         return "", time.time() - debug_start_time, "Download failed: " + str(e)
 
 
-clean_tmp_directory()

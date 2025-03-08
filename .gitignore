@@ -14,12 +14,14 @@ note.txt
 venv/
 video2x/
 vmaf/
+logs/
+videos/
+wandb/
 IQA-PyTorch/
 vmaf_output.xml 
 services/video_scheduler/videos/
 services/upscaling/videos/
 services/upscaling/model/
 services/scoring/vmaf
-videos/
 pexel_scraper.py
 test.py
