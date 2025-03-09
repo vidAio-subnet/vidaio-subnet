@@ -65,7 +65,7 @@ source venv/bin/activate
 
 Install the project and its dependencies using `pip`:
 ```bash
-pip install .
+pip install -e .
 ```
 
 ---
@@ -121,11 +121,12 @@ Ensure your CUDA drivers and NVCC (NVIDIA Compiler) are properly installed and c
    nvcc --version
    ```
 
-2. Install or update the CUDA drivers if they are not already installed:
+2. Ensure you CUDA driver is installed correctly
+   <!-- Install or update the CUDA drivers if they are not already installed:
    ```bash
    sudo apt update
    sudo apt install nvidia-cuda-toolkit -y
-   ```
+   ``` -->
 
 For more information, refer to the [CUDA Toolkit Installation Guide](https://developer.nvidia.com/cuda-toolkit).
 
@@ -146,7 +147,7 @@ cargo install just
 #### 2. Clone the Video2X Repository
 you can clone this repository within the current vidaio-subnet package
 ```bash
-git clone --recurse-submodules https://github.com/k4yt3x/video2x.git
+git clone --recurse-submodules https://github.com/vidAio-subnet/video2x
 cd video2x
 ```
 

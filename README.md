@@ -98,7 +98,8 @@ Real-world video data uploaded by users is processed as follows:
 ## 5. Appendix
 
 ### A. Technical Glossary
-- **VMAF**: [Video Multimethod Assessment Fusion](https://github.com/Netflix/vmaf)
+- **VMAF**: [Video Multimethod Assessment Fusion](https://github.com/vidaio-subnet/vmaf)
 - **LPIPS**: [Learned Perceptual Image Patch Similarity](https://github.com/richzhang/PerceptualSimilarity)
 - **TOPIQ**: [Top-down Image Quality Assessment](https://arxiv.org/pdf/2308.03060v1)
 - **Bittensor Subnet**: [Decentralized AI Framework](https://docs.bittensor.com)
+- **Video2x**: [Vidio upscaling model](https://github.com/vidaio-subnet/video2x)

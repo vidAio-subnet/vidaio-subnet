@@ -179,7 +179,7 @@ while true; do
             fi
         fi
     else
-        echo "The installation does not appear to be from Git. Please install from source at https://github.com/opentensor/validators."
+        echo "The installation does not appear to be from Git. Please install from source at https://github.com/vidaio-subnet/vidaio-subnet."
     fi
 
     sleep 1800  # Sleep 30 minutes before checking again
