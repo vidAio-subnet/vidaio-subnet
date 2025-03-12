@@ -197,12 +197,13 @@ def get_pexels_random_vids(
                 
                 for video in data["videos"]:
                     if min_len <= video["duration"] <= max_len:
-                        matching_files = [
-                            f for f in video["video_files"] if f["width"] == width and f["height"] == height
-                        ]
-                        if matching_files:
+                        # Check if the first video file matches the required resolution
+                        if (video["video_files"] and 
+                            video["video_files"][0]["width"] == width and 
+                            video["video_files"][0]["height"] == height):
                             valid_video_ids.append(video["id"])
-                            # logger.info(f"[INFO] Video ID {video['id']} matches criteria")
+                            logger.info(f"[INFO] Added video ID {video['id']} ({video['video_files'][0]['width']}x{video['video_files'][0]['height']})")
+
                 
                 if len(data["videos"]) < per_page:
                     logger.info(f"[INFO] No more pages available for query '{query}'")
@@ -304,7 +305,7 @@ async def main():
             
             ran_num = random.random()
             logger.info(f"Seleted random number: {ran_num}")
-            ran_num = 0.6
+            ran_num = 0.3
             if ran_num < threshold_hd_to_4k:
                 task_type = "HD24K"
             elif ran_num < threshold_sd_to_hd:

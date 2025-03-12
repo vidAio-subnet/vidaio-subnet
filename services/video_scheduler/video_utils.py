@@ -90,7 +90,24 @@ def download_trim_downscale_video(
         # Trim video
         print("\nTrimming video...")
         start_time = time.time()
+
+        print("\nChecking video resolution...")
         video_clip = VideoFileClip(str(temp_path))
+        actual_width, actual_height = video_clip.size
+        
+        # expected_width, expected_height = 1920, 1080  # for SD2HD 
+        expected_width, expected_height = 4096, 2160  # for HD24K
+        
+        if actual_width != expected_width or actual_height != expected_height:
+            video_clip.close()
+            error_msg = (f"Video resolution mismatch. Expected {expected_width}x{expected_height}, "
+                        f"but got {actual_width}x{actual_height}")
+            print(error_msg)
+            raise ValueError(error_msg)
+        
+        # Continue with existing trimming code...
+        print(f"\nVideo resolution verified: {actual_width}x{actual_height}")
+
 
         start_time_clip = 0 if video_clip.duration <= clip_duration else random.uniform(0, video_clip.duration - clip_duration)
         print(f"Trimming {clip_duration}s from position {start_time_clip:.1f}s")

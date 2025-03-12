@@ -1,0 +1,44 @@
+[TAILING] Tailing last 15 lines for [0] process (change the value with --lines option)
+/root/.pm2/logs/video-scheduler-worker-out.log last 15 lines:
+0|video_sc | 
+0|video_sc | Trimming video...
+0|video_sc | Trimming 1s from position 1.9s
+0|video_sc | Time taken to clip video: 0.20 seconds
+0|video_sc | 
+0|video_sc | Saving downscaled version...
+0|video_sc | Time taken to save downscale version: 0.28 seconds
+0|video_sc | 
+0|video_sc | Done! Saved files:
+0|video_sc | - videos/75dac226-0582-41de-8296-c2b061ac156a_trim.mp4
+0|video_sc | - videos/75dac226-0582-41de-8296-c2b061ac156a_downscale.mp4
+0|video_sc | Attempting to upload
+0|video_sc | The bucket_name is grabucket and the result was <minio.helpers.ObjectWriteResult object at 0x7f16a09bff20>
+0|video_sc | 
+0|video_sc | Downloading video ID: 17574207
+
+/root/.pm2/logs/video-scheduler-worker-error.log last 15 lines:
+0|video_sc | 2025-03-12 01:36:46.481 | INFO     | __main__:main:296 - Pexels video ids queue size: 93
+0|video_sc | 2025-03-12 01:36:46.481 | INFO     | __main__:main:332 - Organic queue size: 0
+0|video_sc | 2025-03-12 01:36:46.482 | INFO     | __main__:main:333 - Synthetic queue size: 10
+0|video_sc | 2025-03-12 01:36:56.482 | INFO     | __main__:main:296 - Pexels video ids queue size: 93
+0|video_sc | 2025-03-12 01:36:56.483 | INFO     | __main__:main:332 - Organic queue size: 0
+0|video_sc | 2025-03-12 01:36:56.483 | INFO     | __main__:main:333 - Synthetic queue size: 10
+0|video_sc | 2025-03-12 01:37:06.484 | INFO     | __main__:main:296 - Pexels video ids queue size: 93
+0|video_sc | 2025-03-12 01:37:06.484 | INFO     | __main__:main:332 - Organic queue size: 0
+0|video_sc | 2025-03-12 01:37:06.484 | INFO     | __main__:main:333 - Synthetic queue size: 10
+0|video_sc | 2025-03-12 01:37:16.485 | INFO     | __main__:main:296 - Pexels video ids queue size: 93
+0|video_sc | 2025-03-12 01:37:16.486 | INFO     | __main__:main:332 - Organic queue size: 0
+0|video_sc | 2025-03-12 01:37:16.486 | INFO     | __main__:main:333 - Synthetic queue size: 10
+0|video_sc | 2025-03-12 01:37:26.486 | INFO     | __main__:main:296 - Pexels video ids queue size: 93
+0|video_sc | 2025-03-12 01:37:26.487 | INFO     | __main__:main:332 - Organic queue size: 0
+0|video_sc | 2025-03-12 01:37:26.487 | INFO     | __main__:main:333 - Synthetic queue size: 10
+
+0|video_scheduler_worker  | 2025-03-12 01:37:36.488 | INFO     | __main__:main:296 - Pexels video ids queue size: 93
+0|video_scheduler_worker  | 2025-03-12 01:37:36.488 | INFO     | __main__:main:332 - Organic queue size: 0
+0|video_scheduler_worker  | 2025-03-12 01:37:36.488 | INFO     | __main__:main:333 - Synthetic queue size: 10
+0|video_scheduler_worker  | 2025-03-12 01:37:46.489 | INFO     | __main__:main:296 - Pexels video ids queue size: 93
+0|video_scheduler_worker  | 2025-03-12 01:37:46.490 | INFO     | __main__:main:332 - Organic queue size: 0
+0|video_scheduler_worker  | 2025-03-12 01:37:46.490 | INFO     | __main__:main:333 - Synthetic queue size: 10
+0|video_scheduler_worker  | 2025-03-12 01:37:56.490 | INFO     | __main__:main:296 - Pexels video ids queue size: 93
+0|video_scheduler_worker  | 2025-03-12 01:37:56.491 | INFO     | __main__:main:332 - Organic queue size: 0
+0|video_scheduler_worker  | 2025-03-12 01:37:56.491 | INFO     | __main__:main:333 - Synthetic queue size: 10
