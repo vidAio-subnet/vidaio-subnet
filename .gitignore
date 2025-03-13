@@ -18,6 +18,7 @@ logs/
 videos/
 wandb/
 IQA-PyTorch/
+MDTVSFA/
 vmaf_output.xml 
 services/video_scheduler/videos/
 services/upscaling/videos/

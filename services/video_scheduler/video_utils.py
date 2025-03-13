@@ -31,9 +31,12 @@ def download_trim_downscale_video(
         Optional[Tuple[str, int]]: Path to the downscaled video and the generated video ID, or None on failure.
     """
 
-    downscale_height = 1080
-    if task_type != "HD24K":
-        downscale_height = 540
+    DOWNSCALE_HEIGHTS = {
+        "HD24K": 1080,
+        "4K28K": 2160
+    }
+
+    downscale_height = DOWNSCALE_HEIGHTS.get(task_type, 540)
 
     api_key = os.getenv("PEXELS_API_KEY")
     
@@ -49,6 +52,12 @@ def download_trim_downscale_video(
     
     try:
         start_time = time.time()
+
+        EXPECTED_RESOLUTIONS = {
+            "SD2HD": (1920, 1080),
+            "4K28K": (7680, 4320),
+        }
+        expected_width, expected_height = EXPECTED_RESOLUTIONS.get(task_type, (4096, 2160))
         # Get video details
         response = requests.get(url, headers=headers)
         response.raise_for_status()  # Raise exception for bad status codes
@@ -57,8 +66,15 @@ def download_trim_downscale_video(
         if "video_files" not in data:
             raise ValueError("No video found or API error")
             
-        # Get video download URL (first video file)
-        video_url = data["video_files"][0]["link"]
+        # Get the highest resolution video file
+        video_url = next(
+            (video["link"] for video in data["video_files"] 
+            if video["width"] == expected_width and video["height"] == expected_height), 
+            None
+        )
+        
+        if video_url is None:
+            return None, None
         
         # Prepare output path
         video_id = uuid.uuid4()
@@ -95,8 +111,6 @@ def download_trim_downscale_video(
         video_clip = VideoFileClip(str(temp_path))
         actual_width, actual_height = video_clip.size
         
-        # expected_width, expected_height = 1920, 1080  # for SD2HD 
-        expected_width, expected_height = 4096, 2160  # for HD24K
         
         if actual_width != expected_width or actual_height != expected_height:
             video_clip.close()
@@ -137,10 +151,10 @@ def download_trim_downscale_video(
         return str(downscale_path), video_id
     except requests.exceptions.RequestException as e:
         print(f"Error downloading video: {e}")
-        return None
+        return None, None
     except Exception as e:
         print(f"Error: {str(e)}")
-        return None
+        return None, None
 
 
 def get_trim_video_path(file_id: int, dir_path: str = "videos") -> str:

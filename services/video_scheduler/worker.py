@@ -138,18 +138,15 @@ def get_pexels_random_vids(
         list: A shuffled list of `num_needed` video IDs.
     """
 
-    DCI_4K_WIDTH = 4096
-    DCI_4K_HEIGHT = 2160
-    HD_WIDTH = 1920
-    HD_HEIGHT = 1080
+    RESOLUTIONS = {
+        "HD24K": (4096, 2160),
+        "SD2HD": (1920, 1080),
+        "SD24K": (1920, 1080),
+        "4K28K": (7680, 4320),
+    }
 
-    if not width or not height:  
-        if task_type == "SD2HD":
-            width = HD_WIDTH
-            height = HD_HEIGHT
-        else:  
-            width = DCI_4K_WIDTH
-            height = DCI_4K_HEIGHT
+
+    width, height = (width, height) if width and height else RESOLUTIONS.get(task_type, (4096, 2160))
 
     api_key = os.getenv("PEXELS_API_KEY")
     if not api_key:
@@ -165,7 +162,11 @@ def get_pexels_random_vids(
 
     random.shuffle(query_list) 
     
-    max_results = max_results or num_needed * 7
+    max_results = max_results or num_needed * 3
+
+    if task_type == "4K28K":
+        max_results = num_needed
+
     valid_video_ids = []
     
     per_page = 80
@@ -183,12 +184,22 @@ def get_pexels_random_vids(
                 "page": page,
                 "size": "large",
             }
-            
+
+            if task_type == "SD2HD":
+                params = {
+                    "query": query,
+                    "per_page": per_page,
+                    "page": page,
+                }
+
             try:
                 response = requests.get("https://api.pexels.com/videos/search", headers=headers, params=params)
                 response.raise_for_status()
                 data = response.json()
-                
+                import json
+                with open("output.json", "w") as file:
+                    # writing the JSON data to the file with indentation for better readability
+                    json.dump(data, file, indent=4)
                 if "videos" not in data or not data["videos"]:
                     logger.info(f"[WARNING] No videos found for query '{query}' on page {page}")
                     break  
@@ -196,14 +207,9 @@ def get_pexels_random_vids(
                 logger.info(f"[INFO] Found {len(data['videos'])} videos for query '{query}' on page {page}")
                 
                 for video in data["videos"]:
-                    if min_len <= video["duration"] <= max_len:
-                        # Check if the first video file matches the required resolution
-                        if (video["video_files"] and 
-                            video["video_files"][0]["width"] == width and 
-                            video["video_files"][0]["height"] == height):
-                            valid_video_ids.append(video["id"])
-                            logger.info(f"[INFO] Added video ID {video['id']} ({video['video_files'][0]['width']}x{video['video_files'][0]['height']})")
-
+                    if min_len <= video["duration"] <= max_len and video["width"] == width and video["height"] == height:
+                        valid_video_ids.append(video["id"])
+                        logger.info(f"[INFO] Added video ID {video['id']} ({video['width']}x{video['height']})")
                 
                 if len(data["videos"]) < per_page:
                     logger.info(f"[INFO] No more pages available for query '{query}'")
@@ -245,7 +251,7 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis)
             task_type = task_type,
         )
 
-        if not challenge_local_path:
+        if challenge_local_path is None:
             logger.info("Failed to download and trim video. Retrying...")
             continue
 
@@ -290,6 +296,7 @@ async def main():
     
     threshold_hd_to_4k = CONFIG.video_scheduler.weight_hd_to_4k
     threshold_sd_to_hd = CONFIG.video_scheduler.weight_sd_to_hd + threshold_hd_to_4k
+    threshold_4k_to_8k = CONFIG.video_scheduler.weight_4k_to_8k + threshold_sd_to_hd
 
     while True:
         
@@ -304,14 +311,16 @@ async def main():
                 needed = 5
             
             ran_num = random.random()
+            ran_num = 0.9
             logger.info(f"Seleted random number: {ran_num}")
-            ran_num = 0.3
             if ran_num < threshold_hd_to_4k:
                 task_type = "HD24K"
             elif ran_num < threshold_sd_to_hd:
                 task_type = "SD2HD"
-            else:
+            elif ran_num < threshold_hd_to_4k:
                 task_type = "SD24K"
+            else: 
+                task_type = "4K28K"
             
             logger.info(f"Need {needed} pexels video ids with task type: {task_type}")
 

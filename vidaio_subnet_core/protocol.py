@@ -21,7 +21,7 @@ class MinerPayload(BaseModel):
         gt=0,
     )
     task_type: str = Field(
-        description="The type of task: HD24K, SD2HD, SD24K",
+        description="The type of task: HD24K, SD2HD, SD24K, 4K28K",
         default="HD24K",
     )
 
