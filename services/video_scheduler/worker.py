@@ -141,8 +141,9 @@ def get_pexels_random_vids(
     RESOLUTIONS = {
         "HD24K": (4096, 2160),
         "SD2HD": (1920, 1080),
-        "SD24K": (1920, 1080),
+        "SD24K": (4096, 2160),
         "4K28K": (7680, 4320),
+        "HD28K": (7680, 4320),
     }
 
 
@@ -296,7 +297,8 @@ async def main():
     
     threshold_hd_to_4k = CONFIG.video_scheduler.weight_hd_to_4k
     threshold_sd_to_hd = CONFIG.video_scheduler.weight_sd_to_hd + threshold_hd_to_4k
-    threshold_4k_to_8k = CONFIG.video_scheduler.weight_4k_to_8k + threshold_sd_to_hd
+    threshold_sd_to_4k = CONFIG.video_scheduler.weight_sd_to_4k + threshold_sd_to_hd
+    threshold_4k_to_8k = CONFIG.video_scheduler.weight_4k_to_8k + threshold_sd_to_4k
 
     while True:
         
@@ -317,10 +319,12 @@ async def main():
                 task_type = "HD24K"
             elif ran_num < threshold_sd_to_hd:
                 task_type = "SD2HD"
-            elif ran_num < threshold_hd_to_4k:
+            elif ran_num < threshold_sd_to_4k:
                 task_type = "SD24K"
-            else: 
+            elif ran_num < threshold_4k_to_8k: 
                 task_type = "4K28K"
+            else:
+                task_type = "HD28K"
             
             logger.info(f"Need {needed} pexels video ids with task type: {task_type}")
 
