@@ -30,7 +30,7 @@ Please check our [Tweet](https://x.com/vidaio_τ) to follow us.
    - [Contact Information](#c-contact-information)
 
 ## **1. Introduction**
-vidAIo's mission is to democratize video enhancement through decentralization, artificial intelligence, and blockchain technology. Leveraging the Bittensor ecosystem, vidAIo provides creators, businesses, and developers with scalable, affordable, and high-quality video upscaling solutions while ensuring full ownership and control over their content
+vidAIo's mission is to democratize video enhancement through decentralization, artificial intelligence, and blockchain technology. Leveraging the Bittensor ecosystem, vidaio provides creators, businesses, and developers with scalable, affordable, and high-quality video upscaling solutions while ensuring full ownership and control over their content
 
 
 ## 2. Subnet Architecture
