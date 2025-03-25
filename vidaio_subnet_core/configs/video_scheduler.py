@@ -7,7 +7,7 @@ class VideoSchedulerConfig(BaseModel):
     max_synthetic_queue_size: int = Field(default=50)
     refill_threshold: int = Field(default=3)
     refill_target: int = Field(default=10)
-    clip_duration: int = Field(default=1)
+    clip_duration: int = Field(default=2)
     min_video_len: int = Field(default=10)
     max_video_len: int = Field(default=30)
     pexels_max_size: int = Field(default = 100)

@@ -52,15 +52,15 @@ def purge_cached_videos():
         if os.path.exists(videos_dir):
             shutil.rmtree(videos_dir)
             os.makedirs(videos_dir)
-            print(f"Successfully purged all files from {videos_dir}")
+            logger.info(f"Successfully purged all files from {videos_dir}")
         else:
-            print(f"Directory not found: {videos_dir}")
+            logger.info(f"Directory not found: {videos_dir}")
             os.makedirs(videos_dir)
-            print(f"Created new videos directory at {videos_dir}")
+            logger.info(f"Created new videos directory at {videos_dir}")
         
             
     except Exception as e:
-        print(f"Error while purging videos: {str(e)}")
+        logger.info(f"Error while purging videos: {str(e)}")
 
 async def get_synthetic_urls_with_retry(hotkey: str, max_retries: int = 2, initial_delay: float = 5.0, num_needed: int = 2) -> Optional[List[str]]:
     """Attempt to fetch synthetic request URLs with exponential backoff retry."""
@@ -130,7 +130,7 @@ def get_pexels_random_vids(
         num_needed (int): Number of video IDs required.
         min_len (int): Minimum video length in seconds.
         max_len (int): Maximum video length in seconds.
-        width (int): Required video width (default: 4096).
+        width (int): Required video width (default: 3840).
         height (int): Required video height (default: 2160).
         max_results (int, optional): Max videos to fetch before selecting randomly (default: num_needed * 10).
         task_type: The type of task
@@ -139,15 +139,15 @@ def get_pexels_random_vids(
     """
 
     RESOLUTIONS = {
-        "HD24K": (4096, 2160),
+        "HD24K": (3840, 2160),
         "SD2HD": (1920, 1080),
-        "SD24K": (4096, 2160),
+        "SD24K": (3840, 2160),
         "4K28K": (7680, 4320),
         "HD28K": (7680, 4320),
     }
 
 
-    width, height = (width, height) if width and height else RESOLUTIONS.get(task_type, (4096, 2160))
+    width, height = (width, height) if width and height else RESOLUTIONS.get(task_type, (3840, 2160))
 
     api_key = os.getenv("PEXELS_API_KEY")
     if not api_key:
@@ -227,7 +227,12 @@ def get_pexels_random_vids(
     logger.info(f"Time taken to get {num_needed} vids: {elapsed_time:.2f} seconds")
     
     random.shuffle(valid_video_ids)
-    return valid_video_ids[:num_needed]
+
+    return_val = valid_video_ids[:num_needed]
+
+    logger.info(return_val)
+
+    return return_val
     
 
 async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis) -> List[Dict[str, str]]:
@@ -239,6 +244,9 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis)
         
         video_id_data = pop_pexels_video_id(redis_conn)
         
+        logger.info("downloading video data: ")
+        logger.info(video_id_data)
+
         if video_id_data == None:
             time.sleep(10)
             continue
@@ -313,7 +321,7 @@ async def main():
                 needed = 5
             
             ran_num = random.random()
-            ran_num = 0.9
+            ran_num = 0.3
             logger.info(f"Seleted random number: {ran_num}")
             if ran_num < threshold_hd_to_4k:
                 task_type = "HD24K"
@@ -329,6 +337,8 @@ async def main():
             logger.info(f"Need {needed} pexels video ids with task type: {task_type}")
 
             needed_vids = get_pexels_random_vids(num_needed = needed, min_len = video_min_len, max_len = video_max_len, task_type = task_type)
+
+            logger.info(f"needed video ids: f{needed_vids}")
 
             needed_vids_dict = []
             for vid in needed_vids:

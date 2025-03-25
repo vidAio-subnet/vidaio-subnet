@@ -33,7 +33,8 @@ def download_trim_downscale_video(
 
     DOWNSCALE_HEIGHTS = {
         "HD24K": 1080,
-        "4K28K": 2160
+        "4K28K": 2160,
+        
     }
 
     downscale_height = DOWNSCALE_HEIGHTS.get(task_type, 540)
@@ -57,7 +58,7 @@ def download_trim_downscale_video(
             "SD2HD": (1920, 1080),
             "4K28K": (7680, 4320),
         }
-        expected_width, expected_height = EXPECTED_RESOLUTIONS.get(task_type, (4096, 2160))
+        expected_width, expected_height = EXPECTED_RESOLUTIONS.get(task_type, (3840, 2160))
         # Get video details
         response = requests.get(url, headers=headers)
         response.raise_for_status()  # Raise exception for bad status codes
