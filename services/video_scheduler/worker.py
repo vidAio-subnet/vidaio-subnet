@@ -160,7 +160,7 @@ def get_pexels_random_vids(
     with open(yaml_file_path, "r") as file:
         yaml_data = yaml.safe_load(file)
         query_list = yaml_data.get("pexels_categories", [])
-
+    query_list = ["nature"]
     random.shuffle(query_list) 
     
     max_results = max_results or num_needed * 3
@@ -270,6 +270,8 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis)
         await minio_client.upload_file(object_name, challenge_local_path)
         sharing_link = await minio_client.get_presigned_url(object_name)
 
+        print(f"Sharing_link:{sharing_link} ")
+
         if not sharing_link:
             logger.info("Upload failed. Retrying...")
             continue
@@ -321,7 +323,7 @@ async def main():
                 needed = 5
             
             ran_num = random.random()
-            ran_num = 0.3
+            # ran_num = 0.85
             logger.info(f"Seleted random number: {ran_num}")
             if ran_num < threshold_hd_to_4k:
                 task_type = "HD24K"

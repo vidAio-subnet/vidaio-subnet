@@ -3,7 +3,8 @@ import asyncio
 import datetime
 import os
 from concurrent.futures import ThreadPoolExecutor
-from ..global_config import CONFIG
+# from ..global_config import CONFIG
+from vidaio_subnet_core.global_config import CONFIG
 
 
 class VideoSubnetMinioClient:
@@ -120,8 +121,10 @@ minio_client = VideoSubnetMinioClient(
 )
 
 
-async def main():
-    pass
+# async def main():
+#     await minio_client.upload_file("567.mp4", "/workspace/vidaio-subnet/4k_33.mp4")
+#     presigned_url = await minio_client.get_presigned_url("567.mp4")
+#     print(presigned_url)
 
 if __name__ == "__main__":
     asyncio.run(main())

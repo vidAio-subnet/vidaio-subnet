@@ -56,11 +56,6 @@ def video_upscaler(request: UpscaleRequest):
         dict: A dictionary containing the full paths to the upscaled video and the mp4 file.
     """
     try:
-        ppath = "/workspace/vidaio-subnet/234.mp4"
-        print(f"Returning from FastAPI: {ppath}")
-        return {"upscaled_video_path": ppath}
-
-
 
         input_file = Path(request.task_file_path)
         task_type = request.task_type
