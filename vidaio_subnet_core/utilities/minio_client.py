@@ -121,10 +121,10 @@ minio_client = VideoSubnetMinioClient(
 )
 
 
-# async def main():
-#     await minio_client.upload_file("567.mp4", "/workspace/vidaio-subnet/4k_33.mp4")
-#     presigned_url = await minio_client.get_presigned_url("567.mp4")
-#     print(presigned_url)
+async def main():
+    await minio_client.upload_file("normal_01.mp4", "/workspace/vidaio-subnet/normal_1.mp4")
+    presigned_url = await minio_client.get_presigned_url("normal_1.mp4")
+    print(presigned_url)
 
 if __name__ == "__main__":
     asyncio.run(main())
