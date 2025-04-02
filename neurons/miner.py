@@ -25,8 +25,9 @@ class Miner(BaseMiner):
         
         task_type: str = synapse.miner_payload.task_type      
         payload_url: str = synapse.miner_payload.reference_video_url
-        
-        logger.info(f"✅✅✅ Receiving {task_type} Request from validator: {synapse.dendrite.hotkey}")
+        validator_uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
+
+        logger.info(f"✅✅✅ Receiving {task_type} Request from validator: {synapse.dendrite.hotkey} with uid: {validator_uid}")
         
         check_version(synapse.version)
         
