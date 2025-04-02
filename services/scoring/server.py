@@ -108,7 +108,7 @@ async def score(request: ScoringRequest) -> ScoringResponse:
     Returns:
         ScoringResponse: The response object containing a list of scores for each distorted video.
     """
-    logger.info("Start scoring..........")
+    logger.info("🤖 Start scoring..........")
     logger.debug(f"Request data: {request.__dict__}")
     
     ref_path = request.reference_path
@@ -126,7 +126,7 @@ async def score(request: ScoringRequest) -> ScoringResponse:
     scores = []
     for dist_url in request.distorted_urls:
         ref_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-        logger.info("Attempting to download video....")
+        logger.info("Attempting to download processed video....")
         dist_path = await download_video(dist_url, request.verbose)
         dist_cap = cv2.VideoCapture(dist_path)
 
