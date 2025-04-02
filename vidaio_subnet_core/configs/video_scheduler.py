@@ -15,6 +15,6 @@ class VideoSchedulerConfig(BaseModel):
     weight_hd_to_4k: float = Field(default = 0.4)
     weight_sd_to_hd: float = Field(default = 0.2)
     weight_sd_to_4k: float = Field(default = 0.2)
-    weight_4k_to_8k: float = Field(default = 0.1)
-    weight_hd_to_8k: float = Field(default = 0.1) 
+    weight_4k_to_8k: float = Field(default = 0)
+    weight_hd_to_8k: float = Field(default = 0) 
 

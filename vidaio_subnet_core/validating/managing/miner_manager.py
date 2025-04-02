@@ -43,7 +43,7 @@ class MinerManager:
             for uid in uids
         }
         logger.debug(
-            f"Serving counters initialized with rate limit: {self.serving_counters}"
+            f"Serving counters initialized with rate limit: {rate_limit}"
         )
     
 

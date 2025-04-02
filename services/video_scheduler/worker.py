@@ -325,13 +325,13 @@ async def main():
             ran_num = random.random()
             # ran_num = 0.85
             logger.info(f"Seleted random number: {ran_num}")
-            if ran_num < threshold_hd_to_4k:
+            if ran_num <= threshold_hd_to_4k:
                 task_type = "HD24K"
-            elif ran_num < threshold_sd_to_hd:
+            elif ran_num <= threshold_sd_to_hd:
                 task_type = "SD2HD"
-            elif ran_num < threshold_sd_to_4k:
+            elif ran_num <= threshold_sd_to_4k:
                 task_type = "SD24K"
-            elif ran_num < threshold_4k_to_8k: 
+            elif ran_num <= threshold_4k_to_8k: 
                 task_type = "4K28K"
             else:
                 task_type = "HD28K"
@@ -370,7 +370,7 @@ async def main():
             needed_urls = await get_synthetic_requests_paths(num_needed=needed, redis_conn = redis_conn)
             push_synthetic_chunks(redis_conn, needed_urls)
         
-        time.sleep(10)
+        time.sleep(5)
 
 if __name__ == "__main__":
     asyncio.run(main())
