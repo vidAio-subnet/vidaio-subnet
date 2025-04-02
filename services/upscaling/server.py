@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from pathlib import Path
 import subprocess
+import os
 from fastapi.responses import JSONResponse
 import time
 import asyncio
@@ -87,10 +88,10 @@ def video_upscaler(request: UpscaleRequest):
         duplicate_last_frame_command = [
             "ffmpeg",
             "-i", str(input_file),
-            "-vf", f"tpad=stop_mode=clone:stop_duration={stop_duration}",  # Dynamically calculated duration
-            "-c:v", "libx264",  # Ensure proper encoding
-            "-crf", "18",  # High-quality encoding
-            "-preset", "fast",  # Fast encoding preset
+            "-vf", f"tpad=stop_mode=clone:stop_duration={stop_duration}",
+            "-c:v", "libx264",
+            "-crf", "23",
+            "-preset", "fast",
             str(output_file_with_extra_frames)
         ]
 
@@ -114,11 +115,11 @@ def video_upscaler(request: UpscaleRequest):
             "video2x",
             "-i", str(output_file_with_extra_frames),
             "-o", str(output_file_upscaled),
-            "-p", "realesrgan",  # Use Real-ESRGAN for upscaling
+            "-p", "realesrgan",  
             "-s", scale_factor,  # Scale factor of 2 or 4
-            "-c", "libx264",  # Encode with H.264
-            "-e", "preset=slow",  # Slow preset for better quality
-            "-e", "crf=24"  # Compression level
+            "-c", "libx264",  
+            "-e", "preset=slow",  
+            "-e", "crf=24"
         ]
         video2x_process = subprocess.run(video2x_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         elapsed_time = time.time() - start_time
@@ -134,6 +135,16 @@ def video_upscaler(request: UpscaleRequest):
         if output_file_with_extra_frames.exists():
             output_file_with_extra_frames.unlink()
             print(f"Intermediate file {output_file_with_extra_frames} deleted.")
+
+
+        # Cleanup intermediate files and original file if needed
+        if output_file_with_extra_frames.exists():
+            output_file_with_extra_frames.unlink()
+            print(f"Intermediate file {output_file_with_extra_frames} deleted.")
+            
+        if input_file.exists():
+            input_file.unlink()
+            print(f"Original file {input_file} deleted.")
         
         print(f"Returning from FastAPI: {output_file_upscaled}")
         return {"upscaled_video_path": str(output_file_upscaled)}

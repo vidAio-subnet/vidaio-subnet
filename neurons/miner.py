@@ -1,6 +1,7 @@
 import time
 import uuid
 import traceback
+import os
 from typing import Tuple
 from loguru import logger
 import bittensor as bt
@@ -43,6 +44,12 @@ class Miner(BaseMiner):
                 await minio_client.upload_file(object_name, processed_video_path)
                 logger.info("Video uploaded successfully.")
                 
+                if os.path.exists(processed_video_path):
+                    os.remove(processed_video_path)
+                    logger.info(f"{processed_video_path} has been deleted.")
+                else:
+                    logger.info(f"{processed_video_path} does not exist.")
+                    
                 sharing_link: str | None = await minio_client.get_presigned_url(object_name)
                 if not sharing_link:
                     logger.error("Upload failed")
