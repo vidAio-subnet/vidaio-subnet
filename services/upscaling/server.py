@@ -135,12 +135,6 @@ def video_upscaler(request: UpscaleRequest):
         if output_file_with_extra_frames.exists():
             output_file_with_extra_frames.unlink()
             print(f"Intermediate file {output_file_with_extra_frames} deleted.")
-
-
-        # Cleanup intermediate files and original file if needed
-        if output_file_with_extra_frames.exists():
-            output_file_with_extra_frames.unlink()
-            print(f"Intermediate file {output_file_with_extra_frames} deleted.")
             
         if input_file.exists():
             input_file.unlink()
