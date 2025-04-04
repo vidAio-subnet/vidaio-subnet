@@ -197,9 +197,11 @@ async def score(request: ScoringRequest) -> ScoringResponse:
 
         # Final score calculation
         if vmaf_score / 100 < VMAF_THRESHOLD:
+            logger.info(f"vmaf score is too low, giving zero score, current vmaf score: {vmaf_score}")
             scores.append(0)
         else:
             final_score = 1 - pieapp_score**2
+            logger.info(f"🏀 final_score is {final_score}")
             scores.append(final_score)
 
         dist_cap.release()
