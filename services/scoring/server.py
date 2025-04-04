@@ -10,6 +10,7 @@ import random
 from vidaio_subnet_core import CONFIG
 from vmaf_metric import calculate_vmaf
 from lpips_metric import calculate_lpips
+from pieapp_metric import calculate_pieapp_score
 import aiohttp
 import logging
 
@@ -17,6 +18,9 @@ import logging
 logger = logging.getLogger(__name__)
 app = FastAPI()
 fire_requests = FireRequests()
+
+VMAF_THRESHOLD = 0.5
+
 
 class ScoringRequest(BaseModel):
     """
@@ -147,41 +151,56 @@ async def score(request: ScoringRequest) -> ScoringResponse:
             os.unlink(dist_path)
             continue  # Skip to the next distorted video
 
+        vmaf_score = 0
         # Calculate VMAF
         try:
             vmaf_score = calculate_vmaf(ref_path, dist_path)
+            logger.info(f"🎾 vmaf_score is {vmaf_score}")
+
         except Exception as e:
             logger.error(f"Failed to calculate VMAF for {dist_url}: {str(e)}. Assigning score of 0.")
             scores.append(0.0)
             dist_cap.release()
             os.unlink(dist_path)
             continue  # Skip to the next distorted video
+        
+        # # Select two random frames for LPIPS calculation
+        # frame_indices = random.sample(range(ref_total_frames), 2)
+        # lpips_scores = []
 
-        # Select two random frames for LPIPS calculation
-        frame_indices = random.sample(range(ref_total_frames), 2)
-        lpips_scores = []
+        # for idx in frame_indices:
+        #     ref_cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        #     ret_ref, ref_frame = ref_cap.read()
+        #     dist_cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        #     ret_dist, dist_frame = dist_cap.read()
 
-        for idx in frame_indices:
-            ref_cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            ret_ref, ref_frame = ref_cap.read()
-            dist_cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            ret_dist, dist_frame = dist_cap.read()
+        #     if not ret_ref or not ret_dist:
+        #         logger.error(f"Frames cannot be read for {dist_url} at index {idx}. Assigning score of 0.")
+        #         lpips_scores.append(1.0)  # Assign a high LPIPS score (bad quality)
+        #         continue
 
-            if not ret_ref or not ret_dist:
-                logger.error(f"Frames cannot be read for {dist_url} at index {idx}. Assigning score of 0.")
-                lpips_scores.append(1.0)  # Assign a high LPIPS score (bad quality)
-                continue
+        #     lpips_score = calculate_lpips(ref_frame, dist_frame)
+        #     lpips_scores.append(lpips_score)
 
-            lpips_score = calculate_lpips(ref_frame, dist_frame)
-            lpips_scores.append(lpips_score)
+        # logger.info(f"LPIPS scores: {lpips_scores}")
+        # average_lpips = sum(lpips_scores) / len(lpips_scores) if lpips_scores else 1.0  # Worst case
+        # logger.info(f"Average LPIPS: {average_lpips}")
 
-        logger.info(f"LPIPS scores: {lpips_scores}")
-        average_lpips = sum(lpips_scores) / len(lpips_scores) if lpips_scores else 1.0  # Worst case
-        logger.info(f"Average LPIPS: {average_lpips}")
+        # # Final score calculation
+        # final_score = vmaf_score * 0.6 / 100 + (1 - average_lpips) * 0.4
+        # scores.append(final_score)
+
+        # Calculate pieapp score
+        
+        pieapp_score = calculate_pieapp_score(ref_cap, dist_cap)
+        logger.info(f"🎾 Pieapp_score is {pieapp_score}")
 
         # Final score calculation
-        final_score = vmaf_score * 0.6 / 100 + (1 - average_lpips) * 0.4
-        scores.append(final_score)
+        if vmaf_score / 100 < VMAF_THRESHOLD:
+            scores.append(0)
+        else:
+            final_score = 1 - pieapp_score**2
+            scores.append(final_score)
 
         dist_cap.release()
         os.unlink(dist_path)

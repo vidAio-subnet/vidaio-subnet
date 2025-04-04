@@ -4,34 +4,17 @@ import numpy as np
 import torch
 import pyiqa
 
-def calculate_pieapp_score(reference_video_path, processed_video_path):
+def calculate_pieapp_score(ref_cap, proc_cap):
     """
     Calculate PieAPP score between a reference video and a processed video using pyiqa on GPU.
-    
-    Args:
-        reference_video_path (str): Path to the reference video file.
-        processed_video_path (str): Path to the processed video file.
     
     Returns:
         float: Average PieAPP score across all frames of the videos.
     """
-    if not os.path.exists(reference_video_path):
-        raise FileNotFoundError(f"Reference video not found at {reference_video_path}")
-    if not os.path.exists(processed_video_path):
-        raise FileNotFoundError(f"Processed video not found at {processed_video_path}")
     
     # Check if GPU is available
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {device}")
-    
-    # Open the reference and processed videos
-    ref_cap = cv2.VideoCapture(reference_video_path)
-    proc_cap = cv2.VideoCapture(processed_video_path)
-    
-    if not ref_cap.isOpened():
-        raise ValueError(f"Unable to open reference video: {reference_video_path}")
-    if not proc_cap.isOpened():
-        raise ValueError(f"Unable to open processed video: {processed_video_path}")
     
     # Initialize PieAPP metric from pyiqa and move it to the GPU
     pieapp_metric = pyiqa.create_metric('PieAPP').to(device)
@@ -61,10 +44,6 @@ def calculate_pieapp_score(reference_video_path, processed_video_path):
         # Calculate PieAPP score for the current frame
         score = pieapp_metric(ref_tensor, proc_tensor).item()
         scores.append(score)
-    
-    # Release video captures
-    ref_cap.release()
-    proc_cap.release()
     
     # Return the average PieAPP score across all frames
     return np.mean(scores) if scores else None
