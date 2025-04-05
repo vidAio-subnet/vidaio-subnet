@@ -39,13 +39,13 @@ class Validator(base.BaseValidator):
         
         self.wandb_manager = WandbManager(validator=self)
         logger.info("🔑 Initialized Wandb Manager 🔑")
-        
+    
 
     async def start_epoch(self):
-        logger.info("✅ Starting forward ✅")
-        uids = list(range(len(self.metagraph.hotkeys)))
-        logger.debug(f"Initial UIDs: {uids}")
-        uids = self.miner_manager.consume(uids)
+        logger.info("✅✅✅✅✅ Starting forward ✅✅✅✅✅")
+        miner_uids = self.filter_miners()
+        logger.debug(f"Initialized {len(miner_uids)} subnet neurons after removing {len(validator_uids)} validators")
+        uids = self.miner_manager.consume(miner_uids)
         uids = [2]
         logger.info(f"Filtered UIDs after consumption: {uids}")
         axons = [self.metagraph.axons[uid] for uid in uids]
@@ -60,7 +60,7 @@ class Validator(base.BaseValidator):
             logger.info(f"🧩 Processing batch {batch_idx + 1}/{len(miner_batches)} 🧩")
             video_id, uploaded_object_name, synapse = await self.challenge_synthesizer.build_protocol()
             synapse.version = get_version()
-            logger.debug(f"Built challenge protocol {synapse.__dict__}")
+            logger.debug(f"Built challenge protocol")
             uids = []
             axons = []
             for miner in batch:
@@ -71,14 +71,13 @@ class Validator(base.BaseValidator):
                 axons=axons, synapse=synapse, timeout=200
             )
             logger.info(f"🎲 Received {len(responses)} responses from miners 🎲")
-            logger.info(responses)
+            logger.info(f"optimized url: f{responses[0].miner_response.optimized_video_url}")
             reference_video_path = get_trim_video_path(video_id)
             
             await self.score(uids, responses, reference_video_path)
 
-            
-            minio_client.delete_file(uploaded_object_name)
-            delete_videos_with_fileid(video_id)
+            # minio_client.delete_file(uploaded_object_name)
+            # delete_videos_with_fileid(video_id)
             
             logger.debug("Waiting 5 seconds before next batch")
             await asyncio.sleep(5)
@@ -104,6 +103,12 @@ class Validator(base.BaseValidator):
         logger.info(f"Updating miner manager with {len(scores)} miner scores")
         self.miner_manager.step(scores, uids)
 
+    def filter_miners(self):
+        min_stake = CONFIG.bandwidth.min_stake
+        stake_array = self.metagraph.S
+        miner_uids = [i for i, stake in enumerate(stake_array) if stake < min_stake]
+
+        return miner_uids
 
     def set_weights(self):
         self.current_block = self.subtensor.get_current_block()
@@ -148,7 +153,6 @@ class Validator(base.BaseValidator):
                 logger.error(f"Failed to set weights: {e}")
                 traceback.print_exc()
 
-            logger.info(f"Set weights result: {success}")
         else:
             logger.info(
                 f"Not setting weights because current block {self.current_block} is not greater than last update {self.last_update} + tempo {CONFIG.SUBNET_TEMPO}"

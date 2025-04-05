@@ -82,6 +82,7 @@ class MinerManager:
         logger.info(f"Consuming {len(uids)} UIDs")
         filtered_uids = [uid for uid in uids if self.serving_counters[uid].increment()]
         logger.info(f"Filtered to {len(filtered_uids)} UIDs after rate limiting")
+
         return filtered_uids
 
     @property

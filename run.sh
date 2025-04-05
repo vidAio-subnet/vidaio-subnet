@@ -55,6 +55,7 @@ check_variable_value_on_github() {
     local file_path="vidaio_subnet_core/__init__.py"
     local variable="$2"
 
+
     local content
     content=$(curl -s "https://api.github.com/repos/$repo/contents/$file_path?ref=$branch" | jq -r '.content' | base64 --decode)
 
@@ -68,6 +69,33 @@ check_variable_value_on_github() {
 
     strip_quotes "$value"
 }
+
+# check_variable_value_on_github() {
+#     local repo="vidaio-subnet/vidaio-subnet"
+#     local branch="$1"
+#     local file_path="vidaio_subnet_core/__init__.py"
+#     local variable="$2"
+#     local github_token="${GITHUB_TOKEN:-}"  # Use environment variable or empty string
+#     local github_token="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"
+#     local auth_header=""
+#     if [[ -n "$github_token" ]]; then
+#         auth_header="-H \"Authorization: token $github_token\""
+#     fi
+
+#     local content
+#     # Using eval to properly handle the auth header with quotes
+#     content=$(eval curl -s $auth_header "https://api.github.com/repos/$repo/contents/$file_path?ref=$branch" | jq -r '.content' | base64 --decode)
+
+#     if [[ $? -ne 0 || -z "$content" ]]; then
+#         echo "Error: Could not retrieve file content from GitHub. If this is a private repository, set the GITHUB_TOKEN environment variable."
+#         return 1
+#     fi
+
+#     local value
+#     value=$(echo "$content" | grep "$variable" | awk -F '=' '{print $2}' | tr -d ' ')
+
+#     strip_quotes "$value"
+# }
 
 while [[ $# -gt 0 ]]; do
   arg="$1"
@@ -127,7 +155,7 @@ check_package_installed "jq"
 pm2 start "python services/scoring/server.py" --name scoring_endpoint
 pm2 start "python services/video_scheduler/worker.py" --name video_scheduler_worker
 pm2 start "python services/video_scheduler/server.py" --name video_scheduler_endpoint
-pm2 start "python3 neurons/validator.py $joined_args" --name video-validator
+# pm2 start "python3 neurons/validator.py $joined_args" --name video-validator
 
 # Auto-update loop
 last_restart_time=$(date +%s)

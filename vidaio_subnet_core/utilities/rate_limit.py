@@ -1,5 +1,6 @@
 import pandas as pd
 from ..global_config import CONFIG
+from loguru import logger
 
 def build_rate_limit(metagraph, uid: int) -> int:
     """
@@ -25,9 +26,15 @@ def build_rate_limit(metagraph, uid: int) -> int:
     uids, stakes = zip(*valid_uids_stakes)
     total_stake = sum(stakes)
 
+    logger.info(f"Total stake: {total_stake}")
+    logger.info(f"Validator currentl stake: {stakes[uids.index(uid)]}")
+
     if total_stake == 0:
         return 0  # Avoid division by zero
 
     # Compute normalized stake
     normalized_stake = stakes[uids.index(uid)] / total_stake
-    return int(CONFIG.bandwidth.total_requests * normalized_stake)
+    vali_rate_limit = int(CONFIG.bandwidth.total_requests * normalized_stake)
+    logger.info(f"Validator rate limit: {vali_rate_limit}")
+
+    return vali_rate_limit

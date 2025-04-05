@@ -3,6 +3,7 @@ import httpx
 from typing import Tuple, Dict
 from ...protocol import VideoUpscalingProtocol, MinerPayload
 from ...global_config import CONFIG
+from loguru import logger
 
 class Synthesizer:
     def __init__(self):
@@ -31,17 +32,17 @@ class Synthesizer:
 
                 # check if response data is None or empty
                 if not data or not data.get("chunk"):
-                    print(f"Attempt {attempt + 1}/{self.max_retries}: No chunk available, waiting {self.retry_delay}s...")
+                    logger.info(f"Attempt {attempt + 1}/{self.max_retries}: No chunk available, waiting {self.retry_delay}s...")
                     await asyncio.sleep(self.retry_delay)
                     continue
 
                 chunk: Dict = data["chunk"]
-                print(f"received chunk from video-scheduler api: {chunk}")
+                logger.info(f"received chunk from video-scheduler api")
 
                 # validate required fields
                 required_fields = ["video_id", "uploaded_object_name", "sharing_link", "task_type"]
                 if not all(field in chunk for field in required_fields):
-                    print(f"Missing required fields in chunk data: {chunk}")
+                    logger.info(f"Missing required fields in chunk data: {chunk}")
                     await asyncio.sleep(self.retry_delay)
                     continue
 
@@ -58,13 +59,13 @@ class Synthesizer:
                 )
 
             except httpx.HTTPStatusError as e:
-                print(f"HTTP error on attempt {attempt + 1}/{self.max_retries}: {e}")
+                logger.info(f"HTTP error on attempt {attempt + 1}/{self.max_retries}: {e}")
                 if attempt == self.max_retries - 1:
                     raise
                 await asyncio.sleep(self.retry_delay)
                 
             except Exception as e:
-                print(f"Unexpected error on attempt {attempt + 1}/{self.max_retries}: {e}")
+                logger.info(f"Unexpected error on attempt {attempt + 1}/{self.max_retries}: {e}")
                 if attempt == self.max_retries - 1:
                     raise
                 await asyncio.sleep(self.retry_delay)
