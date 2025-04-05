@@ -141,7 +141,7 @@ Cargo is required to build the Video2X package:
 ```bash
 sudo apt-get update
 sudo apt-get install cargo -y
-cargo install just
+cargo install just --version=1.39.0
 ```
 
 #### 2. Clone the Video2X Repository
