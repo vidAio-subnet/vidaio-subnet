@@ -43,6 +43,13 @@ def add_args(parser):
     )
 
     parser.add_argument(
+        "--neuron.epoch_length",
+        type=int.
+        help="epoch length",
+        default=100,
+    )
+
+    parser.add_argument(
         "--wandb.off",
         action="store_true",
         help="Turn off wandb.",
@@ -61,7 +68,7 @@ def add_miner_args(parser):
     )
 
     parser.add_argument(
-        "--blacklist.allow_non_registered",
+        "--epoch_length",
         action="store_true",
         help="If set, miners will accept queries from non registered entities. (Dangerous!)",
         default=False,
