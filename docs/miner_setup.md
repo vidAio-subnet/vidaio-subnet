@@ -134,9 +134,9 @@ For more information, refer to the [CUDA Toolkit Installation Guide](https://dev
 
 ### Step 3: Install Video2X
 
-Install the **Video2X** package by following these steps:
+### Option 1: Install Video2X by Building Debian Package:
 
-#### 1. Install Cargo
+1. Install Cargo
 Cargo is required to build the Video2X package:
 ```bash
 sudo apt-get update
@@ -144,14 +144,14 @@ sudo apt-get install cargo -y
 cargo install just --version=1.39.0
 ```
 
-#### 2. Clone the Video2X Repository
+2. Clone the Video2X Repository
 you can clone this repository within the current vidaio-subnet package
 ```bash
 git clone --recurse-submodules https://github.com/vidAio-subnet/video2x
 cd video2x
 ```
 
-#### 3. Build the Video2X Project
+3. Build the Video2X Project
 Before building, ensure `~/.cargo/bin` is included in your `PATH` environment variable:
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -164,15 +164,33 @@ just ubuntu2404
 
 Once the build is complete, the `.deb` package will be located in the current directory.
 
-#### 4. Install the Built Package
+4. Install the Built Package
 Install the `.deb` package using:
 ```bash
 sudo dpkg -i video2x-linux-ubuntu-amd64.deb
 ```
 
-For additional details, refer to the [Video2X Documentation](https://docs.video2x.org/building/linux.html).
-
 ---
+
+### Option 2: Install Video2X by downloading Debian Package:
+
+
+1. **Download the Video2X `.deb` package**:
+   ```bash
+   wget -P services/upscaling/models https://github.com/k4yt3x/video2x/releases/download/6.3.1/video2x-linux-ubuntu2404-amd64.deb
+   ```
+
+2. **Install the package using `dpkg`**:
+   ```bash
+   sudo dpkg -i services/upscaling/models/video2x-linux-ubuntu2404-amd64.deb
+   ```
+
+3. **Resolve dependencies** (if any):
+   ```bash
+   sudo apt-get install -f
+   ```
+---
+For additional details, refer to the [Video2X Documentation](https://docs.video2x.org/building/linux.html).
 
 ## Running the Video Upscaling Endpoint
 
@@ -182,6 +200,7 @@ You can run the video upscaling endpoint using **PM2** to manage the process:
 pm2 start "python services/upscaling/server.py" --name video-upscaler
 ```
 
+
 ### Notes:
 - The `video-upscaler` process will handle video upscaling requests.
 - Use the following PM2 commands to manage the process:
@@ -190,6 +209,14 @@ pm2 start "python services/upscaling/server.py" --name video-upscaler
   - **Stop**: `pm2 stop video-upscaler`
 
 ---
+
+## Running the file deletion process
+
+You can run the file deletion process using **PM2** to manage the process:
+
+```bash
+pm2 start "python services/miner_utilities/file_deletion_server.py" --name video-deleter
+```
 
 ## Running the Miner with PM2
 

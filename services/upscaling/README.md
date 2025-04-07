@@ -24,7 +24,7 @@ Follow these steps to download and install the Video2X package on your environme
    ```bash
    sudo apt-get install -f
    ```
-But we recommend you to follow miner setup guidance since this approach is not safe
+<!-- But we recommend you to follow miner setup guidance since this approach is not safe -->
 
 ## Usage
 
