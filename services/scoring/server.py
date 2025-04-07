@@ -21,7 +21,6 @@ fire_requests = FireRequests()
 
 VMAF_THRESHOLD = 0.5
 
-
 class ScoringRequest(BaseModel):
     """
     Request model for scoring. Contains URLs for distorted videos and the reference video path.
@@ -131,7 +130,13 @@ async def score(request: ScoringRequest) -> ScoringResponse:
     for dist_url in request.distorted_urls:
         ref_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         logger.info("Attempting to download processed video....")
-        dist_path = await download_video(dist_url, request.verbose)
+        try:
+            dist_path = await download_video(dist_url, request.verbose)
+        except Exception as e:
+            logger.error(f"Failed to download video from {dist_url}: {str(e)}. Assigning score of 0.")
+            scores.append(0.0)
+            continue
+         
         dist_cap = cv2.VideoCapture(dist_path)
 
         if not dist_cap.isOpened():
@@ -193,6 +198,8 @@ async def score(request: ScoringRequest) -> ScoringResponse:
         # Calculate pieapp score
         
         pieapp_score = calculate_pieapp_score(ref_cap, dist_cap)
+        if pieapp_score > 5.0
+            pieapp_score = 5.0
         logger.info(f"🎾 Pieapp_score is {pieapp_score}")
 
         # Final score calculation
@@ -200,7 +207,7 @@ async def score(request: ScoringRequest) -> ScoringResponse:
             logger.info(f"vmaf score is too low, giving zero score, current vmaf score: {vmaf_score}")
             scores.append(0)
         else:
-            final_score = 1 - pieapp_score**2
+            final_score = (5 - pieapp_score) / 5.0
             logger.info(f"🏀 final_score is {final_score}")
             scores.append(final_score)
 
