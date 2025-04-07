@@ -76,8 +76,8 @@ class Validator(base.BaseValidator):
             
             await self.score(uids, responses, reference_video_path)
 
-            # minio_client.delete_file(uploaded_object_name)
-            # delete_videos_with_fileid(video_id)
+            minio_client.delete_file(uploaded_object_name)
+            delete_videos_with_fileid(video_id)
             
             logger.debug("Waiting 5 seconds before next batch")
             await asyncio.sleep(5)

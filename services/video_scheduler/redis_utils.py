@@ -62,42 +62,42 @@ def pop_organic_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
     data = r.lpop(REDIS_CONFIG.organic_queue_key)
     return json.loads(data) if data else None
 
-def pop_synthetic_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
-    """
-    Pop the oldest synthetic chunk dictionary (FIFO), and push it back to the end of the queue
-    to maintain the queue size. Returns a dictionary or None if the queue is empty.
-    
-    Args:
-        r (redis.Redis): Redis connection
-
-    Returns:
-        Optional[Dict[str, str]]: The popped synthetic chunk or None if the queue is empty.
-    """
-    # Pop the oldest item from the queue
-    data = r.lpop(REDIS_CONFIG.synthetic_queue_key)
-    
-    if data:
-        chunk = json.loads(data)
-        # Push the chunk back to maintain queue size
-        push_synthetic_chunk(r, chunk)
-        return chunk
-        
-    return None
-
 # def pop_synthetic_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
 #     """
-#     Pop the oldest synthetic chunk dictionary (FIFO), process it, and push it back to the end of the queue (LIFO).
-#     Returns a dictionary or None if the queue is empty.
+#     Pop the oldest synthetic chunk dictionary (FIFO), and push it back to the end of the queue
+#     to maintain the queue size. Returns a dictionary or None if the queue is empty.
     
 #     Args:
 #         r (redis.Redis): Redis connection
 
 #     Returns:
-#         Optional[Dict[str, str]]: The popped and re-pushed synthetic chunk or None if the queue is empty.
+#         Optional[Dict[str, str]]: The popped synthetic chunk or None if the queue is empty.
 #     """
 #     # Pop the oldest item from the queue
 #     data = r.lpop(REDIS_CONFIG.synthetic_queue_key)
-#     return json.loads(data) if data else None
+    
+#     if data:
+#         chunk = json.loads(data)
+#         # Push the chunk back to maintain queue size
+#         push_synthetic_chunk(r, chunk)
+#         return chunk
+        
+#     return None
+
+def pop_synthetic_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
+    """
+    Pop the oldest synthetic chunk dictionary (FIFO), process it, and push it back to the end of the queue (LIFO).
+    Returns a dictionary or None if the queue is empty.
+    
+    Args:
+        r (redis.Redis): Redis connection
+
+    Returns:
+        Optional[Dict[str, str]]: The popped and re-pushed synthetic chunk or None if the queue is empty.
+    """
+    # Pop the oldest item from the queue
+    data = r.lpop(REDIS_CONFIG.synthetic_queue_key)
+    return json.loads(data) if data else None
 
 def get_organic_queue_size(r: redis.Redis) -> int:
     """
