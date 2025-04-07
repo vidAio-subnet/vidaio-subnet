@@ -31,3 +31,4 @@ services/upscaling/model/
 services/scoring/vmaf
 pexel_scraper.py
 test.py
+services/upscaling/models/
