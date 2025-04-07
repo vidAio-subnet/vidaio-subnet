@@ -170,7 +170,7 @@ cd vmaf
 1. Set up the build environment:
    ```bash
    cd libvmaf
-   meson setup build --buildtype release -Denable_avx512=true -Denable_cuda=true
+   meson setup build --buildtype release -Denable_avx512=true
    ```
 
 2. Optional flags:
@@ -227,55 +227,9 @@ cd ..
 source venv/bin/activate
 ```
 
-## Running the Scoring endpoint
-
-You can run the video upscaling validation endpoint using **PM2** to manage the process:
-
+## Running the validator
 ```bash
-pm2 start "python services/scoring/server.py" --name scoring_endpoint
+pm2 start run.sh --name vidaio_v_autoupdater -- --netuid {85} --wallet.name {wallet} --wallet.hotkey {hotkey} --axon.port {port} --axon.external_port {port} --logging.debug
 ```
-
-### Notes:
-- The `scoring_endpoint` process will handle video upscaling requests.
-- Use the following PM2 commands to manage the process:
-  - **View Logs**: `pm2 logs scoring_endpoint`
-  - **Restart**: `pm2 restart scoring_endpoint`
-  - **Stop**: `pm2 stop scoring_endpoint`
-
----
-
-## Video Scheduler Setup
-
-### start worker:
-```bash
-pm2 start "python services/video_scheduler/worker.py" --name video_scheduler_worker
-```
-
-### start endpoint:
-```bash
-pm2 start "python services/video_scheduler/server.py" --name video_scheduler_endpoint
-```
-
-## Running the Validator with PM2
-
-To run the validator, use the following command:
-
-```bash
-pm2 start "python3 neurons/validator.py --wallet.name [Your_Wallet_Name] --wallet.hotkey [Your_Hotkey_Name] --subtensor.network test --netuid 292 --axon.port [port] --logging.debug" --name video-validator
-```
-
-### Parameters:
-- **`--wallet.name`**: Replace `[Your_Wallet_Name]` with your wallet name.
-- **`--wallet.hotkey`**: Replace `[Your_Hotkey_Name]` with your hotkey name.
-- **`--subtensor.network`**: Specify the target network (e.g., `finney`).
-- **`--netuid`**: Specify the network UID (e.g., `292`).
-- **`--axon.port`**: Replace `[port]` with the desired port number.
-- **`--logging.debug`**: Enables debug-level logging for detailed output.
-
-### Managing the validator Process:
-- **Start the validator**: The above command will start the validator as a PM2 process named `video-validator`.
-- **View Logs**: Use `pm2 logs vidaio-validator` to monitor validator logs in real time.
-- **Restart the Validator**: Use `pm2 restart video-validator` to restart the process.
-- **Stop the Validator**: Use `pm2 stop video-validator` to stop the process.
 
 ---
