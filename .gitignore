@@ -10,6 +10,7 @@ note.txt
 *.pyc
 *.mp3
 *.js
+*.xml 
 .DS_Store
 *.json
 .env
@@ -23,12 +24,6 @@ IQA-PyTorch/
 MDTVSFA/
 MANIQA/
 frames/
-video_quality_analyzer/
-vmaf_output.xml 
-services/video_scheduler/videos/
-services/upscaling/videos/
-services/upscaling/model/
+tmp/
 services/scoring/vmaf
-pexel_scraper.py
-test.py
 services/upscaling/models/

@@ -80,7 +80,7 @@ class Validator(base.BaseValidator):
             delete_videos_with_fileid(video_id)
             
             logger.debug("Waiting 5 seconds before next batch")
-            await asyncio.sleep(5)
+            await asyncio.sleep(20)
 
     async def score(self, uids: list[int], responses: list[protocol.Synapse], reference_video_path: str):
         logger.info(f"Starting scoring for {len(uids)} miners")

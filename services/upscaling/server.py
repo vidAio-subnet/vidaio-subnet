@@ -63,10 +63,10 @@ def upscale_video(payload_video_path: str, task_type: str):
     try:
         input_file = Path(payload_video_path)
 
-        scale_factor = 2
+        scale_factor = "2"
 
         if task_type == "SD24K":
-            scale_factor = 4
+            scale_factor = "4"
 
         # Validate input file
         if not input_file.exists() or not input_file.is_file():
@@ -148,13 +148,15 @@ def upscale_video(payload_video_path: str, task_type: str):
         print(f"Error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
-
+@app.post("/upscale-video")
 async def video_upscaler(request: UpscaleRequest):
     try:
         payload_url = request.payload_url
         task_type = request.task_type
 
+        logger.info("📻 Downloading video....")
         payload_video_path: str = await download_video(payload_url)
+        logger.info(f"Download video finished, Path: {payload_video_path}")
 
         processed_video_path = upscale_video(payload_video_path, task_type)
         processed_video_name = Path(processed_video_path).name
