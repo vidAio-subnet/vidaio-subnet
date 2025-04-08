@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from pathlib import Path
 import subprocess
+import os
 from fastapi.responses import JSONResponse
 import time
 import asyncio
@@ -9,11 +10,16 @@ from vidaio_subnet_core import CONFIG
 import re
 from pydantic import BaseModel
 from typing import Optional
+from services.miner_utilities.redis_utils import schedule_file_deletion
+from vidaio_subnet_core.utilities import minio_client, download_video
+from loguru import logger
+import traceback
 
 app = FastAPI()
 
 class UpscaleRequest(BaseModel):
-    task_file_path: str
+    payload_url: str
+    task_type: str
     # output_file_upscaled: Optional[str] = None
     
 
@@ -43,19 +49,24 @@ def get_frame_rate(input_file: Path) -> float:
         raise HTTPException(status_code=500, detail="Unable to determine frame rate of the video.")
 
 
-@app.post("/upscale-video")
-def video_upscaler(request: UpscaleRequest):
+def upscale_video(payload_video_path: str, task_type: str):
     """
     Upscales a video using the video2x tool and returns the full paths of the upscaled video and the converted mp4 file.
 
     Args:
-        request (UpscaleRequest): Input containing the path to the video to upscale.
+        payload_video_path (str): The path to the video to upscale.
+        task_type (str): The type of upscaling task to perform.
 
     Returns:
-        dict: A dictionary containing the full paths to the upscaled video and the mp4 file.
+        str: The full path to the upscaled video.
     """
     try:
-        input_file = Path(request.task_file_path)
+        input_file = Path(payload_video_path)
+
+        scale_factor = "2"
+
+        if task_type == "SD24K":
+            scale_factor = "4"
 
         # Validate input file
         if not input_file.exists() or not input_file.is_file():
@@ -70,7 +81,7 @@ def video_upscaler(request: UpscaleRequest):
 
         # Generate output file paths
         output_file_with_extra_frames = input_file.with_name(f"{input_file.stem}_extra_frames.mp4")
-        output_file_upscaled = input_file.with_name(f"4k_{input_file.stem}.mp4")
+        output_file_upscaled = input_file.with_name(f"{input_file.stem}_upscaled.mp4")
 
         # Step 1: Duplicate the last frame two times
         print("Step 1: Duplicating the last frame two times...")
@@ -79,10 +90,10 @@ def video_upscaler(request: UpscaleRequest):
         duplicate_last_frame_command = [
             "ffmpeg",
             "-i", str(input_file),
-            "-vf", f"tpad=stop_mode=clone:stop_duration={stop_duration}",  # Dynamically calculated duration
-            "-c:v", "libx264",  # Ensure proper encoding
-            "-crf", "18",  # High-quality encoding
-            "-preset", "fast",  # Fast encoding preset
+            "-vf", f"tpad=stop_mode=clone:stop_duration={stop_duration}",
+            "-c:v", "libx264",
+            "-crf", "23",
+            "-preset", "fast",
             str(output_file_with_extra_frames)
         ]
 
@@ -106,11 +117,11 @@ def video_upscaler(request: UpscaleRequest):
             "video2x",
             "-i", str(output_file_with_extra_frames),
             "-o", str(output_file_upscaled),
-            "-p", "realesrgan",  # Use Real-ESRGAN for upscaling
-            "-s", "2",  # Scale factor of 2
-            "-c", "libx264",  # Encode with H.264
-            "-e", "preset=slow",  # Slow preset for better quality
-            "-e", "crf=24"  # Compression level
+            "-p", "realesrgan",  
+            "-s", scale_factor,  # Scale factor of 2 or 4
+            "-c", "libx264",  
+            "-e", "preset=slow",  
+            "-e", "crf=24"
         ]
         video2x_process = subprocess.run(video2x_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         elapsed_time = time.time() - start_time
@@ -126,12 +137,65 @@ def video_upscaler(request: UpscaleRequest):
         if output_file_with_extra_frames.exists():
             output_file_with_extra_frames.unlink()
             print(f"Intermediate file {output_file_with_extra_frames} deleted.")
+            
+        if input_file.exists():
+            input_file.unlink()
+            print(f"Original file {input_file} deleted.")
         
         print(f"Returning from FastAPI: {output_file_upscaled}")
-        return {"upscaled_video_path": str(output_file_upscaled)}
+        return output_file_upscaled
     except Exception as e:
         print(f"Error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+@app.post("/upscale-video")
+async def video_upscaler(request: UpscaleRequest):
+    try:
+        payload_url = request.payload_url
+        task_type = request.task_type
+
+        logger.info("📻 Downloading video....")
+        payload_video_path: str = await download_video(payload_url)
+        logger.info(f"Download video finished, Path: {payload_video_path}")
+
+        processed_video_path = upscale_video(payload_video_path, task_type)
+        processed_video_name = Path(processed_video_path).name
+
+        logger.info(f"Processed video path: {processed_video_path}, video name: {processed_video_name}")
+
+        if processed_video_path is not None:
+            object_name: str = processed_video_name
+            
+            await minio_client.upload_file(object_name, processed_video_path)
+            logger.info("Video uploaded successfully.")
+            
+            # Delete the local file since we've already uploaded it to MinIO
+            if os.path.exists(processed_video_path):
+                os.remove(processed_video_path)
+                logger.info(f"{processed_video_path} has been deleted.")
+            else:
+                logger.info(f"{processed_video_path} does not exist.")
+                
+            sharing_link: str | None = await minio_client.get_presigned_url(object_name)
+            if not sharing_link:
+                logger.error("Upload failed")
+                return {"uploaded_video_url": None}
+            
+            # Schedule the file for deletion after 10 minutes (600 seconds)
+            deletion_scheduled = schedule_file_deletion(object_name)
+            if deletion_scheduled:
+                logger.info(f"Scheduled deletion of {object_name} after 10 minutes")
+            else:
+                logger.warning(f"Failed to schedule deletion of {object_name}")
+            
+            logger.info(f"Public download link: {sharing_link}")  
+
+            return {"uploaded_video_url": sharing_link}
+
+    except Exception as e:
+        logger.error(f"Failed to process upscaling request: {e}")
+        traceback.print_exc()
+        return {"uploaded_video_url": None}
 
 
 if __name__ == "__main__":

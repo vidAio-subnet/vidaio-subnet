@@ -55,6 +55,7 @@ check_variable_value_on_github() {
     local file_path="vidaio_subnet_core/__init__.py"
     local variable="$2"
 
+
     local content
     content=$(curl -s "https://api.github.com/repos/$repo/contents/$file_path?ref=$branch" | jq -r '.content' | base64 --decode)
 
@@ -127,7 +128,7 @@ check_package_installed "jq"
 pm2 start "python services/scoring/server.py" --name scoring_endpoint
 pm2 start "python services/video_scheduler/worker.py" --name video_scheduler_worker
 pm2 start "python services/video_scheduler/server.py" --name video_scheduler_endpoint
-pm2 start "python3 neurons/validator.py $joined_args" --name video-validator
+# pm2 start "python3 neurons/validator.py $joined_args" --name video-validator
 
 # Auto-update loop
 last_restart_time=$(date +%s)
@@ -179,7 +180,7 @@ while true; do
             fi
         fi
     else
-        echo "The installation does not appear to be from Git. Please install from source at https://github.com/opentensor/validators."
+        echo "The installation does not appear to be from Git. Please install from source at https://github.com/vidaio-subnet/vidaio-subnet."
     fi
 
     sleep 1800  # Sleep 30 minutes before checking again

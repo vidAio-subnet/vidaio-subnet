@@ -12,19 +12,19 @@ Follow these steps to download and install the Video2X package on your environme
 
 1. **Download the Video2X `.deb` package**:
    ```bash
-   wget https://github.com/k4yt3x/video2x/releases/download/6.3.1/video2x-linux-ubuntu2404-amd64.deb
+   wget -P services/upscaling/models https://github.com/k4yt3x/video2x/releases/download/6.3.1/video2x-linux-ubuntu2404-amd64.deb
    ```
 
 2. **Install the package using `dpkg`**:
    ```bash
-   sudo dpkg -i video2x-linux-ubuntu2404-amd64.deb
+   sudo dpkg -i services/upscaling/models/video2x-linux-ubuntu2404-amd64.deb
    ```
 
 3. **Resolve dependencies** (if any):
    ```bash
    sudo apt-get install -f
    ```
-But we recommend you to follow miner setup guidance since this approach is not safe
+<!-- But we recommend you to follow miner setup guidance since this approach is not safe -->
 
 ## Usage
 

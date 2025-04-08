@@ -57,28 +57,33 @@ async def download_video(video_url: str) -> Path:
         raise HTTPException(status_code=500, detail=f"Error downloading video: {str(e)}")
 
 
-async def video_upscaler(input_file_path: Path) -> str | None:
+async def video_upscaler(payload_url: str, task_type: str) -> str | None:
     """
     Sends a video file path to the upscaling service and retrieves the processed video path.
     
     Args:
-        input_file_path (Path): The path of the video to be upscaled.
+        payload_url (str): The url of the video to be upscaled.
     
     Returns:
         str | None: The path of the upscaled video or None if an error occurs.
     """
     url = f"http://{CONFIG.video_upscaler.host}:{CONFIG.video_upscaler.port}/upscale-video"
     headers = {"Content-Type": "application/json"}
-    data = {"task_file_path": str(input_file_path)}
+    data = {
+        "payload_url": payload_url,
+        "task_type": task_type,
+    }
     
     async with aiohttp.ClientSession() as session:
         async with session.post(url, headers=headers, data=json.dumps(data)) as response:
             if response.status == 200:
                 result = await response.json()
-                upscaled_video_path = result.get("upscaled_video_path")
-                logger.info(f"Upscaled video path: {upscaled_video_path}")
-                upscaled_video_name = Path(upscaled_video_path).name
-                return upscaled_video_name, upscaled_video_path
-            
+                uploaded_video_url = result.get("uploaded_video_url")
+                # logger.info(f"Processed video URL: {uploaded_video_url}")
+                if uploaded_video_url is None:
+                    logger.info("🩸 Received None response from video upscaler 🩸")
+                    return None
+                logger.info("✈️ Received response from video upscaler correctly ✈️")
+                return uploaded_video_url
             logger.error(f"Upscaling service error: {response.status}")
-            return None, None
+            return None

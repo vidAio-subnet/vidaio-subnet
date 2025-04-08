@@ -62,6 +62,28 @@ def pop_organic_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
     data = r.lpop(REDIS_CONFIG.organic_queue_key)
     return json.loads(data) if data else None
 
+# def pop_synthetic_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
+#     """
+#     Pop the oldest synthetic chunk dictionary (FIFO), and push it back to the end of the queue
+#     to maintain the queue size. Returns a dictionary or None if the queue is empty.
+    
+#     Args:
+#         r (redis.Redis): Redis connection
+
+#     Returns:
+#         Optional[Dict[str, str]]: The popped synthetic chunk or None if the queue is empty.
+#     """
+#     # Pop the oldest item from the queue
+#     data = r.lpop(REDIS_CONFIG.synthetic_queue_key)
+    
+#     if data:
+#         chunk = json.loads(data)
+#         # Push the chunk back to maintain queue size
+#         push_synthetic_chunk(r, chunk)
+#         return chunk
+        
+#     return None
+
 def pop_synthetic_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
     """
     Pop the oldest synthetic chunk dictionary (FIFO), process it, and push it back to the end of the queue (LIFO).
@@ -101,7 +123,7 @@ def get_synthetic_queue_size(r: redis.Redis) -> int:
     """
     return r.llen(REDIS_CONFIG.synthetic_queue_key)
 
-def push_pexels_video_ids(r: redis.Redis, id_list: List[int]) -> None:
+def push_pexels_video_ids(r: redis.Redis, data_list: List[Dict[str, str]]) -> None:
     """
     Push multiple Pexels video IDs to the queue (FIFO).
 
@@ -109,8 +131,8 @@ def push_pexels_video_ids(r: redis.Redis, id_list: List[int]) -> None:
         r (redis.Redis): Redis connection instance.
         id_list (List[int]): List of Pexels video IDs to push.
     """
-    r.rpush(REDIS_CONFIG.pexels_video_ids_key, *[json.dumps(vid) for vid in id_list])
-    print("Pushed all Pexels video IDs correctly in the Redis queue")
+    r.rpush(REDIS_CONFIG.pexels_video_ids_key, *[json.dumps(data) for data in data_list])
+    print("Pushed all Pexels video IDs with task_type correctly in the Redis queue")
 
 def pop_pexels_video_id(r: redis.Redis) -> int:
     """

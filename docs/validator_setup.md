@@ -138,12 +138,12 @@ cd vmaf
 
 1. Install `venv` if it’s not already installed:
    ```bash
-   python3 -m venv venv
+   python3 -m venv vmaf-venv
    ```
 
 2. Activate the virtual environment:
    ```bash
-   source venv/bin/activate
+   source vmaf-venv/bin/activate
    ```
 
 ---
@@ -157,6 +157,7 @@ cd vmaf
 
 2. Install system dependencies:
    ```bash
+   sudo apt-get update
    sudo apt-get install nasm ninja-build doxygen xxd
    ```
    For Ninja, verify whether the package name is `ninja` or `ninja-build` before running the install command.
@@ -214,9 +215,17 @@ ninja -vC build doc/html
 ```
 
 ## Install LPIPS
-
+This functions properly after installing the dependencies
 ....
 
+### Step 7: Deactivate vmaf-venv, activate project venv
+
+```bash
+deactivate
+cd ..
+cd ..
+source venv/bin/activate
+```
 
 ## Running the Scoring endpoint
 
@@ -252,7 +261,7 @@ pm2 start "python services/video_scheduler/server.py" --name video_scheduler_end
 To run the validator, use the following command:
 
 ```bash
-pm2 start "python3 neurons/validator.py --wallet.name [Your_Wallet_Name] --wallet.hotkey [Your_Hotkey_Name] --subtensor.network test --netuid 292 --axon.port [port] --logging.debug" --name video-validator
+pm2 start run.sh --name vidaio_v_autoupdater -- --wallet.name [Your_Wallet_Name] --wallet.hotkey [Your_Hotkey_Name] --subtensor.network finney --netuid 85 --axon.port [port] --logging.debug
 ```
 
 ### Parameters:

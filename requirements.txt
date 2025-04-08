@@ -4,7 +4,7 @@ numpy
 minio
 opencv-python
 loguru
-bittensor==9.0.0
+bittensor==9.0.3
 redis
 sqlalchemy
 pandas

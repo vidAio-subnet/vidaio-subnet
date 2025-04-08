@@ -1,18 +1,14 @@
 import time
 import httpx
 import os
-from rich.progress import track
 import sys
 import uuid
 from firerequests import FireRequests
 from loguru import logger
-import os
-import sys
 from pathlib import Path
-from tqdm import track
+from rich.progress import Progress, TaskID
 
 fire_downloader = FireRequests()
-
 
 def clean_tmp_directory():
     """Clean the tmp directory if running as validator and delete only .mp4 files."""
@@ -29,35 +25,35 @@ def clean_tmp_directory():
                 os.remove(file)
                 print(f"Deleted: {file}").remove(os.path.join("tmp", file))
 
-
 def _generate_filename(url: str) -> str:
     """Generate a unique filename for downloaded file."""
-    return os.path.join("tmp", str(uuid.uuid4()))
+    tmp_dir = Path("tmp")
+    tmp_dir.mkdir(exist_ok=True)  # Create the tmp directory if it doesn't exist
+    return os.path.join("tmp", str(uuid.uuid4()) + ".mp4")
 
-
-async def download_video(url: str) -> tuple[str, float, str]:
-    """Download file using hf_transfer."""
-    debug_start_time = time.time()
-    try:
-        file_path = _generate_filename(url)
-        start_time = time.time()
-
-        await fire_downloader.download_file(
-            url=url,
-            filename=file_path,
-            max_files=10,  # Number of parallel downloads
-            chunk_size=1024 * 1024,  # 1 MB chunks
-            parallel_failures=3,
-            max_retries=5,
-            headers=None,
-            show_progress=False,
-        )
-
-        download_time = time.time() - start_time
-        logger.info(f"Time taken to download: {download_time:.2f} seconds")
-        return file_path
-    except Exception as e:
-        return "", time.time() - debug_start_time, "Download failed: " + str(e)
-
-
-clean_tmp_directory()
+async def download_video(url: str) -> str:
+    """
+    Simple function to download a video file from a URL.
+    
+    Args:
+        url (str): The URL of the video to download.
+        
+    Returns:
+        str: The local file path of the downloaded video.
+    """
+    file_path = _generate_filename(url)
+    
+    async with httpx.AsyncClient() as client:
+        async with client.stream("GET", url) as response:
+            response.raise_for_status()
+            total_size = int(response.headers.get("Content-Length", 0))
+            
+            with open(file_path, "wb") as f:
+                with Progress() as progress:
+                    task = progress.add_task("[cyan]Downloading...", total=total_size)
+                    async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
+                        f.write(chunk)
+                        progress.update(task, advance=len(chunk))
+    
+    print(f"Video downloaded to: {file_path}")
+    return file_path

@@ -2,7 +2,7 @@ from .. import __version__
 from ..protocol import Version
 from loguru import logger
 
-def check_version(version):
+def check_version(version: Version):
     """
     Check the version of request is up to date with subnet
     """

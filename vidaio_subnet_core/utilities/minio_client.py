@@ -3,7 +3,8 @@ import asyncio
 import datetime
 import os
 from concurrent.futures import ThreadPoolExecutor
-from ..global_config import CONFIG
+# from ..global_config import CONFIG
+from vidaio_subnet_core.global_config import CONFIG
 
 
 class VideoSubnetMinioClient:
@@ -42,12 +43,13 @@ class VideoSubnetMinioClient:
         func = self.client.remove_object
         args = (self.bucket_name, object_name)
         loop = asyncio.get_running_loop()
+        print(f"Attempting to delete file: {object_name}")
         return await loop.run_in_executor(self.executor, func, *args)
 
     async def list_objects(self, prefix=None, recursive=True):
         func = self.client.list_objects
         args = (self.bucket_name, prefix, recursive)
-        print("Listing objects")
+        print("Listing objects in bucket...")
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self.executor, func, *args)
 
@@ -87,12 +89,14 @@ class VideoSubnetMinioClient:
             if not objects:
                 print("No objects to delete.")
                 return
-            
+
+            count = 0
             # Delete each object
-            for obj_name in objects:
-                print(f"Deleting object: {obj_name}")
-                await self.delete_file(obj_name)
-            print("All objects deleted successfully.")
+            for obj in objects:
+                print(f"Deleting object: {obj.object_name}")
+                await self.delete_file(obj.object_name)
+                count += 1
+            print(f"All {count} objects deleted successfully.")
         except Exception as e:
             print(f"Error deleting all items in bucket: {e}")
 
@@ -119,15 +123,9 @@ minio_client = VideoSubnetMinioClient(
 
 
 async def main():
-    await minio_client.ensure_bucket_exists()
-    await minio_client.upload_file("345.mp4", "/root/workspace/vidaio-subnet/videos/4k_4887282_hd.mp4")
-    result = await minio_client.list_objects()
-    print(result)
-    # await minio_client.download_file
-    await minio_client.set_bucket_public_policy()
-    url = await minio_client.get_presigned_url("123.md")
-    print(url)
-
+    await minio_client.upload_file("normal_01.mp4", "/workspace/vidaio-subnet/normal_1.mp4")
+    presigned_url = await minio_client.get_presigned_url("normal_1.mp4")
+    print(presigned_url)
 
 if __name__ == "__main__":
     asyncio.run(main())

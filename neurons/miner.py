@@ -1,14 +1,16 @@
 import time
 import uuid
 import traceback
+import os
 from typing import Tuple
 from loguru import logger
 import bittensor as bt
 from vidaio_subnet_core.base.miner import BaseMiner
 from vidaio_subnet_core.protocol import VideoUpscalingProtocol
 from services.miner_utilities.miner_utils import video_upscaler
-from vidaio_subnet_core.utilities import minio_client, download_video
+
 from vidaio_subnet_core.utilities.version import check_version
+
 
 class Miner(BaseMiner):
     def __init__(self, config: dict | None = None) -> None:
@@ -22,31 +24,31 @@ class Miner(BaseMiner):
         Processes a video upscaling request by downloading, upscaling,
         uploading, and returning a sharing link.
         """
-        logger.info(f"Receiving Request from validator: {synapse.dendrite.hotkey}")
+        
+        start_time = time.time()
+
+        task_type: str = synapse.miner_payload.task_type      
+        payload_url: str = synapse.miner_payload.reference_video_url
+        validator_uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
+
+        logger.info(f"✅✅✅ Receiving {task_type} Request from validator: {synapse.dendrite.hotkey} with uid: {validator_uid}")
         
         check_version(synapse.version)
-        
-        try:
-            payload_url: str = synapse.miner_payload.reference_video_url
-            payload_video_path: str = await download_video(payload_url)
-            processed_video_name, processed_video_path = await video_upscaler(payload_video_path)
-            logger.info(f"Processed video path: {processed_video_path}")
-            if processed_video_path is not None:
-                object_name: str = processed_video_name
-                
-                await minio_client.upload_file(object_name, processed_video_path)
-                logger.info("Video uploaded successfully.")
-                
-                sharing_link: str | None = await minio_client.get_presigned_url(object_name)
-                if not sharing_link:
-                    logger.error("Upload failed")
-                    return synapse
-                
-                logger.info(f"Public download link: {sharing_link}")  
-                synapse.miner_response.optimized_video_url = sharing_link
 
-                logger.info(f"Returning Response: {synapse}")
+        try:
+            processed_video_url = await video_upscaler(payload_url, task_type)
+            
+            if processed_video_url is None:
+                logger.info(f"💔 Failed to upscaling video 💔")
                 return synapse
+            
+            synapse.miner_response.optimized_video_url = processed_video_url
+
+            processed_time = time.time() - start_time
+
+            logger.info(f"💜 Returning Response, Processed in {processed_time:.2f} seconds 💜")
+            
+            return synapse
             
         except Exception as e:
             logger.error(f"Failed to process upscaling request: {e}")

@@ -43,17 +43,17 @@ class MinerManager:
             for uid in uids
         }
         logger.debug(
-            f"Serving counters initialized with rate limit: {self.serving_counters}"
+            f"Serving counters initialized with rate limit: {rate_limit}"
         )
     
 
     def query(self, uids: list[int] = []) -> dict[int, MinerMetadata]:
-        logger.debug(f"Querying metadata for UIDs: {uids if uids else 'all'}")
+        # logger.debug(f"Querying metadata for UIDs: {uids if uids else 'all'}")
         query = self.session.query(MinerMetadata)
         if uids:
             query = query.filter(MinerMetadata.uid.in_(uids))
         result = {miner.uid: miner for miner in query.all()}
-        logger.debug(f"Found {len(result)} miner metadata records")
+        # logger.debug(f"Found {len(result)} miner metadata records")
         return result
 
     def step(self, scores: list[float], total_uids: list[int]):
@@ -61,7 +61,7 @@ class MinerManager:
         for uid, score in zip(total_uids, scores):
             logger.debug(f"Processing UID {uid} with score {score}")
             miner = self.query([uid]).get(uid, None)
-            logger.info(f"Miner: {miner}")
+            # logger.info(f"Miner: {miner}")
             if miner is None:
                 logger.info(f"Creating new metadata record for UID {uid}")
                 miner = MinerMetadata(uid=uid)
@@ -82,6 +82,7 @@ class MinerManager:
         logger.info(f"Consuming {len(uids)} UIDs")
         filtered_uids = [uid for uid in uids if self.serving_counters[uid].increment()]
         logger.info(f"Filtered to {len(filtered_uids)} UIDs after rate limiting")
+
         return filtered_uids
 
     @property

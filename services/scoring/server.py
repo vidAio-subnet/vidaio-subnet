@@ -10,6 +10,7 @@ import random
 from vidaio_subnet_core import CONFIG
 from vmaf_metric import calculate_vmaf
 from lpips_metric import calculate_lpips
+from pieapp_metric import calculate_pieapp_score
 import aiohttp
 import logging
 
@@ -17,6 +18,8 @@ import logging
 logger = logging.getLogger(__name__)
 app = FastAPI()
 fire_requests = FireRequests()
+
+VMAF_THRESHOLD = 0.5
 
 class ScoringRequest(BaseModel):
     """
@@ -95,6 +98,8 @@ def calculate_psnr(ref_frame: np.ndarray, dist_frame: np.ndarray) -> float:
         return 1000  # Maximum PSNR value (perfect similarity)
     return 10 * np.log10((255.0**2) / mse)
 
+def calculate_final_score(pieapp_score):
+    return 1 - (np.log(pieapp_score + 1) / np.log(6))
 
 @app.post("/score")
 async def score(request: ScoringRequest) -> ScoringResponse:
@@ -108,7 +113,7 @@ async def score(request: ScoringRequest) -> ScoringResponse:
     Returns:
         ScoringResponse: The response object containing a list of scores for each distorted video.
     """
-    logger.info("Start scoring..........")
+    logger.info("🤖 Start scoring..........")
     logger.debug(f"Request data: {request.__dict__}")
     
     ref_path = request.reference_path
@@ -126,8 +131,14 @@ async def score(request: ScoringRequest) -> ScoringResponse:
     scores = []
     for dist_url in request.distorted_urls:
         ref_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-        logger.info("Attempting to download video....")
-        dist_path = await download_video(dist_url, request.verbose)
+        logger.info("Attempting to download processed video....")
+        try:
+            dist_path = await download_video(dist_url, request.verbose)
+        except Exception as e:
+            logger.error(f"Failed to download video from {dist_url}: {str(e)}. Assigning score of 0.")
+            scores.append(0.0)
+            continue
+         
         dist_cap = cv2.VideoCapture(dist_path)
 
         if not dist_cap.isOpened():
@@ -147,41 +158,33 @@ async def score(request: ScoringRequest) -> ScoringResponse:
             os.unlink(dist_path)
             continue  # Skip to the next distorted video
 
+        vmaf_score = 0
         # Calculate VMAF
         try:
             vmaf_score = calculate_vmaf(ref_path, dist_path)
+            logger.info(f"🎾 vmaf_score is {vmaf_score}")
+
         except Exception as e:
             logger.error(f"Failed to calculate VMAF for {dist_url}: {str(e)}. Assigning score of 0.")
             scores.append(0.0)
             dist_cap.release()
             os.unlink(dist_path)
             continue  # Skip to the next distorted video
-
-        # Select two random frames for LPIPS calculation
-        frame_indices = random.sample(range(ref_total_frames), 2)
-        lpips_scores = []
-
-        for idx in frame_indices:
-            ref_cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            ret_ref, ref_frame = ref_cap.read()
-            dist_cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            ret_dist, dist_frame = dist_cap.read()
-
-            if not ret_ref or not ret_dist:
-                logger.error(f"Frames cannot be read for {dist_url} at index {idx}. Assigning score of 0.")
-                lpips_scores.append(1.0)  # Assign a high LPIPS score (bad quality)
-                continue
-
-            lpips_score = calculate_lpips(ref_frame, dist_frame)
-            lpips_scores.append(lpips_score)
-
-        logger.info(f"LPIPS scores: {lpips_scores}")
-        average_lpips = sum(lpips_scores) / len(lpips_scores) if lpips_scores else 1.0  # Worst case
-        logger.info(f"Average LPIPS: {average_lpips}")
+        
+        
+        pieapp_score = calculate_pieapp_score(ref_cap, dist_cap)
+        if pieapp_score > 5.0:
+            pieapp_score = 5.0
+        logger.info(f"🎾 Pieapp_score is {pieapp_score}")
 
         # Final score calculation
-        final_score = vmaf_score * 0.6 / 100 + (1 - average_lpips) * 0.4
-        scores.append(final_score)
+        if vmaf_score / 100 < VMAF_THRESHOLD:
+            logger.info(f"vmaf score is too low, giving zero score, current vmaf score: {vmaf_score}")
+            scores.append(0)
+        else:
+            final_score = calculate_final_score(pieapp_score)
+            logger.info(f"🏀 final_score is {final_score}")
+            scores.append(final_score)
 
         dist_cap.release()
         os.unlink(dist_path)
@@ -200,10 +203,3 @@ if __name__ == "__main__":
     
     uvicorn.run(app, host=host, port=port)
     
-    # Testing
-    # urls = ScoringRequest(
-    #     distorted_urls=[...],
-    #     reference_path="..."
-    # )
-    # scores = asyncio.run(score(urls))  
-    # print(scores)

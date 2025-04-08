@@ -8,9 +8,10 @@ import pandas as pd
 from typing import List
 from concurrent.futures import ThreadPoolExecutor
 from vidaio_subnet_core.utilities.minio_client import minio_client
-from vidaio_subnet_core.utilities import WandbManager
-from services.video_scheduler.video_utils import get_4k_video_path, delete_videos_with_fileid
-
+from vidaio_subnet_core.utilities.wandb_manager import WandbManager
+from vidaio_subnet_core.utilities.version import get_version
+from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
+import time
 
 class Validator(base.BaseValidator):
     def __init__(self):
@@ -38,17 +39,21 @@ class Validator(base.BaseValidator):
         
         self.wandb_manager = WandbManager(validator=self)
         logger.info("🔑 Initialized Wandb Manager 🔑")
-        
+    
 
     async def start_epoch(self):
-        logger.info("✅ Starting forward ✅")
-        uids = list(range(len(self.metagraph.hotkeys)))
-        logger.debug(f"Initial UIDs: {uids}")
-        uids = self.miner_manager.consume(uids)
-        uids = [2]
+        logger.info("✅✅✅✅✅ Starting forward ✅✅✅✅✅")
+        epoch_start_time = time.time()
+
+        miner_uids = self.filter_miners()
+        logger.debug(f"Initialized {len(miner_uids)} subnet neurons of total {len(self.metagraph.S)} neurons")
+
+        uids = self.miner_manager.consume(miner_uids)
         logger.info(f"Filtered UIDs after consumption: {uids}")
+
         axons = [self.metagraph.axons[uid] for uid in uids]
         miners = list(zip(axons, uids))
+
         batch_size = CONFIG.bandwidth.requests_per_interval
         miner_batches = [
             miners[i : i + batch_size] for i in range(0, len(miners), batch_size)
@@ -56,9 +61,11 @@ class Validator(base.BaseValidator):
         logger.info(f"Created {len(miner_batches)} batches of size {batch_size}")
 
         for batch_idx, batch in enumerate(miner_batches):
+            batch_start_time = time.time()
             logger.info(f"🧩 Processing batch {batch_idx + 1}/{len(miner_batches)} 🧩")
             video_id, uploaded_object_name, synapse = await self.challenge_synthesizer.build_protocol()
-            logger.debug(f"Built challenge protocol {synapse.__dict__}")
+            synapse.version = get_version()
+            logger.debug(f"Built challenge protocol")
             uids = []
             axons = []
             for miner in batch:
@@ -69,29 +76,32 @@ class Validator(base.BaseValidator):
                 axons=axons, synapse=synapse, timeout=200
             )
             logger.info(f"🎲 Received {len(responses)} responses from miners 🎲")
-            logger.info(responses)
-            video_4k_path = get_4k_video_path(video_id)
+
+            reference_video_path = get_trim_video_path(video_id)
             
-            await self.score(uids, responses, video_4k_path)
-            
+            await self.score(uids, responses, reference_video_path)
+
             minio_client.delete_file(uploaded_object_name)
             delete_videos_with_fileid(video_id)
-            
-            logger.debug("Waiting 5 seconds before next batch")
+            batch_processed_time = time.time() - batch_start_time
+            logger.info(f"Completed one batch within {batch_processed_time:.2f} seconds. Waiting 20 seconds before next batch")
             await asyncio.sleep(5)
+        
+        epoch_processed_time = time.time() - epoch_start_time
+        logger.info(f"Completed one epoch within {epoch_processed_time:.2f} seconds")
 
-    async def score(self, uids: list[int], responses: list[protocol.Synapse], reference_4k_path: str):
+    async def score(self, uids: list[int], responses: list[protocol.Synapse], reference_video_path: str):
         logger.info(f"Starting scoring for {len(uids)} miners")
+        logger.info(f"Uids: {uids}")
         distorted_urls = []
-        print(responses, uids)
         for uid, response in zip(uids, responses):
             distorted_urls.append(response.miner_response.optimized_video_url)
-        logger.info(f"distored_urls: {distorted_urls}")
+
         score_response = await self.score_client.post(
             "/score",
             json = {
                 "distorted_urls": distorted_urls,
-                "reference_path": reference_4k_path
+                "reference_path": reference_video_path
             },
             timeout=210
         )
@@ -101,6 +111,12 @@ class Validator(base.BaseValidator):
         logger.info(f"Updating miner manager with {len(scores)} miner scores")
         self.miner_manager.step(scores, uids)
 
+    def filter_miners(self):
+        min_stake = CONFIG.bandwidth.min_stake
+        stake_array = self.metagraph.S
+        miner_uids = [i for i, stake in enumerate(stake_array) if stake < min_stake]
+
+        return miner_uids
 
     def set_weights(self):
         self.current_block = self.subtensor.get_current_block()
@@ -145,7 +161,6 @@ class Validator(base.BaseValidator):
                 logger.error(f"Failed to set weights: {e}")
                 traceback.print_exc()
 
-            logger.info(f"Set weights result: {success}")
         else:
             logger.info(
                 f"Not setting weights because current block {self.current_block} is not greater than last update {self.last_update} + tempo {CONFIG.SUBNET_TEMPO}"
@@ -154,6 +169,7 @@ class Validator(base.BaseValidator):
 
 if __name__ == "__main__":
     validator = Validator()
+    time.sleep(200) # wait till the video scheduler is ready
     asyncio.run(validator.run())
 
 
