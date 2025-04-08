@@ -31,7 +31,7 @@ Please check our [Tweet](https://x.com/vidaio_τ) to follow us.
    - [Contact Information](#c-contact-information)
 
 ## **1. Introduction**
-vidAIo's mission is to democratize video enhancement through decentralization, artificial intelligence, and blockchain technology. Leveraging the Bittensor ecosystem, vidaio provides creators, businesses, and developers with scalable, affordable, and high-quality video upscaling solutions while ensuring full ownership and control over their content
+vidAIo's mission is to democratize video enhancement through decentralization, artificial intelligence, and blockchain technology. Leveraging the Bittensor ecosystem, vidAIo provides creators, businesses, and developers with scalable, affordable, and high-quality video upscaling solutions while ensuring full ownership and control over their content
 
 
 ## 2. Subnet Architecture
@@ -99,7 +99,7 @@ Real-world video data uploaded by users is processed as follows:
 
 ### A. Technical Glossary
 - **VMAF**: [Video Multimethod Assessment Fusion](https://github.com/vidaio-subnet/vmaf)
-- **LPIPS**: [Learned Perceptual Image Patch Similarity](https://github.com/richzhang/PerceptualSimilarity)
-- **TOPIQ**: [Top-down Image Quality Assessment](https://arxiv.org/pdf/2308.03060v1)
-- **Bittensor Subnet**: [Decentralized AI Framework](https://docs.bittensor.com)
 - **Video2x**: [Vidio upscaling model](https://github.com/vidaio-subnet/video2x)
+- **TOPIQ**: [Top-down Image Quality Assessment](https://arxiv.org/pdf/2308.03060v1)
+- **LPIPS**: [Learned Perceptual Image Patch Similarity](https://github.com/richzhang/PerceptualSimilarity)
+- **Bittensor Subnet**: [Decentralized AI Framework](https://docs.bittensor.com)
