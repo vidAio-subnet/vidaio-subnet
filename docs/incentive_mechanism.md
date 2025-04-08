@@ -47,9 +47,9 @@ PIE-APP measures the perceptual similarity between original and processed video 
 
 ---
 
-### **Combining VMAF and LPIPS Scores**
+### **Combining VMAF and PieAPP Scores**
 
-After calculating the VMAF and LPIPS scores:
+After calculating the VMAF and PieAPP scores:
 - The **VMAF score** is a value between `0` and `100`.
 - The **PieAPP score** is a value between `0` and `5`.
 

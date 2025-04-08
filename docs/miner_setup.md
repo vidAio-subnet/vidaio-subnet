@@ -134,7 +134,27 @@ For more information, refer to the [CUDA Toolkit Installation Guide](https://dev
 
 ### Step 3: Install Video2X
 
-### Option 1: Install Video2X by Building Debian Package:
+---
+
+### Option 1: Install Video2X by downloading Debian Package:
+
+
+1. **Download the Video2X `.deb` package**:
+   ```bash
+   wget -P services/upscaling/models https://github.com/k4yt3x/video2x/releases/download/6.3.1/video2x-linux-ubuntu2404-amd64.deb
+   ```
+
+2. **Install the package using `dpkg`**:
+   ```bash
+   sudo dpkg -i services/upscaling/models/video2x-linux-ubuntu2404-amd64.deb
+   ```
+
+3. **Resolve dependencies** (if any):
+   ```bash
+   sudo apt-get install -f
+   ```
+
+### Option 2: Install Video2X by Building Debian Package:
 
 1. Install Cargo
 Cargo is required to build the Video2X package:
@@ -170,25 +190,6 @@ Install the `.deb` package using:
 sudo dpkg -i video2x-linux-ubuntu-amd64.deb
 ```
 
----
-
-### Option 2: Install Video2X by downloading Debian Package:
-
-
-1. **Download the Video2X `.deb` package**:
-   ```bash
-   wget -P services/upscaling/models https://github.com/k4yt3x/video2x/releases/download/6.3.1/video2x-linux-ubuntu2404-amd64.deb
-   ```
-
-2. **Install the package using `dpkg`**:
-   ```bash
-   sudo dpkg -i services/upscaling/models/video2x-linux-ubuntu2404-amd64.deb
-   ```
-
-3. **Resolve dependencies** (if any):
-   ```bash
-   sudo apt-get install -f
-   ```
 ---
 For additional details, refer to the [Video2X Documentation](https://docs.video2x.org/building/linux.html).
 
