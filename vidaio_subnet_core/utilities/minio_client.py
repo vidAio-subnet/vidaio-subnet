@@ -43,6 +43,7 @@ class VideoSubnetMinioClient:
         func = self.client.remove_object
         args = (self.bucket_name, object_name)
         loop = asyncio.get_running_loop()
+        print(f"Attempting to delete file: {object_name}")
         return await loop.run_in_executor(self.executor, func, *args)
 
     async def list_objects(self, prefix=None, recursive=True):

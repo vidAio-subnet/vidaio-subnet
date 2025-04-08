@@ -43,13 +43,17 @@ class Validator(base.BaseValidator):
 
     async def start_epoch(self):
         logger.info("✅✅✅✅✅ Starting forward ✅✅✅✅✅")
+        epoch_start_time = time.time()
+
         miner_uids = self.filter_miners()
         logger.debug(f"Initialized {len(miner_uids)} subnet neurons of total {len(self.metagraph.S)} neurons")
+
         uids = self.miner_manager.consume(miner_uids)
-        uids = [1, 2]
         logger.info(f"Filtered UIDs after consumption: {uids}")
+
         axons = [self.metagraph.axons[uid] for uid in uids]
         miners = list(zip(axons, uids))
+
         batch_size = CONFIG.bandwidth.requests_per_interval
         miner_batches = [
             miners[i : i + batch_size] for i in range(0, len(miners), batch_size)
@@ -57,6 +61,7 @@ class Validator(base.BaseValidator):
         logger.info(f"Created {len(miner_batches)} batches of size {batch_size}")
 
         for batch_idx, batch in enumerate(miner_batches):
+            batch_start_time = time.time()
             logger.info(f"🧩 Processing batch {batch_idx + 1}/{len(miner_batches)} 🧩")
             video_id, uploaded_object_name, synapse = await self.challenge_synthesizer.build_protocol()
             synapse.version = get_version()
@@ -71,24 +76,28 @@ class Validator(base.BaseValidator):
                 axons=axons, synapse=synapse, timeout=200
             )
             logger.info(f"🎲 Received {len(responses)} responses from miners 🎲")
-            logger.info(f"optimized url: f{responses[0].miner_response.optimized_video_url}")
+
             reference_video_path = get_trim_video_path(video_id)
             
             await self.score(uids, responses, reference_video_path)
 
             minio_client.delete_file(uploaded_object_name)
             delete_videos_with_fileid(video_id)
-            
-            logger.debug("Waiting 5 seconds before next batch")
+            batch_processed_time = time.time() - batch_start_time
+            logger.info(f"Completed one batch within {batch_processed_time:.2f} seconds. Waiting 20 seconds before next batch")
             await asyncio.sleep(20)
+        
+        epoch_processed_time = time.time() - epoch_start_time
+        logger.info(f"Completed one epoch within {epoch_processed_time:.2f} seconds")
 
     async def score(self, uids: list[int], responses: list[protocol.Synapse], reference_video_path: str):
         logger.info(f"Starting scoring for {len(uids)} miners")
+        logger.info(f"Uids: {uids}")
         distorted_urls = []
         print(responses, uids)
         for uid, response in zip(uids, responses):
             distorted_urls.append(response.miner_response.optimized_video_url)
-        logger.info(f"distored_urls: {distorted_urls}")
+
         score_response = await self.score_client.post(
             "/score",
             json = {
