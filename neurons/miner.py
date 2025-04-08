@@ -8,9 +8,9 @@ import bittensor as bt
 from vidaio_subnet_core.base.miner import BaseMiner
 from vidaio_subnet_core.protocol import VideoUpscalingProtocol
 from services.miner_utilities.miner_utils import video_upscaler
-from vidaio_subnet_core.utilities import minio_client, download_video
+
 from vidaio_subnet_core.utilities.version import check_version
-from services.miner_utilities.redis_utils import schedule_file_deletion
+
 
 class Miner(BaseMiner):
     def __init__(self, config: dict | None = None) -> None:
@@ -32,7 +32,25 @@ class Miner(BaseMiner):
         logger.info(f"✅✅✅ Receiving {task_type} Request from validator: {synapse.dendrite.hotkey} with uid: {validator_uid}")
         
         check_version(synapse.version)
-        
+
+        try:
+            processed_video_url = await video_upscaler(payload_url, task_type)
+            
+            if processed_video_url is None:
+                return synapse
+            
+            synapse.miner_response.optimized_video_url = processed_video_url
+
+            logger.info(f"Returning Response: {synapse}")
+            
+            return synapse
+            
+        except Exception as e:
+            logger.error(f"Failed to process upscaling request: {e}")
+            traceback.print_exc()
+            return synapse
+
+
         try:
             payload_video_path: str = await download_video(payload_url)
             processed_video_name, processed_video_path = await video_upscaler(payload_video_path, task_type)
