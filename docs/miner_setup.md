@@ -223,7 +223,7 @@ pm2 start "python services/miner_utilities/file_deletion_server.py" --name video
 To run the miner, use the following command:
 
 ```bash
-pm2 start "python3 neurons/miner.py --wallet.name [Your_Wallet_Name] --wallet.hotkey [Your_Hotkey_Name] --subtensor.network test --netuid 292 --axon.port [port] --logging.debug" --name video-miner
+pm2 start "python3 neurons/miner.py --wallet.name [Your_Wallet_Name] --wallet.hotkey [Your_Hotkey_Name] --subtensor.network finney --netuid 85 --axon.port [port] --logging.debug" --name video-miner
 ```
 
 ### Parameters:

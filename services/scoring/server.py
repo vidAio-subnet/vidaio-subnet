@@ -198,7 +198,7 @@ async def score(request: ScoringRequest) -> ScoringResponse:
         # Calculate pieapp score
         
         pieapp_score = calculate_pieapp_score(ref_cap, dist_cap)
-        if pieapp_score > 5.0
+        if pieapp_score > 5.0:
             pieapp_score = 5.0
         logger.info(f"🎾 Pieapp_score is {pieapp_score}")
 

@@ -44,7 +44,7 @@ def add_args(parser):
 
     parser.add_argument(
         "--neuron.epoch_length",
-        type=int.
+        type=int,
         help="epoch length",
         default=100,
     )

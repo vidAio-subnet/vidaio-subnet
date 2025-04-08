@@ -44,9 +44,9 @@ class Validator(base.BaseValidator):
     async def start_epoch(self):
         logger.info("✅✅✅✅✅ Starting forward ✅✅✅✅✅")
         miner_uids = self.filter_miners()
-        logger.debug(f"Initialized {len(miner_uids)} subnet neurons after removing {len(validator_uids)} validators")
+        logger.debug(f"Initialized {len(miner_uids)} subnet neurons of total {len(self.metagraph.S)} neurons")
         uids = self.miner_manager.consume(miner_uids)
-        uids = [2]
+        uids = [1, 2]
         logger.info(f"Filtered UIDs after consumption: {uids}")
         axons = [self.metagraph.axons[uid] for uid in uids]
         miners = list(zip(axons, uids))
@@ -161,7 +161,7 @@ class Validator(base.BaseValidator):
 
 if __name__ == "__main__":
     validator = Validator()
-    time.sleep(200) # wait till the video scheduler is ready
+    time.sleep(10) # wait till the video scheduler is ready
     asyncio.run(validator.run())
 
 
