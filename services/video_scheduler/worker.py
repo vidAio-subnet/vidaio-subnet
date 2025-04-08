@@ -323,8 +323,8 @@ async def main():
                 needed = 5
             
             ran_num = random.random()
-            # ran_num = 0.85
             logger.info(f"Seleted random number: {ran_num}")
+            
             if ran_num <= threshold_hd_to_4k:
                 task_type = "HD24K"
             elif ran_num <= threshold_sd_to_hd:

@@ -25,6 +25,8 @@ class Miner(BaseMiner):
         uploading, and returning a sharing link.
         """
         
+        start_time = time.time()
+
         task_type: str = synapse.miner_payload.task_type      
         payload_url: str = synapse.miner_payload.reference_video_url
         validator_uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
@@ -42,7 +44,9 @@ class Miner(BaseMiner):
             
             synapse.miner_response.optimized_video_url = processed_video_url
 
-            logger.info(f"💜 Returning Response 💜")
+            processed_time = time.time() - start_time
+
+            logger.info(f"💜 Returning Response, Processed in {processed_time:.2f} seconds 💜")
             
             return synapse
             

@@ -85,7 +85,7 @@ class Validator(base.BaseValidator):
             delete_videos_with_fileid(video_id)
             batch_processed_time = time.time() - batch_start_time
             logger.info(f"Completed one batch within {batch_processed_time:.2f} seconds. Waiting 20 seconds before next batch")
-            await asyncio.sleep(20)
+            await asyncio.sleep(5)
         
         epoch_processed_time = time.time() - epoch_start_time
         logger.info(f"Completed one epoch within {epoch_processed_time:.2f} seconds")
@@ -94,7 +94,6 @@ class Validator(base.BaseValidator):
         logger.info(f"Starting scoring for {len(uids)} miners")
         logger.info(f"Uids: {uids}")
         distorted_urls = []
-        print(responses, uids)
         for uid, response in zip(uids, responses):
             distorted_urls.append(response.miner_response.optimized_video_url)
 
@@ -170,7 +169,7 @@ class Validator(base.BaseValidator):
 
 if __name__ == "__main__":
     validator = Validator()
-    time.sleep(10) # wait till the video scheduler is ready
+    time.sleep(200) # wait till the video scheduler is ready
     asyncio.run(validator.run())
 
 

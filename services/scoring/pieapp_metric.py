@@ -11,7 +11,7 @@ from tqdm import tqdm
 import time
 
 
-def calculate_pieapp_score(ref_cap, proc_cap, frame_interval=25):
+def calculate_pieapp_score(ref_cap, proc_cap, frame_interval=1):
     """
     Calculate PIE-APP score between reference and processed videos without extracting frames to disk.
     
@@ -35,7 +35,7 @@ def calculate_pieapp_score(ref_cap, proc_cap, frame_interval=25):
     # Determine how many frames to process
     total_frames = min(ref_frame_count, proc_frame_count)
     frames_to_process = total_frames // frame_interval
-    
+
     print(f"Reference video: {ref_frame_count} frames")
     print(f"Processed video: {proc_frame_count} frames")
     print(f"Processing {frames_to_process} frames (every {frame_interval} frames)")
