@@ -79,9 +79,11 @@ async def video_upscaler(payload_url: str, task_type: str) -> str | None:
             if response.status == 200:
                 result = await response.json()
                 uploaded_video_url = result.get("uploaded_video_url")
-                logger.info(f"Processed video URL: {uploaded_video_url}")
+                # logger.info(f"Processed video URL: {uploaded_video_url}")
                 if uploaded_video_url is None:
+                    logger.info("🩸 Received None response from video upscaler 🩸")
                     return None
+                logger.info("✈️ Received response from video upscaler correctly ✈️")
                 return uploaded_video_url
             logger.error(f"Upscaling service error: {response.status}")
             return None
