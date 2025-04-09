@@ -7,10 +7,15 @@ import httpx
 import asyncio
 import logging
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import lru_cache
 import os
 from enum import Enum
+import time
+from apscheduler.schedulers.background import BackgroundScheduler
+from vidaio_subnet_core import CONFIG
+
+REDIS_CONFIG = CONFIG.redis
 
 # Configure logging
 logging.basicConfig(
@@ -29,14 +34,16 @@ app = FastAPI(
 # Configuration
 class Settings:
     def __init__(self):
-        self.REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-        self.REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-        self.REDIS_DB = int(os.getenv("REDIS_DB", 0))
-        self.REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
-        self.REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", 30))
-        self.MAX_RETRIES = int(os.getenv("MAX_RETRIES", 3))
-        self.RETRY_DELAY = int(os.getenv("RETRY_DELAY", 2))
-        self.REDIS_SERVICE_ENDPOINT = os.getenv("REDIS_SERVICE_ENDPOINT", "http://localhost:8000")
+        self.REDIS_HOST = REDIS_CONFIG.host
+        self.REDIS_PORT = REDIS_CONFIG.port
+        self.REDIS_DB = REDIS_CONFIG.db
+        self.REDIS_PASSWORD = None
+        self.REQUEST_TIMEOUT = 30
+        self.MAX_RETRIES = 3
+        self.RETRY_DELAY = 2
+        self.REDIS_SERVICE_ENDPOINT = CONFIG.video_scheduler.host + ':' + str(CONFIG.video_scheduler.port)
+        self.DATA_RETENTION_DAYS = 3
+        self.CLEANUP_INTERVAL_HOURS = 72 # hours
 
 @lru_cache()
 def get_settings():
@@ -162,6 +169,43 @@ class TaskService:
     def get_result_url_for_task(self, task_id: str):
         """Get the original video URL associated with a task"""
         return self.redis.get(f"task_result:{task_id}")
+    
+    def cleanup_old_data(self, retention_days: int):
+        """Clean up data older than the specified number of days"""
+        logger.info(f"Starting cleanup of data older than {retention_days} days")
+        cutoff_date = (datetime.utcnow() - timedelta(days=retention_days)).isoformat()
+        
+        # Get all task IDs
+        all_tasks = self.redis.smembers("tasks")
+        deleted_count = 0
+        
+        for task_id in all_tasks:
+            task_key = f"task:{task_id}"
+            task_data = self.redis.hgetall(task_key)
+            
+            # Skip if task doesn't exist
+            if not task_data:
+                continue
+                
+            # Check if task is old enough to delete
+            created_at = task_data.get("created_at", "")
+            if created_at < cutoff_date:
+                # Get original video URL before deleting
+                original_url = self.get_result_url_for_task(task_id)
+                
+                # Delete task data
+                self.redis.delete(task_key)
+                self.redis.srem("tasks", task_id)
+                self.redis.delete(f"task_result:{task_id}")
+                
+                # Delete result data if exists
+                if original_url:
+                    self.redis.delete(f"result:{original_url}")
+                
+                deleted_count += 1
+                
+        logger.info(f"Cleanup completed: {deleted_count} old tasks deleted")
+        return deleted_count
 
 # Redis service client
 class RedisServiceClient:
@@ -225,6 +269,35 @@ def get_task_service(redis_conn=Depends(get_redis_connection)):
 def get_redis_service(settings: Settings = Depends(get_settings)):
     return RedisServiceClient(settings)
 
+# Data cleanup scheduler
+scheduler = BackgroundScheduler()
+
+def setup_data_cleanup_job(settings: Settings = Depends(get_settings)):
+    """Setup scheduled job for data cleanup"""
+    redis_conn = get_redis_connection(settings)
+    task_service = TaskService(redis_conn)
+    
+    def cleanup_job():
+        try:
+            task_service.cleanup_old_data(settings.DATA_RETENTION_DAYS)
+        except Exception as e:
+            logger.error(f"Error during scheduled data cleanup: {str(e)}")
+    
+    # Schedule job to run at the specified interval
+    scheduler.add_job(
+        cleanup_job, 
+        'interval', 
+        hours=settings.CLEANUP_INTERVAL_HOURS,
+        id='data_cleanup_job',
+        replace_existing=True
+    )
+    
+    # Run once at startup
+    cleanup_job()
+    
+    if not scheduler.running:
+        scheduler.start()
+
 # Endpoints
 @app.get("/ping")
 async def ping():
@@ -247,7 +320,7 @@ async def upscale(
     # Generate task ID
     task_id = str(uuid.uuid4())
     
-    # Create task in Redis
+    # Create task in Redi00s
     task_service.create_task(
         task_id=task_id,
         chunk_id=request.chunk_id,
@@ -385,8 +458,54 @@ async def update_task_status(
     
     return {"message": f"Task {task_id} status updated to {status}"}
 
+# Manual trigger for data cleanup
+@app.post("/admin/cleanup")
+async def trigger_cleanup(
+    task_service: TaskService = Depends(get_task_service),
+    settings: Settings = Depends(get_settings)
+):
+    """
+    Manually trigger cleanup of old data
+    
+    This endpoint allows administrators to manually trigger cleanup of old data.
+    """
+    try:
+        deleted_count = task_service.cleanup_old_data(settings.DATA_RETENTION_DAYS)
+        return {
+            "message": f"Cleanup completed successfully",
+            "deleted_count": deleted_count,
+            "retention_days": settings.DATA_RETENTION_DAYS
+        }
+    except Exception as e:
+        logger.error(f"Error during manual data cleanup: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Cleanup failed: {str(e)}")
+
 # Error handlers
 @app.exception_handler(Exception)
 async def generic_exception_handler(request, exc):
     logger.error(f"Unhandled exception: {str(exc)}")
     return {"detail": "An internal server error occurred"}
+
+# Startup and shutdown events
+@app.on_event("startup")
+async def startup_event():
+    """Run on application startup"""
+    settings = get_settings()
+    setup_data_cleanup_job(settings)
+    logger.info(f"Data cleanup scheduled to run every {settings.CLEANUP_INTERVAL_HOURS} hours")
+    logger.info(f"Data retention period set to {settings.DATA_RETENTION_DAYS} days")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Run on application shutdown"""
+    if scheduler.running:
+        scheduler.shutdown()
+        logger.info("Cleanup scheduler shut down")
+
+
+if __name__ == "__main__":
+    
+    import uvicorn
+    host = CONFIG.organic_gateway.host
+    port = CONFIG.organic_gateway.port
+    uvicorn.run(app, host=host, port=port)

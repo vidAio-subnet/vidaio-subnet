@@ -13,16 +13,17 @@ from redis_utils import (
 
 app = FastAPI()
 
-
 class InsertOrganicRequest(BaseModel):
     url: str
-
+    chunk_id: str
+    task_id: str
+    resolution_type: str
 
 class InsertResultRequest(BaseModel):
-    compressed_video_url: str
+    processed_video_url: str
     original_video_url: str
     score: float
-
+    task_id: str 
 
 @app.post("/api/insert_organic_chunk")
 def api_insert_organic_chunk(payload: InsertOrganicRequest):
@@ -73,7 +74,7 @@ def api_push_result(payload: InsertResultRequest):
     r = get_redis_connection()
     result_key = f"result:{payload.original_video_url}"
     result_data = {
-        "compressed_video_url": payload.compressed_video_url,
+        "processed_video_url": payload.processed_video_url,
         "original_video_url": payload.original_video_url,
         "score": payload.score,
     }
@@ -94,7 +95,7 @@ def api_get_result(original_video_url: str):
         return {"message": "No result found for this video"}
 
     return {
-        "compressed_video_url": result[b"compressed_video_url"].decode(),
+        "processed_video_url": result[b"processed_video_url"].decode(),
         "original_video_url": result[b"original_video_url"].decode(),
         "score": float(result[b"score"]),
     }
