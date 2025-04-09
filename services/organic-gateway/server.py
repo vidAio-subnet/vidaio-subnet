@@ -18,14 +18,13 @@ async def lifespan(app: FastAPI):
     
     yield  # This is where the application runs
     
-    # Shutdown code (previously in on_event("shutdown"))
     if scheduler.running:
         scheduler.shutdown()
         logger.info("Cleanup scheduler shut down")
 
 # Create FastAPI app with lifespan
 app = FastAPI(
-    title="Video Upscaling Validator API",
+    title="Video Upscaling Subnet API",
     description="API for handling video upscaling tasks",
     version="1.0.0",
     lifespan=lifespan

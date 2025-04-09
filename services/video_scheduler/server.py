@@ -31,7 +31,13 @@ def api_insert_organic_chunk(payload: InsertOrganicRequest):
     Insert an organic video URL into the organic queue.
     """
     r = get_redis_connection()
-    push_organic_chunk(r, payload.url)
+    data = {
+        "url": payload.url,
+        "chunk_id": payload.chunk_id,
+        "task_id": payload.task_id,
+        "resolution_type": payload.resolution_type
+    }
+    push_organic_chunk(r, data)
     return {"message": "Organic chunk inserted"}
 
 
