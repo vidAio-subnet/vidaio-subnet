@@ -10,6 +10,7 @@ import requests
 from concurrent.futures import ThreadPoolExecutor
 from vidaio_subnet_core.utilities.minio_client import minio_client
 from vidaio_subnet_core.utilities.wandb_manager import WandbManager
+from vidaio_subnet_core.utilities.uids import get_organic_forward_uids
 from vidaio_subnet_core.utilities.version import get_version
 from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
 from services.video_scheduler.redis_utils import get_redis_connection, get_organic_queue_size
@@ -138,33 +139,24 @@ class Validator(base.BaseValidator):
         
         forward_uids = get_organic_forward_uids(needed, CONFIG.bandwidth.min_stake)
 
-        if forward_uids < needed:
-            needed = forward_uids
+        if len(forward_uids) < needed:
+            needed = len(forward_uids)
 
         axon_list = [self.metagraph.axons[uid] for uid in forward_uids]
 
         task_ids, original_urls, synapses = await self.challenge_synthesizer.build_organic_protocol()
 
         if len(task_ids) != needed or len(synapses) != needed:
-            logger.error(f"The number of organic synapses are different with needed, {len(task_ids)} != {needed} or {len(synapses)} != {needed}")
-        
+            logger.error(
+                f"Mismatch in organic synapses: {len(task_ids)} != {needed} or {len(synapses)} != {needed}"
+            )
+            return  # Exit early if there's a mismatch
+
+        # Update task status to 'progressing'
         for task_id, original_url in zip(task_ids, original_urls):
-            status_update_endpoint = self.organic_gateway_base_url + f"/admin/task/{task_id}/status"
+            await self.update_task_status(task_id, original_url, "progressing")
 
-            status_update_payload = {
-                "status": "progressing",
-                "original_video_url": original_url
-            }
-
-
-            try:
-                response = requests.post(status_update_endpoint, json=status_update_payload)
-                response.raise_for_status()
-
-            except requests.exceptions.RequestException as e:
-                print(f"Error marking task as completed: {e}")
-
-        # Create a list of coroutines
+        # Perform forward operations asynchronously
         forward_tasks = [
             self.dendrite.forward(axons=[axon], synapse=synapse, timeout=200)
             for axon, synapse in zip(axon_list, synapses)
@@ -173,38 +165,40 @@ class Validator(base.BaseValidator):
         raw_responses = await asyncio.gather(*forward_tasks)
 
         responses = [response[0] for response in raw_responses]
+        processed_urls = [response.miner_response.optimized_video_url for response in responses]
 
-        processed_urls = []
-        for response in responses:
-            processed_urls.append(response.miner_response.optimized_video_url)
-
+        # Update task status to 'completed' and push results
         for task_id, original_url, processed_url in zip(task_ids, original_urls, processed_urls):
-            status_update_endpoint = self.organic_gateway_base_url + f"/admin/task/{task_id}/status"
+            await self.update_task_status(task_id, original_url, "completed")
+            await self.push_result(task_id, original_url, processed_url)
 
-            result_payload = {
-                processed_video_url: processed_url,
-                original_video_url: original_url,
-                score: None,
-                task_id: task_id,
-            }
+    async def update_task_status(self, task_id, original_url, status):
+        status_update_endpoint = f"{self.organic_gateway_base_url}/admin/task/{task_id}/status"
+        status_update_payload = {
+            "status": status,
+            "original_video_url": original_url
+        }
+        try:
+            response = requests.post(status_update_endpoint, json=status_update_payload)
+            response.raise_for_status()
+            logger.info(f"Successfully updated status to '{status}' for task {task_id}")
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error updating status for task {task_id}: {e}")
 
-            status_update_payload = {
-                "status": "completed",
-                "original_video_url": original_url
-            }
+    async def push_result(self, task_id, original_url, processed_url):
+        result_payload = {
+            "processed_video_url": processed_url,
+            "original_video_url": original_url,
+            "score": None,
+            "task_id": task_id,
+        }
+        try:
+            response = requests.post(self.push_result_endpoint, json=result_payload)
+            response.raise_for_status()
+            logger.info(f"Successfully pushed result for task {task_id}")
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error pushing result for task {task_id}: {e}")
 
-            self.push_result_endpoint
-
-            try:
-                response = requests.post(status_update_endpoint, json=status_update_payload)
-                response.raise_for_status()
-                
-            except requests.exceptions.RequestException as e:
-                print(f"Error marking task as completed: {e}")
-
-        
-
-        
 
     def set_weights(self):
         self.current_block = self.subtensor.get_current_block()

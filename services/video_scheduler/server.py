@@ -108,6 +108,7 @@ def api_push_result(payload: InsertResultRequest):
         "processed_video_url": payload.processed_video_url,
         "original_video_url": payload.original_video_url,
         "score": payload.score,
+        "tak_id": task_id,
     }
     r.hmset(result_key, result_data)
     return {"message": "Result saved successfully"}

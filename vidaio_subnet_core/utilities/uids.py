@@ -5,68 +5,56 @@ from typing import List
 import os
 import shutil
 
-BASE_DIR = 'validation'
-def check_uid_availability(
-    metagraph: "bt.metagraph.Metagraph", uid: int, vpermit_tao_limit: int
-) -> bool:
-    """Check if uid is available. The UID should be available if it is serving and has less than vpermit_tao_limit stake
-    Args:
-        metagraph (:obj: bt.metagraph.Metagraph): Metagraph object
-        uid (int): uid to be checked
-        vpermit_tao_limit (int): Validator permit tao limit
-    Returns:
-        bool: True if uid is available, False otherwise
+def check_uid_availability(metagraph: "bt.metagraph.Metagraph", uid: int, vpermit_tao_limit: int) -> bool:
     """
-    # Filter non serving axons.
-    if not metagraph.axons[uid].is_serving:
+    Check if a UID is available. The UID should be available if it is serving and has less than the specified stake limit.
+    
+    Args:
+        metagraph (bt.metagraph.Metagraph): Metagraph object
+        uid (int): UID to be checked
+        vpermit_tao_limit (int): Validator permit tao limit
+    
+    Returns:
+        bool: True if UID is available, False otherwise
+    """
+    axon = metagraph.axons[uid]
+    if not axon.is_serving:
         return False
-    # Filter validator permit > 1024 stake.
-    if metagraph.validator_permit[uid]:
-        if metagraph.S[uid] >= vpermit_tao_limit:
-            return False
-    # Available otherwise.
+    if metagraph.validator_permit[uid] and metagraph.S[uid] >= vpermit_tao_limit:
+        return False
     return True
 
-def get_organic_forward_uids(
-    self, count: int = None, vpermit_tao_limit: int = 20000, exclude: List[int] = None
-) -> np.ndarray:
+def get_organic_forward_uids(self, count: int = None, vpermit_tao_limit: int = 20000, exclude: List[int] = None) -> np.ndarray:
+    """
+    Get a list of UIDs that are available for forwarding, sorted by incentive.
     
-    candidate_uids = []
-    avail_uids = []
+    Args:
+        count (int): Number of UIDs to return
+        vpermit_tao_limit (int): Validator permit tao limit
+        exclude (List[int]): List of UIDs to exclude
     
-    # bt.logging.debug(f"Uids type: {self.metagraph.n.item()}")
+    Returns:
+        np.ndarray: Array of available UIDs
+    """
+    exclude = exclude or []
     incentives = self.metagraph.I
-    miner_info = []
-    for uid in range(self.metagraph.n.item()):
-        incentive = incentives[uid]
-        
-        miner_info.append({
-            "uid": uid,
-            "incentive": incentive,
-        })
+    miner_info = [{"uid": uid, "incentive": incentives[uid]} for uid in range(self.metagraph.n.item())]
 
-    sorted_uids = [miner["uid"] for miner in sorted(miner_info, key=lambda x: x["incentive"], reverse=True)]
+    sorted_uids = sorted(miner_info, key=lambda x: x["incentive"], reverse=True)
+    
+    candidate_uids = [
+        uid for uid in (miner["uid"] for miner in sorted_uids)
+        if check_uid_availability(self.metagraph, uid, vpermit_tao_limit) and uid not in exclude
+    ]
 
-    for uid in sorted_uids:
-        uid_is_available = check_uid_availability(
-            self.metagraph, uid, self.config.neuron.vpermit_tao_limit
-        )
-        uid_is_not_excluded = exclude is None or uid not in exclude
+    avail_uids = [
+        uid for uid in (miner["uid"] for miner in sorted_uids)
+        if check_uid_availability(self.metagraph, uid, vpermit_tao_limit)
+    ]
 
-        if uid_is_available:
-            avail_uids.append(uid)
-            if uid_is_not_excluded:
-                candidate_uids.append(uid)
-
-    # If count is larger than the number of available uids, set count to the number of available uids.
     count = min(count, len(avail_uids))
-    # Check if candidate_uids contain enough for querying, if not grab all avaliable uids
-    available_uids = candidate_uids
     
     if len(candidate_uids) < count:
-        # Add UIDs from the beginning of avail_uids to make up the difference
-        available_uids += avail_uids[:count - len(candidate_uids)]
-            
-    uids = np.array(available_uids[:count])
-    
-    return uids
+        candidate_uids.extend(avail_uids[:count - len(candidate_uids)])
+        
+    return np.array(candidate_uids[:count])
