@@ -41,23 +41,48 @@ def api_insert_organic_chunk(payload: InsertOrganicRequest):
     return {"message": "Organic chunk inserted"}
 
 
-@app.get("/api/get_prioritized_chunk")
-def api_get_prioritized_chunk():
-    """
-    Retrieve the highest-priority chunk:
-    1) Pop the oldest organic chunk, if available.
-    2) Otherwise, pop the oldest synthetic chunk.
-    """
-    print("got the request correctoy")
+# @app.get("/api/get_prioritized_chunk")
+# def api_get_prioritized_chunk():
+#     """
+#     Retrieve the highest-priority chunk:
+#     1) Pop the oldest organic chunk, if available.
+#     2) Otherwise, pop the oldest synthetic chunk.
+#     """
+#     print("got the request correctly")
+#     r = get_redis_connection()
+#     chunk = pop_organic_chunk(r)
+#     print("organic queue is empty, checking synthetic queue...")
+#     if not chunk:
+#         chunk = pop_synthetic_chunk(r)
+#         print(f"processing synthetic queue. {chunk}")
+#     if not chunk:
+#         return {"message": "No chunks available"}
+#     return {"chunk": chunk}
+
+
+@app.get("/api/get_synthetic_chunk")
+def api_get_synthetic_chunk():
+    print("got the get_synthetic_chunk request correctly")
     r = get_redis_connection()
-    chunk = pop_organic_chunk(r)
-    print("organic queue is empty, checking synthetic queue...")
-    if not chunk:
-        chunk = pop_synthetic_chunk(r)
-        print(f"processing synthetic queue. {chunk}")
+    chunk = pop_synthetic_chunk(r)
     if not chunk:
         return {"message": "No chunks available"}
     return {"chunk": chunk}
+
+
+@app.get("/api/get_organic_chunks")
+def api_get_organic_chunks(needed):
+    print("got the get_organic_chunks request correctly")
+    r = get_redis_connection()
+    chunks = []
+    for i in range(0, needed):
+        chunk = pop_organic_chunk(r)
+        if chunk is None:
+            break
+        chunks.append(chunk)
+    if len(chunks) == 0:
+        print("No organic chunks in the queue")
+    return {"chunks": chunks}
 
 
 @app.get("/api/queue_sizes")
