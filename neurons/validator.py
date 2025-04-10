@@ -46,6 +46,7 @@ class Validator(base.BaseValidator):
         logger.info("🔑 Initialized Wandb Manager 🔑")
 
         self.organic_gateway_base_url = "http://localhost:" + CONFIG.organic_gateway.port
+        self.push_result_endpoint = CONFIG.video_scheduler.host + ":" + CONFIG.video_scheduler.port + "/api/push_result"
     
 
     async def start_epoch(self):
@@ -148,15 +149,16 @@ class Validator(base.BaseValidator):
             logger.error(f"The number of organic synapses are different with needed, {len(task_ids)} != {needed} or {len(synapses)} != {needed}")
         
         for task_id, original_url in zip(task_ids, original_urls):
-            endpoint = self.organic_gateway_base_url + f"/admin/task/{task_id}/status"
+            status_update_endpoint = self.organic_gateway_base_url + f"/admin/task/{task_id}/status"
 
-            payload = {
+            status_update_payload = {
                 "status": "progressing",
                 "original_video_url": original_url
             }
 
+
             try:
-                response = requests.post(endpoint, json=payload)
+                response = requests.post(status_update_endpoint, json=status_update_payload)
                 response.raise_for_status()
 
             except requests.exceptions.RequestException as e:
@@ -172,16 +174,29 @@ class Validator(base.BaseValidator):
 
         responses = [response[0] for response in raw_responses]
 
-        for task_id, original_url in zip(task_ids, original_urls):
-            endpoint = self.organic_gateway_base_url + f"/admin/task/{task_id}/status"
+        processed_urls = []
+        for response in responses:
+            processed_urls.append(response.miner_response.optimized_video_url)
 
-            payload = {
+        for task_id, original_url, processed_url in zip(task_ids, original_urls, processed_urls):
+            status_update_endpoint = self.organic_gateway_base_url + f"/admin/task/{task_id}/status"
+
+            result_payload = {
+                processed_video_url: processed_url,
+                original_video_url: original_url,
+                score: None,
+                task_id: task_id,
+            }
+
+            status_update_payload = {
                 "status": "completed",
                 "original_video_url": original_url
             }
 
+            self.push_result_endpoint
+
             try:
-                response = requests.post(endpoint, json=payload)
+                response = requests.post(status_update_endpoint, json=status_update_payload)
                 response.raise_for_status()
                 
             except requests.exceptions.RequestException as e:
