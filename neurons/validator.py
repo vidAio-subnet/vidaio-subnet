@@ -46,7 +46,7 @@ class Validator(base.BaseValidator):
         self.wandb_manager = WandbManager(validator=self)
         logger.info("🔑 Initialized Wandb Manager 🔑")
 
-        self.organic_gateway_base_url = "http://localhost:" + CONFIG.organic_gateway.port
+        self.organic_gateway_base_url = "http://localhost:" + str(CONFIG.organic_gateway.port)
         self.push_result_endpoint = CONFIG.video_scheduler.host + ":" + str(CONFIG.video_scheduler.port) + "/api/push_result"
     
 
