@@ -25,7 +25,7 @@ class Validator(base.BaseValidator):
         logger.info("💧 Initialized miner manager 💧")
         
         self.challenge_synthesizer = validating.synthesizing.Synthesizer()
-        logger.info("Initialized challenge synthesizer")
+        logger.info("💧 Initialized challenge synthesizer 💧")
         
         self.dendrite = bt.dendrite(wallet=self.wallet)
         logger.info("💧 Initialized dendrite 💧")
@@ -46,8 +46,8 @@ class Validator(base.BaseValidator):
         self.wandb_manager = WandbManager(validator=self)
         logger.info("🔑 Initialized Wandb Manager 🔑")
 
-        self.organic_gateway_base_url = "http://localhost:" + str(CONFIG.organic_gateway.port)
-        self.push_result_endpoint = CONFIG.video_scheduler.host + ":" + str(CONFIG.video_scheduler.port) + "/api/push_result"
+        self.organic_gateway_base_url = f"http://localhost:{CONFIG.organic_gateway.port}"
+        self.push_result_endpoint = f"{CONFIG.video_scheduler.host}:{CONFIG.video_scheduler.port}/api/push_result"
     
 
     async def start_epoch(self):
