@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 from vidaio_subnet_core import CONFIG
+from typing import Optional, Literal
+import urllib
 
 from redis_utils import (
     get_redis_connection,
@@ -22,8 +24,11 @@ class InsertOrganicRequest(BaseModel):
 class InsertResultRequest(BaseModel):
     processed_video_url: str
     original_video_url: str
-    score: float
+    score: Optional[float] = None
     task_id: str 
+
+class ResultRequest(BaseModel):
+    original_video_url: str
 
 @app.post("/api/insert_organic_chunk")
 def api_insert_organic_chunk(payload: InsertOrganicRequest):
@@ -71,19 +76,32 @@ def api_get_synthetic_chunk():
 
 
 @app.get("/api/get_organic_chunks")
-def api_get_organic_chunks(needed):
-    print("got the get_organic_chunks request correctly")
-    r = get_redis_connection()
+def api_get_organic_chunks(needed: int):
+    print("Received request for organic chunks")
+    
+    try:
+        r = get_redis_connection()
+    except Exception as e:
+        print(f"Error connecting to Redis: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    
     chunks = []
-    for i in range(0, needed):
-        chunk = pop_organic_chunk(r)
-        if chunk is None:
-            break
-        chunks.append(chunk)
+    for i in range(needed):
+        try:
+            chunk = pop_organic_chunk(r)
+            if chunk is None:
+                print("No more organic chunks available")
+                break
+            chunks.append(chunk)
+        except Exception as e:
+            print(f"Error popping chunk: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error")
+    
     if len(chunks) == 0:
         print("No organic chunks in the queue")
+        return {"message": "No organic chunks available", "chunks": chunks}
+    
     return {"chunks": chunks}
-
 
 @app.get("/api/queue_sizes")
 def api_queue_sizes():
@@ -108,31 +126,40 @@ def api_push_result(payload: InsertResultRequest):
         "processed_video_url": payload.processed_video_url,
         "original_video_url": payload.original_video_url,
         "score": payload.score,
-        "tak_id": task_id,
+        "task_id": payload.task_id,
     }
     r.hmset(result_key, result_data)
     return {"message": "Result saved successfully"}
 
 
-@app.get("/api/get_result/{original_video_url:path}")
-def api_get_result(original_video_url: str):
+@app.get("/api/get_result")
+def api_get_result(payload: ResultRequest):
     """
     Retrieve processing result for a specific video URL.
     """
+    # Decode the URL once since FastAPI will have already decoded it once
+    
+    original_video_url = payload.original_video_url
+
     r = get_redis_connection()
+    
     result_key = f"result:{original_video_url}"
+    
     result = r.hgetall(result_key)
 
     if not result:
         return {"message": "No result found for this video"}
 
+    # Only try to access these fields if result is not empty
+    print(result, result["processed_video_url"], result["original_video_url"])
+    
+    # Return the result as a proper JSON response
     return {
-        "processed_video_url": result[b"processed_video_url"].decode(),
-        "original_video_url": result[b"original_video_url"].decode(),
-        "score": float(result[b"score"]),
+        "processed_video_url": result["processed_video_url"] if "processed_video_url" in result else None,
+        "original_video_url": result["original_video_url"] if "original_video_url" in result else None,
+        "task_id": result["task_id"] if "task_id" in result else None,
+        "score": float(result["score"]) if "score" in result else None
     }
-
-
 
 if __name__ == "__main__":
     

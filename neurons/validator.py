@@ -47,8 +47,8 @@ class Validator(base.BaseValidator):
         logger.info("🔑 Initialized Wandb Manager 🔑")
 
         self.organic_gateway_base_url = f"http://localhost:{CONFIG.organic_gateway.port}"
-        self.push_result_endpoint = f"{CONFIG.video_scheduler.host}:{CONFIG.video_scheduler.port}/api/push_result"
-    
+        self.push_result_endpoint = f"http://{CONFIG.video_scheduler.host}:{CONFIG.video_scheduler.port}/api/push_result"
+
 
     async def start_epoch(self):
         logger.info("✅✅✅✅✅ Starting forward ✅✅✅✅✅")
@@ -56,6 +56,8 @@ class Validator(base.BaseValidator):
 
         miner_uids = self.filter_miners()
         logger.debug(f"Initialized {len(miner_uids)} subnet neurons of total {len(self.metagraph.S)} neurons")
+
+        await self.should_process_organic()
 
         uids = self.miner_manager.consume(miner_uids)
         logger.info(f"Filtered UIDs after consumption: {uids}")
@@ -72,10 +74,7 @@ class Validator(base.BaseValidator):
 
         for batch_idx, batch in enumerate(miner_batches):
 
-            num_organic_chunks = get_organic_queue_size(self.redis_conn)
-
-            if num_organic_chunks > 0:
-                await self.process_organic_chunks(num_organic_chunks)
+            await self.should_process_organic()
 
             batch_start_time = time.time()
             logger.info(f"🧩 Processing batch {batch_idx + 1}/{len(miner_batches)} 🧩")
@@ -134,17 +133,35 @@ class Validator(base.BaseValidator):
 
         return miner_uids
 
+    async def should_process_organic(self):
+
+        num_organic_chunks = get_organic_queue_size(self.redis_conn)
+
+        logger.info(f"🥒 Checking if an organic query exists 🥒")
+
+        if num_organic_chunks > 0:
+            logger.info(f"🥬 The organic_queue_size: {num_organic_chunks}, processing organic requests. 🥬")
+            await self.process_organic_chunks(num_organic_chunks)
+        else:
+            logger.info("🥬 The organic queue is currently empty, so it will be skipped 🥬")
+
     async def process_organic_chunks(self, num_organic_chunks):
+        organic_start_time = time.time() 
+
         needed = min(CONFIG.bandwidth.requests_organic_interval, num_organic_chunks)
         
-        forward_uids = get_organic_forward_uids(needed, CONFIG.bandwidth.min_stake)
+        logger.info(f"🥦 Need {needed} miners 🥦")
+
+        forward_uids = get_organic_forward_uids(self, needed, CONFIG.bandwidth.min_stake)
 
         if len(forward_uids) < needed:
+            logger.info(f"🥕 There are just {len(forward_uids)} miners available, handling {len(forward_uids)} chunks 🥕")
             needed = len(forward_uids)
 
         axon_list = [self.metagraph.axons[uid] for uid in forward_uids]
 
-        task_ids, original_urls, synapses = await self.challenge_synthesizer.build_organic_protocol()
+        logger.info("🍅 Building the organic protocol 🍅")
+        task_ids, original_urls, synapses = await self.challenge_synthesizer.build_organic_protocol(needed)
 
         if len(task_ids) != needed or len(synapses) != needed:
             logger.error(
@@ -152,11 +169,11 @@ class Validator(base.BaseValidator):
             )
             return  # Exit early if there's a mismatch
 
-        # Update task status to 'progressing'
+        logger.info("Updating task status to 'processing'")
         for task_id, original_url in zip(task_ids, original_urls):
-            await self.update_task_status(task_id, original_url, "progressing")
+            await self.update_task_status(task_id, original_url, "processing")
 
-        # Perform forward operations asynchronously
+        logger.info("🍆 Performing forward operations asynchronously 🍆")
         forward_tasks = [
             self.dendrite.forward(axons=[axon], synapse=synapse, timeout=200)
             for axon, synapse in zip(axon_list, synapses)
@@ -167,10 +184,14 @@ class Validator(base.BaseValidator):
         responses = [response[0] for response in raw_responses]
         processed_urls = [response.miner_response.optimized_video_url for response in responses]
 
-        # Update task status to 'completed' and push results
+        logger.info("Updating task status to 'completed' and pushing results")
         for task_id, original_url, processed_url in zip(task_ids, original_urls, processed_urls):
             await self.update_task_status(task_id, original_url, "completed")
             await self.push_result(task_id, original_url, processed_url)
+
+        end_time = time.time()
+        total_time = end_time - organic_start_time
+        logger.info(f"🍏 Organic chunk processing complete in {total_time:.2f} seconds 🍏")
 
     async def update_task_status(self, task_id, original_url, status):
         status_update_endpoint = f"{self.organic_gateway_base_url}/admin/task/{task_id}/status"
@@ -179,26 +200,29 @@ class Validator(base.BaseValidator):
             "original_video_url": original_url
         }
         try:
-            response = requests.post(status_update_endpoint, json=status_update_payload)
-            response.raise_for_status()
-            logger.info(f"Successfully updated status to '{status}' for task {task_id}")
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error updating status for task {task_id}: {e}")
+            async with httpx.AsyncClient() as client:
+                response = await client.post(status_update_endpoint, json=status_update_payload)
+                response.raise_for_status()
+                logger.info(f"Successfully updated status to '{status}' for task {task_id}")
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Error updating status for task {task_id}: {e.response.status_code} - {e.response.text}")
+        except httpx.RequestError as e:
+            logger.error(f"Request error updating status for task {task_id}: {e}")
 
     async def push_result(self, task_id, original_url, processed_url):
         result_payload = {
             "processed_video_url": processed_url,
             "original_video_url": original_url,
-            "score": None,
+            "score": 0,
             "task_id": task_id,
         }
         try:
-            response = requests.post(self.push_result_endpoint, json=result_payload)
-            response.raise_for_status()
-            logger.info(f"Successfully pushed result for task {task_id}")
-        except requests.exceptions.RequestException as e:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(self.push_result_endpoint, json=result_payload)
+                response.raise_for_status()
+                logger.info(f"Successfully pushed result for task {task_id}")
+        except httpx.RequestError as e:
             logger.error(f"Error pushing result for task {task_id}: {e}")
-
 
     def set_weights(self):
         self.current_block = self.subtensor.get_current_block()

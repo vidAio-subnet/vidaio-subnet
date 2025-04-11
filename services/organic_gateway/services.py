@@ -142,9 +142,39 @@ class RedisServiceClient:
     
     async def get_result(self, original_video_url: str):
         """Get processing result from Redis service"""
-        api_url = f"{self.endpoint}/api/get_result/{original_video_url}"
+        api_url = f"{self.endpoint}/api/get_result"
         
-        return await self._make_request("GET", api_url)
+        retry_count = 0
+        
+        while retry_count < self.max_retries:
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    # For FastAPI with Pydantic models in GET requests, we need to use the 
+                    # special 'content' parameter to send the body with a GET request
+                    response = await client.request(
+                        "GET",
+                        api_url,
+                        json={"original_video_url": original_video_url},
+                        headers={"Content-Type": "application/json"}
+                    )
+                    
+                    if response.status_code == 200:
+                        return response.json()
+                    else:
+                        logger.error(f"Request failed: {response.status_code}, {response.text}")
+                        raise HTTPException(status_code=response.status_code, detail=response.text)
+                    
+            except Exception as e:
+                retry_count += 1
+                if retry_count >= self.max_retries:
+                    logger.error(f"Request failed after {self.max_retries} attempts: {str(e)}")
+                    raise HTTPException(status_code=500, detail=f"Service request failed: {str(e)}")
+                
+                logger.warning(f"Retry {retry_count}/{self.max_retries}: {str(e)}")
+                await asyncio.sleep(self.retry_delay)
+        
+        raise HTTPException(status_code=500, detail="Request failed after max retries")
+
     
     async def _make_request(self, method: str, url: str, json_data: Dict = None):
         """Make HTTP request with retry logic"""

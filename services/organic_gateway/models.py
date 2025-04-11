@@ -13,7 +13,7 @@ class TaskStatus(str, Enum):
 class UpscaleRequest(BaseModel):
     chunk_id: str
     chunk_url: str
-    resolution_type: Literal["HD", "4K", "8K"]
+    resolution_type: Literal["SD2HD", "SD24K", "HD24K"]
 
 class UpscaleResponse(BaseModel):
     task_id: str
@@ -48,3 +48,8 @@ class InsertResultRequest(BaseModel):
     original_video_url: str
     score: float
     task_id: str
+
+class UpdateTaskStatusRequest(BaseModel):
+    status: TaskStatus
+    original_video_url: Optional[str] = None
+    progress: Optional[float] = None

@@ -5,7 +5,7 @@ from typing import Optional
 from config import logger
 from models import (
     UpscaleRequest, UpscaleResponse, StatusResponse, 
-    ResultResponse, TaskStatus
+    ResultResponse, TaskStatus, UpdateTaskStatusRequest
 )
 from services import get_task_service, get_redis_service, TaskService
 from config import get_settings
@@ -152,9 +152,7 @@ admin_router = APIRouter(prefix="/admin")
 @admin_router.post("/task/{task_id}/status")
 async def update_task_status(
     task_id: str,
-    status: TaskStatus,
-    original_video_url: Optional[str] = None,
-    progress: Optional[float] = None,
+    request: UpdateTaskStatusRequest,
     task_service: TaskService = Depends(get_task_service)
 ):
     """
@@ -162,6 +160,11 @@ async def update_task_status(
     
     This endpoint allows the validator process to update task status.
     """
+
+    status = request.status
+    progress = request.progress
+    original_video_url = request.original_video_url
+
     success = task_service.update_task_status(task_id, status, progress)
     
     if not success:
