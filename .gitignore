@@ -16,7 +16,6 @@ note.txt
 .env
 venv/
 video2x/
-vmaf/
 logs/
 videos/
 wandb/
@@ -25,5 +24,6 @@ MDTVSFA/
 MANIQA/
 frames/
 tmp/
+vmaf/
 services/scoring/vmaf
 services/upscaling/models/
