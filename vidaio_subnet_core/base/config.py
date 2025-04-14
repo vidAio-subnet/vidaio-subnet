@@ -91,14 +91,14 @@ def add_validator_args(parser):
         "--wandb.project_name",
         type=str,
         help="The name of the project where you are sending the new run.",
-        default="vidaio-validators",
+        default="sn85-validators",
     )
 
     parser.add_argument(
         "--wandb.entity",
         type=str,
         help="The name of the project where you are sending the new run.",
-        default="vidaio",
+        default="vidaio_vidaio",
     )
 
 

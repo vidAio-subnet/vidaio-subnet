@@ -13,6 +13,7 @@ from lpips_metric import calculate_lpips
 from pieapp_metric import calculate_pieapp_score
 import aiohttp
 import logging
+import time
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ class ScoringRequest(BaseModel):
 
 class ScoringResponse(BaseModel):
     """
-    Response model for scoring. Contains the list of calculated scores for each distorted video.
+    Response model for scoring. Contains the list of calculated scores for each d ofistorted video.
     """
     scores: List[float]
 
@@ -57,7 +58,7 @@ async def download_video(video_url: str, verbose: bool) -> str:
         # Create a temporary file for the video
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as vid_temp:
             file_path = vid_temp.name  # Path to the temporary file
-        logger.info(f"Downloading video from {video_url} to {file_path}")
+        print(f"Downloading video from {video_url} to {file_path}")
 
         # Download the file using aiohttp
         async with aiohttp.ClientSession() as session:
@@ -74,11 +75,11 @@ async def download_video(video_url: str, verbose: bool) -> str:
         if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
             raise Exception(f"Download failed or file is empty: {file_path}")
 
-        logger.info(f"File successfully downloaded to: {file_path}")
+        print(f"File successfully downloaded to: {file_path}")
         return file_path
 
     except Exception as e:
-        logger.error(f"Failed to download video from {video_url}: {str(e)}")
+        print(f"Failed to download video from {video_url}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error downloading video: {str(e)}")
 
 
@@ -113,9 +114,12 @@ async def score(request: ScoringRequest) -> ScoringResponse:
     Returns:
         ScoringResponse: The response object containing a list of scores for each distorted video.
     """
-    logger.info("🤖 Start scoring..........")
-    logger.debug(f"Request data: {request.__dict__}")
+    print("#################### 🤖 Start scoring ####################")
+
+    print(f"Request data: {request.__dict__}")
     
+    start_time = time.time()
+
     ref_path = request.reference_path
     ref_cap = cv2.VideoCapture(ref_path)
 
@@ -123,7 +127,7 @@ async def score(request: ScoringRequest) -> ScoringResponse:
         raise HTTPException(status_code=500, detail="Error opening reference video file")
 
     ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    logger.info(f"Reference video has {ref_total_frames} frames.")
+    print(f"Reference video has {ref_total_frames} frames.")
     
     if ref_total_frames <= 0:
         raise HTTPException(status_code=500, detail="Invalid reference video: no frames found")
@@ -131,26 +135,26 @@ async def score(request: ScoringRequest) -> ScoringResponse:
     scores = []
     for dist_url in request.distorted_urls:
         ref_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-        logger.info("Attempting to download processed video....")
+        print("Attempting to download processed video....")
         try:
             dist_path = await download_video(dist_url, request.verbose)
         except Exception as e:
-            logger.error(f"Failed to download video from {dist_url}: {str(e)}. Assigning score of 0.")
+            print(f"Failed to download video from {dist_url}: {str(e)}. Assigning score of 0.")
             scores.append(0.0)
             continue
          
         dist_cap = cv2.VideoCapture(dist_path)
 
         if not dist_cap.isOpened():
-            logger.error(f"Error opening distorted video file from {dist_url}. Assigning score of 0.")
+            print(f"Error opening distorted video file from {dist_url}. Assigning score of 0.")
             scores.append(0.0)
             continue  # Skip to the next distorted video
 
         dist_total_frames = int(dist_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        logger.info(f"Distorted video has {dist_total_frames} frames.")
+        print(f"Distorted video has {dist_total_frames} frames.")
         
         if dist_total_frames != ref_total_frames:
-            logger.warning(
+            print(
                 f"Video length mismatch for {dist_url}: ref({ref_total_frames}) != dist({dist_total_frames}). Assigning score of 0."
             )
             scores.append(0.0)
@@ -162,10 +166,10 @@ async def score(request: ScoringRequest) -> ScoringResponse:
         # Calculate VMAF
         try:
             vmaf_score = calculate_vmaf(ref_path, dist_path)
-            logger.info(f"🎾 vmaf_score is {vmaf_score}")
+            print(f"🎾 vmaf_score is {vmaf_score}")
 
         except Exception as e:
-            logger.error(f"Failed to calculate VMAF for {dist_url}: {str(e)}. Assigning score of 0.")
+            print(f"Failed to calculate VMAF for {dist_url}: {str(e)}. Assigning score of 0.")
             scores.append(0.0)
             dist_cap.release()
             os.unlink(dist_path)
@@ -175,15 +179,15 @@ async def score(request: ScoringRequest) -> ScoringResponse:
         pieapp_score = calculate_pieapp_score(ref_cap, dist_cap)
         if pieapp_score > 5.0:
             pieapp_score = 5.0
-        logger.info(f"🎾 Pieapp_score is {pieapp_score}")
+        print(f"🎾 Pieapp_score is {pieapp_score}")
 
         # Final score calculation
         if vmaf_score / 100 < VMAF_THRESHOLD:
-            logger.info(f"vmaf score is too low, giving zero score, current vmaf score: {vmaf_score}")
+            print(f"vmaf score is too low, giving zero score, current vmaf score: {vmaf_score}")
             scores.append(0)
         else:
             final_score = calculate_final_score(pieapp_score)
-            logger.info(f"🏀 final_score is {final_score}")
+            print(f"🏀 final_score is {final_score}")
             scores.append(final_score)
 
         dist_cap.release()
@@ -192,6 +196,9 @@ async def score(request: ScoringRequest) -> ScoringResponse:
     # Cleanup
     ref_cap.release()
 
+    print(f"🔯🔯🔯 calculated score: {scores} 🔯🔯🔯")
+    processed_time = time.time() - start_time
+    print(f"Completed one batch scoring within {processed_time:.2f} seconds")
     return ScoringResponse(scores=scores)
 
 

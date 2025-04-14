@@ -5,6 +5,7 @@ from .score import ScoreConfig
 from .sql import SQLConfig
 from .minio import MinioConfig
 from .video_upscaler import VideoUpscalerConfig
+from .organic_gateway import OrganicGatewayConfig
 
 __all__ = [
     "RedisConfig",
@@ -14,4 +15,5 @@ __all__ = [
     "SQLConfig",
     "MinioConfig",
     "VideoUpscalerConfig",
+    "OrganicGatewayConfig",
 ]
