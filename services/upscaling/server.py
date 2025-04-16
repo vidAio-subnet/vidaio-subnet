@@ -92,7 +92,7 @@ def upscale_video(payload_video_path: str, task_type: str):
             "-i", str(input_file),
             "-vf", f"tpad=stop_mode=clone:stop_duration={stop_duration}",
             "-c:v", "libx264",
-            "-crf", "23",
+            "-crf", "28",
             "-preset", "fast",
             str(output_file_with_extra_frames)
         ]
@@ -121,7 +121,7 @@ def upscale_video(payload_video_path: str, task_type: str):
             "-s", scale_factor,  # Scale factor of 2 or 4
             "-c", "libx264",  
             "-e", "preset=slow",  
-            "-e", "crf=24"
+            "-e", "crf=28"
         ]
         video2x_process = subprocess.run(video2x_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         elapsed_time = time.time() - start_time

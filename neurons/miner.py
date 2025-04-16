@@ -98,4 +98,4 @@ if __name__ == "__main__":
     with Miner() as miner:
         while True:
             logger.info(f"Miner running... {time.time()}")
-            time.sleep(30)
+            time.sleep(50)
