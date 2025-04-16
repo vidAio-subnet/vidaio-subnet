@@ -12,7 +12,7 @@ __all__ = [
     "CONFIG",
 ]
 
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 version_split = __version__.split(".")
 __spec_version__ = (
     (100 * int(version_split[0]))
