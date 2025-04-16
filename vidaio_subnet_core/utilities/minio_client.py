@@ -111,9 +111,12 @@ class VideoSubnetMinioClient:
         return f"https://{self.endpoint}/{self.bucket_name}/{object_name}"
 
     def __del__(self):
-        self.executor.shutdown(wait=False)
-
-
+        try:
+            if hasattr(self, 'executor') and self.executor:
+                self.executor.shutdown(wait=False)
+        except (TypeError, AttributeError, RuntimeError):
+            # Handle errors during interpreter shutdown
+            pass
 minio_client = VideoSubnetMinioClient(
     endpoint=CONFIG.minio.endpoint,
     access_key=CONFIG.minio.access_key,
@@ -129,3 +132,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+

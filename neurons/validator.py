@@ -57,7 +57,7 @@ class Validator(base.BaseValidator):
         miner_uids = self.filter_miners()
         logger.debug(f"Initialized {len(miner_uids)} subnet neurons of total {len(self.metagraph.S)} neurons")
 
-        await self.should_process_organic()
+        is_true = await self.should_process_organic()
 
         uids = self.miner_manager.consume(miner_uids)
         logger.info(f"Filtered UIDs after consumption: {uids}")
@@ -74,7 +74,9 @@ class Validator(base.BaseValidator):
 
         for batch_idx, batch in enumerate(miner_batches):
 
-            await self.should_process_organic()
+            is_true = True
+            while is_true == True:
+                is_true = await self.should_process_organic()
 
             batch_start_time = time.time()
             logger.info(f"🧩 Processing batch {batch_idx + 1}/{len(miner_batches)} 🧩")
@@ -88,7 +90,7 @@ class Validator(base.BaseValidator):
                 axons.append(miner[0])
             logger.debug(f"Processing UIDs in batch: {uids}")
             responses = await self.dendrite.forward(
-                axons=axons, synapse=synapse, timeout=200
+                axons=axons, synapse=synapse, timeout=60
             )
             logger.info(f"🎲 Received {len(responses)} responses from miners 🎲")
 
@@ -118,7 +120,7 @@ class Validator(base.BaseValidator):
                 "distorted_urls": distorted_urls,
                 "reference_path": reference_video_path
             },
-            timeout=210
+            timeout=800
         )
         response_json = score_response.json()
         scores: List[float] = response_json.get("scores", [])  
@@ -140,27 +142,29 @@ class Validator(base.BaseValidator):
         logger.info(f"🥒 Checking if an organic query exists 🥒")
 
         if num_organic_chunks > 0:
-            logger.info(f"🥬 The organic_queue_size: {num_organic_chunks}, processing organic requests. 🥬")
+            logger.info(f"The organic_queue_size: {num_organic_chunks}, processing organic requests.")
             await self.process_organic_chunks(num_organic_chunks)
+            return True
         else:
-            logger.info("🥬 The organic queue is currently empty, so it will be skipped 🥬")
+            logger.info("The organic queue is currently empty, so it will be skipped")
+            return False
 
     async def process_organic_chunks(self, num_organic_chunks):
         organic_start_time = time.time() 
 
         needed = min(CONFIG.bandwidth.requests_organic_interval, num_organic_chunks)
         
-        logger.info(f"🥦 Need {needed} miners 🥦")
+        logger.info(f"🍉 Start processing organic query. need {needed} miners 🍉")
 
         forward_uids = get_organic_forward_uids(self, needed, CONFIG.bandwidth.min_stake)
 
         if len(forward_uids) < needed:
-            logger.info(f"🥕 There are just {len(forward_uids)} miners available, handling {len(forward_uids)} chunks 🥕")
+            logger.info(f"There are just {len(forward_uids)} miners available, handling {len(forward_uids)} chunks")
             needed = len(forward_uids)
 
         axon_list = [self.metagraph.axons[uid] for uid in forward_uids]
 
-        logger.info("🍅 Building the organic protocol 🍅")
+        logger.info("Building the organic protocol")
         task_ids, original_urls, synapses = await self.challenge_synthesizer.build_organic_protocol(needed)
 
         if len(task_ids) != needed or len(synapses) != needed:
@@ -173,7 +177,7 @@ class Validator(base.BaseValidator):
         for task_id, original_url in zip(task_ids, original_urls):
             await self.update_task_status(task_id, original_url, "processing")
 
-        logger.info("🍆 Performing forward operations asynchronously 🍆")
+        logger.info("Performing forward operations asynchronously")
         forward_tasks = [
             self.dendrite.forward(axons=[axon], synapse=synapse, timeout=200)
             for axon, synapse in zip(axon_list, synapses)

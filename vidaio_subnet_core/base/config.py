@@ -111,5 +111,7 @@ def add_common_config(parser: argparse.ArgumentParser):
     bt.subtensor.add_args(parser)
     bt.logging.add_args(parser)
     bt.axon.add_args(parser)
-    add_args(parser) 
+    add_args(parser)
+    add_validator_args(parser)
+    add_miner_args(parser)
     return parser  

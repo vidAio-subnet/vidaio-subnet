@@ -79,17 +79,20 @@ To configure environment variables, follow these steps:
    cp .env.template .env
    ```
 
-2. Add the required variables to the `.env` file. For example:
+2. Set up a bucket in cloud storage. The base miner code utilizes MinIO to connect with cloud storage services, so you'll need to prepare your bucket using a platform that supports MinIO integration, such as Backblaze. Alternatively, you can modify the code to suit your specific requirements.
+3. Add the required variables to the `.env` file. For example:
    ```env
    BUCKET_NAME="S3 buckent name"
-   S3_COMPATIBLE_ENDPOINT="S3 bucket endpoint"
-   S3_COMPATIBLE_ACCESS_KEY="S3 bucket personal access key"
-   S3_COMPATIBLE_SECRET_KEY="S3 bucket personal secret key"
+   BUCKET_COMPATIBLE_ENDPOINT="S3 bucket endpoint"
+   BUTKET_COMPATIBLE_ACCESS_KEY="S3 bucket personal access key"
+   BUCKET_COMPATIBLE_SECRET_KEY="S3 bucket personal secret key"
+   PEXELS_API_KEY="Your Pexels account api key"
+   WANDB_API_KEY="Your WANDB account api key"
    ```
 
-3. Ensure that the S3 bucket is configured with the appropriate permissions to allow file uploads and enable public access for downloads via presigned URLs.
+4. Ensure that the bucket is configured with the appropriate permissions to allow file uploads and enable public access for downloads via presigned URLs.
 
-4. Once the `.env` file is properly configured, the application will use the specified credentials for S3 bucket and Pexels.
+5. Once the `.env` file is properly configured, the application will use the specified credentials for S3 bucket and Pexels.
 
 
 ---

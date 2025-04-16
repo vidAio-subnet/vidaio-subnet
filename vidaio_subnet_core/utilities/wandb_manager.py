@@ -31,6 +31,7 @@ class WandbManager:
         name = f"validator-{self.validator.uid}--{version}--{current}"
         wandb_project = self.validator.config.wandb.project_name
         wandb_entity = self.validator.config.wandb.entity
+        logger.info("Initializing wandb entity and project.")
         self.wandb = wandb.init(
             anonymous="must",
             name=name,
