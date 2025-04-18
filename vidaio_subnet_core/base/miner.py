@@ -6,7 +6,7 @@ import time
 import traceback
 from vidaio_subnet_core.protocol import VideoUpscalingProtocol
 import argparse
-from .config import add_common_config, add_miner_args
+from .config import add_common_config
 import os
 
 
@@ -44,7 +44,6 @@ class BaseMiner(ABC):
     def get_config(self):
         parser = argparse.ArgumentParser()
         parser = add_common_config(parser)
-        add_miner_args(parser)
         config = bt.config(parser)
         config.full_path = os.path.expanduser(
             "{}/{}/{}/netuid{}/{}".format(

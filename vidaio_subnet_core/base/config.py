@@ -57,24 +57,6 @@ def add_args(parser):
     )
 
 
-def add_miner_args(parser):
-    """Add miner specific arguments to the parser."""
-
-    parser.add_argument(
-        "--blacklist.force_validator_permit",
-        action="store_true",
-        help="If set, we will force incoming requests to have a permit.",
-        default=False,
-    )
-
-    parser.add_argument(
-        "--epoch_length",
-        action="store_true",
-        help="If set, miners will accept queries from non registered entities. (Dangerous!)",
-        default=False,
-    )
-
-
 def add_validator_args(parser):
     """Add validator specific arguments to the parser."""
 
@@ -113,5 +95,4 @@ def add_common_config(parser: argparse.ArgumentParser):
     bt.axon.add_args(parser)
     add_args(parser)
     add_validator_args(parser)
-    add_miner_args(parser)
     return parser  
