@@ -28,7 +28,11 @@ class MinerManager:
         Session = sessionmaker(bind=self.engine)
         self.session = Session()
         logger.info("Initializing serving counters")
-        self.initialize_serving_counter(self.metagraph.uids)
+        if len(self.metagraph.uids) < 256:
+            uids = list(range(256)) 
+            self.initialize_serving_counter(uids)
+        else:
+            self.initialize_serving_counter(self.metagraph.uids)
         logger.success("MinerManager initialization complete")
         
     def initialize_serving_counter(self, uids: list[int]):
