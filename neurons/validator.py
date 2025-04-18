@@ -122,7 +122,7 @@ class Validator(base.BaseValidator):
                 "distorted_urls": distorted_urls,
                 "reference_path": reference_video_path
             },
-            timeout=800
+            timeout=1500
         )
         response_json = score_response.json()
         scores: List[float] = response_json.get("scores", [])  
