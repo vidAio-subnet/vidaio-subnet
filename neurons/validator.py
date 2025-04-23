@@ -15,6 +15,7 @@ from vidaio_subnet_core.utilities.version import get_version
 from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
 from services.video_scheduler.redis_utils import get_redis_connection, get_organic_queue_size
 import time
+import random
 
 class Validator(base.BaseValidator):
     def __init__(self):
@@ -64,8 +65,12 @@ class Validator(base.BaseValidator):
         uids = self.miner_manager.consume(miner_uids)
         logger.info(f"Filtered UIDs after consumption: {uids}")
 
-        axons = [self.metagraph.axons[uid] for uid in uids]
-        miners = list(zip(axons, uids))
+        random_uids = uids.copy()
+        random.shuffle(random_uids)
+        logger.info(f"Randomized UIDs: {random_uids}")
+
+        axons = [self.metagraph.axons[uid] for uid in random_uids]
+        miners = list(zip(axons, random_uids))
 
         batch_size = CONFIG.bandwidth.requests_per_interval
 
@@ -119,6 +124,7 @@ class Validator(base.BaseValidator):
         score_response = await self.score_client.post(
             "/score",
             json = {
+                "uids": uids,
                 "distorted_urls": distorted_urls,
                 "reference_path": reference_video_path
             },
