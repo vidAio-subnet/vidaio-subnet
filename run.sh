@@ -128,7 +128,8 @@ check_package_installed "jq"
 pm2 start "python services/scoring/server.py" --name scoring_endpoint
 pm2 start "python services/video_scheduler/worker.py" --name video_scheduler_worker
 pm2 start "python services/video_scheduler/server.py" --name video_scheduler_endpoint
-# pm2 start "python3 neurons/validator.py $joined_args" --name video-validator
+# pm2 start "python neurons/validator.py $joined_args" --name video-validator
+# pm2 start "python services/organic_gateway/server.py" --name organic-gateway
 
 # Auto-update loop
 last_restart_time=$(date +%s)

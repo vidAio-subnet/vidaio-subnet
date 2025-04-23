@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 
 
-class VideoUpscalerConfig(BaseModel):
+class OrganicGatewayConfig(BaseModel):
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=29116)

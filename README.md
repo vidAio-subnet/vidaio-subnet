@@ -1,6 +1,6 @@
 <div align="center">
 
-# **vidAio Subnet**: Revolutionizing Video Upscaling with AI-Driven Decentralization <!-- omit in toc -->
+# **Vidaio Subnet**: Revolutionizing Video Upscaling with AI-Driven Decentralisation <!-- omit in toc -->
 
 
 Please check our [Tweet](https://x.com/vidaio_τ) to follow us.
@@ -31,18 +31,18 @@ Please check our [Tweet](https://x.com/vidaio_τ) to follow us.
    - [Contact Information](#c-contact-information)
 
 ## **1. Introduction**
-vidAIo's mission is to democratize video enhancement through decentralization, artificial intelligence, and blockchain technology. Leveraging the Bittensor ecosystem, vidAIo provides creators, businesses, and developers with scalable, affordable, and high-quality video upscaling solutions while ensuring full ownership and control over their content
+Vidaio's mission is to democratise video enhancement through decentralisation, artificial intelligence, and blockchain technology. Leveraging the Bittensor ecosystem, Vidaio provides creators, businesses, and developers with scalable, affordable, and high-quality video upscaling solutions, while ensuring full ownership and control over their content.
 
 
 ## 2. Subnet Architecture
 
 ### 2.1 Overview
-- **Miners**: Handle video upscaling tasks and optimize models to ensure high-quality outputs.
+- **Miners**: Handle video upscaling tasks and optimise models to ensure high-quality outputs.
 - **Validators**: Assess miner performance using predefined metrics to maintain network integrity.
 
 ### 2.2 Miners
 Miners enhance video quality using AI-driven upscaling techniques. They can:
-- Optimize open-source models or develop proprietary ones for superior results.
+- Optimise open-source models or develop proprietary ones for superior results.
 - Handle video upscaling requests from validators and end-users.
 
 ### 2.3 Validators
@@ -54,7 +54,7 @@ Validators benchmark miner performance using controlled datasets:
 - Downscale a high-resolution video to low-resolution.
 - Miners upscale the low-resolution video back to high.
 
-- Validators assess the upscaled output using metrics VMAF, LPIPS and latency.
+- Validators assess the upscaled output using metrics VMAF and PieAPP.
 
 #### 2.4.2 Organic Query
 Real-world video data uploaded by users is processed as follows:

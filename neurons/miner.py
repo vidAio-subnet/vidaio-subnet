@@ -64,15 +64,8 @@ class Miner(BaseMiner):
             return True, "Missing dendrite or hotkey"
 
         uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
-        
-        if (
-            not self.config.blacklist.allow_non_registered
-            and synapse.dendrite.hotkey not in self.metagraph.hotkeys
-        ):
-            logger.trace(f"Blacklisting unregistered hotkey {synapse.dendrite.hotkey}")
-            return True, "Unrecognized hotkey"
 
-        if self.config.blacklist.force_validator_permit and not self.metagraph.validator_permit[uid]:
+        if not self.metagraph.validator_permit[uid]:
             logger.warning(f"Blacklisting non-validator hotkey {synapse.dendrite.hotkey}")
             return True, "Non-validator hotkey"
 
@@ -98,4 +91,4 @@ if __name__ == "__main__":
     with Miner() as miner:
         while True:
             logger.info(f"Miner running... {time.time()}")
-            time.sleep(30)
+            time.sleep(50)
