@@ -29,6 +29,7 @@ class ScoringRequest(BaseModel):
     """
     distorted_urls: List[str]
     reference_path: str
+    uids: List[int]
     fps: Optional[float] = None
     subsample: Optional[int] = 1
     verbose: Optional[bool] = False
@@ -101,7 +102,7 @@ def calculate_psnr(ref_frame: np.ndarray, dist_frame: np.ndarray) -> float:
     return 10 * np.log10((255.0**2) / mse)
 
 def calculate_final_score(pieapp_score):
-    return (1 - (np.log10(pieapp_score + 1) / np.log10(3.5))) ** 1.7
+    return (1 - (np.log10(pieapp_score + 1) / np.log10(3.5))) ** 2.5
 
 def get_sample_frames(ref_cap, dist_cap, total_frames):
     """
@@ -257,9 +258,13 @@ async def score(request: ScoringRequest) -> ScoringResponse:
         ref_frames.append(frame)
 
     scores = []
-    for dist_url in request.distorted_urls:
-        print("Attempting to download processed video....")
+    for dist_url, uid in zip(request.distorted_urls, request.uids):
+        print(f"🧩 Processing {uid}.... Attempting to download processed video.... 🧩")
         try:
+            if len(dist_url) < 10:
+                print(f"Wrong download url: {dist_url}. Assigning score of 0.")
+                scores.append(0.0)
+                continue
             dist_path = await download_video(dist_url, request.verbose)
         except Exception as e:
             print(f"Failed to download video from {dist_url}: {str(e)}. Assigning score of 0.")
@@ -294,6 +299,8 @@ async def score(request: ScoringRequest) -> ScoringResponse:
             if vmaf_score / 100 < VMAF_THRESHOLD:
                 print(f"vmaf score is too low, giving zero score, current vmaf score: {vmaf_score}")
                 scores.append(0)
+                dist_cap.release()
+                os.unlink(dist_path)
                 continue
 
         except Exception as e:

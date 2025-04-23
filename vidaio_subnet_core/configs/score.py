@@ -6,4 +6,4 @@ class ScoreConfig(BaseModel):
     host: str = Field(default="localhost")
     port: int = Field(default=8201)
     vmaf_threshold: float = Field(default=0.5)
-    sample_count: int = Field(default=15)
+    sample_count: int = Field(default=7)
