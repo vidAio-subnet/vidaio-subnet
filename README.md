@@ -1,6 +1,6 @@
 <div align="center">
 
-# **Vidaio Subnet**: Revolutionizing Video Upscaling with AI-Driven Decentralisation <!-- omit in toc -->
+# **Vidaio Subnet**: Revolutionizing Video Upscaling with AI-Driven Decentralization <!-- omit in toc -->
 
 
 Please check our [Tweet](https://x.com/vidaio_τ) to follow us.
