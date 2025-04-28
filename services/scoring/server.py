@@ -210,6 +210,17 @@ def calculate_pieapp_score_on_samples(ref_frames, dist_frames):
         print(f"Error calculating PieAPP score on frames: {str(e)}")
         return 2.0  # Return max penalty on error
 
+def sanitize_pieapp(score: float) -> float:
+    if score >= 0:
+        sanitized = score
+    elif score >= -1e-4:
+        sanitized = 0.0
+    else:
+        sanitized = 10.0
+
+    sanitized = min(sanitized, 2.0)  # Cap high scores
+    return sanitized
+
 @app.post("/score")
 async def score(request: ScoringRequest) -> ScoringResponse:
     """
@@ -320,11 +331,7 @@ async def score(request: ScoringRequest) -> ScoringResponse:
             dist_frames.append(frame)
         
         # Calculate PieAPP score on the sampled frames
-        pieapp_score = calculate_pieapp_score_on_samples(ref_frames, dist_frames)
-        if pieapp_score > 2.0:
-            pieapp_score = 2.0
-        if pieapp_score < 0.1:
-            pieapp_score = 0.1
+        pieapp_score = sanitize_pieapp(calculate_pieapp_score_on_samples(ref_frames, dist_frames))
         print(f"🎾 Pieapp_score is {pieapp_score}")
 
         # Final score calculation
