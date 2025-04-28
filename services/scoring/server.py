@@ -323,6 +323,8 @@ async def score(request: ScoringRequest) -> ScoringResponse:
         pieapp_score = calculate_pieapp_score_on_samples(ref_frames, dist_frames)
         if pieapp_score > 2.0:
             pieapp_score = 2.0
+        if pieapp_score < 0.1:
+            pieapp_score = 0.1
         print(f"🎾 Pieapp_score is {pieapp_score}")
 
         # Final score calculation
