@@ -37,7 +37,7 @@ This vmaf score is only used for thresholding, to check if the processed video i
 
 PIE-APP measures the perceptual similarity between original and processed video frames using a deep learning-based approach.
 
-- **Scale**: logically (−∞, ∞). on positive range, from (0, 5) and the lower is better
+- **Scale**: logically spans (−∞, ∞). In the positive range (0 to 5), lower values indicate better quality
 - **Implementation**: The system processes frames at regular intervals (default: every frame) throughout the entire video.
 - **Calculation**: `PIE-APP_score = (Σ abs(d(F_i, F'_i))) / n` where:
   - `F_i`: Frame `i` from the original video
