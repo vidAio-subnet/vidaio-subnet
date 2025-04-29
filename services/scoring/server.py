@@ -14,6 +14,7 @@ from pieapp_metric import calculate_pieapp_score
 import aiohttp
 import logging
 import time
+import math
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -101,8 +102,21 @@ def calculate_psnr(ref_frame: np.ndarray, dist_frame: np.ndarray) -> float:
         return 1000  # Maximum PSNR value (perfect similarity)
     return 10 * np.log10((255.0**2) / mse)
 
+def sigmoid(x):
+    return 1 / (1 + np.exp(-x))
+
 def calculate_final_score(pieapp_score):
-    return (1 - (np.log10(pieapp_score + 1) / np.log10(3.5))) ** 2.5
+    sigmoid_normalized_score = sigmoid(pieapp_score)
+    
+    original_at_zero = (1 - (np.log10(sigmoid(0) + 1) / np.log10(3.5))) ** 2.5
+    original_at_two = (1 - (np.log10(sigmoid(2.0) + 1) / np.log10(3.5))) ** 2.5
+    
+    original_value = (1 - (np.log10(sigmoid_normalized_score + 1) / np.log10(3.5))) ** 2.5
+    
+    scaled_value = 1 - ((original_value - original_at_zero) / (original_at_two - original_at_zero))
+    
+    return scaled_value
+
 
 def get_sample_frames(ref_cap, dist_cap, total_frames):
     """
@@ -321,10 +335,7 @@ async def score(request: ScoringRequest) -> ScoringResponse:
         
         # Calculate PieAPP score on the sampled frames
         pieapp_score = calculate_pieapp_score_on_samples(ref_frames, dist_frames)
-        if pieapp_score > 2.0:
-            pieapp_score = 2.0
-        if pieapp_score < 0.1:
-            pieapp_score = 0.1
+
         print(f"🎾 Pieapp_score is {pieapp_score}")
 
         # Final score calculation
