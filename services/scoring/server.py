@@ -352,7 +352,7 @@ async def score(request: ScoringRequest) -> ScoringResponse:
             print(f"{error_msg}. Assigning score of 0.")
             vmaf_scores.append(0.0)
             pieapp_scores.append(0.0)
-            reasons.append(error_msg)
+            reasons.append("Failed to process video")
             scores.append(0.0)
         
         finally:
