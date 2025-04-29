@@ -47,7 +47,7 @@ def calculate_pieapp_score(ref_cap, proc_cap, frame_interval=1):
     
     scores = []
     frame_idx = 0
-    
+
     with tqdm(total=frames_to_process, desc="Calculating PIE-APP") as pbar:
         while frame_idx < total_frames:
             # Read frames
@@ -74,17 +74,20 @@ def calculate_pieapp_score(ref_cap, proc_cap, frame_interval=1):
                 # Calculate PIE-APP score
                 with torch.no_grad():
                     score = pieapp_metric(proc_tensor, ref_tensor)
-                scores.append(score.item())
+                    score_value = score.item()  # Convert tensor to scalar first
+                    if score_value < 0:
+                        score_value = abs(score_value)  # Use Python's abs() on scalar
+                scores.append(score_value)
                 
                 pbar.update(1)
             
             frame_idx += 1
-    
+
     # Release resources
     ref_cap.release()
     proc_cap.release()
-    
+
     # Return average score
     avg_score = np.mean(scores) if scores else 5.0
     
-    return avg_score
+    return min(avg_score, 2.0) 

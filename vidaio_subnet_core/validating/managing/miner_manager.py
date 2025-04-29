@@ -63,7 +63,7 @@ class MinerManager:
     def step(self, scores: list[float], total_uids: list[int]):
         logger.info(f"Updating scores for {len(total_uids)} miners")
         for uid, score in zip(total_uids, scores):
-            logger.debug(f"Processing UID {uid} with score {score}")
+            # logger.debug(f"Processing UID {uid} with score {score}")
             miner = self.query([uid]).get(uid, None)
             # logger.info(f"Miner: {miner}")
             if miner is None:
@@ -76,9 +76,9 @@ class MinerManager:
                 + score * (1 - CONFIG.score.decay_factor)
             )
             miner.accumulate_score = max(0, miner.accumulate_score)
-            logger.debug(
-                f"Updated accumulate_score for UID {uid}: {miner.accumulate_score}"
-            )
+            # logger.debug(
+            #     f"Updated accumulate_score for UID {uid}: {miner.accumulate_score}"
+            # )
         self.session.commit()
         logger.success(f"Updated metadata for {len(total_uids)} uids")
 

@@ -4,8 +4,8 @@
 
 
 Please check our [Tweet](https://x.com/vidaio_τ) to follow us.
-
-[![vidAio](./docs/images/banner.png)](https://)
+[Website](https://vidaio.io)
+[![vidAio](./docs/images/banner.png)](https://vidaio.io)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) 
 
