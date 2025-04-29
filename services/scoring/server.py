@@ -313,10 +313,26 @@ async def score(request: ScoringRequest) -> ScoringResponse:
                 continue  # Skip to the next distorted video
 
             # Calculate VMAF
-            vmaf_score = calculate_vmaf(ref_path, dist_path)
-            vmaf_scores.append(vmaf_score)
-            print(f"🎾 vmaf_score is {vmaf_score}")
+            try:
+                vmaf_score = calculate_vmaf(ref_path, dist_path)
+                
+                if vmaf_score is not None:
+                    vmaf_scores.append(vmaf_score)
+                else:
+                    vmaf_score = 0.0
+                    vmaf_scores.append(vmaf_score)
 
+                print(f"🎾 vmaf_score is {vmaf_score}")
+
+            except Exception as e:
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                reasons.append("Failed to calculate VMAF score due to video dimension mismatch")
+                scores.append(0.0)
+                dist_cap.release()
+                print(f"Error calculating VMAF score: {e}")
+                continue
+            
             if vmaf_score / 100 < VMAF_THRESHOLD:
                 print(f"vmaf score is too low, giving zero score, current vmaf score: {vmaf_score}")
                 pieapp_scores.append(0.0)
