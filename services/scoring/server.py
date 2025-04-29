@@ -272,11 +272,18 @@ async def score(request: ScoringRequest) -> ScoringResponse:
         ref_frames.append(frame)
 
     scores = []
+    vmaf_scores = []
+    pieapp_scores = []
+    reasons = []
+
+
     for dist_url, uid in zip(request.distorted_urls, request.uids):
         print(f"🧩 Processing {uid}.... Attempting to download processed video.... 🧩")
         try:
             if len(dist_url) < 10:
                 print(f"Wrong download url: {dist_url}. Assigning score of 0.")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
                 scores.append(0.0)
                 continue
             dist_path = await download_video(dist_url, request.verbose)
