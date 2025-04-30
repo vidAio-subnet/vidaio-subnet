@@ -16,17 +16,15 @@ def calculate_pieapp_score(ref_cap, proc_cap, frame_interval=1):
     Calculate PIE-APP score between reference and processed videos without extracting frames to disk.
     
     Args:
-        reference_video (str): Path to the reference video.
-        processed_video (str): Path to the processed video.
         frame_interval (int): Process one frame every `frame_interval` frames.
         
     Returns:
         float: Average PIE-APP score.
     """    
     if not ref_cap.isOpened():
-        raise ValueError(f"Could not open reference video: {reference_video}")
+        raise ValueError("Could not open reference video")
     if not proc_cap.isOpened():
-        raise ValueError(f"Could not open processed video: {processed_video}")
+        raise ValueError("Could not open processed video")
     
     # Get video info
     ref_frame_count = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))

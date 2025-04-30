@@ -8,14 +8,15 @@ import tempfile
 import os
 import random
 from vidaio_subnet_core import CONFIG
-from vmaf_metric import calculate_vmaf
-from lpips_metric import calculate_lpips
-from pieapp_metric import calculate_pieapp_score
+from moviepy.editor import VideoFileClip
 import aiohttp
 import logging
 import time
 import math
 
+from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video
+from lpips_metric import calculate_lpips
+from pieapp_metric import calculate_pieapp_score
 # Set up logging
 logger = logging.getLogger(__name__)
 app = FastAPI()
@@ -274,6 +275,11 @@ async def score(request: ScoringRequest) -> ScoringResponse:
             break
         ref_frames.append(frame)
 
+    video_duration = VideoFileClip(ref_path).duration
+    start_point = random.uniform(0, video_duration - 1)
+    ref_trim_path = trim_video(ref_path, start_point)
+    ref_y4m_path = convert_mp4_to_y4m(ref_trim_path)
+
     for dist_url, uid in zip(request.distorted_urls, request.uids):
         print(f"🧩 Processing {uid}.... Attempting to download processed video.... 🧩")
         dist_path = None
@@ -314,7 +320,7 @@ async def score(request: ScoringRequest) -> ScoringResponse:
 
             # Calculate VMAF
             try:
-                vmaf_score = calculate_vmaf(ref_path, dist_path)
+                vmaf_score = calculate_vmaf(ref_y4m_path, dist_path, start_point)
                 
                 if vmaf_score is not None:
                     vmaf_scores.append(vmaf_score)
@@ -378,6 +384,12 @@ async def score(request: ScoringRequest) -> ScoringResponse:
 
     # Cleanup
     ref_cap.release()
+
+    if os.path.exists(ref_trim_path):
+        os.unlink(ref_trim_path)
+
+    if os.path.exists(ref_y4m_path):
+        os.unlink(ref_y4m_path)
 
     print(f"🔯🔯🔯 calculated score: {scores} 🔯🔯🔯")
     processed_time = time.time() - start_time
