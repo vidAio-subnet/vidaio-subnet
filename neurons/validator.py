@@ -47,11 +47,9 @@ class Validator(base.BaseValidator):
         self.wandb_manager = WandbManager(validator=self)
         logger.info("🔑 Initialized Wandb Manager 🔑")
 
-
         self.organic_gateway_base_url = f"http://localhost:{CONFIG.organic_gateway.port}"
 
         self.push_result_endpoint = f"http://{CONFIG.video_scheduler.host}:{CONFIG.video_scheduler.port}/api/push_result"
-
 
     async def start_epoch(self):
         logger.info("✅✅✅✅✅ Starting forward ✅✅✅✅✅")
@@ -72,7 +70,7 @@ class Validator(base.BaseValidator):
         axons = [self.metagraph.axons[uid] for uid in random_uids]
         miners = list(zip(axons, random_uids))
 
-        batch_size = CONFIG.bandwidth.requests_per_interval
+        batch_size = CONFIG.bandwidth.requests_per_synthetic_interval
 
         miner_batches = [
             miners[i : i + batch_size] for i in range(0, len(miners), batch_size)
@@ -174,7 +172,7 @@ class Validator(base.BaseValidator):
     async def process_organic_chunks(self, num_organic_chunks):
         organic_start_time = time.time() 
 
-        needed = min(CONFIG.bandwidth.requests_organic_interval, num_organic_chunks)
+        needed = min(CONFIG.bandwidth.requests_per_organic_interval, num_organic_chunks)
         
         logger.info(f"🍉 Start processing organic query. need {needed} miners 🍉")
 
