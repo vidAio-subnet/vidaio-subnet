@@ -254,10 +254,26 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis)
         video_id = video_id_data["vid"]
         task_type = video_id_data["task_type"]
 
+        clip_duration_probabilities = {
+            1: 0.6, 
+            2: 0.05,
+            3: 0.05,
+            4: 0.05,
+            5: 0.25 
+        }
+
+        # Generate a random number between 0 and 1 to determine the clip duration
+        random_value = random.random()
+        cumulative_probability = 0
+        for clip_duration, probability in clip_duration_probabilities.items():
+            cumulative_probability += probability
+            if random_value <= cumulative_probability:
+                break
+
         challenge_local_path, video_id = download_trim_downscale_video(
-            clip_duration=CONFIG.video_scheduler.clip_duration,
-            vid = video_id,
-            task_type = task_type,
+            clip_duration=clip_duration,
+            vid=video_id,
+            task_type=task_type,
         )
 
         if challenge_local_path is None:
