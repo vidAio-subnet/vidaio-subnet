@@ -3,13 +3,8 @@ import cv2
 import numpy as np
 import torch
 import pyiqa
-import cv2
-import numpy as np
-import pyiqa
-import torch
 from tqdm import tqdm
 import time
-
 
 def calculate_pieapp_score(ref_cap, proc_cap, frame_interval=1):
     """

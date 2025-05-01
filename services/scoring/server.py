@@ -7,7 +7,6 @@ from firerequests import FireRequests
 import tempfile
 import os
 import random
-from vidaio_subnet_core import CONFIG
 from moviepy.editor import VideoFileClip
 import aiohttp
 import logging
@@ -17,6 +16,8 @@ import math
 from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video
 from lpips_metric import calculate_lpips
 from pieapp_metric import calculate_pieapp_score
+from vidaio_subnet_core import CONFIG
+
 # Set up logging
 logger = logging.getLogger(__name__)
 app = FastAPI()
