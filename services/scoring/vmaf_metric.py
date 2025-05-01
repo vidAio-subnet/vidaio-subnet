@@ -128,11 +128,10 @@ def calculate_vmaf(ref_y4m_path, dist_mp4_path, start_point):
         vmaf_harmonic_mean = vmaf_metric(ref_y4m_path, dist_y4m_path)
         print(f"VMAF harmonic_mean Value as Float: {vmaf_harmonic_mean}")
         
-        # Optional: Clean up intermediate Y4M files
-        # os.remove(ref_y4m_path)
         os.remove(dist_y4m_path)
         os.remove(dist_trim_path)
         print("Intermediate Y4M files deleted.")
+
         return vmaf_harmonic_mean
         
     except Exception as e:
