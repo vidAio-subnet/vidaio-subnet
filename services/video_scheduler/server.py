@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from vidaio_subnet_core import CONFIG
 from typing import Optional, Literal

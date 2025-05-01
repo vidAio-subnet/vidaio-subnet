@@ -47,11 +47,9 @@ class Validator(base.BaseValidator):
         self.wandb_manager = WandbManager(validator=self)
         logger.info("🔑 Initialized Wandb Manager 🔑")
 
-
         self.organic_gateway_base_url = f"http://localhost:{CONFIG.organic_gateway.port}"
 
         self.push_result_endpoint = f"http://{CONFIG.video_scheduler.host}:{CONFIG.video_scheduler.port}/api/push_result"
-
 
     async def start_epoch(self):
         logger.info("✅✅✅✅✅ Starting forward ✅✅✅✅✅")
@@ -72,7 +70,7 @@ class Validator(base.BaseValidator):
         axons = [self.metagraph.axons[uid] for uid in random_uids]
         miners = list(zip(axons, random_uids))
 
-        batch_size = CONFIG.bandwidth.requests_per_interval
+        batch_size = CONFIG.bandwidth.requests_per_synthetic_interval
 
         miner_batches = [
             miners[i : i + batch_size] for i in range(0, len(miners), batch_size)
@@ -130,9 +128,23 @@ class Validator(base.BaseValidator):
             },
             timeout=1500
         )
-        response_json = score_response.json()
-        scores: List[float] = response_json.get("scores", [])  
-        logger.info(f"Scores: {scores}")
+
+        response_data = score_response.json()
+        
+        scores = response_data.get("scores", [])
+        vmaf_scores = response_data.get("vmaf_scores", [])
+        pieapp_scores = response_data.get("pieapp_scores", [])
+        reasons = response_data.get("reasons", [])
+        
+        max_length = max(len(uids), len(scores), len(vmaf_scores), len(pieapp_scores), len(reasons))
+        scores.extend([0.0] * (max_length - len(scores)))
+        vmaf_scores.extend([0.0] * (max_length - len(vmaf_scores)))
+        pieapp_scores.extend([0.0] * (max_length - len(pieapp_scores)))
+        reasons.extend(["No reason provided"] * (max_length - len(reasons)))
+        
+        for uid, vmaf_score, pieapp_score, score, reason in zip(uids, vmaf_scores, pieapp_scores, scores, reasons):
+            logger.info(f"{uid} ** {vmaf_score:.2f} ** {pieapp_score:.2f} ** {score:.4f} || {reason}")
+
         logger.info(f"Updating miner manager with {len(scores)} miner scores")
         self.miner_manager.step(scores, uids)
 
@@ -160,7 +172,7 @@ class Validator(base.BaseValidator):
     async def process_organic_chunks(self, num_organic_chunks):
         organic_start_time = time.time() 
 
-        needed = min(CONFIG.bandwidth.requests_organic_interval, num_organic_chunks)
+        needed = min(CONFIG.bandwidth.requests_per_organic_interval, num_organic_chunks)
         
         logger.info(f"🍉 Start processing organic query. need {needed} miners 🍉")
 

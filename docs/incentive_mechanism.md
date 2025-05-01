@@ -37,13 +37,19 @@ This vmaf score is only used for thresholding, to check if the processed video i
 
 PIE-APP measures the perceptual similarity between original and processed video frames using a deep learning-based approach.
 
-- **Scale**: 0-5 (lower is better)
+- **Scale**: logically spans (−∞, ∞). In the positive range (0 to 5), lower values indicate better quality
 - **Implementation**: The system processes frames at regular intervals (default: every frame) throughout the entire video.
-- **Calculation**: `PIE-APP_score = (Σ d(F_i, F'_i)) / n` where:
+- **Calculation**: `PIE-APP_score = (Σ abs(d(F_i, F'_i))) / n` where:
   - `F_i`: Frame `i` from the original video
   - `F'_i`: Corresponding frame `i` from the processed video
   - `d(F_i, F'_i)`: Perceptual difference between the two frames
   - `n`: Number of frames processed according to the frame interval
+- **Calculate Final Score**: Uses mathematical formulas from average_pieapp score
+  - Caps any value greater than 2.0
+  - Applies sigmoid function to normalize pieapp score: `normalized_pieapp_score = 1/(1+exp(-Average_pieAPP))`
+  - Calculates final score using mathematical transformation, converting from "lower is better" to "higher is better" with values normalized between 0 and 1
+  - <img src="./images/graph2.png" alt="Sigmoid Function" width="900" />
+  - <img src="./images/graph1.png" alt="Final Score Function" width="900" />
 
 ---
 
@@ -51,7 +57,7 @@ PIE-APP measures the perceptual similarity between original and processed video 
 
 After calculating the VMAF and PieAPP scores:
 - The **VMAF score** is a value between `0` and `100`.
-- The **PieAPP score** is a value between `0` and `5`.
+- The **Final score** is a value between `0` and `1`.
 
 ```
 The final score is based on the pieapp score, as the vmaf score serves solely as a threshold.

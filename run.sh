@@ -67,7 +67,8 @@ check_variable_value_on_github() {
     local value
     value=$(echo "$content" | grep "$variable" | awk -F '=' '{print $2}' | tr -d ' ')
 
-    strip_quotes "$value"
+    # Replace the strip_quotes call with direct quote removal
+    echo "$value" | tr -d '"' | tr -d "'"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -142,7 +143,7 @@ while true; do
     if [ -d "./.git" ]; then
         latest_version=$(check_variable_value_on_github "$branch" "$version")
 
-        if version_less_than "$current_version" "$latest_version"; then
+        if version_less_than $current_version $latest_version; then
             echo "Latest version: $latest_version"
             echo "Current version: $current_version"
 
