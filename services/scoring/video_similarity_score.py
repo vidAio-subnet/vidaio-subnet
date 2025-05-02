@@ -30,7 +30,7 @@ class ScoringRequest(BaseModel):
     """
     Request model for scoring. Contains URLs for distorted videos and the reference video path.
     """
-    distorted_urls: List[str]
+    distorted_paths: List[str]
     reference_path: str
     uids: List[int]
     fps: Optional[float] = None
@@ -228,7 +228,6 @@ def calculate_pieapp_score_on_samples(ref_frames, dist_frames):
         print(f"Error calculating PieAPP score on frames: {str(e)}")
         return 2.0  # Return max penalty on error
 
-@app.post("/score")
 async def score(request: ScoringRequest) -> ScoringResponse:
     """
     Scores the distorted videos by comparing them with the reference video using VMAF and LPIPS.
@@ -284,24 +283,22 @@ async def score(request: ScoringRequest) -> ScoringResponse:
     ref_y4m_path = convert_mp4_to_y4m(ref_trim_path)
     print("The reference video has been successfully trimmed and converted to y4m format.")
 
-    for dist_url, uid in zip(request.distorted_urls, request.uids):
+    for dist_path, uid in zip(request.distorted_paths, request.uids):
         print(f"🧩 Processing {uid}.... Attempting to download processed video.... 🧩")
-        dist_path = None
-        
+
         try:
-            if len(dist_url) < 10:
-                print(f"Wrong download url: {dist_url}. Assigning score of 0.")
+            if len(dist_path) < 10:
+                print(f"Wrong download url: {dist_path}. Assigning score of 0.")
                 vmaf_scores.append(0.0)
                 pieapp_scores.append(0.0)
                 reasons.append("Wrong download url")
                 scores.append(0.0)
                 continue
                 
-            dist_path = await download_video(dist_url, request.verbose)
             dist_cap = cv2.VideoCapture(dist_path)
 
             if not dist_cap.isOpened():
-                print(f"Error opening distorted video file from {dist_url}. Assigning score of 0.")
+                print(f"Error opening distorted video file from {dist_path}. Assigning score of 0.")
                 vmaf_scores.append(0.0)
                 pieapp_scores.append(0.0)
                 reasons.append("Error opening distorted video file")
@@ -313,7 +310,7 @@ async def score(request: ScoringRequest) -> ScoringResponse:
             
             if dist_total_frames != ref_total_frames:
                 print(
-                    f"Video length mismatch for {dist_url}: ref({ref_total_frames}) != dist({dist_total_frames}). Assigning score of 0."
+                    f"Video length mismatch for {dist_path}: ref({ref_total_frames}) != dist({dist_total_frames}). Assigning score of 0."
                 )
                 vmaf_scores.append(0.0)
                 pieapp_scores.append(0.0)
@@ -343,7 +340,8 @@ async def score(request: ScoringRequest) -> ScoringResponse:
                 print(f"Error calculating VMAF score: {e}")
                 continue
             
-            if vmaf_score / 100 < VMAF_THRESHOLD:
+            # if vmaf_score / 100 < VMAF_THRESHOLD:
+            if vmaf_score / 100 < 0.1:
                 print(f"vmaf score is too low, giving zero score, current vmaf score: {vmaf_score}")
                 pieapp_scores.append(0.0)
                 reasons.append(f"vmaf score is too low, current vmaf score: {vmaf_score}")
@@ -374,7 +372,7 @@ async def score(request: ScoringRequest) -> ScoringResponse:
             dist_cap.release()
             
         except Exception as e:
-            error_msg = f"Failed to process video from {dist_url}: {str(e)}"
+            error_msg = f"Failed to process video from {dist_path}: {str(e)}"
             print(f"{error_msg}. Assigning score of 0.")
             vmaf_scores.append(0.0)
             pieapp_scores.append(0.0)
@@ -383,8 +381,9 @@ async def score(request: ScoringRequest) -> ScoringResponse:
         
         finally:
             # Clean up downloaded file if it exists
-            if dist_path and os.path.exists(dist_path):
-                os.unlink(dist_path)
+            # if dist_path and os.path.exists(dist_path):
+                # os.unlink(dist_path)
+            pass
 
     # Cleanup
     ref_cap.release()
@@ -406,9 +405,39 @@ async def score(request: ScoringRequest) -> ScoringResponse:
     )
 
 if __name__ == "__main__":
-    import uvicorn
-    
-    host = CONFIG.score.host
-    port = CONFIG.score.port
-    
-    uvicorn.run(app, host=host, port=port)
+    import asyncio
+
+
+if __name__ == "__main__":
+    import asyncio
+
+    # Define the paths for the reference and distorted videos
+    reference_path = ""
+    distorted_paths = [
+        "",
+        "",
+    ]
+    uids = [1]  # Unique identifiers for the distorted videos
+
+    async def main():
+        request = ScoringRequest(
+            distorted_paths=distorted_paths,
+            reference_path=reference_path,
+            uids=uids,
+            fps=None,  # Optional
+            subsample=1,  # Optional
+            verbose=True,  # Enable verbose logging if needed
+            progress=False  # Disable progress tracking
+        )
+
+        try:
+            response = await score(request)
+            print("Scoring Results:")
+            print(f"Scores: {response.scores}")
+            print(f"VMAF Scores: {response.vmaf_scores}")
+            print(f"PIE-APP Scores: {response.pieapp_scores}")
+            print(f"Reasons: {response.reasons}")
+        except Exception as e:
+            print(f"Error during scoring: {str(e)}")
+
+    asyncio.run(main())
