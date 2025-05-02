@@ -128,8 +128,8 @@ minio_client = VideoSubnetMinioClient(
 #     presigned_url = await minio_client.get_presigned_url("normal_02.mp4")
 #     print(presigned_url)
 
-if __name__ == "__main__":
-    asyncio.run(main())
+# if __name__ == "__main__":
+#     asyncio.run(main())
 
 
 
@@ -327,4 +327,16 @@ if __name__ == "__main__":
 #     secret_key=CONFIG.minio.secret_key,
 #     bucket_name=CONFIG.minio.bucket_name,
 # )
+
+# async def main():
+#     await minio_client.upload_file("normal_03.mp4", "")
+#     presigned_url = await minio_client.get_presigned_url("normal_03.mp4")
+#     print(presigned_url)
+
+# if __name__ == "__main__":
+#     asyncio.run(main())
+
+
+
+
 
