@@ -407,10 +407,6 @@ async def score(request: ScoringRequest) -> ScoringResponse:
 if __name__ == "__main__":
     import asyncio
 
-
-if __name__ == "__main__":
-    import asyncio
-
     # Define the paths for the reference and distorted videos
     reference_path = ""
     distorted_paths = [
