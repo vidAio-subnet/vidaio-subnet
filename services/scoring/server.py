@@ -38,7 +38,7 @@ class SyntheticsScoringRequest(BaseModel):
     verbose: Optional[bool] = False
     progress: Optional[bool] = False
 
-class SyntheticsScoringRequest(BaseModel):
+class OrganicsScoringRequest(BaseModel):
     """
     Request model for scoring. Contains URLs for distorted videos and the reference video path.
     """
@@ -465,12 +465,12 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
     )
 
 @app.post("/score_organics")
-async def score_organics(request: OrganicScoringRequest) -> ScoringResponse:
+async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
     """
     Scores the distorted videos by comparing them with their corresponding reference videos using VMAF and LPIPS.
 
     Args:
-        request (OrganicScoringRequest): The request object containing URLs for distorted videos 
+        request (OrganicsScoringRequest): The request object containing URLs for distorted videos 
                                 and their corresponding reference videos.
 
     Returns:
