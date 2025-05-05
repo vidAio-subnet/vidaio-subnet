@@ -251,6 +251,8 @@ class Validator(base.BaseValidator):
             await self.update_task_status(task_id, original_url, "completed")
             await self.push_result(task_id, original_url, processed_url)
 
+        # await self.score_organics(forward_uids, responses, original_urls, task_types)
+
         end_time = time.time()
         total_time = end_time - organic_start_time
         logger.info(f"🍏 Organic chunk processing complete in {total_time:.2f} seconds 🍏")
