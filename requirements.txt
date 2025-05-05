@@ -18,3 +18,4 @@ tabulate
 pyiqa
 wandb
 apscheduler
+boto3

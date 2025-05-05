@@ -180,7 +180,7 @@ cd vmaf
      **Note:** To enable CUDA successfully, ensure `nvcc` and the CUDA driver are installed. Refer to the [CUDA and NVCC setup guide](miner_setup.md#step-2-install-cuda-and-nvcc).
    - Use `-Denable_nvtx=true` to enable NVTX marker support for profiling with Nsight Systems.
    - **Recommendation:**
-   We recommend adding `-Denable_avx512=true` to enhance validation speed. If CUDA is available, include the flag `-Denable_cuda=true`
+   We recommend adding `-Denable_avx512=true` to enhance validation speed. If CUDA is available, include the flag `-Denable_cuda=true` But At present, VMAF does not include support for CUDA integration.
 
 3. Build the project:
    ```bash
