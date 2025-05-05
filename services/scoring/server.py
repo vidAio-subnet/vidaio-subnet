@@ -12,7 +12,7 @@ import aiohttp
 import logging
 import time
 import math
-
+import subprocess
 from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video
 from lpips_metric import calculate_lpips
 from pieapp_metric import calculate_pieapp_score
