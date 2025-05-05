@@ -113,14 +113,14 @@ class Validator(base.BaseValidator):
         logger.info(f"Completed one epoch within {epoch_processed_time:.2f} seconds")
 
     async def score_synthetic(self, uids: list[int], responses: list[protocol.Synapse], reference_video_path: str):
-        logger.info(f"Starting scoring for {len(uids)} miners")
+        logger.info(f"Starting synthetic scoring for {len(uids)} miners")
         logger.info(f"Uids: {uids}")
         distorted_urls = []
         for uid, response in zip(uids, responses):
             distorted_urls.append(response.miner_response.optimized_video_url)
 
         score_response = await self.score_client.post(
-            "/score",
+            "/score_synthetics",
             json = {
                 "uids": uids,
                 "distorted_urls": distorted_urls,
@@ -147,6 +147,43 @@ class Validator(base.BaseValidator):
 
         logger.info(f"Updating miner manager with {len(scores)} miner scores")
         self.miner_manager.step(scores, uids)
+
+    async def score_organic(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: str):
+        logger.info(f"Starting organic scoring for {len(uids)} miners")
+        logger.info(f"Uids: {uids}")
+        distorted_urls = []
+        for uid, response in zip(uids, responses):
+            distorted_urls.append(response.miner_response.optimized_video_url)
+
+        score_response = await self.score_client.post(
+            "/score_organics",
+            json = {
+                "uids": uids,
+                "distorted_urls": distorted_urls,
+                "reference_urls": reference_urls
+            },
+            timeout=1500
+        )
+
+        response_data = score_response.json()
+        
+        scores = response_data.get("scores", [])
+        vmaf_scores = response_data.get("vmaf_scores", [])
+        pieapp_scores = response_data.get("pieapp_scores", [])
+        reasons = response_data.get("reasons", [])
+        
+        max_length = max(len(uids), len(scores), len(vmaf_scores), len(pieapp_scores), len(reasons))
+        scores.extend([0.0] * (max_length - len(scores)))
+        vmaf_scores.extend([0.0] * (max_length - len(vmaf_scores)))
+        pieapp_scores.extend([0.0] * (max_length - len(pieapp_scores)))
+        reasons.extend(["No reason provided"] * (max_length - len(reasons)))
+        
+        for uid, vmaf_score, pieapp_score, score, reason in zip(uids, vmaf_scores, pieapp_scores, scores, reasons):
+            logger.info(f"{uid} ** {vmaf_score:.2f} ** {pieapp_score:.2f} ** {score:.4f} || {reason}")
+
+        logger.info(f"Updating miner manager with {len(scores)} miner scores")
+        self.miner_manager.step(scores, uids)
+
 
     def filter_miners(self):
         min_stake = CONFIG.bandwidth.min_stake
@@ -216,6 +253,7 @@ class Validator(base.BaseValidator):
         end_time = time.time()
         total_time = end_time - organic_start_time
         logger.info(f"🍏 Organic chunk processing complete in {total_time:.2f} seconds 🍏")
+
 
     async def update_task_status(self, task_id, original_url, status):
         status_update_endpoint = f"{self.organic_gateway_base_url}/admin/task/{task_id}/status"
