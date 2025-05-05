@@ -25,6 +25,7 @@ fire_requests = FireRequests()
 
 VMAF_THRESHOLD = CONFIG.score.vmaf_threshold
 SAMPLE_FRAME_COUNT = CONFIG.score.sample_count
+PIEAPP_THRESHOLD = CONFIG.score.pieapp_threshold
 
 class SyntheticsScoringRequest(BaseModel):
     """
