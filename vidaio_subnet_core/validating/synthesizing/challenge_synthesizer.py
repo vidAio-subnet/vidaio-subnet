@@ -93,6 +93,7 @@ class Synthesizer:
                 task_ids = []
                 original_urls = []
                 organic_synapses = []
+                task_types = []
 
                 for chunk in chunks:
                     synapse = VideoUpscalingProtocol(
@@ -103,9 +104,11 @@ class Synthesizer:
                     )
                     task_ids.append(chunk["task_id"])
                     original_urls.append(chunk["url"])
+                    task_types.append(chunk["resolution_type"])
+
                     organic_synapses.append(synapse)
 
-                return task_ids, original_urls, organic_synapses
+                return task_ids, original_urls, task_types, organic_synapses
 
             except httpx.HTTPStatusError as e:
                 logger.info(f"HTTP error on attempt {attempt + 1}/{self.max_retries}: {e}")

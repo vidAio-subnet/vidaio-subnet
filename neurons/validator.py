@@ -101,7 +101,7 @@ class Validator(base.BaseValidator):
 
             reference_video_path = get_trim_video_path(video_id)
             
-            await self.score_synthetic(uids, responses, reference_video_path)
+            await self.score_synthetics(uids, responses, reference_video_path)
 
             minio_client.delete_file(uploaded_object_name)
             delete_videos_with_fileid(video_id)
@@ -112,7 +112,7 @@ class Validator(base.BaseValidator):
         epoch_processed_time = time.time() - epoch_start_time
         logger.info(f"Completed one epoch within {epoch_processed_time:.2f} seconds")
 
-    async def score_synthetic(self, uids: list[int], responses: list[protocol.Synapse], reference_video_path: str):
+    async def score_synthetics(self, uids: list[int], responses: list[protocol.Synapse], reference_video_path: str):
         logger.info(f"Starting synthetic scoring for {len(uids)} miners")
         logger.info(f"Uids: {uids}")
         distorted_urls = []
@@ -146,9 +146,9 @@ class Validator(base.BaseValidator):
             logger.info(f"{uid} ** {vmaf_score:.2f} ** {pieapp_score:.2f} ** {score:.4f} || {reason}")
 
         logger.info(f"Updating miner manager with {len(scores)} miner scores")
-        self.miner_manager.step(scores, uids)
+        self.miner_manager.step_synthetics(scores, uids)
 
-    async def score_organic(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: str):
+    async def score_organics(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: List[str], task_types: List[str]):
         logger.info(f"Starting organic scoring for {len(uids)} miners")
         logger.info(f"Uids: {uids}")
         distorted_urls = []
@@ -160,7 +160,8 @@ class Validator(base.BaseValidator):
             json = {
                 "uids": uids,
                 "distorted_urls": distorted_urls,
-                "reference_urls": reference_urls
+                "reference_urls": reference_urls,
+                "task_types": task_types
             },
             timeout=1500
         )
@@ -182,7 +183,7 @@ class Validator(base.BaseValidator):
             logger.info(f"{uid} ** {vmaf_score:.2f} ** {pieapp_score:.2f} ** {score:.4f} || {reason}")
 
         logger.info(f"Updating miner manager with {len(scores)} miner scores")
-        self.miner_manager.step(scores, uids)
+        self.miner_manager.step_organics(scores, uids)
 
 
     def filter_miners(self):
@@ -222,7 +223,7 @@ class Validator(base.BaseValidator):
         axon_list = [self.metagraph.axons[uid] for uid in forward_uids]
 
         logger.info("Building the organic protocol")
-        task_ids, original_urls, synapses = await self.challenge_synthesizer.build_organic_protocol(needed)
+        task_ids, original_urls, task_types, synapses = await self.challenge_synthesizer.build_organic_protocol(needed)
 
         if len(task_ids) != needed or len(synapses) != needed:
             logger.error(
