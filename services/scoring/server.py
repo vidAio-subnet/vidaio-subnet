@@ -637,7 +637,7 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
             print(f"🎾 PIEAPP SCORE is {pieapp_score}")
             
             if pieapp_score > PIEAPP_THRESHOLD:
-                print(f"PIEAPP SCORE is too low, giving zero score, current PIEAPP SCORE: {pieapp_score}")
+                print(f"PIEAPP SCORE is too high, giving zero score, current PIEAPP SCORE: {pieapp_score}")
                 pieapp_scores.append(0.0)
                 reasons.append(f"PIEAPP SCORE is too low, current PIEAPP SCORE: {pieapp_score}")
                 scores.append(0.0)
