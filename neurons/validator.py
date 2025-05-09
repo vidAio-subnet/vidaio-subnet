@@ -148,16 +148,21 @@ class Validator(base.BaseValidator):
         logger.info(f"Updating miner manager with {len(scores)} miner scores")
         self.miner_manager.step_synthetics(scores, uids)
 
-    async def score_organics(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: List[str], task_types: List[str]):
-        logger.info(f"Starting organic scoring for {len(uids)} miners")
-        logger.info(f"Uids: {uids}")
-        distorted_urls = []
-        for uid, response in zip(uids, responses):
-            distorted_urls.append(response.miner_response.optimized_video_url)
+
+    async def score_organics(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: list[str], task_types: list[str]):
+        logger.info(f"starting organic scoring for {len(uids)} miners")
+        logger.info(f"uids: {uids}")
+
+        distorted_urls = [response.miner_response.optimized_video_url for response in responses]
+
+        # zip and shuffle all lists together to preserve alignment
+        combined = list(zip(uids, distorted_urls, reference_urls, task_types))
+        random.shuffle(combined)
+        uids, distorted_urls, reference_urls, task_types = map(list, zip(*combined))
 
         score_response = await self.score_client.post(
             "/score_organics",
-            json = {
+            json={
                 "uids": uids,
                 "distorted_urls": distorted_urls,
                 "reference_urls": reference_urls,
@@ -167,22 +172,21 @@ class Validator(base.BaseValidator):
         )
 
         response_data = score_response.json()
-        
         scores = response_data.get("scores", [])
         vmaf_scores = response_data.get("vmaf_scores", [])
         pieapp_scores = response_data.get("pieapp_scores", [])
         reasons = response_data.get("reasons", [])
-        
+
         max_length = max(len(uids), len(scores), len(vmaf_scores), len(pieapp_scores), len(reasons))
         scores.extend([0.0] * (max_length - len(scores)))
         vmaf_scores.extend([0.0] * (max_length - len(vmaf_scores)))
         pieapp_scores.extend([0.0] * (max_length - len(pieapp_scores)))
-        reasons.extend(["No reason provided"] * (max_length - len(reasons)))
-        
+        reasons.extend(["no reason provided"] * (max_length - len(reasons)))
+
         for uid, vmaf_score, pieapp_score, score, reason in zip(uids, vmaf_scores, pieapp_scores, scores, reasons):
             logger.info(f"{uid} ** {vmaf_score:.2f} ** {pieapp_score:.2f} ** {score:.4f} || {reason}")
 
-        logger.info(f"Updating miner manager with {len(scores)} miner scores")
+        logger.info(f"updating miner manager with {len(scores)} miner scores")
         self.miner_manager.step_organics(scores, uids)
 
 
@@ -251,7 +255,7 @@ class Validator(base.BaseValidator):
             await self.update_task_status(task_id, original_url, "completed")
             await self.push_result(task_id, original_url, processed_url)
 
-        # await self.score_organics(forward_uids, responses, original_urls, task_types)
+        await self.score_organics(forward_uids.tolist(), responses, original_urls, task_types)
 
         end_time = time.time()
         total_time = end_time - organic_start_time
