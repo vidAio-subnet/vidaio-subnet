@@ -8,7 +8,7 @@ import pandas as pd
 from typing import List
 import requests
 from concurrent.futures import ThreadPoolExecutor
-from vidaio_subnet_core.utilities.minio_client import minio_client
+from vidaio_subnet_core.utilities.storage_client import storage_client
 from vidaio_subnet_core.utilities.wandb_manager import WandbManager
 from vidaio_subnet_core.utilities.uids import get_organic_forward_uids
 from vidaio_subnet_core.utilities.version import get_version
@@ -103,7 +103,7 @@ class Validator(base.BaseValidator):
             
             await self.score_synthetics(uids, responses, reference_video_path)
 
-            minio_client.delete_file(uploaded_object_name)
+            storage_client.delete_file(uploaded_object_name)
             delete_videos_with_fileid(video_id)
             batch_processed_time = time.time() - batch_start_time
             logger.info(f"Completed one batch within {batch_processed_time:.2f} seconds. Waiting 5 seconds before next batch")

@@ -3,7 +3,7 @@ import asyncio
 import logging
 from redis_utils import get_files_to_delete
 from loguru import logger
-from vidaio_subnet_core.utilities.minio_client import minio_client
+from vidaio_subnet_core.utilities.storage_client import storage_client
 
 async def delete_files_from_minio(files_to_delete):
     """Delete files from MinIO"""
@@ -11,7 +11,7 @@ async def delete_files_from_minio(files_to_delete):
         object_name = file_info.get("object_name")
         if object_name:
             try:
-                await minio_client.delete_file(object_name)
+                await storage_client.delete_file(object_name)
                 logger.info(f"Successfully deleted {object_name} from MinIO")
             except Exception as e:
                 logger.error(f"Failed to delete {object_name} from MinIO: {e}")

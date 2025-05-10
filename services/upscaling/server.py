@@ -11,7 +11,7 @@ import re
 from pydantic import BaseModel
 from typing import Optional
 from services.miner_utilities.redis_utils import schedule_file_deletion
-from vidaio_subnet_core.utilities import minio_client, download_video
+from vidaio_subnet_core.utilities import storage_client, download_video
 from loguru import logger
 import traceback
 
@@ -166,7 +166,7 @@ async def video_upscaler(request: UpscaleRequest):
         if processed_video_path is not None:
             object_name: str = processed_video_name
             
-            await minio_client.upload_file(object_name, processed_video_path)
+            await storage_client.upload_file(object_name, processed_video_path)
             logger.info("Video uploaded successfully.")
             
             # Delete the local file since we've already uploaded it to MinIO
@@ -176,7 +176,7 @@ async def video_upscaler(request: UpscaleRequest):
             else:
                 logger.info(f"{processed_video_path} does not exist.")
                 
-            sharing_link: str | None = await minio_client.get_presigned_url(object_name)
+            sharing_link: str | None = await storage_client.get_presigned_url(object_name)
             if not sharing_link:
                 logger.error("Upload failed")
                 return {"uploaded_video_url": None}
