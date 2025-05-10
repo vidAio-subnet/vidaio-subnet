@@ -24,7 +24,7 @@ from redis_utils import (
 from video_utils import download_trim_downscale_video
 from services.google_drive.google_drive_manager import GoogleDriveManager
 from vidaio_subnet_core import CONFIG
-from vidaio_subnet_core.utilities.minio_client import minio_client
+from vidaio_subnet_core.utilities.storage_client import storage_client
 
 load_dotenv()
 
@@ -283,8 +283,8 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis)
         uploaded_file_id = video_id
         object_name = f"{uploaded_file_id}.mp4"
         
-        await minio_client.upload_file(object_name, challenge_local_path)
-        sharing_link = await minio_client.get_presigned_url(object_name)
+        await storage_client.upload_file(object_name, challenge_local_path)
+        sharing_link = await storage_client.get_presigned_url(object_name)
 
         print(f"Sharing_link:{sharing_link} ")
 
@@ -310,7 +310,7 @@ async def main():
     
     clear_queues(redis_conn)
     purge_cached_videos()
-    await minio_client.delete_all_items()
+    await storage_client.delete_all_items()
 
 
     scheduler_threshold = CONFIG.video_scheduler.refill_threshold
