@@ -92,14 +92,8 @@ class MinerManager:
                 logger.info(f"Creating new metadata record for UID {uid}")
                 miner = MinerMetadata(uid=uid)
                 self.session.add(miner)
-            if score ==0.0:
+            if score == 0.0:
                 miner.accumulate_score = 0
-            # EMA with decay factor
-            # miner.accumulate_score = (
-            #     miner.accumulate_score * CONFIG.score.decay_factor
-            #     + score * (1 - CONFIG.score.decay_factor)
-            # )
-            # miner.accumulate_score = max(0, miner.accumulate_score)
             # logger.debug(
             #     f"Updated accumulate_score for UID {uid}: {miner.accumulate_score}"
             # )
