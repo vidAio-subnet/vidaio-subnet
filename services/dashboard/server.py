@@ -80,7 +80,7 @@ def main():
             "0xcdef1234567890abcdef1234567890abcdef1234"
         ],
         timestamp=datetime.now().isoformat(),
-        request_type="image_processing",
+        request_type="test dashboard api",
         vmaf_scores=[95.2, 87.6, 92.1],
         pieapp_scores=[88.7, 79.3, 85.9],
         final_scores=[91.95, 83.45, 89.0],

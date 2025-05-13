@@ -1,6 +1,6 @@
-from typing import List
 from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass
+from typing import List, Dict, Any
 
 @dataclass
 class MinerData:
@@ -58,4 +58,27 @@ class MinerData:
             "status": self.status,
             "task_url": self.task_urls,
             "processed_url": self.processed_urls
+        }
+
+@dataclass
+class MinerInfo:
+    """
+    Class representing information about a miner.
+    """
+    miner_uid: int
+    miner_hotkey: str
+    trust: float
+    incentive: float
+    emission: float
+    daily_reward: float
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert the MinerInfo instance to a dictionary"""
+        return {
+            "miner_uid": self.miner_uid,
+            "miner_hotkey": self.miner_hotkey,
+            "trust": self.trust,
+            "incentive": self.incentive,
+            "emission": self.emission,
+            "daily_reward": self.daily_reward
         }
