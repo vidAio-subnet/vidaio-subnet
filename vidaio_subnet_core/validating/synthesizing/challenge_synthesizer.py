@@ -43,13 +43,14 @@ class Synthesizer:
                     logger.info(f"Missing required fields in chunk data: {chunk}")
                     await asyncio.sleep(self.retry_delay)
                     continue
-
+                payload_url = chunk["sharing_link"]
                 return (
+                    payload_url,
                     chunk["video_id"],
                     chunk["uploaded_object_name"],
                     VideoUpscalingProtocol(
                         miner_payload=MinerPayload(
-                            reference_video_url=chunk["sharing_link"],
+                            reference_video_url=payload_url,
                             task_type=chunk["task_type"]
                         ),
                     )

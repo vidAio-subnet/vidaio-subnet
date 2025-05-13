@@ -6,6 +6,7 @@ from .sql import SQLConfig
 from .storage import StorageConfig
 from .video_upscaler import VideoUpscalerConfig
 from .organic_gateway import OrganicGatewayConfig
+from .dashboard import DashboardConfig
 
 __all__ = [
     "RedisConfig",
@@ -16,4 +17,5 @@ __all__ = [
     "StorageConfig",
     "VideoUpscalerConfig",
     "OrganicGatewayConfig",
+    "DashboardConfig",
 ]

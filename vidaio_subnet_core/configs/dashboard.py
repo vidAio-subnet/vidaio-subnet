@@ -7,3 +7,5 @@ load_dotenv()
 
 class DashboardConfig(BaseModel):
     endpoint: str = Field(default=os.getenv("DASHBOARD_ENDPOINT", "localhost:9001"))
+    timeout: int = Field(default=10)
+    max_retries: int = Field(default = 3)

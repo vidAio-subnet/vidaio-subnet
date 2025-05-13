@@ -3,18 +3,18 @@ from dataclasses import dataclass
 from datetime import datetime
 
 @dataclass
-class RequestData:
+class MinerData:
     validator_uid: int
     validator_hotkey: str
     request_type: str
-    task_url: str
     miner_uids: List[int]
     miner_hotkeys: List[str]
     vmaf_scores: List[float]
     pieapp_scores: List[float]
     final_scores: List[float]
     accumulate_scores: List[float]
-    processed_url: List[str]
+    task_urls: List[str]
+    processed_urls: List[str]
     status: List[str]
     timestamp: str
     
@@ -28,7 +28,8 @@ class RequestData:
             self.final_scores,
             self.accumulate_scores,
             self.status,
-            self.processed_url
+            self.task_urls,
+            self.processed_urls
         ]
         
         # Check if all lists have the same length
@@ -38,11 +39,11 @@ class RequestData:
     
     @classmethod
     def from_dict(cls, data: dict):
-        """Create a RequestData instance from a dictionary"""
+        """Create a MinerData instance from a dictionary"""
         return cls(**data)
     
     def to_dict(self):
-        """Convert the RequestData instance to a dictionary"""
+        """Convert the MinerData instance to a dictionary"""
         return {
             "validator_uid": self.validator_uid,
             "validator_hotkey": self.validator_hotkey,
@@ -55,6 +56,6 @@ class RequestData:
             "final_scores": self.final_scores,
             "accumulate_scores": self.accumulate_scores,
             "status": self.status,
-            "task_url": self.task_url,
-            "processed_url": self.processed_url
+            "task_url": self.task_urls,
+            "processed_url": self.processed_urls
         }

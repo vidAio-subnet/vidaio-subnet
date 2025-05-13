@@ -62,6 +62,8 @@ class MinerManager:
 
     def step_synthetics(self, scores: list[float], total_uids: list[int]):
         logger.info(f"Updating scores for {len(total_uids)} miners")
+
+        acc_scores = []
         for uid, score in zip(total_uids, scores):
             # logger.debug(f"Processing UID {uid} with score {score}")
             miner = self.query([uid]).get(uid, None)
@@ -76,14 +78,19 @@ class MinerManager:
                 + score * (1 - CONFIG.score.decay_factor)
             )
             miner.accumulate_score = max(0, miner.accumulate_score)
+            acc_scores.append(miner.accumulate_score)
             # logger.debug(
             #     f"Updated accumulate_score for UID {uid}: {miner.accumulate_score}"
             # )
         self.session.commit()
         logger.success(f"Updated metadata for {len(total_uids)} uids")
 
+        return acc_scores
+
     def step_organics(self, scores: list[float], total_uids: list[int]):
         logger.info(f"Updating scores for {len(total_uids)} miners")
+        
+        acc_scores = []
         for uid, score in zip(total_uids, scores):
             # logger.debug(f"Processing UID {uid} with score {score}")
             miner = self.query([uid]).get(uid, None)
@@ -94,11 +101,14 @@ class MinerManager:
                 self.session.add(miner)
             if score == 0.0:
                 miner.accumulate_score = 0
+            acc_scores.append(miner.accumulate_score)
             # logger.debug(
             #     f"Updated accumulate_score for UID {uid}: {miner.accumulate_score}"
             # )
         self.session.commit()
         logger.success(f"Updated metadata for {len(total_uids)} uids")
+
+        return acc_scores
 
     def consume(self, uids: list[int]) -> list[int]:
         logger.info(f"Consuming {len(uids)} UIDs")
