@@ -1,21 +1,22 @@
-from vidaio_subnet_core import validating, CONFIG, base, protocol
 import bittensor as bt
 import httpx
 import asyncio
-from loguru import logger
 import traceback
 import pandas as pd
-from typing import List
-import requests
+import time
+import random
+from loguru import logger
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
+from vidaio_subnet_core import validating, CONFIG, base, protocol
 from vidaio_subnet_core.utilities.storage_client import storage_client
 from vidaio_subnet_core.utilities.wandb_manager import WandbManager
 from vidaio_subnet_core.utilities.uids import get_organic_forward_uids
 from vidaio_subnet_core.utilities.version import get_version
+from services.dashboard.server import send_data_to_dashboard
 from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
 from services.video_scheduler.redis_utils import get_redis_connection, get_organic_queue_size
-import time
-import random
+
 
 class Validator(base.BaseValidator):
     def __init__(self):
@@ -85,7 +86,7 @@ class Validator(base.BaseValidator):
 
             batch_start_time = time.time()
             logger.info(f"🧩 Processing batch {batch_idx + 1}/{len(miner_batches)} 🧩")
-            video_id, uploaded_object_name, synapse = await self.challenge_synthesizer.build_synthetic_protocol()
+            payload_url, video_id, uploaded_object_name, synapse = await self.challenge_synthesizer.build_synthetic_protocol()
             synapse.version = get_version()
             logger.debug(f"Built challenge protocol")
             uids = []
@@ -93,6 +94,9 @@ class Validator(base.BaseValidator):
             for miner in batch:
                 uids.append(miner[1])
                 axons.append(miner[0])
+
+            timestamp = datetime.now(timezone.utc).isoformat()
+
             logger.debug(f"Processing UIDs in batch: {uids}")
             responses = await self.dendrite.forward(
                 axons=axons, synapse=synapse, timeout=60
@@ -101,7 +105,7 @@ class Validator(base.BaseValidator):
 
             reference_video_path = get_trim_video_path(video_id)
             
-            await self.score_synthetics(uids, responses, reference_video_path)
+            await self.score_synthetics(uids, responses, payload_url, reference_video_path, timestamp)
 
             storage_client.delete_file(uploaded_object_name)
             delete_videos_with_fileid(video_id)
@@ -112,7 +116,7 @@ class Validator(base.BaseValidator):
         epoch_processed_time = time.time() - epoch_start_time
         logger.info(f"Completed one epoch within {epoch_processed_time:.2f} seconds")
 
-    async def score_synthetics(self, uids: list[int], responses: list[protocol.Synapse], reference_video_path: str):
+    async def score_synthetics(self, uids: list[int], responses: list[protocol.Synapse], payload_url: str, reference_video_path: str, timestamp: str):
         logger.info(f"Starting synthetic scoring for {len(uids)} miners")
         logger.info(f"Uids: {uids}")
         distorted_urls = []
@@ -144,12 +148,32 @@ class Validator(base.BaseValidator):
         
         for uid, vmaf_score, pieapp_score, score, reason in zip(uids, vmaf_scores, pieapp_scores, scores, reasons):
             logger.info(f"{uid} ** {vmaf_score:.2f} ** {pieapp_score:.2f} ** {score:.4f} || {reason}")
-
+        
         logger.info(f"Updating miner manager with {len(scores)} miner scores")
-        self.miner_manager.step_synthetics(scores, uids)
+        
+        accumulate_scores = self.miner_manager.step_synthetics(scores, uids)
+        miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
+        payload_urls = [payload_url] * len(uids)
 
+        miner_data = {
+            "validator_uid": self.my_subnet_uid,
+            "validator_hotkey": self.wallet.hotkey.ss58_address,
+            "request_type": "Synthetic",
+            "miner_uids": uids,
+            "miner_hotkeys": miner_hotkeys,
+            "vmaf_scores": vmaf_scores,
+            "pieapp_scores": pieapp_scores,
+            "final_scores": scores,
+            "accumulate_scores": accumulate_scores,
+            "status": reasons,
+            "task_urls": payload_urls,
+            "processed_urls": distorted_urls,
+            "timestamp": timestamp
+        }
+        
+        success = send_data_to_dashboard(miner_data)
 
-    async def score_organics(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: list[str], task_types: list[str]):
+    async def score_organics(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: list[str], task_types: list[str], timestamp: str):
         logger.info(f"starting organic scoring for {len(uids)} miners")
         logger.info(f"uids: {uids}")
 
@@ -187,7 +211,27 @@ class Validator(base.BaseValidator):
             logger.info(f"{uid} ** {vmaf_score:.2f} ** {pieapp_score:.2f} ** {score:.4f} || {reason}")
 
         logger.info(f"updating miner manager with {len(scores)} miner scores")
-        self.miner_manager.step_organics(scores, uids)
+        accumulate_scores = self.miner_manager.step_organics(scores, uids)
+
+        miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
+
+        miner_data = {
+            "validator_uid": self.my_subnet_uid,
+            "validator_hotkey": self.wallet.hotkey.ss58_address,
+            "request_type": "Organic",
+            "miner_uids": uids,
+            "miner_hotkeys": miner_hotkeys,
+            "vmaf_scores": vmaf_scores,
+            "pieapp_scores": pieapp_scores,
+            "final_scores": scores,
+            "accumulate_scores": accumulate_scores,
+            "status": reasons,
+            "task_urls": reference_urls,
+            "processed_urls": distorted_urls,
+            "timestamp": timestamp
+        }
+        
+        success = send_data_to_dashboard(miner_data)
 
 
     def filter_miners(self):
@@ -239,6 +283,8 @@ class Validator(base.BaseValidator):
         for task_id, original_url in zip(task_ids, original_urls):
             await self.update_task_status(task_id, original_url, "processing")
 
+        timestamp = datetime.now(timezone.utc).isoformat()
+
         logger.info("Performing forward operations asynchronously")
         forward_tasks = [
             self.dendrite.forward(axons=[axon], synapse=synapse, timeout=200)
@@ -255,7 +301,7 @@ class Validator(base.BaseValidator):
             await self.update_task_status(task_id, original_url, "completed")
             await self.push_result(task_id, original_url, processed_url)
 
-        await self.score_organics(forward_uids.tolist(), responses, original_urls, task_types)
+        await self.score_organics(forward_uids.tolist(), responses, original_urls, task_types, timestamp)
 
         end_time = time.time()
         total_time = end_time - organic_start_time
