@@ -332,7 +332,7 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
     ref_y4m_path = convert_mp4_to_y4m(ref_trim_path)
     print("the reference video has been successfully trimmed and converted to y4m format.")
 
-    # cache for each unique distorted url
+    # Enhanced cache for each unique distorted url - now stores scores too
     url_cache = {}
 
     for dist_url, uid in zip(request.distorted_urls, request.uids):
@@ -342,14 +342,25 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
 
         try:
             if cache_entry is not None:
-                # use cached result
+                # Enhanced cache usage
                 if cache_entry["status"] == "fail":
+                    # Use cached failure information
                     vmaf_scores.append(0.0)
                     pieapp_scores.append(0.0)
                     reasons.append(cache_entry["reason"])
                     scores.append(0.0)
+                    print(f"Using cached failure result for {uid} from previous identical URL")
+                    continue
+                elif "score" in cache_entry:
+                    # Use cached complete scoring results
+                    vmaf_scores.append(cache_entry["vmaf_score"])
+                    pieapp_scores.append(cache_entry["pieapp_score"])
+                    reasons.append(cache_entry["reason"])
+                    scores.append(cache_entry["score"])
+                    print(f"Using cached scoring result for {uid} from previous identical URL")
                     continue
                 else:
+                    # Just reuse the downloaded file path
                     dist_path = cache_entry["path"]
             else:
                 # process and cache
@@ -414,6 +425,11 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
                 scores.append(0.0)
                 dist_cap.release()
                 print(f"error calculating vmaf score: {e}")
+                # Cache the failure
+                url_cache[dist_url] = {
+                    "status": "fail", 
+                    "reason": "failed to calculate vmaf score due to video dimension mismatch"
+                }
                 continue
 
             if vmaf_score / 100 < VMAF_THRESHOLD:
@@ -422,6 +438,15 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
                 reasons.append(f"vmaf score is too low, current vmaf score: {vmaf_score}")
                 scores.append(0.0)
                 dist_cap.release()
+                # Cache this result
+                url_cache[dist_url] = {
+                    "status": "ok",
+                    "path": dist_path,
+                    "vmaf_score": vmaf_score,
+                    "pieapp_score": 0.0,
+                    "score": 0.0,
+                    "reason": f"vmaf score is too low, current vmaf score: {vmaf_score}"
+                }
                 continue
 
             # extract distorted frames
@@ -443,6 +468,16 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
             reasons.append("success")
             scores.append(final_score)
             dist_cap.release()
+            
+            # Cache the complete successful result
+            url_cache[dist_url] = {
+                "status": "ok",
+                "path": dist_path,
+                "vmaf_score": vmaf_score,
+                "pieapp_score": pieapp_score,
+                "score": final_score,
+                "reason": "success"
+            }
 
         except Exception as e:
             error_msg = f"failed to process video from {dist_url}: {str(e)}"
@@ -451,6 +486,8 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
             pieapp_scores.append(0.0)
             reasons.append("failed to process video")
             scores.append(0.0)
+            # Cache the failure
+            url_cache[dist_url] = {"status": "fail", "reason": "failed to process video"}
 
         finally:
             # only delete the file if this is the last use of the url (not in cache for others)

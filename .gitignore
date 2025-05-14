@@ -27,3 +27,4 @@ tmp/
 vmaf/
 services/scoring/vmaf
 services/upscaling/models/
+test.py
