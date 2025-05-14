@@ -290,17 +290,7 @@ def upscale_video(input_path, scale_factor=2):
 
 @app.post("/score_synthetics")
 async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse:
-    """
-    Scores the distorted videos by comparing them with the reference video using VMAF and LPIPS.
-
-    Args:
-        request (SyntheticsScoringRequest): The request object containing URLs for distorted videos 
-                                   and the reference video path.
-
-    Returns:
-        ScoringResponse: The response object containing a list of scores for each distorted video.
-    """
-    print("#################### 🤖 Start scoring ####################")
+    print("#################### 🤖 start scoring ####################")
 
     start_time = time.time()
     scores = []
@@ -312,22 +302,20 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
     ref_cap = cv2.VideoCapture(ref_path)
 
     if not ref_cap.isOpened():
-        raise HTTPException(status_code=500, detail="Error opening reference video file")
+        raise HTTPException(status_code=500, detail="error opening reference video file")
 
     ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    print(f"Reference video has {ref_total_frames} frames.")
-    
-    if ref_total_frames <= 0:
-        raise HTTPException(status_code=500, detail="Invalid reference video: no frames found")
+    print(f"reference video has {ref_total_frames} frames.")
 
-    # Generate a consistent sample frame position for all videos
+    if ref_total_frames <= 0:
+        raise HTTPException(status_code=500, detail="invalid reference video: no frames found")
+
     sample_size = min(SAMPLE_FRAME_COUNT, ref_total_frames)
     max_start_frame = ref_total_frames - sample_size
     start_frame = 0 if max_start_frame <= 0 else random.randint(0, max_start_frame)
-    
-    print(f"Selected frame range for all videos: {start_frame} to {start_frame + sample_size - 1}")
-    
-    # Extract reference frames once
+
+    print(f"selected frame range for all videos: {start_frame} to {start_frame + sample_size - 1}")
+
     ref_frames = []
     ref_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
     for _ in range(sample_size):
@@ -338,80 +326,123 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
 
     video_duration = VideoFileClip(ref_path).duration
     start_point = random.uniform(0, video_duration - 1)
-    print(f"Randomly selected 1s video clip for VMAF score from {start_point}s.")
+    print(f"randomly selected 1s video clip for vmaf score from {start_point}s.")
 
     ref_trim_path = trim_video(ref_path, start_point)
     ref_y4m_path = convert_mp4_to_y4m(ref_trim_path)
-    print("The reference video has been successfully trimmed and converted to y4m format.")
+    print("the reference video has been successfully trimmed and converted to y4m format.")
+
+    url_cache = {}
 
     for dist_url, uid in zip(request.distorted_urls, request.uids):
-        print(f"🧩 Processing {uid}.... Attempting to download processed video.... 🧩")
+        print(f"🧩 processing {uid}.... attempting to download processed video.... 🧩")
         dist_path = None
-        
+        cache_entry = url_cache.get(dist_url)
+
         try:
-            if len(dist_url) < 10:
-                print(f"Wrong download url: {dist_url}. Assigning score of 0.")
-                vmaf_scores.append(0.0)
-                pieapp_scores.append(0.0)
-                reasons.append("Wrong download url")
-                scores.append(0.0)
-                continue
-                
-            dist_path = await download_video(dist_url, request.verbose)
+            if cache_entry is not None:
+                if cache_entry["status"] == "fail":
+                    vmaf_scores.append(0.0)
+                    pieapp_scores.append(0.0)
+                    reasons.append(cache_entry["reason"])
+                    scores.append(0.0)
+                    print(f"Using cached failure result for {uid} from previous identical URL")
+                    continue
+                elif "score" in cache_entry:
+                    vmaf_scores.append(cache_entry["vmaf_score"])
+                    pieapp_scores.append(cache_entry["pieapp_score"])
+                    reasons.append(cache_entry["reason"])
+                    scores.append(cache_entry["score"])
+                    print(f"Using cached scoring result for {uid} from previous identical URL")
+                    continue
+                else:
+                    dist_path = cache_entry["path"]
+            else:
+                # process and cache
+                if len(dist_url) < 10:
+                    print(f"wrong download url: {dist_url}. assigning score of 0.")
+                    vmaf_scores.append(0.0)
+                    pieapp_scores.append(0.0)
+                    reasons.append("wrong download url")
+                    scores.append(0.0)
+                    url_cache[dist_url] = {"status": "fail", "reason": "wrong download url"}
+                    continue
+
+                dist_path = await download_video(dist_url, request.verbose)
+                dist_cap = cv2.VideoCapture(dist_path)
+
+                if not dist_cap.isOpened():
+                    print(f"error opening distorted video file from {dist_url}. assigning score of 0.")
+                    vmaf_scores.append(0.0)
+                    pieapp_scores.append(0.0)
+                    reasons.append("error opening distorted video file")
+                    scores.append(0.0)
+                    url_cache[dist_url] = {"status": "fail", "reason": "error opening distorted video file"}
+                    continue
+
+                dist_total_frames = int(dist_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                print(f"distorted video has {dist_total_frames} frames.")
+
+                if dist_total_frames != ref_total_frames:
+                    print(
+                        f"video length mismatch for {dist_url}: ref({ref_total_frames}) != dist({dist_total_frames}). assigning score of 0."
+                    )
+                    vmaf_scores.append(0.0)
+                    pieapp_scores.append(0.0)
+                    reasons.append("video length mismatch")
+                    scores.append(0.0)
+                    url_cache[dist_url] = {"status": "fail", "reason": "video length mismatch"}
+                    dist_cap.release()
+                    if dist_path and os.path.exists(dist_path):
+                        os.unlink(dist_path)
+                    continue
+
+                url_cache[dist_url] = {"status": "ok", "path": dist_path}
+                dist_cap.release()
+
             dist_cap = cv2.VideoCapture(dist_path)
 
-            if not dist_cap.isOpened():
-                print(f"Error opening distorted video file from {dist_url}. Assigning score of 0.")
-                vmaf_scores.append(0.0)
-                pieapp_scores.append(0.0)
-                reasons.append("Error opening distorted video file")
-                scores.append(0.0)
-                continue  # Skip to the next distorted video
-
-            dist_total_frames = int(dist_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            print(f"Distorted video has {dist_total_frames} frames.")
-            
-            if dist_total_frames != ref_total_frames:
-                print(
-                    f"Video length mismatch for {dist_url}: ref({ref_total_frames}) != dist({dist_total_frames}). Assigning score of 0."
-                )
-                vmaf_scores.append(0.0)
-                pieapp_scores.append(0.0)
-                reasons.append("Video length mismatch")
-                scores.append(0.0)
-                dist_cap.release()
-                continue  # Skip to the next distorted video
-
-            # Calculate VMAF
+            # calculate vmaf
             try:
                 vmaf_score = calculate_vmaf(ref_y4m_path, dist_path, start_point)
-                
                 if vmaf_score is not None:
                     vmaf_scores.append(vmaf_score)
                 else:
                     vmaf_score = 0.0
                     vmaf_scores.append(vmaf_score)
-
                 print(f"🎾 vmaf_score is {vmaf_score}")
-
             except Exception as e:
                 vmaf_scores.append(0.0)
                 pieapp_scores.append(0.0)
-                reasons.append("Failed to calculate VMAF score due to video dimension mismatch")
+                reasons.append("failed to calculate vmaf score due to video dimension mismatch")
                 scores.append(0.0)
                 dist_cap.release()
-                print(f"Error calculating VMAF score: {e}")
+                print(f"error calculating vmaf score: {e}")
+                # Cache the failure
+                url_cache[dist_url] = {
+                    "status": "fail", 
+                    "reason": "failed to calculate vmaf score due to video dimension mismatch"
+                }
                 continue
-            
+
             if vmaf_score / 100 < VMAF_THRESHOLD:
                 print(f"vmaf score is too low, giving zero score, current vmaf score: {vmaf_score}")
                 pieapp_scores.append(0.0)
                 reasons.append(f"vmaf score is too low, current vmaf score: {vmaf_score}")
                 scores.append(0.0)
                 dist_cap.release()
+                # Cache this result
+                url_cache[dist_url] = {
+                    "status": "ok",
+                    "path": dist_path,
+                    "vmaf_score": vmaf_score,
+                    "pieapp_score": 0.0,
+                    "score": 0.0,
+                    "reason": f"vmaf score is too low, current vmaf score: {vmaf_score}"
+                }
                 continue
 
-            # Extract distorted frames from the same position
+            # extract distorted frames
             dist_frames = []
             dist_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
             for _ in range(sample_size):
@@ -419,162 +450,171 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
                 if not ret:
                     break
                 dist_frames.append(frame)
-            
-            # Calculate PieAPP score on the sampled frames
+
             pieapp_score = calculate_pieapp_score_on_samples(ref_frames, dist_frames)
             pieapp_scores.append(pieapp_score)
-            print(f"🎾 Pieapp_score is {pieapp_score}")
+            print(f"🎾 pieapp_score is {pieapp_score}")
 
-            # Final score calculation
             final_score = calculate_final_score(pieapp_score)
             print(f"🏀 final_score is {final_score}")
 
-            reasons.append("Success")
+            reasons.append("success")
             scores.append(final_score)
             dist_cap.release()
             
+            # Cache the complete successful result
+            url_cache[dist_url] = {
+                "status": "ok",
+                "path": dist_path,
+                "vmaf_score": vmaf_score,
+                "pieapp_score": pieapp_score,
+                "score": final_score,
+                "reason": "success"
+            }
+
         except Exception as e:
-            error_msg = f"Failed to process video from {dist_url}: {str(e)}"
-            print(f"{error_msg}. Assigning score of 0.")
+            error_msg = f"failed to process video from {dist_url}: {str(e)}"
+            print(f"{error_msg}. assigning score of 0.")
             vmaf_scores.append(0.0)
             pieapp_scores.append(0.0)
-            reasons.append("Failed to process video")
+            reasons.append("failed to process video")
             scores.append(0.0)
-        
+            url_cache[dist_url] = {"status": "fail", "reason": "failed to process video"}
+
         finally:
-            # Clean up downloaded file if it exists
             if dist_path and os.path.exists(dist_path):
-                os.unlink(dist_path)
+                remaining_uses = request.distorted_urls[request.distorted_urls.index(dist_url)+1:].count(dist_url)
+                if remaining_uses == 0:
+                    os.unlink(dist_path)
 
-    # Cleanup
+    # cleanup
     ref_cap.release()
-
     if os.path.exists(ref_trim_path):
         os.unlink(ref_trim_path)
-
     if os.path.exists(ref_y4m_path):
         os.unlink(ref_y4m_path)
 
     print(f"🔯🔯🔯 calculated score: {scores} 🔯🔯🔯")
     processed_time = time.time() - start_time
-    print(f"Completed one batch scoring within {processed_time:.2f} seconds")
+    print(f"completed one batch scoring within {processed_time:.2f} seconds")
     return ScoringResponse(
-        scores = scores,
-        vmaf_scores = vmaf_scores,
-        pieapp_scores = pieapp_scores,
-        reasons = reasons
+        scores=scores,
+        vmaf_scores=vmaf_scores,
+        pieapp_scores=pieapp_scores,
+        reasons=reasons
     )
 
 @app.post("/score_organics")
 async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
-    """
-    Scores the distorted videos by comparing them with their corresponding reference videos using VMAF and LPIPS.
-
-    Args:
-        request (OrganicsScoringRequest): The request object containing URLs for distorted videos 
-                                and their corresponding reference videos.
-
-    Returns:
-        ScoringResponse: The response object containing a list of scores for each distorted video.
-    """
-    print("#################### 🤖 Start scoring ####################")
-
+    print("#################### 🤖 start scoring ####################")
     start_time = time.time()
     scores = []
     vmaf_scores = []
     pieapp_scores = []
     reasons = []
 
-    # Process each pair of reference and distorted videos
-    for ref_url, dist_url, uid, task_type in zip(request.reference_urls, request.distorted_urls, request.uids, request.task_types):
-        print(f"🧩 Processing {uid}.... Downloading reference and distorted videos.... 🧩")
+    # step 1: download all distorted videos first
+    distorted_video_paths = []
+    for dist_url in request.distorted_urls:
+        if len(dist_url) < 10:
+            distorted_video_paths.append(None)
+            continue
+        try:
+            path = await download_video(dist_url, request.verbose)
+            distorted_video_paths.append(path)
+        except Exception as e:
+            print(f"failed to download distorted video: {dist_url}, error: {e}")
+            distorted_video_paths.append(None)
+
+    # step 2: process each pair
+    for idx, (ref_url, dist_path, uid, task_type) in enumerate(
+        zip(request.reference_urls, distorted_video_paths, request.uids, request.task_types)
+    ):
+        print(f"🧩 processing {uid}.... downloading reference video.... 🧩")
         ref_path = None
-        dist_path = None
+        ref_cap = None
+        dist_cap = None
+        ref_trim_path = None
+        ref_y4m_path = None
 
         scale_factor = 2
         if task_type == "SD24K":
             scale_factor = 4
 
         try:
-            # Download reference video
+            # download reference video
             if len(ref_url) < 10:
-                print(f"Invalid reference download URL: {ref_url}. Skipping...")
+                print(f"invalid reference download url: {ref_url}. skipping...")
                 vmaf_scores.append(-1)
                 pieapp_scores.append(-1)
-                reasons.append("Wrong reference download url")
+                reasons.append("wrong reference download url")
                 scores.append(-100)
                 continue
-                
+
             original_video_path = await download_video(ref_url, request.verbose)
             ref_path = upscale_video(original_video_path, scale_factor)
-
             ref_cap = cv2.VideoCapture(ref_path)
 
             if not ref_cap.isOpened():
-                print(f"Error opening reference video file from {ref_url}. Skipping...")
+                print(f"error opening reference video file from {ref_url}. skipping...")
                 vmaf_scores.append(-1)
                 pieapp_scores.append(-1)
-                reasons.append("Error opening reference video file")
+                reasons.append("error opening reference video file")
                 scores.append(-100)
                 continue
-            
+
             ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            print(f"Reference video has {ref_total_frames} frames.")
-            
+            print(f"reference video has {ref_total_frames} frames.")
+
             if ref_total_frames <= 0:
-                print(f"Invalid reference video from {ref_url}: no frames found. Skipping...")
+                print(f"invalid reference video from {ref_url}: no frames found. skipping...")
                 vmaf_scores.append(-1)
                 pieapp_scores.append(-1)
-                reasons.append("Invalid reference video: no frames found")
+                reasons.append("invalid reference video: no frames found")
                 scores.append(-100)
                 ref_cap.release()
                 continue
-            
-            # Download distorted video
-            if len(dist_url) < 10:
-                print(f"Wrong distorted download url: {dist_url}. Assigning score of 0.")
+
+            # check if distorted video failed to download
+            if dist_path is None:
+                print(f"failed to download distorted video for uid {uid}. assigning score of 0.")
                 vmaf_scores.append(0.0)
                 pieapp_scores.append(0.0)
-                reasons.append("Wrong distorted download url")
+                reasons.append("failed to download distorted video")
                 scores.append(0.0)
                 ref_cap.release()
                 continue
-                
-            dist_path = await download_video(dist_url, request.verbose)
-            dist_cap = cv2.VideoCapture(dist_path)
 
+            dist_cap = cv2.VideoCapture(dist_path)
             if not dist_cap.isOpened():
-                print(f"Error opening distorted video file from {dist_url}. Assigning score of 0.")
+                print(f"error opening distorted video file from {dist_path}. assigning score of 0.")
                 vmaf_scores.append(0.0)
                 pieapp_scores.append(0.0)
-                reasons.append("Error opening distorted video file")
+                reasons.append("error opening distorted video file")
                 scores.append(0.0)
                 ref_cap.release()
                 continue
 
             dist_total_frames = int(dist_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            print(f"Distorted video has {dist_total_frames} frames.")
-            
+            print(f"distorted video has {dist_total_frames} frames.")
+
             if dist_total_frames != ref_total_frames:
                 print(
-                    f"Video length mismatch for {dist_url}: ref({ref_total_frames}) != dist({dist_total_frames}). Assigning score of 0."
+                    f"video length mismatch for {dist_path}: ref({ref_total_frames}) != dist({dist_total_frames}). assigning score of 0."
                 )
                 vmaf_scores.append(0.0)
                 pieapp_scores.append(0.0)
-                reasons.append("Video length mismatch")
+                reasons.append("video length mismatch")
                 scores.append(0.0)
                 ref_cap.release()
                 dist_cap.release()
                 continue
 
-            # Generate a consistent sample frame position for this video pair
             sample_size = min(SAMPLE_FRAME_COUNT, ref_total_frames)
             max_start_frame = ref_total_frames - sample_size
             start_frame = 0 if max_start_frame <= 0 else random.randint(0, max_start_frame)
-            
-            print(f"Selected frame range for video pair: {start_frame} to {start_frame + sample_size - 1}")
-            
-            # Extract reference frames
+            print(f"selected frame range for video pair: {start_frame} to {start_frame + sample_size - 1}")
+
             ref_frames = []
             ref_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
             for _ in range(sample_size):
@@ -585,34 +625,31 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
 
             video_duration = VideoFileClip(ref_path).duration
             start_point = random.uniform(0, video_duration - 1)
-            print(f"Randomly selected 1s video clip for VMAF score from {start_point}s.")
+            print(f"randomly selected 1s video clip for vmaf score from {start_point}s.")
 
             ref_trim_path = trim_video(ref_path, start_point)
             ref_y4m_path = convert_mp4_to_y4m(ref_trim_path)
-            print("The reference video has been successfully trimmed and converted to y4m format.")
+            print("the reference video has been successfully trimmed and converted to y4m format.")
 
-            # Calculate VMAF
+            # calculate vmaf
             try:
                 vmaf_score = calculate_vmaf(ref_y4m_path, dist_path, start_point)
-                
                 if vmaf_score is not None:
                     vmaf_scores.append(vmaf_score)
                 else:
                     vmaf_score = 0.0
                     vmaf_scores.append(vmaf_score)
-
                 print(f"🎾 vmaf_score is {vmaf_score}")
-
             except Exception as e:
                 vmaf_scores.append(0.0)
                 pieapp_scores.append(0.0)
-                reasons.append("Failed to calculate VMAF score due to video dimension mismatch")
+                reasons.append("failed to calculate vmaf score due to video dimension mismatch")
                 scores.append(0.0)
                 ref_cap.release()
                 dist_cap.release()
-                print(f"Error calculating VMAF score: {e}")
+                print(f"error calculating vmaf score: {e}")
                 continue
-            
+
             if vmaf_score / 100 < VMAF_THRESHOLD:
                 print(f"vmaf score is too low, giving zero score, current vmaf score: {vmaf_score}")
                 pieapp_scores.append(0.0)
@@ -622,7 +659,6 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
                 dist_cap.release()
                 continue
 
-            # Extract distorted frames from the same position
             dist_frames = []
             dist_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
             for _ in range(sample_size):
@@ -630,60 +666,53 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
                 if not ret:
                     break
                 dist_frames.append(frame)
-            
-            # Calculate PieAPP score on the sampled frames
+
             pieapp_score = calculate_pieapp_score_on_samples(ref_frames, dist_frames)
             pieapp_scores.append(pieapp_score)
-            print(f"🎾 PIEAPP SCORE is {pieapp_score}")
-            
+            print(f"🎾 pieapp score is {pieapp_score}")
+
             if pieapp_score > PIEAPP_THRESHOLD:
-                print(f"PIEAPP SCORE is too high, giving zero score, current PIEAPP SCORE: {pieapp_score}")
+                print(f"pieapp score is too low, giving zero score, current pieapp score: {pieapp_score}")
                 pieapp_scores.append(0.0)
-                reasons.append(f"PIEAPP SCORE is too high, current PIEAPP SCORE: {pieapp_score}")
+                reasons.append(f"pieapp score is too low, current pieapp score: {pieapp_score}")
                 scores.append(0.0)
                 ref_cap.release()
-                dist_cap.release()  
+                dist_cap.release()
                 continue
 
-            reasons.append("Success")
+            reasons.append("success")
             scores.append(1)
-            
+
         except Exception as e:
-            error_msg = f"Failed to process video pair (ref: {ref_url}, dist: {dist_url}): {str(e)}"
-            print(f"{error_msg}. Assigning score of 0.")
+            error_msg = f"failed to process video pair (ref: {ref_url}, dist: {dist_path}): {str(e)}. failed to download video"
+            print(f"{error_msg}. assigning score of 0.")
             vmaf_scores.append(0.0)
             pieapp_scores.append(0.0)
-            reasons.append("Failed to process video pair")
+            reasons.append("failed to process video pair")
             scores.append(0.0)
-        
+
         finally:
-            # Clean up downloaded files if they exist
             if ref_cap:
                 ref_cap.release()
-            
             if dist_cap:
                 dist_cap.release()
-                
             if ref_path and os.path.exists(ref_path):
                 os.unlink(ref_path)
-                
             if dist_path and os.path.exists(dist_path):
                 os.unlink(dist_path)
-                
             if ref_trim_path and os.path.exists(ref_trim_path):
                 os.unlink(ref_trim_path)
-                
             if ref_y4m_path and os.path.exists(ref_y4m_path):
                 os.unlink(ref_y4m_path)
 
     processed_time = time.time() - start_time
     print(f"🔯🔯🔯 calculated score: {scores} 🔯🔯🔯")
-    print(f"Completed one batch scoring within {processed_time:.2f} seconds")
+    print(f"completed one batch scoring within {processed_time:.2f} seconds")
     return ScoringResponse(
-        scores = scores,
-        vmaf_scores = vmaf_scores,
-        pieapp_scores = pieapp_scores,
-        reasons = reasons
+        scores=scores,
+        vmaf_scores=vmaf_scores,
+        pieapp_scores=pieapp_scores,
+        reasons=reasons
     )
 
 if __name__ == "__main__":

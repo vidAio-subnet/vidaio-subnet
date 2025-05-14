@@ -3,9 +3,10 @@ from .video_scheduler import VideoSchedulerConfig
 from .bandwidth import BandwidthConfig
 from .score import ScoreConfig
 from .sql import SQLConfig
-from .minio import MinioConfig
+from .storage import StorageConfig
 from .video_upscaler import VideoUpscalerConfig
 from .organic_gateway import OrganicGatewayConfig
+from .dashboard import DashboardConfig
 
 __all__ = [
     "RedisConfig",
@@ -13,7 +14,8 @@ __all__ = [
     "BandwidthConfig",
     "ScoreConfig",
     "SQLConfig",
-    "MinioConfig",
+    "StorageConfig",
     "VideoUpscalerConfig",
     "OrganicGatewayConfig",
+    "DashboardConfig",
 ]

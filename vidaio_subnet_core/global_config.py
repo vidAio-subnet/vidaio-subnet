@@ -5,9 +5,10 @@ from .configs import (
     BandwidthConfig,
     ScoreConfig,
     SQLConfig,
-    MinioConfig,
+    StorageConfig,
     VideoUpscalerConfig,
     OrganicGatewayConfig,
+    DashboardConfig,
 )
 from loguru import logger
 
@@ -18,9 +19,10 @@ class GlobalConfig(BaseSettings):
     bandwidth: BandwidthConfig = BandwidthConfig()
     score: ScoreConfig = ScoreConfig()
     sql: SQLConfig = SQLConfig(url="sqlite:///video_subnet.db")
-    minio: MinioConfig = MinioConfig()
+    storage: StorageConfig = StorageConfig()
     video_upscaler: VideoUpscalerConfig = VideoUpscalerConfig()
     organic_gateway: OrganicGatewayConfig = OrganicGatewayConfig()
+    dashboard: DashboardConfig = DashboardConfig()
     SUBNET_TEMPO: int = 100
 
     class Config:

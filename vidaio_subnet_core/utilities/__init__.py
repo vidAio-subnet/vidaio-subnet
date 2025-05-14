@@ -1,7 +1,7 @@
-from .minio_client import minio_client
+from .storage_client import storage_client
 from .file_handler import download_video
 
 __all__ = [
-    "minio_client",
+    "storage_client",
     "download_video",
 ]
