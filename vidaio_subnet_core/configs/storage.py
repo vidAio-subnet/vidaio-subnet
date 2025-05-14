@@ -12,7 +12,10 @@ class BucketType(str, Enum):
     CLOUDFLARE = "cloudflare"
 
 class StorageConfig(BaseModel):
-    bucket_type: BucketType = Field(default=BucketType.BACKBLAZE, description="Type of bucket service")
+    bucket_type: BucketType = Field(
+        default=os.getenv("BUCKET_TYPE", "backblaze"),
+        description="Type of bucket service"
+    )
     endpoint: str = Field(default=os.getenv("BUCKET_COMPATIBLE_ENDPOINT", "localhost:9000"))
     access_key: str = Field(default=os.getenv("BUCKET_COMPATIBLE_ACCESS_KEY", "minioadmin"))
     secret_key: str = Field(default=os.getenv("BUCKET_COMPATIBLE_SECRET_KEY", "minioadmin"))
