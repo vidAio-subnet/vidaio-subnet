@@ -171,7 +171,7 @@ class Validator(base.BaseValidator):
             "timestamp": timestamp
         }
         
-        success = send_data_to_dashboard(miner_data)
+        # success = send_data_to_dashboard(miner_data)
 
     async def score_organics(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: list[str], task_types: list[str], timestamp: str):
         logger.info(f"starting organic scoring for {len(uids)} miners")
@@ -231,7 +231,7 @@ class Validator(base.BaseValidator):
             "timestamp": timestamp
         }
         
-        success = send_data_to_dashboard(miner_data)
+        # success = send_data_to_dashboard(miner_data)
 
 
     def filter_miners(self):
