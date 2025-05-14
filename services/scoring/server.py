@@ -332,7 +332,6 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
     ref_y4m_path = convert_mp4_to_y4m(ref_trim_path)
     print("the reference video has been successfully trimmed and converted to y4m format.")
 
-    # Enhanced cache for each unique distorted url - now stores scores too
     url_cache = {}
 
     for dist_url, uid in zip(request.distorted_urls, request.uids):
@@ -342,9 +341,7 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
 
         try:
             if cache_entry is not None:
-                # Enhanced cache usage
                 if cache_entry["status"] == "fail":
-                    # Use cached failure information
                     vmaf_scores.append(0.0)
                     pieapp_scores.append(0.0)
                     reasons.append(cache_entry["reason"])
@@ -352,7 +349,6 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
                     print(f"Using cached failure result for {uid} from previous identical URL")
                     continue
                 elif "score" in cache_entry:
-                    # Use cached complete scoring results
                     vmaf_scores.append(cache_entry["vmaf_score"])
                     pieapp_scores.append(cache_entry["pieapp_score"])
                     reasons.append(cache_entry["reason"])
@@ -360,7 +356,6 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
                     print(f"Using cached scoring result for {uid} from previous identical URL")
                     continue
                 else:
-                    # Just reuse the downloaded file path
                     dist_path = cache_entry["path"]
             else:
                 # process and cache
@@ -402,11 +397,9 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
                         os.unlink(dist_path)
                     continue
 
-                # if all validations pass, cache the path for reuse
                 url_cache[dist_url] = {"status": "ok", "path": dist_path}
                 dist_cap.release()
 
-            # now dist_path is valid and ready to use
             dist_cap = cv2.VideoCapture(dist_path)
 
             # calculate vmaf
@@ -486,14 +479,10 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
             pieapp_scores.append(0.0)
             reasons.append("failed to process video")
             scores.append(0.0)
-            # Cache the failure
             url_cache[dist_url] = {"status": "fail", "reason": "failed to process video"}
 
         finally:
-            # only delete the file if this is the last use of the url (not in cache for others)
             if dist_path and os.path.exists(dist_path):
-                # check if this url is used again in the next iterations
-                # if not, remove file
                 remaining_uses = request.distorted_urls[request.distorted_urls.index(dist_url)+1:].count(dist_url)
                 if remaining_uses == 0:
                     os.unlink(dist_path)

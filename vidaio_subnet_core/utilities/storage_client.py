@@ -27,7 +27,7 @@ class BackblazeClient:
         args = (self.bucket_name, object_name, file_path)
         print("Attempting to upload")
         try:
-            loop = asyncio.get_running_loop()  # Get the current event loop dynamically
+            loop = asyncio.get_running_loop()  
             result = await loop.run_in_executor(self.executor, func, *args)
             print(f"The bucket_name is {self.bucket_name} and the result was {result}")
             return result
@@ -86,7 +86,6 @@ class BackblazeClient:
         """Deletes all items in the Minio bucket."""
         print(f"Deleting all items in bucket: {self.bucket_name}")
         try:
-            # List all objects in the bucket
             objects = await self.list_objects()
             if not objects:
                 print("No objects to delete.")
@@ -114,7 +113,6 @@ class BackblazeClient:
             if hasattr(self, 'executor') and self.executor:
                 self.executor.shutdown(wait=False)
         except (TypeError, AttributeError, RuntimeError):
-            # Handle errors during interpreter shutdown
             pass
 
 
@@ -123,7 +121,6 @@ class AmazonS3Client:
         self.endpoint = endpoint
         self.bucket_name = bucket_name
         
-        # Create boto3 S3 client
         self.client = boto3.client(
             's3',
             aws_access_key_id=access_key,
@@ -142,7 +139,6 @@ class AmazonS3Client:
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(self.executor, func, *args)
             print(f"The bucket_name is {self.bucket_name} and the result was {result}")
-            # boto3 upload_file doesn't return anything, so we'll return a similar structure to the original
             return {"etag": None, "version_id": None}
         except Exception as e:
             print(f"There was an issue with uploading: {e}")
@@ -173,22 +169,17 @@ class AmazonS3Client:
         if prefix:
             kwargs['Prefix'] = prefix
         
-        # Note: boto3 doesn't have a direct 'recursive' parameter
-        # In S3, listing is always recursive unless you use a delimiter
         if not recursive:
             kwargs['Delimiter'] = '/'
             
         print("Listing objects in bucket...")
         loop = asyncio.get_running_loop()
         
-        # Create a wrapper function to convert boto3 response to match MinIO format
         def list_and_convert():
             response = func(**kwargs)
-            # Convert to format similar to MinIO objects
             objects = []
             if 'Contents' in response:
                 for item in response['Contents']:
-                    # Create an object with attributes matching MinIO response
                     class ObjectInfo:
                         def __init__(self, obj_data):
                             self.object_name = obj_data.get('Key')
@@ -203,7 +194,6 @@ class AmazonS3Client:
     async def ensure_bucket_exists(self):
         loop = asyncio.get_running_loop()
         
-        # Check if bucket exists
         async def check_bucket_exists():
             try:
                 await loop.run_in_executor(
@@ -297,7 +287,6 @@ class CloudflareR2Client:
         self.endpoint = endpoint
         self.bucket_name = bucket_name
         
-        # Cloudflare R2 uses the S3 API, so we can use boto3 client
         self.client = boto3.client(
             's3',
             aws_access_key_id=access_key,
@@ -458,7 +447,6 @@ class CloudflareR2Client:
             if hasattr(self, 'executor') and self.executor:
                 self.executor.shutdown(wait=False)
         except (TypeError, AttributeError, RuntimeError):
-            # Handle errors during interpreter shutdown
             pass
 
 
