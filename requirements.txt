@@ -19,3 +19,5 @@ pyiqa
 wandb
 apscheduler
 boto3
+google-auth
+google-api-python-client
