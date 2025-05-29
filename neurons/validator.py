@@ -105,7 +105,9 @@ class Validator(base.BaseValidator):
 
             reference_video_path = get_trim_video_path(video_id)
             
-            await self.score_synthetics(uids, responses, payload_url, reference_video_path, timestamp)
+            asyncio.create_task(self.score_synthetics(uids, responses, payload_url, reference_video_path, timestamp))
+
+            # await self.score_synthetics(uids, responses, payload_url, reference_video_path, timestamp)
 
             storage_client.delete_file(uploaded_object_name)
             delete_videos_with_fileid(video_id)
@@ -117,8 +119,7 @@ class Validator(base.BaseValidator):
         logger.info(f"Completed one epoch within {epoch_processed_time:.2f} seconds")
 
     async def score_synthetics(self, uids: list[int], responses: list[protocol.Synapse], payload_url: str, reference_video_path: str, timestamp: str):
-        logger.info(f"Starting synthetic scoring for {len(uids)} miners")
-        logger.info(f"Uids: {uids}")
+
         distorted_urls = []
         for uid, response in zip(uids, responses):
             distorted_urls.append(response.miner_response.optimized_video_url)
@@ -134,7 +135,7 @@ class Validator(base.BaseValidator):
         )
 
         response_data = score_response.json()
-        
+
         scores = response_data.get("scores", [])
         vmaf_scores = response_data.get("vmaf_scores", [])
         pieapp_scores = response_data.get("pieapp_scores", [])
@@ -145,7 +146,10 @@ class Validator(base.BaseValidator):
         vmaf_scores.extend([0.0] * (max_length - len(vmaf_scores)))
         pieapp_scores.extend([0.0] * (max_length - len(pieapp_scores)))
         reasons.extend(["No reason provided"] * (max_length - len(reasons)))
-        
+
+
+        logger.info(f"Starting synthetic scoring for {len(uids)} miners")
+        logger.info(f"Uids: {uids}")
         for uid, vmaf_score, pieapp_score, score, reason in zip(uids, vmaf_scores, pieapp_scores, scores, reasons):
             logger.info(f"{uid} ** {vmaf_score:.2f} ** {pieapp_score:.2f} ** {score:.4f} || {reason}")
         
