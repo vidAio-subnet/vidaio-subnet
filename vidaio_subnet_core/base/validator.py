@@ -98,7 +98,6 @@ class BaseValidator(ABC):
         while not self.should_exit:
             try:
                 await self.start_epoch()
-                self.set_weights()
             except Exception as e:
                 logger.error(f"Forward error: {e}")
                 traceback.print_exc()
