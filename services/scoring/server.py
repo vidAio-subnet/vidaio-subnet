@@ -24,8 +24,9 @@ app = FastAPI()
 fire_requests = FireRequests()
 
 VMAF_THRESHOLD = CONFIG.score.vmaf_threshold
-SAMPLE_FRAME_COUNT = CONFIG.score.sample_count
+SAMPLE_FRAME_COUNT = CONFIG.score.pieapp_sample_count
 PIEAPP_THRESHOLD = CONFIG.score.pieapp_threshold
+VMAF_SAMPLE_COUNT = CONFIG.score.vmaf_sample_count
 
 class SyntheticsScoringRequest(BaseModel):
     """
@@ -180,6 +181,19 @@ def get_sample_frames(ref_cap, dist_cap, total_frames):
     
     return ref_frames, dist_frames
 
+def get_frame_count(video_path):
+    cmd = [
+        "ffprobe",
+        "-v", "error",
+        "-count_frames",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=nb_read_frames",
+        "-of", "default=nokey=1:noprint_wrappers=1",
+        video_path
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    return int(result.stdout.strip())
+
 def calculate_pieapp_score_on_samples(ref_frames, dist_frames):
     """
     Calculate PIE-APP score on sampled frames without creating temporary files.
@@ -328,8 +342,12 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
     start_point = random.uniform(0, video_duration - 1)
     print(f"randomly selected 1s video clip for vmaf score from {start_point}s.")
 
-    ref_trim_path = trim_video(ref_path, start_point)
-    ref_y4m_path = convert_mp4_to_y4m(ref_trim_path)
+    if ref_total_frames < 10:
+        raise ValueError("Video must contain at least 10 frames.")
+    
+    random_frames = sorted(random.sample(range(ref_total_frames), VMAF_SAMPLE_COUNT))
+
+    ref_y4m_path = convert_mp4_to_y4m(ref_path, random_frames)
     print("the reference video has been successfully trimmed and converted to y4m format.")
 
     url_cache = {}
@@ -404,7 +422,7 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
 
             # calculate vmaf
             try:
-                vmaf_score = calculate_vmaf(ref_y4m_path, dist_path, start_point)
+                vmaf_score = calculate_vmaf(ref_y4m_path, dist_path, random_frames)
                 if vmaf_score is not None:
                     vmaf_scores.append(vmaf_score)
                 else:
