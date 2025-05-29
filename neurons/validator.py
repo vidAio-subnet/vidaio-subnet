@@ -387,11 +387,23 @@ class Validator(base.BaseValidator):
                 f"Not setting weights because current block {self.current_block} is not greater than last update {self.last_update} + tempo {CONFIG.SUBNET_TEMPO}"
             )
 
+class WeightSynthesizer():
+    pass
 
 if __name__ == "__main__":
     validator = Validator()
-    time.sleep(200) # wait till the video scheduler is ready
-    asyncio.run(validator.run())
+    weight_synthesizer = WeightSynthesizer()
+    time.sleep(200) # wait till the video scheduler is ready\
+
+    async def main():
+        # Create separate tasks
+        validator_task = asyncio.create_task(validator.run())
+        scheduler_task = asyncio.create_task(weight_synthesizer.run())
+
+        # Wait for both tasks to complete (runs indefinitely in this case)
+        await asyncio.gather(validator_task, scheduler_task)
+
+    asyncio.run(main())
 
 
 
