@@ -338,14 +338,12 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
             break
         ref_frames.append(frame)
 
-    video_duration = VideoFileClip(ref_path).duration
-    start_point = random.uniform(0, video_duration - 1)
-    print(f"randomly selected 1s video clip for vmaf score from {start_point}s.")
 
     if ref_total_frames < 10:
         raise ValueError("Video must contain at least 10 frames.")
     
     random_frames = sorted(random.sample(range(ref_total_frames), VMAF_SAMPLE_COUNT))
+    print(f"randomly selected {VMAF_SAMPLE_COUNT}frames for vmaf score: frame list: {random_frames}")
 
     ref_y4m_path = convert_mp4_to_y4m(ref_path, random_frames)
     print("the reference video has been successfully trimmed and converted to y4m format.")

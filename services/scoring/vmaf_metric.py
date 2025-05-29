@@ -122,13 +122,11 @@ def calculate_vmaf(ref_y4m_path, dist_mp4_path, random_frames):
         print("Converting distorted MP4 to Y4M...")
         dist_y4m_path = convert_mp4_to_y4m(dist_mp4_path, random_frames)
         
-        # Step 2: Calculate VMAF
         print("Calculating VMAF score...")
         vmaf_harmonic_mean = vmaf_metric(ref_y4m_path, dist_y4m_path)
         print(f"VMAF harmonic_mean Value as Float: {vmaf_harmonic_mean}")
         
         os.remove(dist_y4m_path)
-        os.remove(dist_trim_path)
         print("Intermediate Y4M files deleted.")
 
         return vmaf_harmonic_mean
