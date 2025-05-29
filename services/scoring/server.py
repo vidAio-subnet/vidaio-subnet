@@ -505,8 +505,6 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
 
     # cleanup
     ref_cap.release()
-    if os.path.exists(ref_trim_path):
-        os.unlink(ref_trim_path)
     if os.path.exists(ref_y4m_path):
         os.unlink(ref_y4m_path)
 
@@ -639,17 +637,18 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
                     break
                 ref_frames.append(frame)
 
-            video_duration = VideoFileClip(ref_path).duration
-            start_point = random.uniform(0, video_duration - 1)
-            print(f"randomly selected 1s video clip for vmaf score from {start_point}s.")
+            if ref_total_frames < 10:
+                raise ValueError("Video must contain at least 10 frames.")
+            
+            random_frames = sorted(random.sample(range(ref_total_frames), VMAF_SAMPLE_COUNT))
+            print(f"randomly selected {VMAF_SAMPLE_COUNT}frames for vmaf score: frame list: {random_frames}")
 
-            ref_trim_path = trim_video(ref_path, start_point)
-            ref_y4m_path = convert_mp4_to_y4m(ref_trim_path)
+            ref_y4m_path = convert_mp4_to_y4m(ref_path, random_frames)
             print("the reference video has been successfully trimmed and converted to y4m format.")
 
             # calculate vmaf
             try:
-                vmaf_score = calculate_vmaf(ref_y4m_path, dist_path, start_point)
+                vmaf_score = calculate_vmaf(ref_y4m_path, dist_path, random_frames)
                 if vmaf_score is not None:
                     vmaf_scores.append(vmaf_score)
                 else:
