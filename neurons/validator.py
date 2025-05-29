@@ -387,12 +387,24 @@ class Validator(base.BaseValidator):
                 f"Not setting weights because current block {self.current_block} is not greater than last update {self.last_update} + tempo {CONFIG.SUBNET_TEMPO}"
             )
 
-class WeightSynthesizer():
-    pass
+
+class WeightSynthesizer:
+    def __init__(self, validator: Validator):
+        self.weight_manager = validator.set_weights()
+
+    async def run(self):
+        while True:
+            try:
+                logger.info("Running weight_manager...")
+                self.weight_manager()  
+            except Exception as e:
+                logger.error(f"Error in WeightSynthesizer: {e}", exc_info=True)
+            await asyncio.sleep(1200)  
+
 
 if __name__ == "__main__":
     validator = Validator()
-    weight_synthesizer = WeightSynthesizer()
+    weight_synthesizer = WeightSynthesizer(validator)
     time.sleep(200) # wait till the video scheduler is ready\
 
     async def main():
@@ -403,7 +415,11 @@ if __name__ == "__main__":
         # Wait for both tasks to complete (runs indefinitely in this case)
         await asyncio.gather(validator_task, scheduler_task)
 
-    asyncio.run(main())
-
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Program terminated by user.")
+    except Exception as e:
+        logger.error(f"Unhandled exception: {e}", exc_info=True)
 
 
