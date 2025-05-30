@@ -36,12 +36,14 @@ def trim_video(video_path, start_time, trim_duration=1):
     # Return the path to the trimmed video
     return output_path
 
-def convert_mp4_to_y4m(input_path, random_frames):
+def convert_mp4_to_y4m(input_path, random_frames, upscale_factor=1):
     """
-    Converts an MP4 video file to Y4M format using FFmpeg.
+    Converts an MP4 video file to Y4M format using FFmpeg and upscales selected frames.
     
     Args:
         input_path (str): Path to the input MP4 file.
+        random_frames (list): List of frame indices to select.
+        upscale_factor (int): Factor by which to upscale the frames (2 or 4).
     
     Returns:
         str: Path to the converted Y4M file.
@@ -53,25 +55,40 @@ def convert_mp4_to_y4m(input_path, random_frames):
     output_path = os.path.splitext(input_path)[0] + ".y4m"
 
     try:
-        # Corrected select expression
         select_expr = "+".join([f"eq(n\\,{f})" for f in random_frames])
+        
+        if upscale_factor >= 2:
 
-        # Extract all frames at once into a single Y4M file for both videos
-        subprocess.run([
-            "ffmpeg",
-            "-i", input_path,
-            "-vf", f"select='{select_expr}'",
-            "-pix_fmt", "yuv420p",
-            "-vsync", "vfr",
-            output_path,
-            "-y"
-        ], check=True)
+            scale_width = f"iw*{upscale_factor}"
+            scale_height = f"ih*{upscale_factor}"
+
+            subprocess.run([
+                "ffmpeg",
+                "-i", input_path,
+                "-vf", f"select='{select_expr}',scale={scale_width}:{scale_height}",
+                "-pix_fmt", "yuv420p",
+                "-vsync", "vfr",
+                output_path,
+                "-y"
+            ], check=True)
+
+        else:
+            subprocess.run([
+                "ffmpeg",
+                "-i", input_path,
+                "-vf", f"select='{select_expr}'",
+                "-pix_fmt", "yuv420p",
+                "-vsync", "vfr",
+                output_path,
+                "-y"
+            ], check=True)
 
         return output_path
 
     except Exception as e:
         print(f"Error in vmaf_metric_batch: {e}")
         raise
+
 
 def vmaf_metric(ref_path, dist_path, output_file="vmaf_output.xml"):
     """
@@ -133,3 +150,22 @@ def calculate_vmaf(ref_y4m_path, dist_mp4_path, random_frames):
         
     except Exception as e:
         print(f"Failed to calculate VMAF: {e}")
+
+
+
+ref_path = "……"
+dist_paths = ["……", "……"]
+ref_y4m_path = convert_mp4_to_y4m(ref_path)
+for dist_path in dist_paths:
+    try:
+        vmaf_score = calculate_vmaf(ref_y4m_path, dist_path, random_frames)
+        if vmaf_score is not None:
+            vmaf_scores.append(vmaf_score)
+        else:
+            vmaf_score = 0.0
+            vmaf_scores.append(vmaf_score)
+        print(f"🎾 vmaf_score is {vmaf_score}")
+    except Exception as e:
+        vmaf_scores.append(0.0)
+        pieapp_scores.append(0.0)
+        reasons.append("failed to calculate vmaf score due to video dimension mismatch")

@@ -26,7 +26,7 @@ app = FastAPI()
 fire_requests = FireRequests()
 
 VMAF_THRESHOLD = CONFIG.score.vmaf_threshold
-SAMPLE_FRAME_COUNT = CONFIG.score.pieapp_sample_count
+PIEAPP_SAMPLE_COUNT = CONFIG.score.pieapp_sample_count
 PIEAPP_THRESHOLD = CONFIG.score.pieapp_threshold
 VMAF_SAMPLE_COUNT = CONFIG.score.vmaf_sample_count
 
@@ -328,7 +328,7 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
     if ref_total_frames <= 0:
         raise HTTPException(status_code=500, detail="invalid reference video: no frames found")
 
-    sample_size = min(SAMPLE_FRAME_COUNT, ref_total_frames)
+    sample_size = min(PIEAPP_SAMPLE_COUNT, ref_total_frames)
     max_start_frame = ref_total_frames - sample_size
     start_frame = 0 if max_start_frame <= 0 else random.randint(0, max_start_frame)
 
@@ -537,7 +537,6 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
     pieapp_scores = []
     reasons = []
 
-    # step 1: download all distorted videos first
     distorted_video_paths = []
     for dist_url in request.distorted_urls:
         if len(dist_url) < 10:
@@ -550,7 +549,6 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
             print(f"failed to download distorted video: {dist_url}, error: {e}")
             distorted_video_paths.append(None)
 
-    # step 2: process each pair
     for idx, (ref_url, dist_path, uid, task_type) in enumerate(
         zip(request.reference_urls, distorted_video_paths, request.uids, request.task_types)
     ):
@@ -558,8 +556,7 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
         ref_path = None
         ref_cap = None
         dist_cap = None
-        ref_trim_path = None
-        ref_y4m_path = None
+        ref_upscaled_y4m_path = None
 
         scale_factor = 2
         if task_type == "SD24K":
@@ -575,8 +572,12 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
                 scores.append(-100)
                 continue
 
-            original_video_path = await download_video(ref_url, request.verbose)
-            ref_path = upscale_video(original_video_path, scale_factor)
+
+            random_frames = sorted(random.sample(range(ref_total_frames), VMAF_SAMPLE_COUNT))
+            print(f"randomly selected {VMAF_SAMPLE_COUNT}frames for vmaf score: frame list: {random_frames}")
+
+            ref_path = await download_video(ref_url, request.verbose)
+            # ref_path = upscale_video(original_video_path, scale_factor)
             ref_cap = cv2.VideoCapture(ref_path)
 
             if not ref_cap.isOpened():
@@ -634,7 +635,7 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
                 dist_cap.release()
                 continue
 
-            sample_size = min(SAMPLE_FRAME_COUNT, ref_total_frames)
+            sample_size = min(PIEAPP_SAMPLE_COUNT, ref_total_frames)
             max_start_frame = ref_total_frames - sample_size
             start_frame = 0 if max_start_frame <= 0 else random.randint(0, max_start_frame)
             print(f"selected frame range for video pair: {start_frame} to {start_frame + sample_size - 1}")
@@ -647,18 +648,26 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
                     break
                 ref_frames.append(frame)
 
+            for _ in range(sample_size):
+                ret, frame = ref_cap.read()
+                if not ret:
+                    break
+                # Upscale the frame by a factor of 2 using INTER_LINEAR
+                upscaled_frame = cv2.resize(frame, (0, 0), fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_LINEAR)
+                ref_frames.append(upscaled_frame)
+
             if ref_total_frames < 10:
                 raise ValueError("Video must contain at least 10 frames.")
             
             random_frames = sorted(random.sample(range(ref_total_frames), VMAF_SAMPLE_COUNT))
             print(f"randomly selected {VMAF_SAMPLE_COUNT}frames for vmaf score: frame list: {random_frames}")
 
-            ref_y4m_path = convert_mp4_to_y4m(ref_path, random_frames)
-            print("the reference video has been successfully trimmed and converted to y4m format.")
+            ref_upscaled_y4m_path = convert_mp4_to_y4m(ref_path, random_frames, scale_factor)
+            print("the reference video has been successfully upscaled and converted to y4m format.")
 
             # calculate vmaf
             try:
-                vmaf_score = calculate_vmaf(ref_y4m_path, dist_path, random_frames)
+                vmaf_score = calculate_vmaf(ref_upscaled_y4m_path, dist_path, random_frames)
                 if vmaf_score is not None:
                     vmaf_scores.append(vmaf_score)
                 else:
@@ -725,10 +734,8 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
                 os.unlink(ref_path)
             if dist_path and os.path.exists(dist_path):
                 os.unlink(dist_path)
-            if ref_trim_path and os.path.exists(ref_trim_path):
-                os.unlink(ref_trim_path)
-            if ref_y4m_path and os.path.exists(ref_y4m_path):
-                os.unlink(ref_y4m_path)
+            if ref_upscaled_y4m_path and os.path.exists(ref_upscaled_y4m_path):
+                os.unlink(ref_upscaled_y4m_path)
 
     processed_time = time.time() - start_time
     print(f"🔯🔯🔯 calculated score: {scores} 🔯🔯🔯")
