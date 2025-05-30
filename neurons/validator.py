@@ -297,7 +297,7 @@ class Validator(base.BaseValidator):
 
         timestamp = datetime.now(timezone.utc).isoformat()
 
-        logger.info("Performing forward operations asynchronously")
+        logger.info("💡 Performing forward operations asynchronously 💡")
         forward_tasks = [
             self.dendrite.forward(axons=[axon], synapse=synapse, timeout=200)
             for axon, synapse in zip(axon_list, synapses)
@@ -330,7 +330,7 @@ class Validator(base.BaseValidator):
             async with httpx.AsyncClient() as client:
                 response = await client.post(status_update_endpoint, json=status_update_payload)
                 response.raise_for_status()
-                logger.info(f"Successfully updated status to '{status}' for task {task_id}")
+                # logger.info(f"Successfully updated status to '{status}' for task {task_id}")
         except httpx.HTTPStatusError as e:
             logger.error(f"Error updating status for task {task_id}: {e.response.status_code} - {e.response.text}")
         except httpx.RequestError as e:
