@@ -117,7 +117,6 @@ class Validator(base.BaseValidator):
         logger.info(f"Completed one epoch within {epoch_processed_time:.2f} seconds")
 
     async def start_organic_loop(self):
-
         try:
             is_true = await self.should_process_organic()
             await asyncio.sleep(5)
@@ -186,8 +185,6 @@ class Validator(base.BaseValidator):
         # success = send_data_to_dashboard(miner_data)
 
     async def score_organics(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: list[str], task_types: list[str], timestamp: str):
-        logger.info(f"starting organic scoring for {len(uids)} miners")
-        logger.info(f"uids: {uids}")
 
         distorted_urls = [response.miner_response.optimized_video_url for response in responses]
 
@@ -219,6 +216,8 @@ class Validator(base.BaseValidator):
         pieapp_scores.extend([0.0] * (max_length - len(pieapp_scores)))
         reasons.extend(["no reason provided"] * (max_length - len(reasons)))
 
+        logger.info(f"organic scoring for {len(uids)} miners")
+        logger.info(f"uids: {uids}")
         for uid, vmaf_score, pieapp_score, score, reason in zip(uids, vmaf_scores, pieapp_scores, scores, reasons):
             logger.info(f"{uid} ** {vmaf_score:.2f} ** {pieapp_score:.2f} ** {score:.4f} || {reason}")
 
@@ -313,7 +312,8 @@ class Validator(base.BaseValidator):
             await self.update_task_status(task_id, original_url, "completed")
             await self.push_result(task_id, original_url, processed_url)
 
-        await self.score_organics(forward_uids.tolist(), responses, original_urls, task_types, timestamp)
+        # await self.score_organics(forward_uids.tolist(), responses, original_urls, task_types, timestamp)
+        asyncio.create_task(self.score_organics(forward_uids.tolist(), responses, original_urls, task_types, timestamp))
 
         end_time = time.time()
         total_time = end_time - organic_start_time
@@ -423,10 +423,10 @@ if __name__ == "__main__":
         # Create separate tasks
         validator_synthetic_task = asyncio.create_task(validator.run_synthetic())
         validator_organic_task = asyncio.create_task(validator.run_organic())
-        scheduler_task = asyncio.create_task(weight_synthesizer.run())
+        weight_setter = asyncio.create_task(weight_synthesizer.run())
 
         # Wait for both tasks to complete (runs indefinitely in this case)
-        await asyncio.gather(validator_task, scheduler_task)
+        await asyncio.gather(validator_synthetic_task, validator_organic_task, weight_setter)
 
     try:
         asyncio.run(main())
