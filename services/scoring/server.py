@@ -153,7 +153,7 @@ def get_sample_frames(ref_cap, dist_cap, total_frames):
         tuple: (ref_frames, dist_frames) - Lists of sampled frames
     """
     # Determine how many frames to sample
-    frames_to_sample = min(SAMPLE_FRAME_COUNT, total_frames)
+    frames_to_sample = min(PIEAPP_SAMPLE_COUNT, total_frames)
     
     # Generate a random starting point that ensures we can get consecutive frames
     # without exceeding the total number of frames

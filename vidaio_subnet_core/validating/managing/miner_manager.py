@@ -49,7 +49,6 @@ class MinerManager:
         logger.debug(
             f"Serving counters initialized with rate limit: {rate_limit}"
         )
-    
 
     def query(self, uids: list[int] = []) -> dict[int, MinerMetadata]:
         # logger.debug(f"Querying metadata for UIDs: {uids if uids else 'all'}")
@@ -60,19 +59,28 @@ class MinerManager:
         # logger.debug(f"Found {len(result)} miner metadata records")
         return result
 
-    def step_synthetics(self, scores: list[float], total_uids: list[int]):
+    def step_synthetics(self, scores: list[float], total_uids: list[int], hotkeys: list[str]):
         logger.info(f"Updating scores for {len(total_uids)} miners")
 
         acc_scores = []
-        for uid, score in zip(total_uids, scores):
+        for uid, score, hotkey in zip(total_uids, scores, hotkeys):
             # logger.debug(f"Processing UID {uid} with score {score}")
             miner = self.query([uid]).get(uid, None)
+
             # logger.info(f"Miner: {miner}")
             if miner is None:
                 logger.info(f"Creating new metadata record for UID {uid}")
-                miner = MinerMetadata(uid=uid)
+                miner = MinerMetadata(uid=uid, hotkey=hotkey)
                 self.session.add(miner)
             # EMA with decay factor
+            
+            if miner.hotkey is None:
+                miner.hotkey = hotkey
+
+            if miner.hotkey is not None and miner.hotkey != hotkey:
+                miner.accumulate_score = 0
+                miner.hotkey = hotkey
+
             miner.accumulate_score = (
                 miner.accumulate_score * CONFIG.score.decay_factor
                 + score * (1 - CONFIG.score.decay_factor)
@@ -86,6 +94,35 @@ class MinerManager:
         logger.success(f"Updated metadata for {len(total_uids)} uids")
 
         return acc_scores
+
+    def step_synthetics(self, scores: list[float], total_uids: list[int], hotkeys: list[str]):
+        logger.info(f"Updating scores for {len(total_uids)} miners")
+
+        updated_scores = []
+        for uid, score, hotkey in zip(total_uids, scores, hotkeys):
+            miner = self.query([uid]).get(uid)
+
+            if miner is None:
+                logger.info(f"Creating new metadata record for UID {uid}")
+                miner = MinerMetadata(uid=uid, hotkey=hotkey)
+                self.session.add(miner)
+            else:
+                if miner.hotkey is None:
+                    miner.hotkey = hotkey
+                elif miner.hotkey != hotkey:
+                    miner.accumulate_score = 0  
+                    miner.hotkey = hotkey
+
+            miner.accumulate_score = (
+                miner.accumulate_score * CONFIG.score.decay_factor
+                + score * (1 - CONFIG.score.decay_factor)
+            )
+            miner.accumulate_score = max(0, miner.accumulate_score)  
+            updated_scores.append(miner.accumulate_score)
+
+        self.session.commit()
+        logger.success(f"Updated metadata for {len(total_uids)} miners")
+        return updated_scores
 
     def step_organics(self, scores: list[float], total_uids: list[int]):
         logger.info(f"Updating scores for {len(total_uids)} miners")

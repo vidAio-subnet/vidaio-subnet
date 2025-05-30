@@ -68,6 +68,7 @@ class Validator(base.BaseValidator):
         logger.info(f"Randomized UIDs: {random_uids}")
 
         axons = [self.metagraph.axons[uid] for uid in random_uids]
+
         miners = list(zip(axons, random_uids))
 
         batch_size = CONFIG.bandwidth.requests_per_synthetic_interval
@@ -162,8 +163,8 @@ class Validator(base.BaseValidator):
         
         logger.info(f"Updating miner manager with {len(scores)} miner scores")
         
-        accumulate_scores = self.miner_manager.step_synthetics(scores, uids)
         miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
+        accumulate_scores = self.miner_manager.step_synthetics(scores, uids, miner_hotkeys)
         payload_urls = [payload_url] * len(uids)
 
         miner_data = {
