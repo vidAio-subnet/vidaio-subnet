@@ -17,6 +17,8 @@ from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video
 from lpips_metric import calculate_lpips
 from pieapp_metric import calculate_pieapp_score
 from vidaio_subnet_core import CONFIG
+from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
+from vidaio_subnet_core.utilities.storage_client import storage_client
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -35,6 +37,8 @@ class SyntheticsScoringRequest(BaseModel):
     distorted_urls: List[str]
     reference_path: str
     uids: List[int]
+    video_id: str
+    uploaded_object_name: str
     fps: Optional[float] = None
     subsample: Optional[int] = 1
     verbose: Optional[bool] = False
@@ -509,6 +513,12 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
         os.unlink(ref_y4m_path)
 
     print(f"🔯🔯🔯 calculated score: {scores} 🔯🔯🔯")
+
+    video_id = request.video_id
+    uploaded_object_name = request.uploaded_object_name
+    storage_client.delete_file(uploaded_object_name)
+    delete_videos_with_fileid(video_id)
+
     processed_time = time.time() - start_time
     print(f"completed one batch scoring within {processed_time:.2f} seconds")
     return ScoringResponse(

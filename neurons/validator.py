@@ -9,7 +9,6 @@ from loguru import logger
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from vidaio_subnet_core import validating, CONFIG, base, protocol
-from vidaio_subnet_core.utilities.storage_client import storage_client
 from vidaio_subnet_core.utilities.wandb_manager import WandbManager
 from vidaio_subnet_core.utilities.uids import get_organic_forward_uids
 from vidaio_subnet_core.utilities.version import get_version
@@ -52,8 +51,8 @@ class Validator(base.BaseValidator):
 
         self.push_result_endpoint = f"http://{CONFIG.video_scheduler.host}:{CONFIG.video_scheduler.port}/api/push_result"
 
-    async def start_epoch(self):
-        logger.info("✅✅✅✅✅ Starting forward ✅✅✅✅✅")
+    async def start_synthetic_epoch(self):
+        logger.info("✅✅✅✅✅ Starting synthetic forward ✅✅✅✅✅")
         epoch_start_time = time.time()
 
         miner_uids = self.filter_miners()
@@ -105,12 +104,11 @@ class Validator(base.BaseValidator):
 
             reference_video_path = get_trim_video_path(video_id)
             
-            asyncio.create_task(self.score_synthetics(uids, responses, payload_url, reference_video_path, timestamp))
+            asyncio.create_task(self.score_synthetics(uids, responses, payload_url, reference_video_path, timestamp, video_id, uploaded_object_name,))
 
             # await self.score_synthetics(uids, responses, payload_url, reference_video_path, timestamp)
 
-            storage_client.delete_file(uploaded_object_name)
-            delete_videos_with_fileid(video_id)
+
             batch_processed_time = time.time() - batch_start_time
             logger.info(f"Completed one batch within {batch_processed_time:.2f} seconds. Waiting 5 seconds before next batch")
             await asyncio.sleep(5)
@@ -118,7 +116,15 @@ class Validator(base.BaseValidator):
         epoch_processed_time = time.time() - epoch_start_time
         logger.info(f"Completed one epoch within {epoch_processed_time:.2f} seconds")
 
-    async def score_synthetics(self, uids: list[int], responses: list[protocol.Synapse], payload_url: str, reference_video_path: str, timestamp: str):
+    async def start_organic_loop(self):
+
+        try:
+            is_true = await self.should_process_organic()
+            await asyncio.sleep(5)
+        except Exception as e:
+            logger.error(f"Error during process organic requests: {e}")
+
+    async def score_synthetics(self, uids: list[int], responses: list[protocol.Synapse], payload_url: str, reference_video_path: str, timestamp: str, video_id: str, uploaded_object_name: str):
 
         distorted_urls = []
         for uid, response in zip(uids, responses):
@@ -129,7 +135,9 @@ class Validator(base.BaseValidator):
             json = {
                 "uids": uids,
                 "distorted_urls": distorted_urls,
-                "reference_path": reference_video_path
+                "reference_path": reference_video_path,
+                "video_id": video_id,
+                "uploaded_object_name": uploaded_object_name
             },
             timeout=1500
         )
@@ -249,14 +257,14 @@ class Validator(base.BaseValidator):
 
         num_organic_chunks = get_organic_queue_size(self.redis_conn)
 
-        logger.info(f"🥒 Checking if an organic query exists 🥒")
+        # logger.info(f"🥒 Checking if an organic query exists 🥒")
 
         if num_organic_chunks > 0:
-            logger.info(f"The organic_queue_size: {num_organic_chunks}, processing organic requests.")
+            logger.info(f"🔷🔷🔷🔷 The organic_queue_size: {num_organic_chunks}, processing organic requests. 🔷🔷🔷🔷")
             await self.process_organic_chunks(num_organic_chunks)
             return True
         else:
-            logger.info("The organic queue is currently empty, so it will be skipped")
+            # logger.info("The organic queue is currently empty, so it will be skipped")
             return False
 
     async def process_organic_chunks(self, num_organic_chunks):
@@ -409,11 +417,12 @@ class WeightSynthesizer:
 if __name__ == "__main__":
     validator = Validator()
     weight_synthesizer = WeightSynthesizer(validator)
-    time.sleep(200) # wait till the video scheduler is ready\
+    time.sleep(200) # wait till the video scheduler is ready
 
     async def main():
         # Create separate tasks
-        validator_task = asyncio.create_task(validator.run())
+        validator_synthetic_task = asyncio.create_task(validator.run_synthetic())
+        validator_organic_task = asyncio.create_task(validator.run_organic())
         scheduler_task = asyncio.create_task(weight_synthesizer.run())
 
         # Wait for both tasks to complete (runs indefinitely in this case)
