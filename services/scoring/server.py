@@ -350,7 +350,7 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
     print(f"randomly selected {VMAF_SAMPLE_COUNT}frames for vmaf score: frame list: {random_frames}")
 
     ref_y4m_path = convert_mp4_to_y4m(ref_path, random_frames)
-    print("the reference video has been successfully trimmed and converted to y4m format.")
+    print("the reference video has been successfully converted to y4m format.")
 
     url_cache = {}
 
@@ -562,6 +562,11 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
         if task_type == "SD24K":
             scale_factor = 4
 
+        print(f"scale factor: {scale_factor}")
+
+        ref_cap = cv2.VideoCapture(ref_path)
+        ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
         try:
             # download reference video
             if len(ref_url) < 10:
@@ -642,11 +647,6 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
 
             ref_frames = []
             ref_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-            for _ in range(sample_size):
-                ret, frame = ref_cap.read()
-                if not ret:
-                    break
-                ref_frames.append(frame)
 
             for _ in range(sample_size):
                 ret, frame = ref_cap.read()

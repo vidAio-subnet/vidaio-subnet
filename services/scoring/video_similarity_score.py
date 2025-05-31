@@ -442,9 +442,9 @@ if __name__ == "__main__":
     # Define the paths for the reference and distorted videos
     reference_path = ""
     distorted_paths = [
-        ""
+        "",
     ]
-    uids = [1]
+    uids = [1, ]
 
     async def main():
         request = SyntheticsScoringRequest(
