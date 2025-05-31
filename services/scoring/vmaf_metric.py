@@ -70,7 +70,7 @@ def convert_mp4_to_y4m(input_path, random_frames, upscale_factor=1):
                 "-vsync", "vfr",
                 output_path,
                 "-y"
-            ], check=True)
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
         else:
             subprocess.run([
@@ -81,7 +81,7 @@ def convert_mp4_to_y4m(input_path, random_frames, upscale_factor=1):
                 "-vsync", "vfr",
                 output_path,
                 "-y"
-            ], check=True)
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
         return output_path
 
@@ -150,22 +150,3 @@ def calculate_vmaf(ref_y4m_path, dist_mp4_path, random_frames):
         
     except Exception as e:
         print(f"Failed to calculate VMAF: {e}")
-
-
-
-ref_path = "……"
-dist_paths = ["……", "……"]
-ref_y4m_path = convert_mp4_to_y4m(ref_path)
-for dist_path in dist_paths:
-    try:
-        vmaf_score = calculate_vmaf(ref_y4m_path, dist_path, random_frames)
-        if vmaf_score is not None:
-            vmaf_scores.append(vmaf_score)
-        else:
-            vmaf_score = 0.0
-            vmaf_scores.append(vmaf_score)
-        print(f"🎾 vmaf_score is {vmaf_score}")
-    except Exception as e:
-        vmaf_scores.append(0.0)
-        pieapp_scores.append(0.0)
-        reasons.append("failed to calculate vmaf score due to video dimension mismatch")
