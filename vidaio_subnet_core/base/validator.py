@@ -112,7 +112,6 @@ class BaseValidator(ABC):
                 logger.error(f"Resync metagraph error: {e}")
                 traceback.print_exc()
 
-                # If someone intentionally stops the validator, it'll safely terminate operations.
             except KeyboardInterrupt:
                 self.axon.stop()
                 logger.success("Validator killed by keyboard interrupt.")
@@ -133,7 +132,6 @@ class BaseValidator(ABC):
                 logger.error(f"Resync metagraph error: {e}")
                 traceback.print_exc()
 
-                # If someone intentionally stops the validator, it'll safely terminate operations.
             except KeyboardInterrupt:
                 self.axon.stop()
                 logger.success("Validator killed by keyboard interrupt.")

@@ -421,12 +421,10 @@ if __name__ == "__main__":
     time.sleep(200) # wait till the video scheduler is ready
 
     async def main():
-        # Create separate tasks
         validator_synthetic_task = asyncio.create_task(validator.run_synthetic())
         validator_organic_task = asyncio.create_task(validator.run_organic())
         weight_setter = asyncio.create_task(weight_synthesizer.run())
 
-        # Wait for both tasks to complete (runs indefinitely in this case)
         await asyncio.gather(validator_synthetic_task, validator_organic_task, weight_setter)
 
     try:
