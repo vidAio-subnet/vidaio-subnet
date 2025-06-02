@@ -58,8 +58,6 @@ class Validator(base.BaseValidator):
         miner_uids = self.filter_miners()
         logger.debug(f"Initialized {len(miner_uids)} subnet neurons of total {len(self.metagraph.S)} neurons")
 
-        is_true = await self.should_process_organic()
-
         uids = self.miner_manager.consume(miner_uids)
         logger.info(f"Filtered UIDs after consumption: {uids}")
 
@@ -79,10 +77,6 @@ class Validator(base.BaseValidator):
         logger.info(f"Created {len(miner_batches)} batches of size {batch_size}")
 
         for batch_idx, batch in enumerate(miner_batches):
-
-            is_true = True
-            while is_true == True:
-                is_true = await self.should_process_organic()
 
             batch_start_time = time.time()
             logger.info(f"🧩 Processing batch {batch_idx + 1}/{len(miner_batches)} 🧩")

@@ -564,9 +564,6 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
 
         print(f"scale factor: {scale_factor}")
 
-        ref_cap = cv2.VideoCapture(ref_path)
-        ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        
         try:
             # download reference video
             if len(ref_url) < 10:
@@ -578,22 +575,10 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
                 continue
 
 
-            random_frames = sorted(random.sample(range(ref_total_frames), VMAF_SAMPLE_COUNT))
-            print(f"randomly selected {VMAF_SAMPLE_COUNT}frames for vmaf score: frame list: {random_frames}")
 
             ref_path = await download_video(ref_url, request.verbose)
             ref_cap = cv2.VideoCapture(ref_path)
-
-            if not ref_cap.isOpened():
-                print(f"error opening reference video file from {ref_url}. skipping...")
-                vmaf_scores.append(-1)
-                pieapp_scores.append(-1)
-                reasons.append("error opening reference video file")
-                scores.append(-100)
-                continue
-
             ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            print(f"reference video has {ref_total_frames} frames.")
 
             if ref_total_frames <= 0:
                 print(f"invalid reference video from {ref_url}: no frames found. skipping...")
@@ -602,6 +587,17 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
                 reasons.append("invalid reference video: no frames found")
                 scores.append(-100)
                 ref_cap.release()
+                continue
+
+            random_frames = sorted(random.sample(range(ref_total_frames), VMAF_SAMPLE_COUNT))
+            print(f"randomly selected {VMAF_SAMPLE_COUNT}frames for vmaf score: frame list: {random_frames}")
+
+            if not ref_cap.isOpened():
+                print(f"error opening reference video file from {ref_url}. skipping...")
+                vmaf_scores.append(-1)
+                pieapp_scores.append(-1)
+                reasons.append("error opening reference video file")
+                scores.append(-100)
                 continue
 
             # check if distorted video failed to download
