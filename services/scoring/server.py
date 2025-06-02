@@ -582,7 +582,6 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
             print(f"randomly selected {VMAF_SAMPLE_COUNT}frames for vmaf score: frame list: {random_frames}")
 
             ref_path = await download_video(ref_url, request.verbose)
-            # ref_path = upscale_video(original_video_path, scale_factor)
             ref_cap = cv2.VideoCapture(ref_path)
 
             if not ref_cap.isOpened():

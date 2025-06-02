@@ -90,7 +90,11 @@ class BaseValidator(ABC):
         self.axon.start()
 
     @abstractmethod
-    async def start_epoch(self):
+    async def start_synthetic_epoch(self):
+        pass
+
+    @abstractmethod
+    async def start_organic_loop(self):
         pass
 
     async def run_synthetic(self):
