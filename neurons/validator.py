@@ -101,9 +101,6 @@ class Validator(base.BaseValidator):
             
             asyncio.create_task(self.score_synthetics(uids, responses, payload_url, reference_video_path, timestamp, video_id, uploaded_object_name,))
 
-            # await self.score_synthetics(uids, responses, payload_url, reference_video_path, timestamp)
-
-
             batch_processed_time = time.time() - batch_start_time
             logger.info(f"Completed one batch within {batch_processed_time:.2f} seconds. Waiting 5 seconds before next batch")
             await asyncio.sleep(5)
@@ -150,12 +147,12 @@ class Validator(base.BaseValidator):
         reasons.extend(["No reason provided"] * (max_length - len(reasons)))
 
 
-        logger.info(f"Starting synthetic scoring for {len(uids)} miners")
+        logger.info(f"Synthetic scoring results for {len(uids)} miners")
         logger.info(f"Uids: {uids}")
         for uid, vmaf_score, pieapp_score, score, reason in zip(uids, vmaf_scores, pieapp_scores, scores, reasons):
             logger.info(f"{uid} ** {vmaf_score:.2f} ** {pieapp_score:.2f} ** {score:.4f} || {reason}")
         
-        logger.info(f"Updating miner manager with {len(scores)} miner scores")
+        logger.info(f"Updating miner manager with {len(scores)} miner scores after synthetic requests processing")
         
         miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
         accumulate_scores = self.miner_manager.step_synthetics(scores, uids, miner_hotkeys)
@@ -211,12 +208,12 @@ class Validator(base.BaseValidator):
         pieapp_scores.extend([0.0] * (max_length - len(pieapp_scores)))
         reasons.extend(["no reason provided"] * (max_length - len(reasons)))
 
-        logger.info(f"organic scoring for {len(uids)} miners")
+        logger.info(f"organic scoring results for {len(uids)} miners")
         logger.info(f"uids: {uids}")
         for uid, vmaf_score, pieapp_score, score, reason in zip(uids, vmaf_scores, pieapp_scores, scores, reasons):
             logger.info(f"{uid} ** {vmaf_score:.2f} ** {pieapp_score:.2f} ** {score:.4f} || {reason}")
 
-        logger.info(f"updating miner manager with {len(scores)} miner scores")
+        logger.info(f"updating miner manager with {len(scores)} miner scores after organic requests processing…")
         accumulate_scores = self.miner_manager.step_organics(scores, uids)
 
         miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
@@ -251,8 +248,6 @@ class Validator(base.BaseValidator):
 
         num_organic_chunks = get_organic_queue_size(self.redis_conn)
 
-        # logger.info(f"🥒 Checking if an organic query exists 🥒")
-
         if num_organic_chunks > 0:
             logger.info(f"🔷🔷🔷🔷 The organic_queue_size: {num_organic_chunks}, processing organic requests. 🔷🔷🔷🔷")
             await self.process_organic_chunks(num_organic_chunks)
@@ -271,17 +266,16 @@ class Validator(base.BaseValidator):
         forward_uids = get_organic_forward_uids(self, needed, CONFIG.bandwidth.min_stake)
 
         if len(forward_uids) < needed:
-            logger.info(f"There are just {len(forward_uids)} miners available, handling {len(forward_uids)} chunks")
+            logger.info(f"There are just {len(forward_uids)} miners available for organic, handling {len(forward_uids)} chunks")
             needed = len(forward_uids)
 
         axon_list = [self.metagraph.axons[uid] for uid in forward_uids]
 
-        logger.info("Building the organic protocol")
         task_ids, original_urls, task_types, synapses = await self.challenge_synthesizer.build_organic_protocol(needed)
 
         if len(task_ids) != needed or len(synapses) != needed:
             logger.error(
-                f"Mismatch in organic synapses: {len(task_ids)} != {needed} or {len(synapses)} != {needed}"
+                f"Mismatch in organic synapses after building organic protocol: {len(task_ids)} != {needed} or {len(synapses)} != {needed}"
             )
             return  # Exit early if there's a mismatch
 
@@ -307,7 +301,6 @@ class Validator(base.BaseValidator):
             await self.update_task_status(task_id, original_url, "completed")
             await self.push_result(task_id, original_url, processed_url)
 
-        # await self.score_organics(forward_uids.tolist(), responses, original_urls, task_types, timestamp)
         asyncio.create_task(self.score_organics(forward_uids.tolist(), responses, original_urls, task_types, timestamp))
 
         end_time = time.time()
@@ -325,7 +318,6 @@ class Validator(base.BaseValidator):
             async with httpx.AsyncClient() as client:
                 response = await client.post(status_update_endpoint, json=status_update_payload)
                 response.raise_for_status()
-                # logger.info(f"Successfully updated status to '{status}' for task {task_id}")
         except httpx.HTTPStatusError as e:
             logger.error(f"Error updating status for task {task_id}: {e.response.status_code} - {e.response.text}")
         except httpx.RequestError as e:
@@ -354,7 +346,6 @@ class Validator(base.BaseValidator):
             processed_weight_uids,
             processed_weights,
         ) = bt.utils.weight_utils.process_weights_for_netuid(
-            # uids=self.metagraph.uids,
             uids = uids,
             weights=weights,
             netuid=self.config.netuid,
@@ -371,7 +362,7 @@ class Validator(base.BaseValidator):
             weight_info = list(zip(uint_uids, uint_weights))
             weight_info_df = pd.DataFrame(weight_info, columns=["uid", "weight"])
             logger.info(f"Weight info:\n{weight_info_df.to_markdown()}")
-            logger.info("Actually trying to set weights.")
+            logger.info("Trying to set weights.")
             try:
                 future = self.set_weights_executor.submit(
                     self.subtensor.set_weights,
@@ -397,13 +388,13 @@ class Validator(base.BaseValidator):
 
 class WeightSynthesizer:
     def __init__(self, validator: Validator):
-        self.weight_manager = validator.set_weights()
+        self.validator = validator
 
     async def run(self):
         while True:
             try:
                 logger.info("Running weight_manager...")
-                self.weight_manager()  
+                self.validator.set_weights()  
             except Exception as e:
                 logger.error(f"Error in WeightSynthesizer: {e}", exc_info=True)
             await asyncio.sleep(1200)  
