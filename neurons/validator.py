@@ -5,6 +5,7 @@ import traceback
 import pandas as pd
 import time
 import random
+import uuid
 from loguru import logger
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
@@ -16,7 +17,6 @@ from vidaio_subnet_core.protocol import LengthCheckProtocol
 from services.dashboard.server import send_data_to_dashboard
 from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
 from services.video_scheduler.redis_utils import get_redis_connection, get_organic_queue_size
-
 
 class Validator(base.BaseValidator):
     def __init__(self):
@@ -106,21 +106,30 @@ class Validator(base.BaseValidator):
                 uids.append(miner[1])
                 axons.append(miner[0])
             
-            payload_url, video_ids, uploaded_object_names, synapse = await self.challenge_synthesizer.build_synthetic_protocol(len(uids), content_lengths)
-            synapse.version = get_version()
+            version = get_version()
+            payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_synthetic_protocol(len(uids), content_lengths, version)
+            # Need to add version into the synapse
             logger.debug(f"Built challenge protocol")
 
             timestamp = datetime.now(timezone.utc).isoformat()
 
             logger.debug(f"Processing UIDs in batch: {uids}")
-            responses = await self.dendrite.forward(
-                axons=axons, synapse=synapse, timeout=60
-            )
+            forward_tasks = [
+                self.dendrite.forward(axons=[axon], synapse=synapse, timeout=60)
+                for axon, synapse in zip(axons, synapses)
+            ]
+
+            raw_responses = await asyncio.gather(*forward_tasks)
+
+            responses = [response[0] for response in raw_responses]
             logger.info(f"🎲 Received {len(responses)} responses from miners 🎲")
 
-            reference_video_path = get_trim_video_path(video_ids)
+            reference_video_paths = []
+            for video_id in video_ids:
+                reference_video_path = get_trim_video_path(video_id)
+                reference_video_paths.append(reference_video_path)
             
-            asyncio.create_task(self.score_synthetics(uids, responses, payload_url, reference_video_path, timestamp, video_ids, uploaded_object_names,))
+            asyncio.create_task(self.score_synthetics(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, content_lengths))
 
             batch_processed_time = time.time() - batch_start_time
             logger.info(f"Completed one batch within {batch_processed_time:.2f} seconds. Waiting 5 seconds before next batch")
@@ -136,8 +145,7 @@ class Validator(base.BaseValidator):
         except Exception as e:
             logger.error(f"Error during process organic requests: {e}")
 
-    async def score_synthetics(self, uids: list[int], responses: list[protocol.Synapse], payload_url: str, reference_video_path: str, timestamp: str, video_id: str, uploaded_object_name: str):
-
+    async def score_synthetics(self, uids: list[int], responses: list[protocol.Synapse], payload_urls: list[str], reference_video_paths: list[str], timestamp: str, video_ids: list[str], uploaded_object_names: list[str], content_lengths: list[int]):
         distorted_urls = []
         for uid, response in zip(uids, responses):
             distorted_urls.append(response.miner_response.optimized_video_url)
@@ -147,22 +155,27 @@ class Validator(base.BaseValidator):
             json = {
                 "uids": uids,
                 "distorted_urls": distorted_urls,
-                "reference_path": reference_video_path,
-                "video_id": video_id,
-                "uploaded_object_name": uploaded_object_name
+                "reference_paths": reference_video_paths,
+                "video_ids": video_ids,
+                "uploaded_object_names": uploaded_object_names,
+                "content_lengths": content_lengths
             },
-            timeout=1500
+            timeout=360
         )
 
         response_data = score_response.json()
 
-        scores = response_data.get("scores", [])
+        quality_scores = response_data.get("quality_scores", [])
+        length_scores = response_data.get("length_scores", [])
+        final_scores = response_data.get("final_scores", [])
         vmaf_scores = response_data.get("vmaf_scores", [])
         pieapp_scores = response_data.get("pieapp_scores", [])
         reasons = response_data.get("reasons", [])
         
-        max_length = max(len(uids), len(scores), len(vmaf_scores), len(pieapp_scores), len(reasons))
-        scores.extend([0.0] * (max_length - len(scores)))
+        max_length = max(len(uids), len(quality_scores), len(length_scores), len(final_scores), len(vmaf_scores), len(pieapp_scores), len(reasons))
+        quality_scores.extend([0.0] * (max_length - len(quality_scores)))
+        length_scores.extend([0.0] * (max_length - len(length_scores)))
+        final_scores.extend([0.0] * (max_length - len(final_scores)))
         vmaf_scores.extend([0.0] * (max_length - len(vmaf_scores)))
         pieapp_scores.extend([0.0] * (max_length - len(pieapp_scores)))
         reasons.extend(["No reason provided"] * (max_length - len(reasons)))
@@ -170,14 +183,18 @@ class Validator(base.BaseValidator):
 
         logger.info(f"Synthetic scoring results for {len(uids)} miners")
         logger.info(f"Uids: {uids}")
-        for uid, vmaf_score, pieapp_score, score, reason in zip(uids, vmaf_scores, pieapp_scores, scores, reasons):
-            logger.info(f"{uid} ** {vmaf_score:.2f} ** {pieapp_score:.2f} ** {score:.4f} || {reason}")
+        for uid, vmaf_score, pieapp_score, quality_score, length_score, final_score, reason in zip(
+            uids, vmaf_scores, pieapp_scores, quality_scores, length_scores, final_scores, reasons
+        ):
+            logger.info(f"{uid} ** VMAF: {vmaf_score:.2f} ** PieAPP: {pieapp_score:.2f} ** Quality: {quality_score:.4f} ** Length: {length_score:.4f} ** Final: {final_score:.4f} || {reason}")
         
-        logger.info(f"Updating miner manager with {len(scores)} miner scores after synthetic requests processing")
+        logger.info(f"Updating miner manager with {len(quality_scores)} miner scores after synthetic requests processing")
         
         miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
-        accumulate_scores = self.miner_manager.step_synthetics(scores, uids, miner_hotkeys)
-        payload_urls = [payload_url] * len(uids)
+
+        round_id = uuid.uuid4()
+
+        accumulate_scores = self.miner_manager.step_synthetics(quality_scores, uids, miner_hotkeys, round_id, content_lengths, length_scores, final_scores, content_lengths)
 
         miner_data = {
             "validator_uid": self.my_subnet_uid,
@@ -187,7 +204,9 @@ class Validator(base.BaseValidator):
             "miner_hotkeys": miner_hotkeys,
             "vmaf_scores": vmaf_scores,
             "pieapp_scores": pieapp_scores,
-            "final_scores": scores,
+            "quality_scores": quality_scores,
+            "length_scores": length_scores,
+            "final_scores": final_scores,
             "accumulate_scores": accumulate_scores,
             "status": reasons,
             "task_urls": payload_urls,
@@ -195,7 +214,7 @@ class Validator(base.BaseValidator):
             "timestamp": timestamp
         }
         
-        success = send_data_to_dashboard(miner_data)
+        # success = send_data_to_dashboard(miner_data)
 
     async def score_organics(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: list[str], task_types: list[str], timestamp: str):
 
@@ -255,7 +274,7 @@ class Validator(base.BaseValidator):
             "timestamp": timestamp
         }
         
-        success = send_data_to_dashboard(miner_data)
+        # success = send_data_to_dashboard(miner_data)
 
 
     def filter_miners(self):
