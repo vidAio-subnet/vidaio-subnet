@@ -1,12 +1,25 @@
 from pydantic import BaseModel, Field
 from bittensor import Synapse
 from typing import Optional 
-
+from enum import Enum
 
 class Version(BaseModel):
     major: int
     minor: int
     patch: int
+
+class ContentLength(Enum):
+    """
+    Enumeration of allowed video content lengths in seconds.
+    These represent the maximum duration of video content that miners can process efficiently.
+    """
+    FIVE = 5    
+    TEN = 10    
+    TWENTY = 20 
+    FORTY = 40  
+    EIGHTY = 80    
+    ONE_SIXTY = 160  
+    THREE_TWENTY = 320 
 
 
 class MinerPayload(BaseModel):
@@ -99,3 +112,21 @@ class VideoUpscalingProtocol(Synapse):
             reference_video_url=self.miner_payload.reference_video_url,
             optimized_video_url=self.miner_response.optimized_video_url,
         )
+
+
+class LengthCheckProtocol(Synapse):
+    """
+    Protocol for verifying and enforcing maximum video content length constraints.
+    
+    This protocol ensures that video processing requests don't exceed the miner's
+    capacity to handle content within a reasonable timeframe. Miners can specify
+    their maximum supported content length from the predefined options.
+    
+    Attributes:
+        version (Optional[Version]): The version of the protocol implementation.
+        max_content_length (ContentLength): Maximum video duration in seconds that
+            miners can process, must be one of the predefined values (5, 10, 20, or 40).
+    """
+    
+    version: Optional[Version] = None
+    max_content_length: ContentLength
