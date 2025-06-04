@@ -1,8 +1,9 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from vidaio_subnet_core import CONFIG
-from typing import Optional, Literal
+from typing import Optional, Literal, List
 import urllib
+
 
 from redis_utils import (
     get_redis_connection,
@@ -29,6 +30,9 @@ class InsertResultRequest(BaseModel):
 
 class ResultRequest(BaseModel):
     original_video_url: str
+
+class SyntheticChunkRequest(BaseModel):
+    content_lengths: Optional[List[int]] = []
 
 @app.post("/api/insert_organic_chunk")
 def api_insert_organic_chunk(payload: InsertOrganicRequest):
@@ -65,14 +69,18 @@ def api_insert_organic_chunk(payload: InsertOrganicRequest):
 #     return {"chunk": chunk}
 
 
-@app.get("/api/get_synthetic_chunk")
-def api_get_synthetic_chunk():
-    print("got the get_synthetic_chunk request correctly")
+@app.post("/api/get_synthetic_chunks")
+def api_get_synthetic_chunk(request_data: SyntheticChunkRequest):
+    print("Got the get_synthetic_chunk request correctly")
+    print(f"Received content_lengths: {request_data.content_lengths}")
+    
     r = get_redis_connection()
-    chunk = pop_synthetic_chunk(r)
+    chunk = pop_synthetic_chunk(r, request_data.content_lengths)
+    
     if not chunk:
         return {"message": "No chunks available"}
-    return {"chunk": chunk}
+    
+    return {"chunks": chunk}
 
 
 @app.get("/api/get_organic_chunks")

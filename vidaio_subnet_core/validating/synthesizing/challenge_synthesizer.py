@@ -32,7 +32,7 @@ class Synthesizer:
         for attempt in range(self.max_retries):
             try:
                 response = await self.session.post(
-                    "/api/get_synthetic_chunk",
+                    "/api/get_synthetic_chunks",
                     json={"content_lengths": content_lengths}                               
                 )
                 response.raise_for_status()
