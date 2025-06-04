@@ -107,7 +107,7 @@ class Validator(base.BaseValidator):
                 axons.append(miner[0])
             
             version = get_version()
-            payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_synthetic_protocol(len(uids), content_lengths, version)
+            payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_synthetic_protocol(content_lengths, version)
             # Need to add version into the synapse
             logger.debug(f"Built challenge protocol")
 
