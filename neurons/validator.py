@@ -12,6 +12,7 @@ from vidaio_subnet_core import validating, CONFIG, base, protocol
 from vidaio_subnet_core.utilities.wandb_manager import WandbManager
 from vidaio_subnet_core.utilities.uids import get_organic_forward_uids
 from vidaio_subnet_core.utilities.version import get_version
+from vidaio_subnet_core.protocol import LengthCheckProtocol
 from services.dashboard.server import send_data_to_dashboard
 from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
 from services.video_scheduler.redis_utils import get_redis_connection, get_organic_queue_size
@@ -67,7 +68,23 @@ class Validator(base.BaseValidator):
 
         axons = [self.metagraph.axons[uid] for uid in random_uids]
 
-        miners = list(zip(axons, random_uids))
+        logger.info(f"Sending LengthCheck requests to {len(axons)} miners")
+
+        responses = await self.dendrite.forward(
+            axons=axons, synapse=LengthCheckProtocol, timeout=10
+        )
+        logger.info(f"💊 Received {len(responses)} responses from miners for LengthCheck requests💊")
+
+        content_lengths = []
+
+        for response in responses:
+            avail_max_len = response.max_content_length
+            if avail_max_len is not None:
+                content_lengths.append(avail_max_len)
+            else:
+                content_lengths.append(5)
+
+        miners = list(zip(axons, random_uids, content_lengths))
 
         batch_size = CONFIG.bandwidth.requests_per_synthetic_interval
 
@@ -80,14 +97,18 @@ class Validator(base.BaseValidator):
 
             batch_start_time = time.time()
             logger.info(f"🧩 Processing batch {batch_idx + 1}/{len(miner_batches)} 🧩")
-            payload_url, video_id, uploaded_object_name, synapse = await self.challenge_synthesizer.build_synthetic_protocol()
-            synapse.version = get_version()
-            logger.debug(f"Built challenge protocol")
+            
             uids = []
             axons = []
+            content_lengths = []
             for miner in batch:
+                content_lengths.append(miner[2])
                 uids.append(miner[1])
                 axons.append(miner[0])
+            
+            payload_url, video_ids, uploaded_object_names, synapse = await self.challenge_synthesizer.build_synthetic_protocol(len(uids), content_lengths)
+            synapse.version = get_version()
+            logger.debug(f"Built challenge protocol")
 
             timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -97,9 +118,9 @@ class Validator(base.BaseValidator):
             )
             logger.info(f"🎲 Received {len(responses)} responses from miners 🎲")
 
-            reference_video_path = get_trim_video_path(video_id)
+            reference_video_path = get_trim_video_path(video_ids)
             
-            asyncio.create_task(self.score_synthetics(uids, responses, payload_url, reference_video_path, timestamp, video_id, uploaded_object_name,))
+            asyncio.create_task(self.score_synthetics(uids, responses, payload_url, reference_video_path, timestamp, video_ids, uploaded_object_names,))
 
             batch_processed_time = time.time() - batch_start_time
             logger.info(f"Completed one batch within {batch_processed_time:.2f} seconds. Waiting 5 seconds before next batch")
