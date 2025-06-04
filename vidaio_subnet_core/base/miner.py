@@ -29,6 +29,10 @@ class BaseMiner(ABC):
             forward_fn=self.forward_upscaling_requests,
             blacklist_fn=self.blacklist_upscaling_requests,
             priority_fn=self.priority_upscaling_requests,
+        ).attach(
+            forward_fn=self.forward_length_check_requests,
+            blacklist_fn=self.blacklist_length_check_requests,
+            priority_fn=self.priority_length_check_requests,
         )
 
         self.check_registered()
@@ -70,6 +74,15 @@ class BaseMiner(ABC):
 
     @abstractmethod
     async def priority_upscaling_requests(self, synapse: VideoUpscalingProtocol) -> float: ...
+
+    @abstractmethod
+    async def forward_length_check_requests(self, synapse: VideoUpscalingProtocol) -> bt.Synapse: ...
+
+    @abstractmethod
+    async def blacklist_length_check_requests(self, synapse: VideoUpscalingProtocol) -> bool: ...
+
+    @abstractmethod
+    async def priority_length_check_requests(self, synapse: VideoUpscalingProtocol) -> float: ...
 
     def run(self):
         """
