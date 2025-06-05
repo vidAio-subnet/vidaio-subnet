@@ -15,8 +15,12 @@ import shutil
 from redis_utils import (
     get_redis_connection,
     get_organic_queue_size,
-    get_synthetic_queue_size,
-    push_synthetic_chunks,
+    get_5s_queue_size,
+    get_10s_queue_size,
+    get_20s_queue_size,
+    push_5s_chunks,
+    push_10s_chunks,
+    push_20s_chunks,
     push_pexels_video_ids,
     get_pexels_queue_size,
     pop_pexels_video_id,
@@ -235,7 +239,7 @@ def get_pexels_random_vids(
     return return_val
     
 
-async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis) -> List[Dict[str, str]]:
+async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis, chunk_duration: int) -> List[Dict[str, str]]:
     """Generate synthetic Google Drive URLs by uploading trimmed videos."""
     uploaded_video_chunks = []
     remaining_count = num_needed
@@ -270,123 +274,220 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis)
             if random_value <= cumulative_probability:
                 break
 
-        challenge_local_path, video_id = download_trim_downscale_video(
+        challenge_local_paths, video_ids = download_trim_downscale_video(
             clip_duration=clip_duration,
             vid=video_id,
             task_type=task_type,
+            chunk_duration=chunk_duration
         )
 
-        if challenge_local_path is None:
+        if challenge_local_paths is None:
             logger.info("Failed to download and trim video. Retrying...")
             continue
 
-        uploaded_file_id = video_id
-        object_name = f"{uploaded_file_id}.mp4"
+        for video_id, challenge_local_path in zip(video_ids, challenge_local_paths):
+            uploaded_file_id = video_id
+            object_name = f"{uploaded_file_id}.mp4"
         
-        await storage_client.upload_file(object_name, challenge_local_path)
-        sharing_link = await storage_client.get_presigned_url(object_name)
+            await storage_client.upload_file(object_name, challenge_local_path)
+            sharing_link = await storage_client.get_presigned_url(object_name)
 
-        print(f"Sharing_link:{sharing_link} ")
+            print(f"Sharing_link:{sharing_link} ")
 
-        if not sharing_link:
-            logger.info("Upload failed. Retrying...")
-            continue
-        logger.info("Uploading success!")
-        uploaded_video_chunks.append({
-            "video_id": str(video_id),
-            "uploaded_object_name": object_name,
-            "sharing_link": sharing_link,
-            "task_type": task_type,
-        })
-        remaining_count -= 1
+            if not sharing_link:
+                logger.info("Upload failed. Retrying...")
+                continue
+            logger.info("Uploading success!")
 
+            uploaded_video_chunks.append({
+                "video_id": str(video_id),
+                "uploaded_object_name": object_name,
+                "sharing_link": sharing_link,
+                "task_type": task_type,
+            })
+            remaining_count -= 1
+            
     return uploaded_video_chunks
 
 async def main():
-    """Main function to manage video processing and synthetic queue handling."""
+    """
+    Main service function that manages video processing workflow and queue maintenance.
     
-    logger.info("Starting worker...")
-    redis_conn = get_redis_connection()
+    Handles:
+    - Queue initialization and monitoring
+    - Dynamic video source replenishment based on configurable thresholds
+    - Multi-duration synthetic chunk generation and distribution
+    - Continuous system health monitoring
+    """
+    logger.info("Initializing video processing worker...")
     
+    try:
+        redis_conn = get_redis_connection()
+        await initialize_environment(redis_conn)
+        
+        scheduler_config = CONFIG.video_scheduler
+        queue_thresholds = {
+            "refill": scheduler_config.refill_threshold,
+            "target": scheduler_config.refill_target,
+            "pexels": scheduler_config.pexels_threshold,
+            "pexels_max": scheduler_config.pexels_max_size
+        }
+        
+        video_constraints = {
+            "min_length": scheduler_config.min_video_len,
+            "max_length": scheduler_config.max_video_len
+        }
+        
+        task_thresholds = calculate_task_thresholds(scheduler_config)
+        
+        while True:
+
+            try: 
+                await manage_pexels_queue(
+                    redis_conn, 
+                    queue_thresholds, 
+                    video_constraints, 
+                    task_thresholds
+                )
+                
+                log_queue_status(redis_conn)
+                
+                for duration in [5, 10, 20]:
+                    await replenish_synthetic_queue(
+                        redis_conn,
+                        duration,
+                        queue_thresholds["refill"],
+                        queue_thresholds["target"]
+                    )
+                
+                await asyncio.sleep(5)
+            except Exception as e:
+                logger.error(f"Error in main service loop: {str(e)}")
+            
+    except Exception as e:
+        logger.error(f"Critical error in main service loop: {str(e)}")
+        logger.exception("Exception details:")
+        raise
+
+
+async def initialize_environment(redis_conn):
+    """Initialize the processing environment by clearing queues and cached data."""
+    logger.info("Clearing queues and cached content...")
     clear_queues(redis_conn)
     purge_cached_videos()
     await storage_client.delete_all_items()
+    logger.info("Environment initialized successfully")
 
 
-    scheduler_threshold = CONFIG.video_scheduler.refill_threshold
-    fill_target = CONFIG.video_scheduler.refill_target
+def calculate_task_thresholds(config):
+    """Calculate cumulative thresholds for task type selection."""
+    return {
+        "HD24K": config.weight_hd_to_4k,
+        "SD2HD": config.weight_sd_to_hd + config.weight_hd_to_4k,
+        "SD24K": config.weight_sd_to_4k + config.weight_sd_to_hd + config.weight_hd_to_4k,
+        "4K28K": config.weight_4k_to_8k + config.weight_sd_to_4k + config.weight_sd_to_hd + config.weight_hd_to_4k
+    }
 
-    pexels_queue_threshold = CONFIG.video_scheduler.pexels_threshold
-    pexels_queue_max_size = CONFIG.video_scheduler.pexels_max_size
-    video_min_len = CONFIG.video_scheduler.min_video_len
-    video_max_len = CONFIG.video_scheduler.max_video_len
+
+async def manage_pexels_queue(redis_conn, thresholds, video_constraints, task_thresholds):
+    """Manage the Pexels video ID queue, replenishing when below threshold."""
+    pexels_queue_size = get_pexels_queue_size(redis_conn)
+    logger.info(f"Pexels video IDs queue size: {pexels_queue_size}")
     
-    threshold_hd_to_4k = CONFIG.video_scheduler.weight_hd_to_4k
-    threshold_sd_to_hd = CONFIG.video_scheduler.weight_sd_to_hd + threshold_hd_to_4k
-    threshold_sd_to_4k = CONFIG.video_scheduler.weight_sd_to_4k + threshold_sd_to_hd
-    threshold_4k_to_8k = CONFIG.video_scheduler.weight_4k_to_8k + threshold_sd_to_4k
-
-    while True:
+    if pexels_queue_size <= thresholds["pexels"]:
+        needed = thresholds["pexels_max"] - pexels_queue_size
+        needed = 5 if pexels_queue_size == 0 else needed
         
-        pexels_queue_size = get_pexels_queue_size(redis_conn)
-        logger.info(f"Pexels video ids queue size: {pexels_queue_size}")
-
-        if pexels_queue_size <= pexels_queue_threshold:
-
-            needed = pexels_queue_max_size - pexels_queue_size
-
-            if pexels_queue_size == 0:
-                needed = 5
-            
-            ran_num = random.random()
-            logger.info(f"Seleted random number: {ran_num}")
-            
-            if ran_num <= threshold_hd_to_4k:
-                task_type = "HD24K"
-            elif ran_num <= threshold_sd_to_hd:
-                task_type = "SD2HD"
-            elif ran_num <= threshold_sd_to_4k:
-                task_type = "SD24K"
-            elif ran_num <= threshold_4k_to_8k: 
-                task_type = "4K28K"
-            else:
-                task_type = "HD28K"
-            
-            logger.info(f"Need {needed} pexels video ids with task type: {task_type}")
-
-            needed_vids = get_pexels_random_vids(num_needed = needed, min_len = video_min_len, max_len = video_max_len, task_type = task_type)
-
-            logger.info(f"needed video ids: f{needed_vids}")
-
-            needed_vids_dict = []
-            for vid in needed_vids:
-                needed_vids_dict.append({
-                    "vid": vid,
-                    "task_type": task_type,
-                })
-
-            push_pexels_video_ids(redis_conn, needed_vids_dict)
+        task_type = select_task_type(task_thresholds)
+        logger.info(f"Replenishing queue with {needed} videos for task type: {task_type}")
         
-        organic_size = get_organic_queue_size(redis_conn)
-        synthetic_size = get_synthetic_queue_size(redis_conn)
-        total_size = organic_size + synthetic_size
-       
-        logger.info(f"Organic queue size: {organic_size}")
-        logger.info(f"Synthetic queue size: {synthetic_size}")
-
-        if total_size <= scheduler_threshold:
+        try:
+            video_ids = get_pexels_random_vids(
+                num_needed=needed,
+                min_len=video_constraints["min_length"],
+                max_len=video_constraints["max_length"],
+                task_type=task_type
+            )
             
-            needed = fill_target - total_size
-
-            if total_size == 0:
-                needed = 3
-        
-            logger.info(f"Need {needed} chunks...")
+            video_entries = [{"vid": vid, "task_type": task_type} for vid in video_ids]
+            push_pexels_video_ids(redis_conn, video_entries)
             
-            needed_urls = await get_synthetic_requests_paths(num_needed=needed, redis_conn = redis_conn)
-            push_synthetic_chunks(redis_conn, needed_urls)
+            logger.info(f"Added {len(video_entries)} new video IDs to Pexels queue")
+        except Exception as e:
+            logger.error(f"Failed to replenish Pexels queue: {str(e)}")
+
+
+def select_task_type(thresholds):
+    """Select a task type based on weighted probability thresholds."""
+    random_value = random.random()
+    logger.debug(f"Task selection random value: {random_value:.4f}")
+    
+    for task_type, threshold in thresholds.items():
+        if random_value <= threshold:
+            return task_type
+    
+    return "HD28K"
+
+
+def log_queue_status(redis_conn):
+    """Log the current status of all processing queues."""
+    queue_sizes = {
+        "organic": get_organic_queue_size(redis_conn),
+        "synthetic_5s": get_5s_queue_size(redis_conn),
+        "synthetic_10s": get_10s_queue_size(redis_conn),
+        "synthetic_20s": get_20s_queue_size(redis_conn)
+    }
+    
+    for queue_name, size in queue_sizes.items():
+        logger.info(f"{queue_name.replace('_', ' ').title()} queue size: {size}")
+    
+    return queue_sizes
+
+
+async def replenish_synthetic_queue(redis_conn, duration, threshold, target):
+    """Replenish a specific synthetic chunk queue if below threshold."""
+    queue_size = get_queue_size_by_duration(redis_conn, duration)
+    
+    if queue_size < threshold:
+        needed = target - queue_size
+        logger.info(f"Replenishing {duration}s chunk queue with {needed} items")
         
-        time.sleep(5)
+        try:
+            chunk_data = await get_synthetic_requests_paths(
+                num_needed=needed,
+                redis_conn=redis_conn,
+                chunk_dutaion=duration
+            )
+            
+            push_chunks_by_duration(redis_conn, chunk_data, duration)
+            logger.info(f"Successfully added {len(chunk_data)} chunks to {duration}s queue")
+        except Exception as e:
+            logger.error(f"Failed to replenish {duration}s queue: {str(e)}")
+
+
+def get_queue_size_by_duration(redis_conn, duration):
+    """Get queue size based on duration."""
+    if duration == 5:
+        return get_5s_queue_size(redis_conn)
+    elif duration == 10:
+        return get_10s_queue_size(redis_conn)
+    elif duration == 20:
+        return get_20s_queue_size(redis_conn)
+    else:
+        raise ValueError(f"Unsupported duration: {duration}")
+
+
+def push_chunks_by_duration(redis_conn, chunk_data, duration):
+    """Push chunks to the appropriate queue based on duration."""
+    if duration == 5:
+        push_5s_chunks(redis_conn, chunk_data)
+    elif duration == 10:
+        push_10s_chunks(redis_conn, chunk_data)
+    elif duration == 20:
+        push_20s_chunks(redis_conn, chunk_data)
+    else:
+        raise ValueError(f"Unsupported duration: {duration}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

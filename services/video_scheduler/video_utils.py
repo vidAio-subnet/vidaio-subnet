@@ -6,29 +6,30 @@ from tqdm import tqdm
 from moviepy.editor import VideoFileClip
 from dotenv import load_dotenv
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 import uuid
 
 load_dotenv()
 
-
 def download_trim_downscale_video(
     clip_duration: int,
     vid: int,
-    task_type : str,
+    task_type: str,
     output_dir: str = "videos"
-) -> Optional[Tuple[str, int]]:
+) -> Optional[Tuple[List[str], List[int]]]:
     """
-    Downloads a specified videos with video id from Pexels, trims it to the specified duration,
-    and downscales it to required resolution.
+    Downloads a specified video with video id from Pexels, extracts multiple non-overlapping chunks 
+    of the specified duration, and downscales each chunk to required resolution.
 
     Args:
         clip_duration (int): Desired clip duration in seconds.
         vid (int): Pexels video ID to download.
+        task_type (str): Type of task determining resolution requirements.
         output_dir (str): Directory to save the processed videos.
 
     Returns:
-        Optional[Tuple[str, int]]: Path to the downscaled video and the generated video ID, or None on failure.
+        Optional[Tuple[List[str], List[int]]]: Lists of paths to the downscaled videos and their generated IDs, 
+        or None on failure.
     """
 
     DOWNSCALE_HEIGHTS = {
@@ -46,7 +47,6 @@ def download_trim_downscale_video(
     # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
     
-    # API endpoint
     url = f"https://api.pexels.com/videos/videos/{vid}"
     headers = {"Authorization": api_key}
     
@@ -58,15 +58,14 @@ def download_trim_downscale_video(
             "4K28K": (7680, 4320),
         }
         expected_width, expected_height = EXPECTED_RESOLUTIONS.get(task_type, (3840, 2160))
-        # Get video details
+        
         response = requests.get(url, headers=headers)
-        response.raise_for_status()  # Raise exception for bad status codes
+        response.raise_for_status()  
         
         data = response.json()
         if "video_files" not in data:
             raise ValueError("No video found or API error")
             
-        # Get the highest resolution video file
         video_url = next(
             (video["link"] for video in data["video_files"] 
             if video["width"] == expected_width and video["height"] == expected_height), 
@@ -76,14 +75,8 @@ def download_trim_downscale_video(
         if video_url is None:
             return None, None
         
-        # Prepare output path
-        video_id = uuid.uuid4()
-
-        temp_path = Path(output_dir) / f"{video_id}_original.mp4"
-        clipped_path = Path(output_dir) / f"{video_id}_trim.mp4"
-        downscale_path = Path(output_dir) / f"{video_id}_downscale.mp4"
+        temp_path = Path(output_dir) / f"{vid}_original.mp4"
         
-        # Download video with progress bar
         print(f"\nDownloading video ID: {vid}")
         response = requests.get(video_url, stream=True)
         total_size = int(response.headers.get('content-length', 0))
@@ -103,14 +96,9 @@ def download_trim_downscale_video(
         elapsed_time = time.time() - start_time
         print(f"Time taken to download video: {elapsed_time:.2f} seconds")
     
-        # Trim video
-        print("\nTrimming video...")
-        start_time = time.time()
-
         print("\nChecking video resolution...")
         video_clip = VideoFileClip(str(temp_path))
         actual_width, actual_height = video_clip.size
-        
         
         if actual_width != expected_width or actual_height != expected_height:
             video_clip.close()
@@ -119,41 +107,65 @@ def download_trim_downscale_video(
             print(error_msg)
             raise ValueError(error_msg)
         
-        # Continue with existing trimming code...
         print(f"\nVideo resolution verified: {actual_width}x{actual_height}")
-
-
-        start_time_clip = 0 if video_clip.duration <= clip_duration else random.uniform(0, video_clip.duration - clip_duration)
-        print(f"Trimming {clip_duration}s from position {start_time_clip:.1f}s")
-
-        clipped_clip = video_clip.subclip(start_time_clip, start_time_clip + min(clip_duration, video_clip.duration))
-        clipped_clip.write_videofile(str(clipped_path), codec='libx264', verbose=False, logger=None)
-
-        elapsed_time = time.time() - start_time
-        print(f"Time taken to clip video: {elapsed_time:.2f} seconds")
-
-        # Downscaling
-        print("\nSaving downscaled version...")
-        start_time = time.time()
-        downscale_clip = clipped_clip.resize(height=downscale_height)
-        downscale_clip.write_videofile(str(downscale_path), codec='libx264', verbose=False, logger=None)
-
-        elapsed_time = time.time() - start_time
-        print(f"Time taken to save downscale version: {elapsed_time:.2f} seconds")
-
-        # Cleanup
+        
+        total_duration = video_clip.duration
+        num_chunks = int(total_duration // clip_duration)
+        
+        print(f"\nVideo duration: {total_duration:.2f}s")
+        print(f"Extracting {num_chunks} non-overlapping chunks of {clip_duration}s each")
+        
+        downscale_paths = []
+        video_ids = []
+        
+        for i in range(num_chunks):
+            video_id = uuid.uuid4()
+            video_ids.append(video_id)
+            
+            clipped_path = Path(output_dir) / f"{video_id}_trim.mp4"
+            downscale_path = Path(output_dir) / f"{video_id}_downscale.mp4"
+            downscale_paths.append(str(downscale_path))
+            
+            start_time_clip = i * clip_duration
+            print(f"\nProcessing chunk {i+1}/{num_chunks}: {start_time_clip}s to {start_time_clip + clip_duration}s")
+            
+            print(f"Trimming chunk {i+1}...")
+            chunk_start_time = time.time()
+            
+            clipped_clip = video_clip.subclip(start_time_clip, start_time_clip + clip_duration)
+            clipped_clip.write_videofile(str(clipped_path), codec='libx264', verbose=False, logger=None)
+            
+            print(f"Downscaling chunk {i+1}...")
+            downscale_clip = clipped_clip.resize(height=downscale_height)
+            downscale_clip.write_videofile(str(downscale_path), codec='libx264', verbose=False, logger=None)
+            
+            clipped_clip.close()
+            downscale_clip.close()
+            
+            chunk_elapsed_time = time.time() - chunk_start_time
+            print(f"Time taken to process chunk {i+1}: {chunk_elapsed_time:.2f} seconds")
+        
         video_clip.close()
-        clipped_clip.close()
-        downscale_clip.close()
+        
+        print("\nCleaning up original downloaded file...")
+        os.remove(temp_path)
+        print(f"Deleted: {temp_path}")
 
-        print(f"\nDone! Saved files:\n- {clipped_path}\n- {downscale_path}")
-
-        return str(downscale_path), video_id
+        print(f"\nDone! Processed {num_chunks} chunks.")
+        
+        return downscale_paths, video_ids
+        
     except requests.exceptions.RequestException as e:
         print(f"Error downloading video: {e}")
         return None, None
     except Exception as e:
         print(f"Error: {str(e)}")
+        if 'temp_path' in locals() and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+                print(f"Cleaned up downloaded file after error: {temp_path}")
+            except:
+                pass
         return None, None
 
 

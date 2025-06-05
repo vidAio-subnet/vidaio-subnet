@@ -15,7 +15,7 @@ from vidaio_subnet_core.utilities.uids import get_organic_forward_uids
 from vidaio_subnet_core.utilities.version import get_version
 from vidaio_subnet_core.protocol import LengthCheckProtocol
 from services.dashboard.server import send_data_to_dashboard
-from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
+from services.video_scheduler.video_utils import get_trim_video_path
 from services.video_scheduler.redis_utils import get_redis_connection, get_organic_queue_size
 
 class Validator(base.BaseValidator):
@@ -108,7 +108,6 @@ class Validator(base.BaseValidator):
             
             version = get_version()
             payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_synthetic_protocol(content_lengths, version)
-            # Need to add version into the synapse
             logger.debug(f"Built challenge protocol")
 
             timestamp = datetime.now(timezone.utc).isoformat()
@@ -132,8 +131,11 @@ class Validator(base.BaseValidator):
             asyncio.create_task(self.score_synthetics(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, content_lengths))
 
             batch_processed_time = time.time() - batch_start_time
-            logger.info(f"Completed one batch within {batch_processed_time:.2f} seconds. Waiting 5 seconds before next batch")
-            await asyncio.sleep(5)
+            sleep_time = 250 - batch_processed_time
+            
+            logger.info(f"Completed one batch within {batch_processed_time:.2f} seconds. Waiting {sleep_time:.2f} seconds before next batch")
+
+            await asyncio.sleep(sleep_time)
         
         epoch_processed_time = time.time() - epoch_start_time
         logger.info(f"Completed one epoch within {epoch_processed_time:.2f} seconds")
