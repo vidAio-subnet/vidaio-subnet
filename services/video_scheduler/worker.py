@@ -342,7 +342,10 @@ async def main():
         
         while True:
 
-            try: 
+            try:
+                
+                cycle_start_time = time.time()
+
                 await manage_pexels_queue(
                     redis_conn, 
                     queue_thresholds, 
@@ -360,6 +363,10 @@ async def main():
                         queue_thresholds["target"]
                     )
                 
+                processed_time = time.time() - cycle_start_time
+
+                logger.info(f"✳️✳️✳️ One cycle processed in {processed_time:.2f} ✳️✳️✳️")
+
                 await asyncio.sleep(5)
             except Exception as e:
                 logger.error(f"Error in main service loop: {str(e)}")
