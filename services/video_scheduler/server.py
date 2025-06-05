@@ -74,7 +74,7 @@ def api_insert_organic_chunk(payload: InsertOrganicRequest):
 
 
 @app.post("/api/get_synthetic_chunks")
-def api_get_synthetic_chunk(request_data: SyntheticChunkRequest):
+def api_get_synthetic_chunks(request_data: SyntheticChunkRequest):
 
     print(f"Processing synthetic chunk request for durations: {request_data.content_lengths}")
     
@@ -165,7 +165,9 @@ def api_queue_sizes():
     r = get_redis_connection()
     return {
         "organic_queue_size": get_organic_queue_size(r),
-        "synthetic_queue_size": get_synthetic_queue_size(r),
+        "synthetic_5s_queue_size": get_5s_queue_size(r),
+        "synthetic_10s_queue_size": get_10s_queue_size(r),
+        "synthetic_20s_queue_size": get_20s_queue_size(r),
     }
 
 

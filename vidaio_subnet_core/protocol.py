@@ -16,10 +16,10 @@ class ContentLength(Enum):
     FIVE = 5    
     TEN = 10    
     TWENTY = 20 
-    FORTY = 40  
-    EIGHTY = 80    
-    ONE_SIXTY = 160  
-    THREE_TWENTY = 320 
+    # FORTY = 40  
+    # EIGHTY = 80    
+    # ONE_SIXTY = 160  
+    # THREE_TWENTY = 320 
 
 
 class MinerPayload(BaseModel):
