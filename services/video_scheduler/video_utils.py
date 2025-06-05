@@ -34,7 +34,6 @@ def download_trim_downscale_video(
     DOWNSCALE_HEIGHTS = {
         "HD24K": 1080,
         "4K28K": 2160,
-        
     }
 
     downscale_height = DOWNSCALE_HEIGHTS.get(task_type, 540)

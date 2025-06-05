@@ -36,12 +36,14 @@ def trim_video(video_path, start_time, trim_duration=1):
     # Return the path to the trimmed video
     return output_path
 
-def convert_mp4_to_y4m(input_path):
+def convert_mp4_to_y4m(input_path, random_frames, upscale_factor=1):
     """
-    Converts an MP4 video file to Y4M format using FFmpeg.
+    Converts an MP4 video file to Y4M format using FFmpeg and upscales selected frames.
     
     Args:
         input_path (str): Path to the input MP4 file.
+        random_frames (list): List of frame indices to select.
+        upscale_factor (int): Factor by which to upscale the frames (2 or 4).
     
     Returns:
         str: Path to the converted Y4M file.
@@ -52,24 +54,41 @@ def convert_mp4_to_y4m(input_path):
     # Change extension to .y4m and keep it in the same directory
     output_path = os.path.splitext(input_path)[0] + ".y4m"
 
-    command = [
-        "ffmpeg",
-        "-i", input_path,
-        "-pix_fmt", "yuv420p",  # Ensure pixel format is compatible
-        "-f", "yuv4mpegpipe",   # Set output format to Y4M
-        output_path
-    ]
-    
     try:
-        result = subprocess.run(command, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise Exception(f"Error converting MP4 to Y4M: {result.stderr.strip()}")
-        if not os.path.exists(output_path):
-            raise FileNotFoundError(f"Expected output file '{output_path}' not found.")
+        select_expr = "+".join([f"eq(n\\,{f})" for f in random_frames])
+        
+        if upscale_factor >= 2:
+
+            scale_width = f"iw*{upscale_factor}"
+            scale_height = f"ih*{upscale_factor}"
+
+            subprocess.run([
+                "ffmpeg",
+                "-i", input_path,
+                "-vf", f"select='{select_expr}',scale={scale_width}:{scale_height}",
+                "-pix_fmt", "yuv420p",
+                "-vsync", "vfr",
+                output_path,
+                "-y"
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+
+        else:
+            subprocess.run([
+                "ffmpeg",
+                "-i", input_path,
+                "-vf", f"select='{select_expr}'",
+                "-pix_fmt", "yuv420p",
+                "-vsync", "vfr",
+                output_path,
+                "-y"
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+
         return output_path
+
     except Exception as e:
-        print(f"Error in convert_mp4_to_y4m: {e}")
+        print(f"Error in vmaf_metric_batch: {e}")
         raise
+
 
 def vmaf_metric(ref_path, dist_path, output_file="vmaf_output.xml"):
     """
@@ -114,22 +133,17 @@ def vmaf_metric(ref_path, dist_path, output_file="vmaf_output.xml"):
         print(f"Error in calculate_vmaf: {e}")
         raise
 
-def calculate_vmaf(ref_y4m_path, dist_mp4_path, start_point):
+def calculate_vmaf(ref_y4m_path, dist_mp4_path, random_frames):
     try:
 
-        print("Trimming distorted MP4")
-        dist_trim_path = trim_video(dist_mp4_path, start_point)
-
         print("Converting distorted MP4 to Y4M...")
-        dist_y4m_path = convert_mp4_to_y4m(dist_trim_path)
+        dist_y4m_path = convert_mp4_to_y4m(dist_mp4_path, random_frames)
         
-        # Step 2: Calculate VMAF
         print("Calculating VMAF score...")
         vmaf_harmonic_mean = vmaf_metric(ref_y4m_path, dist_y4m_path)
         print(f"VMAF harmonic_mean Value as Float: {vmaf_harmonic_mean}")
         
         os.remove(dist_y4m_path)
-        os.remove(dist_trim_path)
         print("Intermediate Y4M files deleted.")
 
         return vmaf_harmonic_mean

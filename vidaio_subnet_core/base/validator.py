@@ -90,15 +90,18 @@ class BaseValidator(ABC):
         self.axon.start()
 
     @abstractmethod
-    async def start_epoch(self):
+    async def start_synthetic_epoch(self):
         pass
 
-    async def run(self):
-        logger.info("Starting validator loop.")
+    @abstractmethod
+    async def start_organic_loop(self):
+        pass
+
+    async def run_synthetic(self):
+        logger.info("Starting validator synthetic loop.")
         while not self.should_exit:
             try:
-                await self.start_epoch()
-                self.set_weights()
+                await self.start_synthetic_epoch()
             except Exception as e:
                 logger.error(f"Forward error: {e}")
                 traceback.print_exc()
@@ -109,7 +112,26 @@ class BaseValidator(ABC):
                 logger.error(f"Resync metagraph error: {e}")
                 traceback.print_exc()
 
-                # If someone intentionally stops the validator, it'll safely terminate operations.
+            except KeyboardInterrupt:
+                self.axon.stop()
+                logger.success("Validator killed by keyboard interrupt.")
+                exit()
+
+    async def run_organic(self):
+        logger.info("Starting validator organic loop.")
+        while not self.should_exit:
+            try:
+                await self.start_organic_loop()
+            except Exception as e:
+                logger.error(f"Forward error: {e}")
+                traceback.print_exc()
+
+            try:
+                self.resync_metagraph()
+            except Exception as e:
+                logger.error(f"Resync metagraph error: {e}")
+                traceback.print_exc()
+
             except KeyboardInterrupt:
                 self.axon.stop()
                 logger.success("Validator killed by keyboard interrupt.")
