@@ -404,17 +404,6 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
         ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
         print(f"Reference video has {ref_total_frames} frames.")
 
-        if ref_total_frames <= 0:
-            print(f"Invalid reference video: no frames found in {ref_path}. Assigning score of 0.")
-            vmaf_scores.append(0.0)
-            pieapp_scores.append(0.0)
-            quality_scores.append(0.0)
-            length_scores.append(0.0)
-            final_scores.append(-100)
-            reasons.append("invalid reference video: no frames found")
-            ref_cap.release()
-            continue
-
         if ref_total_frames < 10:
             print(f"Video must contain at least 10 frames. Assigning score of 0.")
             vmaf_scores.append(0.0)
@@ -430,7 +419,7 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
         max_start_frame = ref_total_frames - sample_size
         start_frame = 0 if max_start_frame <= 0 else random.randint(0, max_start_frame)
 
-        print(f"Selected frame range for pair {idx+1}: {start_frame} to {start_frame + sample_size - 1}")
+        print(f"Selected frame range for pieapp score {idx+1}: {start_frame} to {start_frame + sample_size - 1}")
 
         ref_frames = []
         ref_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
@@ -449,13 +438,13 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
         dist_path = None
         try:
             if len(dist_url) < 10:
-                print(f"Wrong download URL: {dist_url}. Assigning score of 0.")
+                print(f"Wrong dist download URL: {dist_url}. Assigning score of 0.")
                 vmaf_scores.append(0.0)
                 pieapp_scores.append(0.0)
                 quality_scores.append(0.0)
                 length_scores.append(0.0)
-                reasons.append("wrong download url")
                 final_scores.append(0.0)
+                reasons.append("wrong dist download url")
                 continue
 
             dist_path = await download_video(dist_url, request.verbose)
@@ -469,6 +458,9 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
                 length_scores.append(0.0)
                 final_scores.append(0.0)
                 reasons.append("error opening distorted video file")
+                dist_cap.release()
+                if dist_path and os.path.exists(dist_path):
+                    os.unlink(dist_path)
                 continue
 
             dist_total_frames = int(dist_cap.get(cv2.CAP_PROP_FRAME_COUNT))

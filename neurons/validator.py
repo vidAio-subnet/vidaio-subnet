@@ -84,6 +84,8 @@ class Validator(base.BaseValidator):
             else:
                 content_lengths.append(5)
 
+        logger.info(f"Passed content lengths: {content_lengths}")
+
         miners = list(zip(axons, random_uids, content_lengths))
 
         batch_size = CONFIG.bandwidth.requests_per_synthetic_interval
@@ -162,7 +164,7 @@ class Validator(base.BaseValidator):
                 "uploaded_object_names": uploaded_object_names,
                 "content_lengths": content_lengths
             },
-            timeout=360
+            timeout=240
         )
 
         response_data = score_response.json()
@@ -196,7 +198,7 @@ class Validator(base.BaseValidator):
 
         round_id = uuid.uuid4()
 
-        accumulate_scores = self.miner_manager.step_synthetics(quality_scores, uids, miner_hotkeys, round_id, content_lengths, length_scores, final_scores, content_lengths)
+        accumulate_scores = self.miner_manager.step_synthetics(quality_scores, uids, miner_hotkeys, round_id, length_scores, final_scores, content_lengths)
 
         miner_data = {
             "validator_uid": self.my_subnet_uid,

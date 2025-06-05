@@ -78,7 +78,7 @@ class MinerManager:
         result = {miner.uid: miner for miner in query.all()}
         return result
 
-    def step_synthetic(
+    def step_synthetics(
         self,
         scores: List[float],
         total_uids: List[int],
@@ -162,11 +162,12 @@ class MinerManager:
                 applied_multiplier = miner.total_multiplier
                 score_with_multiplier = s_f * applied_multiplier
                 
-                miner.accumulate_score = (
-                    miner.accumulate_score * CONFIG.score.decay_factor
-                    + score_with_multiplier * (1 - CONFIG.score.decay_factor)
-                )
-                miner.accumulate_score = max(0, miner.accumulate_score)
+                if s_f != -100:
+                    miner.accumulate_score = (
+                        miner.accumulate_score * CONFIG.score.decay_factor
+                        + score_with_multiplier * (1 - CONFIG.score.decay_factor)
+                    )
+                    miner.accumulate_score = max(0, miner.accumulate_score)
 
                 acc_scores.append(miner.accumulate_score)
 
