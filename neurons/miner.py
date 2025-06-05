@@ -99,7 +99,7 @@ class Miner(BaseMiner):
         logger.trace(f"Prioritizing {synapse.dendrite.hotkey} with value: {priority}")
         return priority
 
-    async def blacklist_length_check_requests(self, synapse: VideoUpscalingProtocol) -> Tuple[bool, str]:
+    async def blacklist_length_check_requests(self, synapse: LengthCheckProtocol) -> Tuple[bool, str]:
         """
         Determines whether a request should be blacklisted based on the hotkey status.
         """
@@ -116,7 +116,7 @@ class Miner(BaseMiner):
         logger.trace(f"Hotkey {synapse.dendrite.hotkey} recognized and allowed.")
         return False, "Hotkey recognized!"
 
-    async def priority_length_check_requests(self, synapse: VideoUpscalingProtocol) -> float:
+    async def priority_length_check_requests(self, synapse: LengthCheckProtocol) -> float:
         """
         Assigns a priority to requests based on the stake of the requesting entity.
         Higher stakes result in higher priority.
