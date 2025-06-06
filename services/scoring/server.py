@@ -62,7 +62,7 @@ class ScoringResponse(BaseModel):
     """
     Response model for scoring. Contains the list of calculated scores for each d ofistorted video.
     """
-    scores: List[float]
+    quality_scores: List[float]
     vmaf_scores: List[float]
     pieapp_scores: List[float]
     quality_scores: List[float]

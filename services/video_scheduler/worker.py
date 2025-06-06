@@ -281,7 +281,6 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis,
             clip_duration=clip_duration,
             vid=video_id,
             task_type=task_type,
-            chunk_duration=chunk_duration
         )
 
         if challenge_local_paths is None:
@@ -406,7 +405,6 @@ async def manage_pexels_queue(redis_conn, thresholds, video_constraints, task_th
     
     if pexels_queue_size <= thresholds["pexels"]:
         needed = thresholds["pexels_max"] - pexels_queue_size
-        needed = 5 if pexels_queue_size == 0 else needed
         
         task_type = select_task_type(task_thresholds)
         logger.info(f"Replenishing queue with {needed} videos for task type: {task_type}")

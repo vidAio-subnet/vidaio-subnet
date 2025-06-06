@@ -14,7 +14,7 @@ class Synthesizer:
         self.max_retries = 20
         self.retry_delay = 10  
 
-    async def build_synthetic_protocol(self, content_lengths: list[int], version) -> Tuple[list[str], list[str], list[str], list[VideoUpscalingProtocol]]:
+    async def build_synthetic_protocol(self, content_lengths: list[int], version, round_id) -> Tuple[list[str], list[str], list[str], list[VideoUpscalingProtocol]]:
         """Fetches synthetic video chunks and builds the video compression protocols.
         
         Args:
@@ -80,7 +80,8 @@ class Synthesizer:
                             reference_video_url=chunk["sharing_link"],
                             task_type=chunk["task_type"]
                         ),
-                        version=version
+                        version=version,
+                        round_id=round_id
                     )
                     synapses.append(synapse)
 

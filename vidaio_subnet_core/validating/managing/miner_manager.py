@@ -38,8 +38,8 @@ class MinerManager:
             self.initialize_serving_counter(self.metagraph.uids)
 
         self.BONUS_THRESHOLD = 0.3
-        self.PENALTY_F_THRESHOLD = 0.07
-        self.PENALTY_Q_THRESHOLD = 0.5
+        self.PENALTY_F_THRESHOLD = 0.07 
+        self.PENALTY_Q_THRESHOLD = 0.5  
         
         self.BONUS_MAX = 0.15  
         self.PENALTY_F_MAX = 0.20  
@@ -80,10 +80,12 @@ class MinerManager:
 
     def step_synthetics(
         self,
-        scores: List[float],
+        round_id: str,
         total_uids: List[int],
         hotkeys: List[str],
-        round_id: str,
+        vmaf_scores: List[float],
+        pieapp_scores: List[float],
+        scores: List[float],
         length_scores: List[float],
         final_scores: List[float],
         content_lengths: List[float],
@@ -92,12 +94,14 @@ class MinerManager:
         """
         Process scores from a synthetic mining step and update miner records
         """
-        session = self.Session()
+        session = self.session
 
         acc_scores = []
         try:
             for i, uid in enumerate(total_uids):
                 hotkey = hotkeys[i]
+                vmaf_score = vmaf_scores[i]
+                pieapp_score = pieapp_scores[i]
                 s_q = scores[i]
                 s_l = length_scores[i]
                 s_f = final_scores[i]
@@ -142,12 +146,14 @@ class MinerManager:
                     
                     is_new_miner = True
                 
-                success = s_f > 0.3
+                success = s_f > 0.08
 
                 self._add_performance_record(
                     session, 
                     uid, 
-                    round_id, 
+                    round_id,
+                    vmaf_score,
+                    pieapp_score,
                     s_q, 
                     s_l, 
                     s_f, 
@@ -201,6 +207,8 @@ class MinerManager:
         session: Session,
         uid: int,
         round_id: str,
+        vmaf_score: float,
+        pie_app_score: float,
         s_q: float,
         s_l: float,
         s_f: float,
@@ -215,6 +223,8 @@ class MinerManager:
             uid=uid,
             round_id=round_id,
             timestamp=datetime.now(),
+            vmaf_score=vmaf_score,
+            pie_app_score=pie_app_score,
             s_q=s_q,
             s_l=s_l,
             s_f=s_f,
@@ -280,17 +290,17 @@ class MinerManager:
         """
         Determine performance tier based on average S_F score
         """
-        if avg_s_f > 0.85:
+        if avg_s_f > 0.4:
             return "Elite"
-        elif avg_s_f > 0.7:
-            return "Outstanding"
-        elif avg_s_f > 0.6:
-            return "High Performance"
-        elif avg_s_f > 0.5:
-            return "Good Performance"
-        elif avg_s_f > 0.4:
-            return "Average"
         elif avg_s_f > 0.3:
+            return "Outstanding"
+        elif avg_s_f > 0.25:
+            return "High Performance"
+        elif avg_s_f > 0.2:
+            return "Good Performance"
+        elif avg_s_f > 0.1:
+            return "Average"
+        elif avg_s_f > 0.07:
             return "Below Average"
         else:
             return "Poor Performance"
