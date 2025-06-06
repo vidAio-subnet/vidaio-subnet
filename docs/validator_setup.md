@@ -8,8 +8,7 @@ To achieve optimal results, we recommend the following setup:
 
 - **Operating System**: Ubuntu 24.04 LTS or higher
   [Learn more about Ubuntu 24.04 LTS](https://ubuntu.com/blog/tag/ubuntu-24-04-lts)
-- **GPU**: NVIDIA RTX 4090 or higher  
-  (Required for efficient video upscaling using Video2X)
+- **GPU**: NVIDIA RTX A6000 or higher (At least 48GB VRAM and 10 CPU Cores)
 
 ---
 
