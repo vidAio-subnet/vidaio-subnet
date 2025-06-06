@@ -112,7 +112,8 @@ class Validator(base.BaseValidator):
                 uids.append(miner[1])
                 axons.append(miner[0])
             
-            payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_synthetic_protocol(content_lengths, version)
+            round_id = str(uuid.uuid4())
+            payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_synthetic_protocol(content_lengths, version, round_id)
             logger.debug(f"Built challenge protocol")
 
             timestamp = datetime.now(timezone.utc).isoformat()
@@ -133,7 +134,7 @@ class Validator(base.BaseValidator):
                 reference_video_path = get_trim_video_path(video_id)
                 reference_video_paths.append(reference_video_path)
             
-            asyncio.create_task(self.score_synthetics(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, content_lengths))
+            asyncio.create_task(self.score_synthetics(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, content_lengths, round_id))
 
             batch_processed_time = time.time() - batch_start_time
             sleep_time = 250 - batch_processed_time
@@ -152,7 +153,18 @@ class Validator(base.BaseValidator):
         except Exception as e:
             logger.error(f"Error during process organic requests: {e}")
 
-    async def score_synthetics(self, uids: list[int], responses: list[protocol.Synapse], payload_urls: list[str], reference_video_paths: list[str], timestamp: str, video_ids: list[str], uploaded_object_names: list[str], content_lengths: list[int]):
+    async def score_synthetics(
+        self, 
+        uids: list[int], 
+        responses: list[protocol.Synapse], 
+        payload_urls: list[str], 
+        reference_video_paths: list[str], 
+        timestamp: str, 
+        video_ids: list[str], 
+        uploaded_object_names: list[str], 
+        content_lengths: list[int], 
+        round_id: str
+    ):
         distorted_urls = []
         for uid, response in zip(uids, responses):
             distorted_urls.append(response.miner_response.optimized_video_url)
@@ -199,9 +211,7 @@ class Validator(base.BaseValidator):
         
         miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
 
-        round_id = uuid.uuid4()
-
-        accumulate_scores = self.miner_manager.step_synthetics(quality_scores, uids, miner_hotkeys, round_id, length_scores, final_scores, content_lengths)
+        accumulate_scores = self.miner_manager.step_synthetics(round_id, uids, miner_hotkeys, vmaf_scores, pieapp_scores, quality_scores, length_scores, final_scores, content_lengths)
 
         miner_data = {
             "validator_uid": self.my_subnet_uid,
