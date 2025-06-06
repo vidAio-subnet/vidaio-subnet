@@ -149,7 +149,9 @@ Miners actively request content processing durations within 60-second evaluation
 | 160s | 🔄 Coming Soon | Future Release |
 | 320s | 🔄 Coming Soon | Future Release |
 
+
 > **Current Limitation**: Processing durations up to 20 seconds are currently supported.
+
 
 #### Length Score Mathematical Model
 
