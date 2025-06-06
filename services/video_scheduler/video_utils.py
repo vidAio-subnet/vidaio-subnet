@@ -361,7 +361,6 @@ def delete_videos_with_fileid(file_id: int, dir_path: str = "videos") -> None:
     """Deletes all video files associated with the given file ID."""
 
     files_to_delete = [
-        Path(dir_path) / f"{file_id}_original.mp4",
         Path(dir_path) / f"{file_id}_trim.mp4",
         Path(dir_path) / f"{file_id}_downscale.mp4",
     ]

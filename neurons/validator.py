@@ -211,7 +211,7 @@ class Validator(base.BaseValidator):
         
         miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
 
-        accumulate_scores = self.miner_manager.step_synthetics(round_id, uids, miner_hotkeys, vmaf_scores, pieapp_scores, quality_scores, length_scores, final_scores, content_lengths)
+        accumulate_scores, applied_multipliers = self.miner_manager.step_synthetics(round_id, uids, miner_hotkeys, vmaf_scores, pieapp_scores, quality_scores, length_scores, final_scores, content_lengths)
 
         miner_data = {
             "validator_uid": self.my_subnet_uid,
@@ -225,6 +225,7 @@ class Validator(base.BaseValidator):
             "length_scores": length_scores,
             "final_scores": final_scores,
             "accumulate_scores": accumulate_scores,
+            "applied_multipliers": applied_multipliers,
             "status": reasons,
             "task_urls": payload_urls,
             "processed_urls": distorted_urls,

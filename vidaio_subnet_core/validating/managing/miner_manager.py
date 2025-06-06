@@ -97,6 +97,8 @@ class MinerManager:
         session = self.session
 
         acc_scores = []
+        applied_multipliers = []
+
         try:
             for i, uid in enumerate(total_uids):
                 hotkey = hotkeys[i]
@@ -176,6 +178,7 @@ class MinerManager:
                     miner.accumulate_score = max(0, miner.accumulate_score)
 
                 acc_scores.append(miner.accumulate_score)
+                applied_multipliers.append(applied_multiplier)
 
                 miner.total_rounds_completed += 1
                 miner.last_update_timestamp = datetime.now()

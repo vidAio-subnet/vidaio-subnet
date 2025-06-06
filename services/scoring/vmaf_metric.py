@@ -150,3 +150,8 @@ def calculate_vmaf(ref_y4m_path, dist_mp4_path, random_frames):
         
     except Exception as e:
         print(f"Failed to calculate VMAF: {e}")
+
+    finally:
+        if os.path.exists(dist_y4m_path):
+            os.remove(dist_y4m_path)
+            print("Intermediate Y4M files deleted.")
