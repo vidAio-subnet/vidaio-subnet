@@ -39,7 +39,9 @@ def clear_queues(redis_conn) -> None:
     """Clear both organic and synthetic queues before starting."""
     logger.info("Clearing queues")
     redis_conn.delete(CONFIG.redis.organic_queue_key)
-    redis_conn.delete(CONFIG.redis.synthetic_queue_key)
+    redis_conn.delete(CONFIG.redis.synthetic_5s_clip_queue_key)
+    redis_conn.delete(CONFIG.redis.synthetic_10s_clip_queue_key)
+    redis_conn.delete(CONFIG.redis.synthetic_20s_clip_queue_key)
     redis_conn.delete(CONFIG.redis.pexels_video_ids_key)
 
 def read_synthetic_urls(config_path: str) -> List[str]:
@@ -259,21 +261,22 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis,
         task_type = video_id_data["task_type"]
 
         clip_duration_probabilities = {
-            1: 0.6, 
+            1: 0.35, 
             2: 0.05,
             3: 0.05,
             4: 0.05,
-            5: 0.25 
+            5: 0.5
         }
 
-        # Generate a random number between 0 and 1 to determine the clip duration
-        random_value = random.random()
-        cumulative_probability = 0
-        for clip_duration, probability in clip_duration_probabilities.items():
-            cumulative_probability += probability
-            if random_value <= cumulative_probability:
-                break
-
+        if chunk_duration == 5:
+            random_value = random.random()
+            cumulative_probability = 0
+            for clip_duration, probability in clip_duration_probabilities.items():
+                cumulative_probability += probability
+                if random_value <= cumulative_probability:
+                    break
+        else:
+            clip_duration = chunk_duration
         challenge_local_paths, video_ids = download_trim_downscale_video(
             clip_duration=clip_duration,
             vid=video_id,
@@ -463,7 +466,7 @@ async def replenish_synthetic_queue(redis_conn, duration, threshold, target):
             chunk_data = await get_synthetic_requests_paths(
                 num_needed=needed,
                 redis_conn=redis_conn,
-                chunk_dutaion=duration
+                chunk_duration=duration
             )
             
             push_chunks_by_duration(redis_conn, chunk_data, duration)
