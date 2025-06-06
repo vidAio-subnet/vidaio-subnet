@@ -82,7 +82,7 @@ class Validator(base.BaseValidator):
         content_lengths = []
 
         for response in responses:
-            avail_max_len = response.max_content_length
+            avail_max_len = response.max_content_length.value
             if avail_max_len is not None:
                 content_lengths.append(avail_max_len)
             else:

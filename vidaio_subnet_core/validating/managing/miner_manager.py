@@ -37,9 +37,9 @@ class MinerManager:
         else:
             self.initialize_serving_counter(self.metagraph.uids)
 
-        self.BONUS_THRESHOLD = 0.77  
-        self.PENALTY_F_THRESHOLD = 0.45 
-        self.PENALTY_Q_THRESHOLD = 0.5  
+        self.BONUS_THRESHOLD = 0.3
+        self.PENALTY_F_THRESHOLD = 0.07
+        self.PENALTY_Q_THRESHOLD = 0.5
         
         self.BONUS_MAX = 0.15  
         self.PENALTY_F_MAX = 0.20  

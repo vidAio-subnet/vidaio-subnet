@@ -131,5 +131,5 @@ class LengthCheckProtocol(Synapse):
     version: Optional[Version] = None
     max_content_length: ContentLength = Field(
         description="Maximum content length miner can process in 60 seconds",
-        default=5,
+        default=ContentLength.FIVE,
     )

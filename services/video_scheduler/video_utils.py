@@ -1,15 +1,19 @@
 import requests
 import os
-import random
 import time
 from tqdm import tqdm
-from moviepy.editor import VideoFileClip
-from dotenv import load_dotenv
 from pathlib import Path
-from typing import Optional, Tuple, List
 import uuid
+from typing import List, Tuple, Optional
+import concurrent.futures
+import subprocess
+import tempfile
+import threading
+from dotenv import load_dotenv
 
 load_dotenv()
+
+MAX_WORKERS = 5  
 
 def download_trim_downscale_video(
     clip_duration: int,
@@ -32,20 +36,7 @@ def download_trim_downscale_video(
         Optional[Tuple[List[str], List[int]]]: Lists of paths to the downscaled videos and their generated IDs, 
         or None on failure.
     """
-    import os
-    import time
-    import uuid
-    import requests
-    from pathlib import Path
-    from typing import List, Tuple, Optional, Dict, Any
-    from tqdm import tqdm
-    import concurrent.futures
-    import subprocess
-    import tempfile
-    import threading
-    from functools import partial
 
-    MAX_WORKERS = 5  
     DOWNSCALE_HEIGHTS = {
         "HD24K": 1080,
         "4K28K": 2160,
