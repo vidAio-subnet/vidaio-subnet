@@ -40,7 +40,7 @@ def send_data_to_dashboard(
     # Try to send the data with retries
     for attempt in range(max_retries):
         try:
-            logger.info(f"Sending data to dashboard (attempt {attempt + 1}/{max_retries})")
+            # logger.info(f"Sending data to dashboard (attempt {attempt + 1}/{max_retries})")
             response = requests.post(
                 dashboard_endpoint,
                 headers=headers,

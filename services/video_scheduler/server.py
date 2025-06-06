@@ -1,16 +1,21 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+import time
 from pydantic import BaseModel
 from vidaio_subnet_core import CONFIG
-from typing import Optional, Literal
-import urllib
+from typing import Optional, List
+from fastapi.responses import JSONResponse
 
 from redis_utils import (
     get_redis_connection,
     push_organic_chunk,
     pop_organic_chunk,
-    pop_synthetic_chunk,
     get_organic_queue_size,
-    get_synthetic_queue_size,
+    get_5s_queue_size,
+    get_10s_queue_size,
+    get_20s_queue_size,
+    pop_5s_chunk,
+    pop_10s_chunk,
+    pop_20s_chunk
 )
 
 app = FastAPI()
@@ -29,6 +34,9 @@ class InsertResultRequest(BaseModel):
 
 class ResultRequest(BaseModel):
     original_video_url: str
+
+class SyntheticChunkRequest(BaseModel):
+    content_lengths: Optional[List[int]] = []
 
 @app.post("/api/insert_organic_chunk")
 def api_insert_organic_chunk(payload: InsertOrganicRequest):
@@ -65,14 +73,60 @@ def api_insert_organic_chunk(payload: InsertOrganicRequest):
 #     return {"chunk": chunk}
 
 
-@app.get("/api/get_synthetic_chunk")
-def api_get_synthetic_chunk():
-    print("got the get_synthetic_chunk request correctly")
-    r = get_redis_connection()
-    chunk = pop_synthetic_chunk(r)
-    if not chunk:
-        return {"message": "No chunks available"}
-    return {"chunk": chunk}
+@app.post("/api/get_synthetic_chunks")
+def api_get_synthetic_chunks(request_data: SyntheticChunkRequest):
+
+    print(f"Processing synthetic chunk request for durations: {request_data.content_lengths}")
+    
+    redis_conn = get_redis_connection()
+    chunks = []
+    
+    for content_length in request_data.content_lengths:
+        chunk = retrieve_chunk_with_retry(redis_conn, content_length)
+        chunks.append(chunk)
+    
+    # Filter out None values
+    valid_chunks = [chunk for chunk in chunks if chunk is not None]
+    
+    if not valid_chunks:
+        print("No valid chunks available after retries")
+        return JSONResponse(
+            status_code=404,
+            content={"message": "No chunks available", "status": "error"}
+        )
+    
+    print(f"Successfully retrieved {len(valid_chunks)} chunks")
+    return {"chunks": chunks, "status": "success"}
+
+
+def retrieve_chunk_with_retry(redis_conn, content_length: int, max_retries: int = 3, retry_delay: int = 20):
+   
+    chunk_type_map = {
+        5: ("5-second", pop_5s_chunk),
+        10: ("10-second", pop_10s_chunk),
+        20: ("20-second", pop_20s_chunk)
+    }
+    
+    if content_length not in chunk_type_map:
+        print(f"Unsupported content length requested: {content_length}")
+        return None
+    
+    chunk_name, pop_function = chunk_type_map[content_length]
+    
+    for attempt in range(1, max_retries + 1):
+        chunk = pop_function(redis_conn)
+        
+        if chunk:
+            print(f"Retrieved {chunk_name} chunk on attempt {attempt}")
+            return chunk
+        
+        if attempt < max_retries:
+            print(f"{chunk_name} chunk unavailable, retry {attempt}/{max_retries} after {retry_delay}s")
+            time.sleep(retry_delay)
+        else:
+            print(f"Failed to retrieve {chunk_name} chunk after {max_retries} attempts")
+    
+    return None
 
 
 @app.get("/api/get_organic_chunks")
@@ -111,7 +165,9 @@ def api_queue_sizes():
     r = get_redis_connection()
     return {
         "organic_queue_size": get_organic_queue_size(r),
-        "synthetic_queue_size": get_synthetic_queue_size(r),
+        "synthetic_5s_queue_size": get_5s_queue_size(r),
+        "synthetic_10s_queue_size": get_10s_queue_size(r),
+        "synthetic_20s_queue_size": get_20s_queue_size(r),
     }
 
 

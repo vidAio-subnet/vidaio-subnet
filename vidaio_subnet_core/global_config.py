@@ -18,7 +18,7 @@ class GlobalConfig(BaseSettings):
     video_scheduler: VideoSchedulerConfig = VideoSchedulerConfig()
     bandwidth: BandwidthConfig = BandwidthConfig()
     score: ScoreConfig = ScoreConfig()
-    sql: SQLConfig = SQLConfig(url="sqlite:///video_subnet.db")
+    sql: SQLConfig = SQLConfig(url="sqlite:///video_subnet_validator.db")
     storage: StorageConfig = StorageConfig()
     video_upscaler: VideoUpscalerConfig = VideoUpscalerConfig()
     organic_gateway: OrganicGatewayConfig = OrganicGatewayConfig()

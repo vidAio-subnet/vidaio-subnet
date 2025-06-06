@@ -8,67 +8,105 @@ from loguru import logger
 class Synthesizer:
     def __init__(self):
         self.session = httpx.AsyncClient(
-            base_url=f"http://{CONFIG.video_scheduler.host}:{CONFIG.video_scheduler.port}"
+            base_url=f"http://{CONFIG.video_scheduler.host}:{CONFIG.video_scheduler.port}",
+            timeout=30.0
         )
         self.max_retries = 20
-        self.retry_delay = 10  # seconds
+        self.retry_delay = 10  
 
-    async def build_synthetic_protocol(self) -> Tuple[str, str, VideoUpscalingProtocol]:
-        """Fetches the synthetic video chunk and builds the video compression protocol.
+    async def build_synthetic_protocol(self, content_lengths: list[int], version, round_id) -> Tuple[list[str], list[str], list[str], list[VideoUpscalingProtocol]]:
+        """Fetches synthetic video chunks and builds the video compression protocols.
         
+        Args:
+            content_lengths: List of requested content durations in seconds
+            version: Version of the protocol to use
+            
         Returns:
-            Tuple[str, str, VideoUpscalingProtocol]: A tuple containing the video ID, 
-            uploaded object name, and the corresponding VideoUpscalingProtocol instance.
+            Tuple containing lists of:
+            - payload URLs
+            - video IDs
+            - uploaded object names
+            - VideoUpscalingProtocol instances
         
         Raises:
-            httpx.HTTPStatusError: If the request to the video scheduler fails.
-            RuntimeError: If max retries exceeded without valid response.
+            httpx.HTTPStatusError: If the request to the video scheduler fails
+            RuntimeError: If max retries exceeded without valid response
         """
         for attempt in range(self.max_retries):
             try:
-                response = await self.session.get("/api/get_synthetic_chunk")
+                # Send the correct request with content_lengths
+                response = await self.session.post(
+                    "/api/get_synthetic_chunks",
+                    json={"content_lengths": content_lengths}
+                )
                 response.raise_for_status()
                 data = response.json()
 
-                if not data or not data.get("chunk"):
-                    logger.info(f"Attempt {attempt + 1}/{self.max_retries}: No chunk available, waiting {self.retry_delay}s...")
+                # Check if we have valid chunks
+                if not data or not data.get("chunks") or not any(chunk for chunk in data.get("chunks", []) if chunk is not None):
+                    logger.info(f"Attempt {attempt + 1}/{self.max_retries}: No valid chunks available, waiting {self.retry_delay}s...")
                     await asyncio.sleep(self.retry_delay)
                     continue
 
-                chunk: Dict = data["chunk"]
-                logger.info("Received synthetic chunk from video-scheduler API")
+                chunks = data["chunks"]
+                logger.info(f"Received {len([c for c in chunks if c is not None])}/{len(chunks)} valid synthetic chunks")
 
-                required_fields = ["video_id", "uploaded_object_name", "sharing_link", "task_type"]
-                if not all(field in chunk for field in required_fields):
-                    logger.info(f"Missing required fields in chunk data: {chunk}")
+                payload_urls = []
+                video_ids = []
+                uploaded_object_names = []
+                synapses = []
+
+                # Process only non-None chunks
+                valid_chunks = [chunk for chunk in chunks if chunk is not None]
+                
+                if not valid_chunks:
+                    logger.warning("All chunks were None, retrying...")
                     await asyncio.sleep(self.retry_delay)
                     continue
-                payload_url = chunk["sharing_link"]
-                return (
-                    payload_url,
-                    chunk["video_id"],
-                    chunk["uploaded_object_name"],
-                    VideoUpscalingProtocol(
+
+                for chunk in valid_chunks:
+                    # Validate chunk data
+                    required_fields = ["video_id", "uploaded_object_name", "sharing_link", "task_type"]
+                    if not all(field in chunk for field in required_fields):
+                        logger.warning(f"Missing required fields in chunk data: {chunk}")
+                        continue
+
+                    payload_urls.append(chunk["sharing_link"])
+                    video_ids.append(chunk["video_id"])
+                    uploaded_object_names.append(chunk["uploaded_object_name"])
+                    
+                    synapse = VideoUpscalingProtocol(
                         miner_payload=MinerPayload(
-                            reference_video_url=payload_url,
+                            reference_video_url=chunk["sharing_link"],
                             task_type=chunk["task_type"]
                         ),
+                        version=version,
+                        round_id=round_id
                     )
-                )
+                    synapses.append(synapse)
 
-            except httpx.HTTPStatusError as e:
-                logger.info(f"HTTP error on attempt {attempt + 1}/{self.max_retries}: {e}")
-                if attempt == self.max_retries - 1:
-                    raise
-                await asyncio.sleep(self.retry_delay)
+                if not synapses:
+                    logger.warning(f"Attempt {attempt + 1}/{self.max_retries}: No valid protocols could be created, retrying...")
+                    await asyncio.sleep(self.retry_delay)
+                    continue
+                    
+                # Return the results if we have valid data
+                return payload_urls, video_ids, uploaded_object_names, synapses
                 
-            except Exception as e:
-                logger.info(f"Unexpected error on attempt {attempt + 1}/{self.max_retries}: {e}")
-                if attempt == self.max_retries - 1:
+            except httpx.HTTPStatusError as e:
+                logger.error(f"HTTP error occurred (attempt {attempt + 1}/{self.max_retries}): {e}")
+                if attempt < self.max_retries - 1:
+                    await asyncio.sleep(self.retry_delay)
+                else:
                     raise
-                await asyncio.sleep(self.retry_delay)
-
-        raise RuntimeError(f"Failed to get valid response after {self.max_retries} attempts")
+            except Exception as e:
+                logger.error(f"Unexpected error (attempt {attempt + 1}/{self.max_retries}): {e}", exc_info=True)
+                if attempt < self.max_retries - 1:
+                    await asyncio.sleep(self.retry_delay)
+                else:
+                    raise
+                    
+        raise RuntimeError(f"Failed to get synthetic chunks after {self.max_retries} attempts")
 
     async def build_organic_protocol(self, needed: int):
         for attempt in range(self.max_retries):
@@ -124,3 +162,7 @@ class Synthesizer:
                 await asyncio.sleep(self.retry_delay)
 
         raise RuntimeError(f"Failed to get valid response after {self.max_retries} attempts")
+
+    async def close(self):
+        """Close the HTTP session."""
+        await self.session.aclose()
