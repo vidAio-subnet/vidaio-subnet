@@ -196,7 +196,7 @@ class MinerManager:
             session.commit()
             logger.success(f"Updated metadata for {len(total_uids)} miners")
             
-            return acc_scores
+            return acc_scores, applied_multipliers
 
         except Exception as e:
             session.rollback()
