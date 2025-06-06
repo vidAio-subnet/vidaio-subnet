@@ -125,8 +125,11 @@ class LengthCheckProtocol(Synapse):
     Attributes:
         version (Optional[Version]): The version of the protocol implementation.
         max_content_length (ContentLength): Maximum video duration in seconds that
-            miners can process, must be one of the predefined values (5, 10, 20, or 40).
+            miners can process, must be one of the predefined values (5, 10, or 20).
     """
     
     version: Optional[Version] = None
-    max_content_length: ContentLength
+    max_content_length: ContentLength = Field(
+        description="Maximum content length miner can process in 60 seconds",
+        default=5,
+    )

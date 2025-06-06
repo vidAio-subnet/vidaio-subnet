@@ -70,8 +70,12 @@ class Validator(base.BaseValidator):
 
         logger.info(f"Sending LengthCheck requests to {len(axons)} miners")
 
+        version = get_version()
+        synapse = LengthCheckProtocol(
+            version=version
+        )
         responses = await self.dendrite.forward(
-            axons=axons, synapse=LengthCheckProtocol, timeout=10
+            axons=axons, synapse=synapse, timeout=10
         )
         logger.info(f"💊 Received {len(responses)} responses from miners for LengthCheck requests💊")
 
@@ -108,7 +112,6 @@ class Validator(base.BaseValidator):
                 uids.append(miner[1])
                 axons.append(miner[0])
             
-            version = get_version()
             payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_synthetic_protocol(content_lengths, version)
             logger.debug(f"Built challenge protocol")
 
