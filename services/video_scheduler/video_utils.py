@@ -45,8 +45,7 @@ def download_trim_downscale_video(
     import threading
     from functools import partial
 
-    # Constants
-    MAX_WORKERS = 5  # Use 5 CPU cores
+    MAX_WORKERS = 5  
     DOWNSCALE_HEIGHTS = {
         "HD24K": 1080,
         "4K28K": 2160,
@@ -56,10 +55,8 @@ def download_trim_downscale_video(
         "4K28K": (7680, 4320),
     }
 
-    # Create a lock for print statements to avoid messy output
     print_lock = threading.Lock()
     
-    # Safe print function
     def safe_print(message):
         with print_lock:
             print(message)
@@ -67,7 +64,6 @@ def download_trim_downscale_video(
     downscale_height = DOWNSCALE_HEIGHTS.get(task_type, 540)
     expected_width, expected_height = EXPECTED_RESOLUTIONS.get(task_type, (3840, 2160))
 
-    # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
     
     api_key = os.getenv("PEXELS_API_KEY")
@@ -115,17 +111,14 @@ def download_trim_downscale_video(
         chunk_start_time = time.time()
         safe_print(f"Processing chunk {i+1}: {start_time_clip:.1f}s to {end_time_clip:.1f}s")
         
-        # Calculate actual duration
         actual_duration = end_time_clip - start_time_clip
         
-        # Use FFmpeg directly for trimming
         trim_cmd = [
             "ffmpeg", "-y", "-i", str(source_path), "-ss", str(start_time_clip), 
             "-t", str(actual_duration), "-c:v", "libx264", "-preset", "ultrafast",
             "-c:a", "aac", str(clipped_path), "-hide_banner", "-loglevel", "error"
         ]
         
-        # Use FFmpeg directly for downscaling
         scale_cmd = [
             "ffmpeg", "-y", "-i", str(clipped_path), "-vf", f"scale=-1:{downscale_height}", 
             "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", 
@@ -133,7 +126,6 @@ def download_trim_downscale_video(
         ]
         
         try:
-            # Execute commands
             subprocess.run(trim_cmd, check=True)
             subprocess.run(scale_cmd, check=True)
             
@@ -154,8 +146,7 @@ def download_trim_downscale_video(
         """
         chunks = []
         
-        if clip_duration == 5:
-            # Strategy for 5s clips: No overlap
+        if clip_duration <= 5:
             num_chunks = int(total_duration // clip_duration)
             for i in range(num_chunks):
                 start_time = i * clip_duration
@@ -163,53 +154,40 @@ def download_trim_downscale_video(
                 chunks.append((i, start_time, end_time))
                 
         elif clip_duration == 10:
-            # Strategy for 10s clips: Strategic overlapping
-            # For videos longer than 25s, create overlapping chunks
             if total_duration <= 10:
-                # Just one chunk if video is shorter than clip duration
                 chunks.append((0, 0, min(total_duration, clip_duration)))
             elif total_duration <= 20:
-                # Two chunks with minimal overlap for videos between 10-20s
                 chunks.append((0, 0, clip_duration))
                 chunks.append((1, total_duration - clip_duration, total_duration))
             else:
-                # For longer videos, create strategically overlapped chunks
-                # First chunk always starts at 0
                 chunks.append((0, 0, clip_duration))
                 
-                # Middle chunks with strategic positioning
-                position = 8  # Start next chunk at 8s (2s overlap with first)
+                position = 8  
                 i = 1
                 
                 while position + clip_duration < total_duration - 2:
                     chunks.append((i, position, position + clip_duration))
-                    position += 7  # Move forward by 7s (3s overlap)
+                    position += 7 
                     i += 1
                 
-                # Last chunk always ends at total_duration
-                if position < total_duration - 5:  # Only add if we have at least 5s of content
+                if position < total_duration - 5: 
                     chunks.append((i, total_duration - clip_duration, total_duration))
                 
         elif clip_duration == 20:
-            # Strategy for 20s clips: Minimal overlapping for longer videos
             if total_duration <= 20:
-                # Just one chunk if video is shorter than clip duration
                 chunks.append((0, 0, min(total_duration, clip_duration)))
             elif total_duration <= 30:
-                # Two chunks with overlap for videos between 20-30s
                 chunks.append((0, 0, clip_duration))
                 chunks.append((1, total_duration - clip_duration, total_duration))
             else:
-                # For longer videos (>30s), create chunks with minimal overlap
                 position = 0
                 i = 0
                 
                 while position + clip_duration <= total_duration:
                     chunks.append((i, position, position + clip_duration))
-                    position += 15  # Move forward by 15s (5s overlap)
+                    position += 15  
                     i += 1
                     
-                # Ensure the last chunk captures the end of the video
                 if position < total_duration and position + 5 < total_duration:
                     chunks.append((i, total_duration - clip_duration, total_duration))
         
@@ -221,7 +199,6 @@ def download_trim_downscale_video(
         Each thread handles download, trim, and downscale for a separate video
         """
         try:
-            # Get video info from API
             url = f"https://api.pexels.com/videos/videos/{vid}"
             headers = {"Authorization": api_key}
             
@@ -242,29 +219,22 @@ def download_trim_downscale_video(
                 safe_print("No video found with required resolution")
                 return None, None
                 
-            # Get video duration from API if available, otherwise estimate
-            video_duration = data.get("duration", 30)  # Default to 30s if not provided
+            video_duration = data.get("duration", 30)  
             
-            # Generate chunk timestamps
             chunks = generate_chunk_timestamps(video_duration, 20)
             
-            # Process each chunk in parallel (download, trim, downscale)
             results = []
             
             def process_single_chunk(chunk_info):
                 i, start_time, end_time = chunk_info
                 video_id = uuid.uuid4()
                 
-                # Create temporary directory for this chunk
                 with tempfile.TemporaryDirectory() as temp_dir:
-                    # Download video to temp directory
                     temp_path = Path(temp_dir) / f"{vid}_original_{i}.mp4"
                     download_video(video_url, temp_path)
                     
-                    # Process the chunk
                     result = process_chunk((i, start_time, end_time, video_id), temp_path)
                     
-                    # Clean up temp file
                     if os.path.exists(temp_path):
                         os.remove(temp_path)
                     
@@ -278,10 +248,8 @@ def download_trim_downscale_video(
                     if result:
                         results.append(result)
             
-            # Sort results by chunk index
             results.sort(key=lambda x: x[0])
             
-            # Extract paths and IDs
             downscale_paths = [result[1] for result in results]
             final_video_ids = [result[2] for result in results]
             
@@ -302,7 +270,6 @@ def download_trim_downscale_video(
         try:
             start_time = time.time()
             
-            # 1. Download and verify video
             url = f"https://api.pexels.com/videos/videos/{vid}"
             headers = {"Authorization": api_key}
             
@@ -324,12 +291,10 @@ def download_trim_downscale_video(
             
             temp_path = Path(output_dir) / f"{vid}_original.mp4"
             
-            # Download the video
             download_video(video_url, temp_path)
             elapsed_time = time.time() - start_time
             safe_print(f"Time taken to download video: {elapsed_time:.2f} seconds")
         
-            # 2. Verify video resolution and get duration
             safe_print("\nChecking video resolution...")
             width, height, total_duration = get_video_info(temp_path)
             
@@ -342,18 +307,14 @@ def download_trim_downscale_video(
             safe_print(f"\nVideo resolution verified: {width}x{height}")
             safe_print(f"Video duration: {total_duration:.2f}s")
             
-            # 3. Generate chunk timestamps based on clip_duration
             chunks_info = generate_chunk_timestamps(total_duration, clip_duration)
             safe_print(f"Extracting {len(chunks_info)} chunks of {clip_duration}s each")
             
-            # Generate UUIDs for all chunks
             video_ids = [uuid.uuid4() for _ in range(len(chunks_info))]
             
-            # Prepare chunk information with video IDs
             chunks_with_ids = [(i, start, end, video_ids[idx]) 
                               for idx, (i, start, end) in enumerate(chunks_info)]
             
-            # 4. Process chunks in parallel
             results = []
             with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                 future_to_chunk = {executor.submit(process_chunk, chunk, temp_path): chunk 
@@ -364,14 +325,11 @@ def download_trim_downscale_video(
                     if result:
                         results.append(result)
             
-            # Sort results by chunk index
             results.sort(key=lambda x: x[0])
             
-            # Extract paths and IDs
             downscale_paths = [result[1] for result in results]
             final_video_ids = [result[2] for result in results]
             
-            # 5. Clean up
             safe_print("\nCleaning up original downloaded file...")
             os.remove(temp_path)
             safe_print(f"Deleted: {temp_path}")
@@ -393,14 +351,10 @@ def download_trim_downscale_video(
                     pass
             return None, None
 
-    # Main processing logic
     try:
-        # Choose processing strategy based on clip_duration
         if clip_duration == 20:
-            # For 20s clips, use fully parallel approach
             return process_video_20s(vid, task_type, output_dir)
         else:
-            # For 5s and 10s clips, use standard approach
             return process_video_standard(vid, clip_duration, task_type, output_dir)
             
     except Exception as e:
