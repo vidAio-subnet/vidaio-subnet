@@ -89,7 +89,7 @@ async def download_video(video_url: str, verbose: bool) -> str:
             file_path = vid_temp.name  # Path to the temporary file
         print(f"downloading video from {video_url} to {file_path}")
 
-        timeout = aiohttp.ClientTimeout(sock_connect=0.5, total=3.5)
+        timeout = aiohttp.ClientTimeout(sock_connect=0.5, total=4.5)
 
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(video_url) as response:
