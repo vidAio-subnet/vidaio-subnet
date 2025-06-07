@@ -85,32 +85,30 @@ async def download_video(video_url: str, verbose: bool) -> str:
         HTTPException: If the download fails.
     """
     try:
-        # Create a temporary file for the video
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as vid_temp:
             file_path = vid_temp.name  # Path to the temporary file
-        print(f"Downloading video from {video_url} to {file_path}")
+        print(f"downloading video from {video_url} to {file_path}")
 
-        # Download the file using aiohttp
-        async with aiohttp.ClientSession() as session:
+        timeout = aiohttp.ClientTimeout(sock_connect=0.5, total=3.5)
+
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(video_url) as response:
                 if response.status != 200:
-                    raise Exception(f"Failed to download video. HTTP status: {response.status}")
+                    raise Exception(f"failed to download video. http status: {response.status}")
 
-                # Write the content to the temp file in chunks
                 with open(file_path, "wb") as f:
-                    async for chunk in response.content.iter_chunked(2 * 1024 * 1024):  # 2 MB chunks
+                    async for chunk in response.content.iter_chunked(2 * 1024 * 1024): 
                         f.write(chunk)
 
-        # Verify the file was successfully downloaded
         if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
-            raise Exception(f"Download failed or file is empty: {file_path}")
+            raise Exception(f"download failed or file is empty: {file_path}")
 
-        print(f"File successfully downloaded to: {file_path}")
+        print(f"file successfully downloaded to: {file_path}")
         return file_path
 
     except Exception as e:
-        print(f"Failed to download video from {video_url}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error downloading video: {str(e)}")
+        print(f"download failed from {video_url}: {e}") 
+        raise HTTPException(status_code=500, detail="failed to download video")
 
 
 def calculate_psnr(ref_frame: np.ndarray, dist_frame: np.ndarray) -> float:
