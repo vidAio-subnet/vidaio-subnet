@@ -372,72 +372,73 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
         request.uploaded_object_names,
         request.content_lengths
     )):
-        print(f"🧩 Processing pair {idx+1}/{len(request.distorted_urls)}: UID {uid} 🧩")
-        
-        uid_start_time = time.time()  # Start time for this UID
-
-        ref_cap = None
-        dist_cap = None
-
-        ref_cap = cv2.VideoCapture(ref_path)
-        step_time = time.time() - uid_start_time
-        print(f"♎️ 1. Opened reference video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
-        if not ref_cap.isOpened():
-            print(f"Error opening reference video file {ref_path}. Assigning score of 0.")
-            vmaf_scores.append(0.0)
-            pieapp_scores.append(0.0)
-            quality_scores.append(0.0)
-            length_scores.append(0.0)
-            final_scores.append(-100)
-            reasons.append(f"error opening reference video file: {ref_path}")
-            continue
-
-        ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        step_time = time.time() - uid_start_time
-        print(f"♎️ 2. Retrieved reference video frame count ({ref_total_frames}) in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
-        if ref_total_frames < 10:
-            print(f"Video must contain at least 10 frames. Assigning score of 0.")
-            vmaf_scores.append(0.0)
-            pieapp_scores.append(0.0)
-            quality_scores.append(0.0)
-            length_scores.append(0.0)
-            final_scores.append(-100)
-            reasons.append("reference video has fewer than 10 frames")
-            ref_cap.release()
-            continue
-
-        sample_size = min(PIEAPP_SAMPLE_COUNT, ref_total_frames)
-        max_start_frame = ref_total_frames - sample_size
-        start_frame = 0 if max_start_frame <= 0 else random.randint(0, max_start_frame)
-
-        print(f"Selected frame range for pieapp score {idx+1}: {start_frame} to {start_frame + sample_size - 1}")
-        step_time = time.time() - uid_start_time
-        print(f"♎️ 3. Selected frame range in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
-        ref_frames = []
-        ref_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-        for _ in range(sample_size):
-            ret, frame = ref_cap.read()
-            if not ret:
-                break
-            ref_frames.append(frame)
-        step_time = time.time() - uid_start_time
-        print(f"♎️ 4. Extracted sampled frames from reference video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
-        random_frames = sorted(random.sample(range(ref_total_frames), VMAF_SAMPLE_COUNT))
-        print(f"Randomly selected {VMAF_SAMPLE_COUNT} frames for VMAF score: frame list: {random_frames}")
-        step_time = time.time() - uid_start_time
-        print(f"♎️ 5. Selected random frames for VMAF in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
-        ref_y4m_path = convert_mp4_to_y4m(ref_path, random_frames)
-        print("The reference video has been successfully converted to Y4M format.")
-        step_time = time.time() - uid_start_time
-        print(f"♎️ 6. Converted reference video to Y4M in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
-        dist_path = None
         try:
+            print(f"🧩 Processing pair {idx+1}/{len(request.distorted_urls)}: UID {uid} 🧩")
+            
+            uid_start_time = time.time()  # Start time for this UID
+
+            ref_cap = None
+            dist_cap = None
+
+            ref_cap = cv2.VideoCapture(ref_path)
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 1. Opened reference video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            if not ref_cap.isOpened():
+                print(f"Error opening reference video file {ref_path}. Assigning score of 0.")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(-100)
+                reasons.append(f"error opening reference video file: {ref_path}")
+                continue
+
+            ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 2. Retrieved reference video frame count ({ref_total_frames}) in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            if ref_total_frames < 10:
+                print(f"Video must contain at least 10 frames. Assigning score of 0.")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(-100)
+                reasons.append("reference video has fewer than 10 frames")
+                ref_cap.release()
+                continue
+
+            sample_size = min(PIEAPP_SAMPLE_COUNT, ref_total_frames)
+            max_start_frame = ref_total_frames - sample_size
+            start_frame = 0 if max_start_frame <= 0 else random.randint(0, max_start_frame)
+
+            print(f"Selected frame range for pieapp score {idx+1}: {start_frame} to {start_frame + sample_size - 1}")
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 3. Selected frame range in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            ref_frames = []
+            ref_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            for _ in range(sample_size):
+                ret, frame = ref_cap.read()
+                if not ret:
+                    break
+                ref_frames.append(frame)
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 4. Extracted sampled frames from reference video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            random_frames = sorted(random.sample(range(ref_total_frames), VMAF_SAMPLE_COUNT))
+            print(f"Randomly selected {VMAF_SAMPLE_COUNT} frames for VMAF score: frame list: {random_frames}")
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 5. Selected random frames for VMAF in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            ref_y4m_path = convert_mp4_to_y4m(ref_path, random_frames)
+            print("The reference video has been successfully converted to Y4M format.")
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 6. Converted reference video to Y4M in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            dist_path = None
+
             if len(dist_url) < 10:
                 print(f"Wrong dist download URL: {dist_url}. Assigning score of 0.")
                 vmaf_scores.append(0.0)
@@ -448,7 +449,19 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
                 reasons.append("wrong dist download url")
                 continue
 
-            dist_path = await download_video(dist_url, request.verbose)
+            try:
+                dist_path = await download_video(dist_url, request.verbose)
+            except Exception as e:
+                error_msg = f"Failed to download video from {dist_url}: {str(e)}"
+                print(f"{error_msg}. Assigning score of 0.")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(0.0)
+                reasons.append("failed to download video file from url")
+                continue
+
             step_time = time.time() - uid_start_time
             print(f"♎️ 7. Downloaded distorted video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
