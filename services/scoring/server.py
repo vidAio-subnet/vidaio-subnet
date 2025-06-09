@@ -6,6 +6,7 @@ import numpy as np
 from firerequests import FireRequests
 import tempfile
 import os
+import glob
 import random
 from moviepy.editor import VideoFileClip
 import aiohttp
@@ -603,10 +604,25 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
                 os.unlink(ref_y4m_path)
             if dist_path and os.path.exists(dist_path):
                 os.unlink(dist_path)
-            
+            if ref_path and os.path.exists(ref_path):
+                os.unlink(ref_path)
+
             # Delete the uploaded object
             storage_client.delete_file(uploaded_object_name)
+            
             delete_videos_with_fileid(video_id)
+
+    tmp_directory = "/tmp"
+    try:
+        print("🧹 Cleaning up temporary files in /tmp...")
+        for file_path in glob.glob(os.path.join(tmp_directory, "*.mp4")):
+            os.remove(file_path)
+            print(f"Deleted: {file_path}")
+        for file_path in glob.glob(os.path.join(tmp_directory, "*.y4m")):
+            os.remove(file_path)
+            print(f"Deleted: {file_path}")
+    except Exception as e:
+        print(f"⚠️ Error during cleanup: {e}")
 
     processed_time = time.time() - start_time
     print(f"Completed batch scoring of {len(request.distorted_urls)} pairs within {processed_time:.2f} seconds")

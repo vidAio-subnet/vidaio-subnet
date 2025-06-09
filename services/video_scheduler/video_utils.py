@@ -361,19 +361,17 @@ def get_trim_video_path(file_id: int, dir_path: str = "videos") -> str:
 
 def delete_videos_with_fileid(file_id: int, dir_path: str = "videos") -> None:
     """Deletes all video files associated with the given file ID."""
-
+    
     files_to_delete = [
-        Path(dir_path) / f"{file_id}_trim.mp4",
-        Path(dir_path) / f"{file_id}_downscale.mp4",
+        os.path.join(dir_path, f"{file_id}_trim.mp4"),
+        os.path.join(dir_path, f"{file_id}_downscale.mp4"),
     ]
 
     for file_path in files_to_delete:
         try:
-            if file_path.exists():
-                file_path.unlink()
+            if os.path.exists(file_path): 
+                os.remove(file_path) 
                 print(f"Deleted: {file_path}")
-            else:
-                print(f"File not found: {file_path}")
         except Exception as e:
             print(f"Error deleting {file_path}: {e}")
 
