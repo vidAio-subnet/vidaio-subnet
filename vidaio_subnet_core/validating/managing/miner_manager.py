@@ -128,20 +128,28 @@ class MinerManager:
                 elif miner.hotkey != hotkey:
                     bt.logging.info(f"Hotkey change detected for UID {uid}: {miner.hotkey} -> {hotkey}")
                     miner.hotkey = hotkey
+                    miner.accumulate_score = 0
                     
                     miner.bonus_multiplier = 1.0
                     miner.penalty_f_multiplier = 1.0
                     miner.penalty_q_multiplier = 1.0
                     miner.total_multiplier = 1.0
+
                     miner.avg_s_q = 0.0
                     miner.avg_s_l = 0.0
                     miner.avg_s_f = 0.0
                     miner.avg_content_length = 0.0
+
                     miner.bonus_count = 0
                     miner.penalty_f_count = 0
                     miner.penalty_q_count = 0
+
+                    miner.total_rounds_completed = 0
                     miner.performance_tier = "New Miner"
                     
+                    miner.success_rate = 1
+                    miner.longest_content_processed = 0
+
                     session.query(MinerPerformanceHistory).filter(
                         MinerPerformanceHistory.uid == uid
                     ).delete()
