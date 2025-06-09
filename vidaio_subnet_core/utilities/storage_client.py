@@ -152,13 +152,15 @@ class AmazonS3Client:
 
     async def delete_file(self, object_name):
         func = self.client.delete_object
-        args = (self.bucket_name, object_name)
-        kwargs = {}
+        kwargs = {
+            'Bucket': self.bucket_name,
+            'Key': object_name
+        }
         loop = asyncio.get_running_loop()
         print(f"Attempting to delete file: {object_name}")
         return await loop.run_in_executor(
             self.executor, 
-            lambda: func(*args, **kwargs)
+            lambda: func(**kwargs)
         )
 
     async def list_objects(self, prefix=None, recursive=True):
