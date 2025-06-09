@@ -446,7 +446,7 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
                 quality_scores.append(0.0)
                 length_scores.append(0.0)
                 final_scores.append(0.0)
-                reasons.append("wrong dist download url")
+                reasons.append("Invalid download URL: the distorted video download URL must be at least 10 characters long.")
                 continue
 
             try:
