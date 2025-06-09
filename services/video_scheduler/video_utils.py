@@ -105,14 +105,14 @@ def download_trim_downscale_video(
         actual_duration = end_time_clip - start_time_clip
         
         trim_cmd = [
-            "taskset", "-c", "0,1,2,3,4,5",
+            "taskset", "-c", "0,1,2,3,4,5,6,7,8,9,10,11",
             "ffmpeg", "-y", "-i", str(source_path), "-ss", str(start_time_clip), 
             "-t", str(actual_duration), "-c:v", "libx264", "-preset", "ultrafast",
             "-c:a", "aac", str(clipped_path), "-hide_banner", "-loglevel", "error"
         ]
         
         scale_cmd = [
-            "taskset", "-c", "0,1,2,3,4,5",
+            "taskset", "-c", "0,1,2,3,4,5,6,7,8,9,10,11",
             "ffmpeg", "-y", "-i", str(clipped_path), "-vf", f"scale=-1:{downscale_height}", 
             "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", 
             str(downscale_path), "-hide_banner", "-loglevel", "error"
@@ -361,17 +361,19 @@ def get_trim_video_path(file_id: int, dir_path: str = "videos") -> str:
 
 def delete_videos_with_fileid(file_id: int, dir_path: str = "videos") -> None:
     """Deletes all video files associated with the given file ID."""
-    
+
     files_to_delete = [
-        os.path.join(dir_path, f"{file_id}_trim.mp4"),
-        os.path.join(dir_path, f"{file_id}_downscale.mp4"),
+        Path(dir_path) / f"{file_id}_trim.mp4",
+        Path(dir_path) / f"{file_id}_downscale.mp4",
     ]
 
     for file_path in files_to_delete:
         try:
-            if os.path.exists(file_path): 
-                os.remove(file_path) 
+            if file_path.exists():
+                file_path.unlink()
                 print(f"Deleted: {file_path}")
+            else:
+                print(f"File not found: {file_path}")
         except Exception as e:
             print(f"Error deleting {file_path}: {e}")
 

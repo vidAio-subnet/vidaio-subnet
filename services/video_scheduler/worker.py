@@ -294,6 +294,8 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis,
             await storage_client.upload_file(object_name, challenge_local_path)
             sharing_link = await storage_client.get_presigned_url(object_name)
 
+            os.unlink(challenge_local_path)
+
             print(f"Sharing_link:{sharing_link} ")
 
             if not sharing_link:
