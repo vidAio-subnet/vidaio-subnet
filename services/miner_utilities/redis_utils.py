@@ -72,3 +72,60 @@ def get_files_to_delete() -> List[Dict]:
     except Exception as e:
         print(f"Error getting files to delete: {e}")
         return []
+
+def get_gpu_count():
+    try:
+        import pynvml
+        pynvml.nvmlInit()
+        device_count = pynvml.nvmlDeviceGetCount()
+        return device_count
+    except Exception as e:
+        print(f"Error getting available GPUs: {e}")
+        return 0
+
+TOTAL_GPU_COUNT = get_gpu_count()
+
+def init_gpus():
+    """
+    Initialize GPU states in Redis.
+    Set all GPUs to available (0).
+    """
+
+    redis_conn = get_redis_connection()
+    for i in range(TOTAL_GPU_COUNT):
+        redis_conn.set(f"gpu:{i}", 0)  # 0 = available, 1 = busy
+
+def get_total_gpu_count():
+    return TOTAL_GPU_COUNT
+
+def acquire_gpu(timeout=1) -> Optional[int]:
+    """
+    Acquire a GPU for processing.
+    
+    Args:
+        timeout: Time to wait before retrying to acquire a GPU.
+        
+    Returns:
+        int: Index of the acquired GPU, or None if no GPU is available.
+    """
+    redis_conn = get_redis_connection()
+    while True:
+        for i in range(TOTAL_GPU_COUNT):
+            if redis_conn.get(f"gpu:{i}") == "0":
+                if redis_conn.setnx(f"gpu:{i}:lock", 1):  # atomic lock
+                    redis_conn.set(f"gpu:{i}", 1)
+                    redis_conn.delete(f"gpu:{i}:lock")
+                    # if i > 0:
+                    #     time.sleep(3)
+                    return i
+        time.sleep(timeout)
+
+def release_gpu(gpu_index: int):
+    """
+    Release a GPU after processing.
+    
+    Args:
+        gpu_index: Index of the GPU to release.
+    """
+    redis_conn = get_redis_connection()
+    redis_conn.set(f"gpu:{gpu_index}", 0)

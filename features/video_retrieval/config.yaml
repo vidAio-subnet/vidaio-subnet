@@ -1,0 +1,11 @@
+mongo_uri: "mongodb://localhost:27017/?replicaSet=rs0"
+db_name: "vidaio"
+collection: "videos"
+default_video_dir: "/home/kingaimaster/85-Vidaio/videodb/"
+tolerance: 5
+vmaf_score_threshold: 80
+fine_interval: 1
+coarse_interval: 10
+max_workers: 6
+evaluated_file: "eval.json"
+PEXELS_API_KEY: "WD9OjZcFWztgC6no5AQksf5ixmdrW1EfLqpiYqxOWozhLX2DKzCYVkcO"

@@ -14,7 +14,7 @@ from services.miner_utilities.redis_utils import schedule_file_deletion
 from vidaio_subnet_core.utilities import storage_client, download_video
 from loguru import logger
 import traceback
-from modules.search_engine import VideoSearchEngine
+from features.modules.search_engine import VideoSearchEngine
 import shutil
 
 from services.miner_utilities.redis_utils import init_gpus, acquire_gpu, release_gpu, get_gpu_count
@@ -98,7 +98,7 @@ def upscale_video(payload_video_path: str, task_type: str, delete_input_file: bo
         logger.info(f"✅ Frame rate detected:💜 {frame_rate} fps")
 
         # Generate output file paths
-        output_file_upscaled = f"{input_file.name}_video2x_upscaled.mp4"
+        output_file_upscaled = f"{input_file.stem}_video2x_upscaled.mp4"
         if os.path.exists(output_file_upscaled):
             logger.info(f"✅ Output file already exists: {output_file_upscaled}")
             os.remove(output_file_upscaled)

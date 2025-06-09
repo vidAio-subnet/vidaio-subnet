@@ -1,0 +1,5 @@
+.venv
+__pycache__
+*.mp4
+*.xml
+*.y4m

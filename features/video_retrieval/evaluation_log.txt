@@ -1,0 +1,2 @@
+2025-06-04 15:28:32,213 - INFO - search_engine: fine_results: [{'id': 'SD2HD_4122889', 'start_frame': 504, 'scale': 2, 'frames': 30, 'fps': 29.97, 'score': 2}]
+2025-06-04 15:28:34,295 - INFO - 🔴 search_engine: vmaf score: 87.851778

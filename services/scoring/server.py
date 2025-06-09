@@ -560,10 +560,13 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
             dist_cap.release()
 
             s_l = calculate_length_score(content_length)
-
+            print(f"🏀 Content length: {content_length}, Length score is {s_l}")
+            
             s_pre = calculate_preliminary_score(s_q, s_l)
+            print(f"🏀 Preliminary score is {s_pre}")
 
             s_f = calculate_final_score(s_pre)
+            print(f"🏀 Final score is {s_f}")
 
             quality_scores.append(s_q)
             length_scores.append(s_l)
