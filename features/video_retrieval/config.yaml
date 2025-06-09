@@ -1,7 +1,7 @@
 mongo_uri: "mongodb://localhost:27017/?replicaSet=rs0"
 db_name: "vidaio"
 collection: "videos"
-default_video_dir: "/home/kingaimaster/85-Vidaio/videodb/"
+default_video_dir: "/root/vidaio/videodb/"
 tolerance: 5
 vmaf_score_threshold: 80
 fine_interval: 1

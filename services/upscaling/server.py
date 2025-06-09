@@ -175,25 +175,25 @@ def upscale_video(payload_video_path: str, task_type: str, delete_input_file: bo
         video2x_process = subprocess.run(video2x_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         elapsed_time = time.time() - start_time
         if video2x_process.returncode != 0:
-            logger.info(f"✅ video2x failed: {video2x_process.stderr.strip()}")
+            logger.info(f"❌ video2x failed: {video2x_process.stderr.strip()}")
 
             # Release the GPU
             if gpu_index != -1:
                 release_gpu(gpu_index)
                 logger.info(f"✅ <<<<<<<<<  Released GPU index: {gpu_index}  >>>>>>>>>")
             else:
-                logger.info("✅ Failed to release GPU index, it was never acquired.")
+                logger.info("❌ Failed to release GPU index, it was never acquired.")
 
             raise HTTPException(status_code=500, detail=f"video2x: Upscaling failed: {video2x_process.stderr.strip()}")
         if not os.path.exists(str(output_file_upscaled)):
-            logger.info("✅ video2x: Upscaled MP4 video file was not created.")
+            logger.info("❌ video2x: Upscaled MP4 video file was not created.")
 
             # Release the GPU
             if gpu_index != -1:
                 release_gpu(gpu_index)
                 logger.info(f"✅ <<<<<<<<<  Released GPU index: {gpu_index}  >>>>>>>>>")
             else:
-                logger.info("✅ Failed to release GPU index, it was never acquired.")
+                logger.info("❌ Failed to release GPU index, it was never acquired.")
 
             raise HTTPException(status_code=500, detail="video2x: Upscaled MP4 video file was not created.")
         logger.info(f"✅ Step 2 completed in ✅ {elapsed_time:.2f} seconds. Upscaled MP4 file: {output_file_upscaled}")

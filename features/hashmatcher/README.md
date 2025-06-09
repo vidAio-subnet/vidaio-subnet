@@ -1,13 +1,16 @@
 # fast hash_matcher for python
 
-## Build from source
-pybind11 install
-### OpenCV, FFTW3 installation
+## Install pybind11
+sudo apt install pybind11-dev
+
+
+## Install dependency libs (OpenCV, FFTW3 installation)
 ```bash
 # Download dependencies
 apt install libopencv-dev libfftw3-dev cmake
 ```
 
+## Install FFmpeg that supports nvenc
 ### Install required dependencies for FFMpeg
 ```bash
 cuda toolkit install
@@ -38,7 +41,6 @@ cd nv-codec-headers
 make
 sudo make install
 ```
-
 ### ffmpeg-nv installation
 ```bash
 git clone https://git.ffmpeg.org/ffmpeg.git ffmpeg
@@ -64,6 +66,7 @@ ffmpeg -hide_banner -encoders | grep nvenc
 ffmpeg -hwaccel cuda -i input.mp4 -c:v h264_nvenc -preset p1 output.mp4
 ```
 
+## git clone & compile
 ```bash
 # Checkout source
 git clone https://github.com/kingaimaster94/hash_matcher
@@ -76,6 +79,6 @@ make
 sudo make install
 ```
 
-### Usage
+## Usage
 ```bash
 import cmatcher
