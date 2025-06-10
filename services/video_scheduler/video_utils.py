@@ -73,13 +73,6 @@ def fetch_cookies() -> os.PathLike:
     print(f"Cookie fetch took {time.time() - start} seconds")
     return cookie_file
 
-def with_tempdir(func):
-    """Provides a contextual temp dir to a function"""
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        with tempfile.TemporaryDirectory() as temp:
-            return func(*args, temp_path=temp, **kwargs)
-    return wrapper
 
 def download_trim_downscale_video(
     clip_duration: int,
