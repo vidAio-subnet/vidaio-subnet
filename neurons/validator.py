@@ -191,27 +191,46 @@ class Validator(base.BaseValidator):
         pieapp_scores = response_data.get("pieapp_scores", [])
         reasons = response_data.get("reasons", [])
         
-        max_length = max(len(uids), len(quality_scores), len(length_scores), len(final_scores), len(vmaf_scores), len(pieapp_scores), len(reasons))
+        logger.info(f"Updating miner manager with {len(quality_scores)} miner scores after synthetic requests processing")
+
+        accumulate_scores, applied_multipliers = self.miner_manager.step_synthetics(
+            round_id, uids, miner_hotkeys, vmaf_scores, pieapp_scores, quality_scores, length_scores, final_scores, content_lengths
+        )
+
+        max_length = max(
+            len(uids),
+            len(quality_scores),
+            len(length_scores),
+            len(final_scores),
+            len(vmaf_scores),
+            len(pieapp_scores),
+            len(reasons),
+            len(content_lengths),
+            len(applied_multipliers),
+            len(accumulate_scores),
+        )
+
+        vmaf_scores.extend([0.0] * (max_length - len(vmaf_scores)))
+        pieapp_scores.extend([0.0] * (max_length - len(pieapp_scores)))
         quality_scores.extend([0.0] * (max_length - len(quality_scores)))
         length_scores.extend([0.0] * (max_length - len(length_scores)))
         final_scores.extend([0.0] * (max_length - len(final_scores)))
-        vmaf_scores.extend([0.0] * (max_length - len(vmaf_scores)))
-        pieapp_scores.extend([0.0] * (max_length - len(pieapp_scores)))
         reasons.extend(["No reason provided"] * (max_length - len(reasons)))
-
+        content_lengths.extend([0.0] * (max_length - len(content_lengths)))
+        applied_multipliers.extend([0.0] * (max_length - len(applied_multipliers)))
 
         logger.info(f"Synthetic scoring results for {len(uids)} miners")
         logger.info(f"Uids: {uids}")
-        for uid, vmaf_score, pieapp_score, quality_score, length_score, final_score, reason in zip(
-            uids, vmaf_scores, pieapp_scores, quality_scores, length_scores, final_scores, reasons
+
+        for uid, vmaf_score, pieapp_score, quality_score, length_score, final_score, reason, content_length, applied_multiplier in zip(
+            uids, vmaf_scores, pieapp_scores, quality_scores, length_scores, final_scores, reasons, content_lengths, applied_multipliers
         ):
-            logger.info(f"{uid} ** VMAF: {vmaf_score:.2f} ** PieAPP: {pieapp_score:.2f} ** Quality: {quality_score:.4f} ** Length: {length_score:.4f} ** Final: {final_score:.4f} || {reason}")
-        
-        logger.info(f"Updating miner manager with {len(quality_scores)} miner scores after synthetic requests processing")
+            logger.info(
+                f"{uid} ** VMAF: {vmaf_score:.2f} ** PieAPP: {pieapp_score:.2f} ** Quality: {quality_score:.4f} "
+                f"** Length: {length_score:.4f} ** Content Length: {content_length} ** Applied_multiplier {applied_multiplier} ** Final: {final_score:.4f} || {reason}"
+            )
         
         miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
-
-        accumulate_scores, applied_multipliers = self.miner_manager.step_synthetics(round_id, uids, miner_hotkeys, vmaf_scores, pieapp_scores, quality_scores, length_scores, final_scores, content_lengths)
 
         miner_data = {
             "validator_uid": self.my_subnet_uid,
