@@ -1,0 +1,34 @@
+services:
+  vidaio_video_utils_test:
+    hostname: vidaio_video_utils_test
+    container_name: vidaio_video_utils_test
+    environment:
+      - PYTHONUNBUFFERED=1
+    build:
+      context: ../
+      dockerfile_inline: |
+        FROM python:3.11-slim
+
+        WORKDIR /app
+
+        # Install Chrome + dependencies
+        RUN apt-get update && apt-get install -y \
+            wget curl unzip gnupg2 xvfb ffmpeg \
+            chromium chromium-driver \
+            && rm -rf /var/lib/apt/lists/*
+
+        # Set environment variables for Selenium
+        ENV CHROME_BIN=/usr/bin/chromium
+        ENV CHROMEDRIVER_PATH=/usr/lib/chromium/chromedriver
+
+        # Install Python packages
+        COPY ../requirements.txt /app/common_requirements.txt
+        RUN pip install --no-cache-dir requests tqdm selenium python-dotenv
+
+        RUN pip install -U --pre "yt-dlp[default]" && yt-dlp -U && yt-dlp --version
+
+        COPY ../services/ /app/services/
+
+        CMD ["python", "--version"]
+    command: ["python", "services/video_scheduler/video_utils.py"]
+    restart: always
