@@ -31,4 +31,4 @@ services:
 
         CMD ["python", "--version"]
     command: ["python", "services/video_scheduler/video_utils.py"]
-    restart: always
+    restart: no
