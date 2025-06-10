@@ -8,6 +8,7 @@ import tempfile
 import os
 import glob
 import random
+import asyncio
 from moviepy.editor import VideoFileClip
 import aiohttp
 import logging
@@ -71,7 +72,7 @@ class ScoringResponse(BaseModel):
     final_scores: List[float]
     reasons: List[str]
 
-async def download_video(video_url: str, verbose: bool) -> str:
+async def download_video(video_url: str, verbose: bool) -> tuple[str, float]:
     """
     Download a video from the given URL and save it to a temporary file.
 
@@ -80,37 +81,47 @@ async def download_video(video_url: str, verbose: bool) -> str:
         verbose (bool): Whether to show download progress.
 
     Returns:
-        str: The path to the downloaded video file.
+        tuple[str, float]: A tuple containing the path to the downloaded video file
+                           and the time taken to download it.
 
     Raises:
-        HTTPException: If the download fails.
+        Exception: If the download fails or takes longer than the timeout.
     """
     try:
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as vid_temp:
             file_path = vid_temp.name  # Path to the temporary file
-        print(f"downloading video from {video_url} to {file_path}")
+        if verbose:
+            print(f"Downloading video from {video_url} to {file_path}")
 
-        timeout = aiohttp.ClientTimeout(sock_connect=0.5, total=4.5)
+        timeout = aiohttp.ClientTimeout(sock_connect=0.5, total=7.5)
+
+        start_time = time.time()  # Record start time
 
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(video_url) as response:
                 if response.status != 200:
-                    raise Exception(f"failed to download video. http status: {response.status}")
+                    raise Exception(f"Failed to download video. HTTP status: {response.status}")
 
                 with open(file_path, "wb") as f:
-                    async for chunk in response.content.iter_chunked(2 * 1024 * 1024): 
+                    async for chunk in response.content.iter_chunked(2 * 1024 * 1024):
                         f.write(chunk)
 
+        end_time = time.time()  # Record end time
+        download_time = end_time - start_time  # Calculate download duration
+
         if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
-            raise Exception(f"download failed or file is empty: {file_path}")
+            raise Exception(f"Download failed or file is empty: {file_path}")
 
-        print(f"file successfully downloaded to: {file_path}")
-        return file_path
+        if verbose:
+            print(f"File successfully downloaded to: {file_path}")
+            print(f"Download time: {download_time:.2f} seconds")
 
-    except Exception as e:
-        print(f"download failed from {video_url}: {e}") 
-        raise HTTPException(status_code=500, detail="failed to download video")
+        return file_path, download_time
 
+    except aiohttp.ClientError as e:
+        raise Exception(f"Download failed due to a network error: {e}")
+    except asyncio.TimeoutError:
+        raise Exception("Download timed out")
 
 def calculate_psnr(ref_frame: np.ndarray, dist_frame: np.ndarray) -> float:
     """
@@ -451,7 +462,7 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
                 continue
 
             try:
-                dist_path = await download_video(dist_url, request.verbose)
+                dist_path, download_time = await download_video(dist_url, request.verbose)
             except Exception as e:
                 error_msg = f"Failed to download video from {dist_url}: {str(e)}"
                 print(f"{error_msg}. Assigning score of 0.")
@@ -652,7 +663,7 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
             distorted_video_paths.append(None)
             continue
         try:
-            path = await download_video(dist_url, request.verbose)
+            path, download_time = await download_video(dist_url, request.verbose)
             distorted_video_paths.append(path)
         except Exception as e:
             print(f"failed to download distorted video: {dist_url}, error: {e}")
@@ -685,7 +696,7 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
 
 
 
-            ref_path = await download_video(ref_url, request.verbose)
+            ref_path, download_time = await download_video(ref_url, request.verbose)
             ref_cap = cv2.VideoCapture(ref_path)
             ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
