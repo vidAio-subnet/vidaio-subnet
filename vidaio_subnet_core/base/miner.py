@@ -4,7 +4,7 @@ import threading
 from loguru import logger
 import time
 import traceback
-from vidaio_subnet_core.protocol import VideoUpscalingProtocol
+from vidaio_subnet_core.protocol import VideoUpscalingProtocol, LengthCheckProtocol
 import argparse
 from .config import add_common_config
 import os
@@ -76,13 +76,13 @@ class BaseMiner(ABC):
     async def priority_upscaling_requests(self, synapse: VideoUpscalingProtocol) -> float: ...
 
     @abstractmethod
-    async def forward_length_check_requests(self, synapse: VideoUpscalingProtocol) -> bt.Synapse: ...
+    async def forward_length_check_requests(self, synapse: LengthCheckProtocol) -> bt.Synapse: ...
 
     @abstractmethod
-    async def blacklist_length_check_requests(self, synapse: VideoUpscalingProtocol) -> bool: ...
+    async def blacklist_length_check_requests(self, synapse: LengthCheckProtocol) -> bool: ...
 
     @abstractmethod
-    async def priority_length_check_requests(self, synapse: VideoUpscalingProtocol) -> float: ...
+    async def priority_length_check_requests(self, synapse: LengthCheckProtocol) -> float: ...
 
     def run(self):
         """

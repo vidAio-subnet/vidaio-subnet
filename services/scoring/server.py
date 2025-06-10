@@ -6,7 +6,9 @@ import numpy as np
 from firerequests import FireRequests
 import tempfile
 import os
+import glob
 import random
+import asyncio
 from moviepy.editor import VideoFileClip
 import aiohttp
 import logging
@@ -70,7 +72,7 @@ class ScoringResponse(BaseModel):
     final_scores: List[float]
     reasons: List[str]
 
-async def download_video(video_url: str, verbose: bool) -> str:
+async def download_video(video_url: str, verbose: bool) -> tuple[str, float]:
     """
     Download a video from the given URL and save it to a temporary file.
 
@@ -79,39 +81,47 @@ async def download_video(video_url: str, verbose: bool) -> str:
         verbose (bool): Whether to show download progress.
 
     Returns:
-        str: The path to the downloaded video file.
+        tuple[str, float]: A tuple containing the path to the downloaded video file
+                           and the time taken to download it.
 
     Raises:
-        HTTPException: If the download fails.
+        Exception: If the download fails or takes longer than the timeout.
     """
     try:
-        # Create a temporary file for the video
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as vid_temp:
             file_path = vid_temp.name  # Path to the temporary file
-        print(f"Downloading video from {video_url} to {file_path}")
+        if verbose:
+            print(f"Downloading video from {video_url} to {file_path}")
 
-        # Download the file using aiohttp
-        async with aiohttp.ClientSession() as session:
+        timeout = aiohttp.ClientTimeout(sock_connect=0.5, total=7.5)
+
+        start_time = time.time()  # Record start time
+
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(video_url) as response:
                 if response.status != 200:
                     raise Exception(f"Failed to download video. HTTP status: {response.status}")
 
-                # Write the content to the temp file in chunks
                 with open(file_path, "wb") as f:
-                    async for chunk in response.content.iter_chunked(2 * 1024 * 1024):  # 2 MB chunks
+                    async for chunk in response.content.iter_chunked(2 * 1024 * 1024):
                         f.write(chunk)
 
-        # Verify the file was successfully downloaded
+        end_time = time.time()  # Record end time
+        download_time = end_time - start_time  # Calculate download duration
+
         if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
             raise Exception(f"Download failed or file is empty: {file_path}")
 
-        print(f"File successfully downloaded to: {file_path}")
-        return file_path
+        if verbose:
+            print(f"File successfully downloaded to: {file_path}")
+            print(f"Download time: {download_time:.2f} seconds")
 
-    except Exception as e:
-        print(f"Failed to download video from {video_url}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error downloading video: {str(e)}")
+        return file_path, download_time
 
+    except aiohttp.ClientError as e:
+        raise Exception(f"Download failed due to a network error: {e}")
+    except asyncio.TimeoutError:
+        raise Exception("Download timed out")
 
 def calculate_psnr(ref_frame: np.ndarray, dist_frame: np.ndarray) -> float:
     """
@@ -260,7 +270,6 @@ def calculate_pieapp_score_on_samples(ref_frames, dist_frames):
         print("No dist frames to process")
         return 2.0
     
-    # Create a custom frame provider class that mimics cv2.VideoCapture
     class FrameProvider:
         def __init__(self, frames):
             self.frames = frames
@@ -277,7 +286,6 @@ def calculate_pieapp_score_on_samples(ref_frames, dist_frames):
         def get(self, prop_id):
             if prop_id == cv2.CAP_PROP_FRAME_COUNT:
                 return self.frame_count
-            # Add other properties as needed
             return 0
         
         def set(self, prop_id, value):
@@ -293,13 +301,10 @@ def calculate_pieapp_score_on_samples(ref_frames, dist_frames):
         def isOpened(self):
             return self.frame_count > 0
     
-    # Create frame providers that will act as cv2.VideoCapture objects
     ref_provider = FrameProvider(ref_frames)
     dist_provider = FrameProvider(dist_frames)
     
-    # Calculate PieAPP score using the original function
     try:
-        # Use frame_interval=1 to process all frames since we're already working with sampled frames
         score = calculate_pieapp_score(ref_provider, dist_provider, frame_interval=1)
         return score
     except Exception as e:
@@ -317,40 +322,34 @@ def upscale_video(input_path, scale_factor=2):
     Returns:
         str: Path to the upscaled video file
     """
-    # Create output filename with scale factor indication
     filename, extension = os.path.splitext(input_path)
     output_path = f"{filename}_upscaled{extension}"
     
-    # Get video dimensions
     cap = cv2.VideoCapture(input_path)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.release()
     
-    # Calculate new dimensions
     new_width = width * scale_factor
     new_height = height * scale_factor
     
-    # FFmpeg command to upscale the video
     cmd = [
         "ffmpeg",
         "-i", input_path,
         "-vf", f"scale={new_width}:{new_height}",
         "-c:v", "libx264",
-        "-preset", "medium",  # Balance between speed and quality
-        "-crf", "18",         # High quality
-        "-c:a", "copy",       # Copy audio stream without re-encoding
+        "-preset", "medium",  
+        "-crf", "18",         
+        "-c:a", "copy",       
         output_path
     ]
     
-    # Execute the command
     try:
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         print(f"Successfully upscaled video to {new_width}x{new_height}")
         return output_path
     except subprocess.CalledProcessError as e:
         print(f"Error upscaling video: {e}")
-        # If upscaling fails, return the original path
         return input_path
 
 @app.post("/score_synthetics")
@@ -385,58 +384,73 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
         request.uploaded_object_names,
         request.content_lengths
     )):
-        print(f"🧩 Processing pair {idx+1}/{len(request.distorted_urls)}: UID {uid} 🧩")
-        
-        ref_cap = None
-        dist_cap = None
-
-        ref_cap = cv2.VideoCapture(ref_path)
-        if not ref_cap.isOpened():
-            print(f"Error opening reference video file {ref_path}. Assigning score of 0.")
-            vmaf_scores.append(0.0)
-            pieapp_scores.append(0.0)
-            quality_scores.append(0.0)
-            length_scores.append(0.0)
-            final_scores.append(-100)
-            reasons.append(f"error opening reference video file: {ref_path}")
-            continue
-
-        ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        print(f"Reference video has {ref_total_frames} frames.")
-
-        if ref_total_frames < 10:
-            print(f"Video must contain at least 10 frames. Assigning score of 0.")
-            vmaf_scores.append(0.0)
-            pieapp_scores.append(0.0)
-            quality_scores.append(0.0)
-            length_scores.append(0.0)
-            final_scores.append(-100)
-            reasons.append("reference video has fewer than 10 frames")
-            ref_cap.release()
-            continue
-
-        sample_size = min(PIEAPP_SAMPLE_COUNT, ref_total_frames)
-        max_start_frame = ref_total_frames - sample_size
-        start_frame = 0 if max_start_frame <= 0 else random.randint(0, max_start_frame)
-
-        print(f"Selected frame range for pieapp score {idx+1}: {start_frame} to {start_frame + sample_size - 1}")
-
-        ref_frames = []
-        ref_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-        for _ in range(sample_size):
-            ret, frame = ref_cap.read()
-            if not ret:
-                break
-            ref_frames.append(frame)
-
-        random_frames = sorted(random.sample(range(ref_total_frames), VMAF_SAMPLE_COUNT))
-        print(f"Randomly selected {VMAF_SAMPLE_COUNT} frames for VMAF score: frame list: {random_frames}")
-
-        ref_y4m_path = convert_mp4_to_y4m(ref_path, random_frames)
-        print("The reference video has been successfully converted to Y4M format.")
-
-        dist_path = None
         try:
+            print(f"🧩 Processing pair {idx+1}/{len(request.distorted_urls)}: UID {uid} 🧩")
+            
+            uid_start_time = time.time()  # Start time for this UID
+
+            ref_cap = None
+            dist_cap = None
+
+            ref_cap = cv2.VideoCapture(ref_path)
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 1. Opened reference video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            if not ref_cap.isOpened():
+                print(f"Error opening reference video file {ref_path}. Assigning score of 0.")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(-100)
+                reasons.append(f"error opening reference video file: {ref_path}")
+                continue
+
+            ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 2. Retrieved reference video frame count ({ref_total_frames}) in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            if ref_total_frames < 10:
+                print(f"Video must contain at least 10 frames. Assigning score of 0.")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(-100)
+                reasons.append("reference video has fewer than 10 frames")
+                ref_cap.release()
+                continue
+
+            sample_size = min(PIEAPP_SAMPLE_COUNT, ref_total_frames)
+            max_start_frame = ref_total_frames - sample_size
+            start_frame = 0 if max_start_frame <= 0 else random.randint(0, max_start_frame)
+
+            print(f"Selected frame range for pieapp score {idx+1}: {start_frame} to {start_frame + sample_size - 1}")
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 3. Selected frame range in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            ref_frames = []
+            ref_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            for _ in range(sample_size):
+                ret, frame = ref_cap.read()
+                if not ret:
+                    break
+                ref_frames.append(frame)
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 4. Extracted sampled frames from reference video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            random_frames = sorted(random.sample(range(ref_total_frames), VMAF_SAMPLE_COUNT))
+            print(f"Randomly selected {VMAF_SAMPLE_COUNT} frames for VMAF score: frame list: {random_frames}")
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 5. Selected random frames for VMAF in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            ref_y4m_path = convert_mp4_to_y4m(ref_path, random_frames)
+            print("The reference video has been successfully converted to Y4M format.")
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 6. Converted reference video to Y4M in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            dist_path = None
+
             if len(dist_url) < 10:
                 print(f"Wrong dist download URL: {dist_url}. Assigning score of 0.")
                 vmaf_scores.append(0.0)
@@ -444,11 +458,28 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
                 quality_scores.append(0.0)
                 length_scores.append(0.0)
                 final_scores.append(0.0)
-                reasons.append("wrong dist download url")
+                reasons.append("Invalid download URL: the distorted video download URL must be at least 10 characters long.")
                 continue
 
-            dist_path = await download_video(dist_url, request.verbose)
+            try:
+                dist_path, download_time = await download_video(dist_url, request.verbose)
+            except Exception as e:
+                error_msg = f"Failed to download video from {dist_url}: {str(e)}"
+                print(f"{error_msg}. Assigning score of 0.")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(0.0)
+                reasons.append("failed to download video file from url")
+                continue
+
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 7. Downloaded distorted video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
             dist_cap = cv2.VideoCapture(dist_path)
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 8. Opened distorted video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             if not dist_cap.isOpened():
                 print(f"Error opening distorted video file from {dist_url}. Assigning score of 0.")
@@ -465,6 +496,8 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
 
             dist_total_frames = int(dist_cap.get(cv2.CAP_PROP_FRAME_COUNT))
             print(f"Distorted video has {dist_total_frames} frames.")
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 9. Retrieved distorted video frame count in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             if dist_total_frames != ref_total_frames:
                 print(
@@ -483,7 +516,14 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
 
             # Calculate VMAF
             try:
+                vmaf_start = time.time()
                 vmaf_score = calculate_vmaf(ref_y4m_path, dist_path, random_frames)
+                vmaf_calc_time = time.time() - vmaf_start
+                print(f"☣️☣️ VMAF calculation took {vmaf_calc_time:.2f} seconds.")
+
+                step_time = time.time() - uid_start_time
+                print(f"♎️ 10. Completed VMAF calculation in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
                 if vmaf_score is not None:
                     vmaf_scores.append(vmaf_score)
                 else:
@@ -519,9 +559,13 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
                 if not ret:
                     break
                 dist_frames.append(frame)
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 11. Extracted sampled frames from distorted video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Calculate PieAPP score
             pieapp_score = calculate_pieapp_score_on_samples(ref_frames, dist_frames)
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 12. Calculated PieAPP score in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
             print(f"🎾 PieAPP score is {pieapp_score}")
 
             if pieapp_score == -100:
@@ -536,7 +580,7 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
 
             pieapp_scores.append(pieapp_score)
             s_q = calculate_quality_score(pieapp_score)
-            print(f"🏀 quality score is {s_q}")
+            print(f"🏀 Quality score is {s_q}")
 
             dist_cap.release()
 
@@ -550,6 +594,9 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
             length_scores.append(s_l)
             final_scores.append(s_f)
             reasons.append("success")
+
+            step_time = time.time() - uid_start_time
+            print(f"🛑 Processed one UID in {step_time:.2f} seconds.")
 
         except Exception as e:
             error_msg = f"Failed to process video from {dist_url}: {str(e)}"
@@ -568,10 +615,25 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
                 os.unlink(ref_y4m_path)
             if dist_path and os.path.exists(dist_path):
                 os.unlink(dist_path)
-            
+            if ref_path and os.path.exists(ref_path):
+                os.unlink(ref_path)
+
             # Delete the uploaded object
             storage_client.delete_file(uploaded_object_name)
+            
             delete_videos_with_fileid(video_id)
+
+    tmp_directory = "/tmp"
+    try:
+        print("🧹 Cleaning up temporary files in /tmp...")
+        for file_path in glob.glob(os.path.join(tmp_directory, "*.mp4")):
+            os.remove(file_path)
+            print(f"Deleted: {file_path}")
+        for file_path in glob.glob(os.path.join(tmp_directory, "*.y4m")):
+            os.remove(file_path)
+            print(f"Deleted: {file_path}")
+    except Exception as e:
+        print(f"⚠️ Error during cleanup: {e}")
 
     processed_time = time.time() - start_time
     print(f"Completed batch scoring of {len(request.distorted_urls)} pairs within {processed_time:.2f} seconds")
@@ -601,7 +663,7 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
             distorted_video_paths.append(None)
             continue
         try:
-            path = await download_video(dist_url, request.verbose)
+            path, download_time = await download_video(dist_url, request.verbose)
             distorted_video_paths.append(path)
         except Exception as e:
             print(f"failed to download distorted video: {dist_url}, error: {e}")
@@ -634,7 +696,7 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
 
 
 
-            ref_path = await download_video(ref_url, request.verbose)
+            ref_path, download_time = await download_video(ref_url, request.verbose)
             ref_cap = cv2.VideoCapture(ref_path)
             ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
