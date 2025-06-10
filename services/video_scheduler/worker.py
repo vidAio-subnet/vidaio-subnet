@@ -11,6 +11,7 @@ import time
 import yaml
 import redis
 import shutil
+from datetime import datetime
 
 from redis_utils import (
     get_redis_connection,
@@ -119,6 +120,39 @@ async def get_synthetic_urls(hotkey: str, num_needed: int) -> Optional[List[str]
     except Exception as e:
         logger.error(f"Unexpected error fetching synthetic URLs: {str(e)}", exc_info=True)
     return None
+
+def clean_old_files(directory: str, age_limit_in_hours: int, check_interval_in_seconds: int = 100):
+    """
+    Continuously checks the given directory and deletes files older than the specified age (in hours).
+
+    Args:
+        directory (str): The directory to monitor.
+        age_limit_in_hours (int): The age limit for files in hours. Files older than this will be deleted.
+        check_interval_in_seconds (int): The interval (in seconds) to wait between directory checks. Default is 100 seconds.
+    """
+    age_limit_in_seconds = age_limit_in_hours * 60 * 60
+
+    while True:
+        now = time.time()  # Current time in seconds since the epoch
+        print(f"Checking directory: {directory} at {datetime.now()}")
+
+        if not os.path.exists(directory):
+            print(f"Directory '{directory}' does not exist. Skipping...")
+        else:
+            for filename in os.listdir(directory):
+                file_path = os.path.join(directory, filename)
+
+                if os.path.isfile(file_path):
+                    file_age_in_seconds = now - os.path.getmtime(file_path)
+
+                    if file_age_in_seconds > age_limit_in_seconds:
+                        try:
+                            os.remove(file_path)
+                            print(f"Deleted file: {file_path} (Age: {file_age_in_seconds / 3600:.2f} hours)")
+                        except Exception as e:
+                            print(f"Error deleting file {file_path}: {e}")
+
+        time.sleep(check_interval_in_seconds)
 
 def get_pexels_random_vids(
     num_needed: int, 
@@ -349,6 +383,8 @@ async def main():
             try:
                 
                 cycle_start_time = time.time()
+
+                clean_old_files(directory="videos", age_limit_in_hours=36, check_interval_in_seconds=200)
 
                 await manage_pexels_queue(
                     redis_conn, 

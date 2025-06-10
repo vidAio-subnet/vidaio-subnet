@@ -229,7 +229,7 @@ class Validator(base.BaseValidator):
                 f"{uid} ** VMAF: {vmaf_score:.2f} ** PieAPP: {pieapp_score:.2f} ** Quality: {quality_score:.4f} "
                 f"** Length: {length_score:.4f} ** Content Length: {content_length} ** Applied_multiplier {applied_multiplier} ** Final: {final_score:.4f} || {reason}"
             )
-        
+
         miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
 
         miner_data = {
