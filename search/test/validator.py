@@ -66,7 +66,7 @@ class Validator(BaseValidator):
         payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_synthetic_protocol(content_lengths, version, round_id)
         logger.debug(f"Built challenge protocol")
 
-        breference_video_paths = []
+        reference_video_paths = []
         for video_id in video_ids:
             reference_video_path = get_trim_video_path(video_id)
             reference_video_paths.append(reference_video_path)

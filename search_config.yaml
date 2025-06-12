@@ -1,0 +1,16 @@
+mongo_uri: "mongodb://localhost:27017/?replicaSet=rs0"
+db_name: "vidaio"
+collection: "videos"
+video_dir: "/root/vidaio/video_src_files/"
+test_video_dir: "/root/vidaio/test_videos/"
+hash_search_processors: 8
+tolerance: 5
+vmaf_score_threshold: 60
+fine_interval: 1
+coarse_interval: 10
+max_workers: 6
+evaluated_file: "eval.json"
+PEXELS_API_KEY: "WD9OjZcFWztgC6no5AQksf5ixmdrW1EfLqpiYqxOWozhLX2DKzCYVkcO"
+MIN_VIDEO_LEN: 25
+MAX_VIDEO_LEN: 50
+PEXELS_CHECK_INTERVAL: 900 # 15 minutes

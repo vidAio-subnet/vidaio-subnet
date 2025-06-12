@@ -56,16 +56,13 @@ async def score_video(downscaled_video_path, ref_video_path):
             
             await storage_client.upload_file(object_name, processed_video_path)
             #await storage_client.upload_file(object_name, ref_video_path)
-            
-            logger.info("Video uploaded successfully.")
-                
+                            
             sharing_link: str | None = await storage_client.get_presigned_url(object_name)
             if not sharing_link:
-                logger.error("Upload failed")
+                logger.error(f"File: {input_file.name} Upload failed")
                 return (None, None)
-           
-            logger.info(f"Public download link: {sharing_link}")
-            logger.info(f"Total processing time: {time.time() - start_time:.2f} seconds")
+
+            logger.info(f"File: {input_file.name} Total processing time: {time.time() - start_time:.2f} seconds")
             video_duration = VideoFileClip(ref_video_path).duration
             uids = [1]
             
@@ -77,8 +74,6 @@ async def score_video(downscaled_video_path, ref_video_path):
                 "uploaded_object_names": [object_name],
                 "content_lengths": [math.floor(video_duration)]
             }
-
-            logger.info(f"Post JSON: {post_json}")
 
             score_response = await score_client.post(
                 "/score_synthetics",
@@ -119,7 +114,7 @@ async def do_score_check(file_list):
         try:
             vmaf_score, final_score = await score_video(file[0], file[1])
             file_name = os.path.splitext(os.path.basename(file[0]))[0]
-            logger.info(f"🔯🔯🔯 calculated score: VMAF: {vmaf_score} Final: {final_score} for {file_name} 🔯🔯🔯")
+            logger.info(f"🔯🔯🔯 File: {file_name} VMAF: {vmaf_score} Final: {final_score} 🔯🔯🔯")
             if vmaf_score is not None:
                 vmaf_scores.append(vmaf_score)  
             if final_score is not None:

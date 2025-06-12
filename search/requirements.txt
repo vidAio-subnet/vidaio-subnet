@@ -13,3 +13,6 @@ networkx==3.5
 packaging==25.0 
 scikit-image==0.25.2 
 tifffile==2025.6.1
+pynvml
+pymongo
+tqdm
