@@ -39,7 +39,7 @@ def download_trim_downscale_video(
         vid (int): YouTube video ID to download.
         task_type (str): Type of task determining resolution requirements.
         output_dir (str): Directory to save the processed videos.
-        handler (str): Optional handler to minimize cookie fetches.
+        handler (YouTubeHandler): Optional handler to minimize cookie fetches.
 
     Returns:
         Optional[Tuple[List[str], List[int]]]: Lists of paths to the downscaled videos and their generated IDs, 
