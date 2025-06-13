@@ -12,73 +12,22 @@ import tempfile
 import threading
 import functools
 from dotenv import load_dotenv
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
 import yt_dlp
+
+if __name__ == "__main__": # for testing
+    from youtube_requests import YouTubeHandler, RESOLUTIONS
+else:
+    from .youtube_requests import YouTubeHandler, RESOLUTIONS
 
 load_dotenv()
 MAX_WORKERS = 8
 
-def cookies_to_netscape(cookies, max_age=48 * 3600) -> str:
-    """
-    Converts Selenium Chrome driver cookies to Netscape format
-    Returns the cookies as a string
-    """
-    expiry = int(time.time()) + max_age
-    lines = ["# Netscape HTTP Cookie File"]
-    for c in cookies:
-        domain = c["domain"]
-        include_subdomains = "TRUE" if domain.startswith(".") else "FALSE"
-        path = c["path"]
-        secure = "TRUE" if c.get("secure", False) else "FALSE"
-        expiry = c.get("expiry", expiry)
-        name = c["name"]
-        value = c["value"]
-        lines.append(f"{domain}\t{include_subdomains}\t{path}\t{secure}\t{expiry}\t{name}\t{value}")
-    return "\n".join(lines)
-
-def fetch_cookies() -> os.PathLike:
-    """
-    Gets cookies from YouTube using Selenium
-    Converts them to Netscape format for yt dlp
-    Saves them to a tempfile
-    Returns the tempfile path.
-    """
-    start = time.time()
-    options = [
-        "--headless=new",
-        "--no-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--window-size=64,64",
-        "--disable-extensions",
-        "--disable-background-networking",
-        "--disable-sync",
-        "--disable-default-apps",
-        "--disable-translate",
-        "--disable-features=TranslateUI",
-    ]
-    chrome_options = Options()
-    for o in options:
-        chrome_options.add_argument(o)
-    driver = webdriver.Chrome(options=chrome_options)
-    driver.get("https://www.youtube.com")
-    driver.implicitly_wait(5)
-    cookies = driver.get_cookies()
-    driver.quit()
-    cookies = cookies_to_netscape(cookies)
-    with tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.cookies') as f:
-        f.write(cookies)
-        cookie_file = f.name
-    print(f"Cookie fetch took {time.time() - start} seconds")
-    return cookie_file
-
-
 def download_trim_downscale_video(
     clip_duration: int,
-    vid: int,
+    vid: str,
     task_type: str,
-    output_dir: str = "/videos"
+    output_dir: str = "/videos",
+    handler: YouTubeHandler | None = None
 ) -> Optional[Tuple[List[str], List[int]]]:
     """
     Downloads a specified video with video id from YouTube, extracts multiple chunks 
@@ -90,6 +39,7 @@ def download_trim_downscale_video(
         vid (int): YouTube video ID to download.
         task_type (str): Type of task determining resolution requirements.
         output_dir (str): Directory to save the processed videos.
+        handler (str): Optional handler to minimize cookie fetches.
 
     Returns:
         Optional[Tuple[List[str], List[int]]]: Lists of paths to the downscaled videos and their generated IDs, 
@@ -115,34 +65,12 @@ def download_trim_downscale_video(
     os.makedirs(output_dir, exist_ok=True)
 
     downscale_height = DOWNSCALE_HEIGHTS.get(task_type, 540)
-    expected_width, expected_height = EXPECTED_RESOLUTIONS.get(task_type, (3840, 2160))
+    expected_width, expected_height = resolution = EXPECTED_RESOLUTIONS.get(task_type, (3840, 2160))
     
+    if handler is None:
+        handler = YouTubeHandler()
 
-    def download_video(video_url:str, video_format:dict, output_path:os.PathLike) -> os.PathLike:
-        """Download video from YouTube"""
-        print(f"Downloading video {video_url} to {output_path}")
-        
-        print(f"Getting YouTube cookies from https://youtube.com")
-        cookie_file = fetch_cookies()
 
-        format_id = video_format['format_id']
-        actual_width = video_format.get('width')
-        actual_height = video_format.get('height')
-        print(f"Selected video format: {format_id}")
-
-        ydl_opts = {
-            "cookiefile": cookie_file,
-            "format": format_id,
-            "outtmpl": str(output_path),
-            "quiet": False,
-            "no_warnings": True,
-            "fixup": "never",
-        }
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([video_url])
-        
-    
     def get_video_info(video_path):
         """Get video resolution and duration using FFprobe"""
         
@@ -257,30 +185,13 @@ def download_trim_downscale_video(
         Each thread handles download, trim, and downscale for a separate video
         """
         try:
+
             start_time = time.time()
-
-            # Fetch video metadata
-            with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
-                info = ydl.extract_info(vid, download=False)
-                formats = info.get('formats', [])
-
-            # Get video matches
-            matching_formats = [
-                f for f in formats
-                if f.get('vcodec') != 'none' and f.get('acodec') == 'none'
-                and f.get('width') == expected_width and f.get('height') == expected_height
-            ]
-
-            # Select highest bitrate version
-            vid_format = max(matching_formats, key=lambda f: f.get('tbr') or 0)
-
-            url = f"https://youtube.com/watch?v={vid}"
             temp_path = str(Path(output_dir) / f"{vid}_original.mp4")
-            download_video(url, vid_format, temp_path)
-
+            handler.download_video(vid, resolution, output_path=temp_path)
             elapsed_time = time.time() - start_time
             safe_print(f"Time taken to download video: {elapsed_time:.2f} seconds")
-        
+    
             safe_print("\nChecking video resolution...")
             width, height, total_duration = get_video_info(temp_path)
             
@@ -334,32 +245,13 @@ def download_trim_downscale_video(
         1. Download video once
         2. Process chunks in parallel
         """
-        try:
+        try:      
             start_time = time.time()
-
-            # Fetch video metadata
-            with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
-                info = ydl.extract_info(vid, download=False)
-                formats = info.get('formats', [])
-
-            # Get video matches
-            matching_formats = [
-                f for f in formats
-                if f.get('vcodec') != 'none' and f.get('acodec') == 'none'
-                and f.get('width') == expected_width and f.get('height') == expected_height
-            ]
-
-            # Select highest bitrate version
-            vid_format = max(matching_formats, key=lambda f: f.get('tbr') or 0)
-
             temp_path = str(Path(output_dir) / f"{vid}_original.mp4")
-
-            url = f"https://youtube.com/watch?v={vid}"
-            download_video(url, vid_format, temp_path)
-
+            handler.download_video(vid, resolution, output_path=temp_path)
             elapsed_time = time.time() - start_time
             safe_print(f"Time taken to download video: {elapsed_time:.2f} seconds")
-        
+
             safe_print("\nChecking video resolution...")
             width, height, total_duration = get_video_info(temp_path)
             
@@ -402,10 +294,7 @@ def download_trim_downscale_video(
             safe_print(f"\nDone! Successfully processed {len(results)} out of {len(chunks)} chunks.")
             
             return downscale_paths, final_video_ids
-            
-        except requests.exceptions.RequestException as e:
-            safe_print(f"Error downloading video: {e}")
-            return None, None
+
         except Exception as e:
             print(traceback.print_exc())
             safe_print(f"Error: {str(e)}")
@@ -429,7 +318,7 @@ def download_trim_downscale_video(
         return None, None
 
 
-def get_trim_video_path(file_id: int, dir_path: str = "videos") -> str:
+def get_trim_video_path(file_id: int, dir_path: str = "videos") -> os.PathLike:
     """Returns the path of the clipped trim video based on the file ID."""
     return str(Path(dir_path) / f"{file_id}_trim.mp4")
 
@@ -454,7 +343,8 @@ def delete_videos_with_fileid(file_id: int, dir_path: str = "videos") -> None:
 
 
 if __name__ == "__main__":
-
+    
     CLIP_DURATION = 20
     vid = "LrSvfI2hMJc" # 4k/HD YouTube video
-    download_trim_downscale_video(CLIP_DURATION, vid, "HD24K")
+    handler = YouTubeHandler()
+    download_trim_downscale_video(CLIP_DURATION, vid, "HD24K", handler=handler)
