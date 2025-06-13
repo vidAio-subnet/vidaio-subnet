@@ -5,7 +5,7 @@ import os
 import time
 from threading import Thread
 from search.modules.config import config
-from search.modules.hash_engine import video_to_phashes, match_query_in_video_np_v1, match_query_in_video_np_v2
+from search.modules.hash_engine import video_to_phashes
 from services.scoring.vmaf_metric import vmaf_metric
 from loguru import logger
 from pymongo import MongoClient
@@ -23,38 +23,6 @@ def get_ramfs_path():
         if os.path.ismount(path) and os.statvfs(path).f_bsize > 0:
             return path
     return '/tmp'
-
-def find_query_in_chunk_v1(q_len, query_bits_coarse, query_bits_fine, dataset_bits_chunk, coarse_interval : int = 10):
-    datset_count = len(dataset_bits_chunk)
-    best_overall_score = float('inf')
-    best_overall_start = -1
-    best_overall_idx = -1
-
-    for idx, dataset_bits in enumerate(dataset_bits_chunk):
-        best_start, best_score = match_query_in_video_np_v1(q_len, query_bits_coarse, query_bits_fine, dataset_bits, coarse_interval)
-        
-        if best_score < best_overall_score:
-            best_overall_score = best_score
-            best_overall_start = best_start
-            best_overall_idx = idx
-            
-    return best_overall_start, best_overall_score, best_overall_idx
-
-def find_query_in_chunk_v2(max_qlen,query_bits_coarse, dataset_bits_coarse_chunk, query_bits_fine, dataset_bits_fine_chunk, coarse_unit: int = 2, coarse_interval: int = 5):
-    datset_count = len(dataset_bits_coarse_chunk)
-    best_overall_score = float('inf')
-    best_overall_start = -1
-    best_overall_idx = -1
-
-    for idx, (dataset_bits_coarse, dataset_bits_fine) in enumerate(zip(dataset_bits_coarse_chunk, dataset_bits_fine_chunk)):
-        best_start, best_score = match_query_in_video_np_v2(max_qlen, query_bits_coarse, dataset_bits_coarse, query_bits_fine, dataset_bits_fine, coarse_unit, coarse_interval)
-        
-        if best_score < best_overall_score:
-            best_overall_score = best_score
-            best_overall_start = best_start
-            best_overall_idx = idx
-            
-    return best_overall_start, best_overall_score, best_overall_idx
 
 def convert_mp4_to_y4m_downscale(input_path, random_frames, downscale_factor=1):
     if not input_path.lower().endswith(".mp4"):
@@ -102,14 +70,17 @@ def vmaf_metric_skip(ref_path, ref_skip, dist_path, dist_skip, frame_cnt, output
     command = [
         "vmaf",  
         "-r", ref_path,
-        "--frame_skip_ref", ref_skip,
+        "--frame_skip_ref", f"{ref_skip}",
         "-d", dist_path,
-        "--frame_skip_dist", dist_skip,
-        "--frame_cnt", frame_cnt,
+        "--frame_skip_dist", f"{dist_skip}",
+        "--frame_cnt", f"{frame_cnt}",
         "-out-fmt", "xml",
         "-o", output_file  
     ]
     
+    # command_str = " ".join(command)
+    # print(f"Running VMAF command: {command_str}")
+
     try:
         result = subprocess.run(command, capture_output=True, text=True)
         if result.returncode != 0:
@@ -202,8 +173,8 @@ class VideoSearchEngine:
             if start_idx < 0:
                 start_idx = 0
             end_idx = start_idx + 3
-            if end_idx > query_frame_count - 1:
-                end_idx = query_frame_count - 1
+            if end_idx > best_video['frame_count'] - 1:
+                end_idx = best_video['frame_count'] - 1
 
             query_y4m_path = convert_mp4_to_y4m_downscale(query_path, list(range(0, 2)))
             clip_y4m_path = convert_mp4_to_y4m_downscale(ref_path, list(range(start_idx, end_idx+1)), query_scale)
@@ -211,16 +182,16 @@ class VideoSearchEngine:
             max_vmaf_score = -1
             max_vmaf_idx = -1
             for i in range(start_idx, end_idx+1):
-                vmaf_score = vmaf_metric_skip(query_y4m_path, 0, clip_y4m_path, i, 2, vmaf_output_path)
+                vmaf_score = vmaf_metric_skip(ref_path = query_y4m_path, ref_skip = 0, dist_path = clip_y4m_path, dist_skip = i - start_idx, frame_cnt = 2, output_file = vmaf_output_path)
+                # self.log.info(f"2️ ✅ VMAF score: {vmaf_score}, idx: {i}")
                 if max_vmaf_score < vmaf_score:
                     max_vmaf_score = vmaf_score
                     max_vmaf_idx = i
 
-            self.log.info(f"2️✅ VMAF based fine tuning duration: {time.time() - start_time:.2f} seconds")
-            print(f"2️ ✅ Max VMAF score: {max_vmaf_score}, Max VMAF idx: {max_vmaf_idx}")
+            self.log.info(f"2️ ✅ VMAF based fine tuning duration: {time.time() - start_time:.2f} seconds")
 
             # Final clip
-            clipped_path = os.path.join(get_ramfs_path(), f"{query_filename}_clipped_{best_start}_{query_frame_count}.mp4")
+            clipped_path = os.path.join(get_ramfs_path(), f"{query_filename}_clipped_{max_vmaf_idx}_{query_frame_count}.mp4")
             trim_cmd = [
                 "taskset", "-c", "0,1,2,3,4,5",
                 "ffmpeg", "-y", "-i", str(ref_path), "-ss", str(start_time_clip), 
@@ -234,142 +205,113 @@ class VideoSearchEngine:
             random_frames = sorted(random.sample(range(query_frame_count), 3))
             clip_y4m_path = convert_mp4_to_y4m_downscale(clipped_path, random_frames, query_scale)
             query_y4m_path = convert_mp4_to_y4m_downscale(query_path, random_frames)
-
             
             vmaf_score = vmaf_metric(query_y4m_path, clip_y4m_path, vmaf_output_path)
-            self.log.info(f"2️ ✅ query_path: {query_path}, ref_video: {best_video['filename']}, VMAF score: {vmaf_score}")
 
             os.remove(clip_y4m_path)
             os.remove(query_y4m_path)
             os.remove(vmaf_output_path)
 
             elapsed_time = time.time() - start_time
-            self.log.info(f"2️ ✅ Final clip generated and validated in {elapsed_time:.2f} seconds")
-
             if vmaf_score < 75:
                 self.log.info(f"2️ ❌ VMAF score is too low: {vmaf_score}")
                 os.remove(clipped_path)
                 return None
 
-            return clipped_path
+            self.log.info(f"2️ ✅ Valid final clip generated in {elapsed_time:.2f} seconds, vmaf_score: {vmaf_score}, max_vmaf_idx: {max_vmaf_idx}")
+            return clipped_path, max_vmaf_idx
         except subprocess.SubprocessError as e:
             self.log.error(f"2️ ❌ Error trimming video: {e}")
-            return None
-        return None
+            return None, None
+        return None, None
     
     def search_and_clip(self, query_path : str, query_scale : int = 2):
         start_time = time.time()
         best_dataset_idx, best_start, query_frame_count = self._search_hash(query_path)
         duration = time.time() - start_time
-        print(f"2️ query_file: {os.path.basename(query_path)} best_start: {best_start}, best_dataset_idx: {best_dataset_idx}")
-        print(f"2️ _search_hash execution duration: {duration:.2f} seconds")
+        # self.log.info(f"2️ _search_hash execution duration: {duration:.2f} seconds, best_start: {best_start}")
         if best_start < 0:
             return None
 
         best_video = self.video_db[best_dataset_idx]
-        # start_time = time.time()
-        #clip_path = self._trim_and_validate(query_path, query_scale, query_frame_count, best_video, best_start)
-        #duration = time.time() - start_time
-        #print(f"2️ clip_path: {clip_path}, _trim_and_validate execution duration: {duration:.2f} seconds")
+        start_time = time.time()
+        clip_path, max_vmaf_idx = self._trim_and_validate(query_path, query_scale, query_frame_count, best_video, best_start)
+        duration = time.time() - start_time
+        # self.log.info(f"2️ _trim_and_validate execution duration: {duration:.2f} seconds, max_vmaf_idx: {max_vmaf_idx}")
 
-        # return clip_path
-        return ""
+        return clip_path, max_vmaf_idx
 
 
-if __name__ == "__main__":
-    # Create a VideoSearchEngine instance
+def test_multiple_files(file_count : int = -1):
+    # search_and_clip
+    test_video_dir = "/root/vidaio/test_videos"
+    search_engine = VideoSearchEngine(logger)
+
+    count = 0
+    total_duration = 0
+    max_duration = 0
+    min_duration = float('inf')
+    success_count = 0
+
+    for file in os.listdir(test_video_dir):
+        if (file_count > 0 and count >= file_count):
+            break
+        
+        if file.endswith(".mp4") and "downscale" in file:
+            query_path = os.path.join(test_video_dir, file)
+            if file.startswith("SD24K"):
+                query_scale = 4
+            else:
+                query_scale = 2
+            
+            start_time = time.time()
+            clip_path, max_vmaf_idx = search_engine.search_and_clip(query_path, query_scale)
+            duration = time.time() - start_time
+
+            start_frame = int(query_path.split('downscale_')[1].split('_')[0])
+
+            if clip_path:
+                if start_frame == max_vmaf_idx:
+                    logger.info(f"✅ {os.path.basename(query_path)}")                    
+                elif abs(start_frame - max_vmaf_idx) == 1:
+                    logger.info(f"⚠️ {os.path.basename(query_path)}, start_frame: {start_frame}, max_vmaf_idx: {max_vmaf_idx}")
+                else:
+                    logger.error(f"❌ {os.path.basename(query_path)}, start_frame: {start_frame}, max_vmaf_idx: {max_vmaf_idx}")
+
+                success_count += 1
+                os.remove(clip_path)                
+            else:
+                logger.error(f"❌ {os.path.basename(query_path)}")
+
+            if duration > max_duration:
+                max_duration = duration
+            if duration < min_duration:
+                min_duration = duration
+            total_duration += duration
+            count += 1
+
+    logger.info(f"VideoSearchEngine processed {count} videos with {success_count} successful matches")
+    logger.info(f"VideoSearchEngine took {total_duration/count:.2f} seconds on average for {count} videos")
+    logger.info(f"VideoSearchEngine took {max_duration:.2f} seconds for the longest video")
+    logger.info(f"VideoSearchEngine took {min_duration:.2f} seconds for the shortest video")
+
+def test_single_file(query_path : str, query_scale : int = 2):
     start_time = time.time()
     search_engine = VideoSearchEngine(logger)
     duration = time.time() - start_time
     logger.info(f"VideoSearchEngine initialization took {duration:.2f} seconds")
 
     start_time = time.time()
-    search_engine.search_and_clip("/root/vidaio/test_videos/SD24K_30643798_downscale_126_5.mp4", 4)
+    clip_path, max_vmaf_idx = search_engine.search_and_clip(query_path, query_scale)
     duration = time.time() - start_time
     logger.info(f"VideoSearchEngine search and clip took {duration:.2f} seconds")
+    if clip_path:
+        os.remove(clip_path)
 
-    # # _search_hash
-    # test_video_dir = "/root/vidaio/test_videos"
-    # count = 0
-    # total_duration = 0
-    # max_duration = 0
-    # min_duration = float('inf')
-    # success_count = 0
+if __name__ == "__main__":
+    test_single_file("/root/vidaio/test_videos/SD2HD_32269855_downscale_632_10.mp4", 2)
+    test_multiple_files(10)
     
-    # for file in os.listdir(test_video_dir):
-    #     if file.endswith(".mp4") and "downscale" in file:
-    #         query_path = os.path.join(test_video_dir, file)
-    #         start_frame = int(query_path.split('downscale_')[1].split('_')[0])
-    #         if file.startswith("SD24K"):
-    #             query_scale = 4
-    #         else:
-    #             query_scale = 2
-
-    #         start_time = time.time()
-    #         best_start, best_score, best_video_idx = search_engine._search_hash(query_path, query_scale)
-    #         duration = time.time() - start_time
-    #         best_video = search_engine.get_video_info(best_video_idx)
-
-    #         if best_video['filename'] in query_path and best_start == start_frame:
-    #             success_count += 1
-    #         else:
-    #             if not best_video['filename'] in query_path:
-    #                 logger.error(f"❌ VideoSearchEngine search hash failed for {query_path} with best_video: {best_video['filename']} and start_frame: {start_frame}")
-    #             elif abs(best_start - start_frame) == 1:
-    #                 logger.warning(f"⚠️ VideoSearchEngine search hash failed for {query_path} with best_start: {best_start} and start_frame: {start_frame}")
-    #             else:
-    #                 logger.error(f"❌ VideoSearchEngine search hash failed for {query_path} with best_start: {best_start} and start_frame: {start_frame}")
-
-    #         if duration > max_duration:
-    #             max_duration = duration
-    #         if duration < min_duration:
-    #             min_duration = duration
-    #         total_duration += duration
-    #         count += 1
-
-    # logger.info(f"VideoSearchEngine search hash processed {count} videos with {success_count} successful matches")
-    # logger.info(f"VideoSearchEngine search hash took {total_duration/count:.2f} seconds on average for {count} videos")
-    # logger.info(f"VideoSearchEngine search hash took {max_duration:.2f} seconds for the longest video")
-    # logger.info(f"VideoSearchEngine search hash took {min_duration:.2f} seconds for the shortest video")
-
-    # # search_and_clip
-    # count = 0
-    # total_duration = 0
-    # max_duration = 0
-    # min_duration = float('inf')
-    # success_count = 0
-
-    # for file in os.listdir(test_video_dir):
-    #     if file.endswith(".mp4") and "downscale" in file:
-    #         query_path = os.path.join(test_video_dir, file)
-    #         if file.startswith("SD24K"):
-    #             query_scale = 4
-    #         else:
-    #             query_scale = 2
-            
-    #         start_time = time.time()
-    #         clip_path = search_engine.search_and_clip(query_path, query_scale)
-    #         duration = time.time() - start_time
-
-    #         if clip_path:
-    #             success_count += 1
-    #             logger.info(f"✅ VideoSearchEngine search and clip took {duration:.2f} seconds for {query_path}")
-    #             os.remove(clip_path)                
-    #         else:
-    #             logger.error(f"❌ VideoSearchEngine search and clip failed for {query_path}")
-
-    #         if duration > max_duration:
-    #             max_duration = duration
-    #         if duration < min_duration:
-    #             min_duration = duration
-    #         total_duration += duration
-    #         count += 1
-
-    # logger.info(f"VideoSearchEngine search and clip processed {count} videos with {success_count} successful matches")
-    # logger.info(f"VideoSearchEngine search and clip took {total_duration/count:.2f} seconds on average for {count} videos")
-    # logger.info(f"VideoSearchEngine search and clip took {max_duration:.2f} seconds for the longest video")
-    # logger.info(f"VideoSearchEngine search and clip took {min_duration:.2f} seconds for the shortest video")
-
 
 
     
