@@ -197,10 +197,10 @@ def upscale_query_based(payload_video_path: str, task_type: str, delete_input_fi
             upscaled_video_path = result[0][0]
             return upscaled_video_path
         else:
-            logger.info("2️❌ No result found for query_based upscaling")
+            logger.info("2️ ❌ No result found for query_based upscaling")
             return None
     except Exception as e:
-        logger.error(f"2️❌ upscale_query_based failed: {e}")
+        logger.error(f"2️ ❌ upscale_query_based failed: {e}")
         traceback.print_exc()
         return None
 

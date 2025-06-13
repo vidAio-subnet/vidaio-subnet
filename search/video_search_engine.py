@@ -5,10 +5,18 @@ import os
 import time
 from threading import Thread
 from search.modules.config import config
-from search.modules.hash_engine import video_to_phashes, match_query_in_video
-from search.services.scoring.vmaf_metric import vmaf_metric
+from search.modules.hash_engine import video_to_phashes, match_query_in_video_np_v1, match_query_in_video_np_v2
+from services.scoring.vmaf_metric import vmaf_metric
 from loguru import logger
-
+from pymongo import MongoClient
+import numpy as np
+import random
+import subprocess
+import xml.etree.ElementTree as ET
+from multiprocessing import Pool
+import logging
+from search.hashmatcher import cmatcher
+ 
 def get_ramfs_path():
     candidates = ['/dev/shm', '/run', '/tmp']
     for path in candidates:
@@ -16,14 +24,30 @@ def get_ramfs_path():
             return path
     return '/tmp'
 
-def find_query_in_chunk(q_len, query_bits_coarse, query_bits_fine, dataset_bits_chunk, coarse_interval : int = 10):
+def find_query_in_chunk_v1(q_len, query_bits_coarse, query_bits_fine, dataset_bits_chunk, coarse_interval : int = 10):
     datset_count = len(dataset_bits_chunk)
     best_overall_score = float('inf')
     best_overall_start = -1
     best_overall_idx = -1
 
     for idx, dataset_bits in enumerate(dataset_bits_chunk):
-        best_start, best_score = match_query_in_video_np(q_len, query_bits_coarse, query_bits_fine, dataset_bits, coarse_interval)
+        best_start, best_score = match_query_in_video_np_v1(q_len, query_bits_coarse, query_bits_fine, dataset_bits, coarse_interval)
+        
+        if best_score < best_overall_score:
+            best_overall_score = best_score
+            best_overall_start = best_start
+            best_overall_idx = idx
+            
+    return best_overall_start, best_overall_score, best_overall_idx
+
+def find_query_in_chunk_v2(max_qlen,query_bits_coarse, dataset_bits_coarse_chunk, query_bits_fine, dataset_bits_fine_chunk, coarse_unit: int = 2, coarse_interval: int = 5):
+    datset_count = len(dataset_bits_coarse_chunk)
+    best_overall_score = float('inf')
+    best_overall_start = -1
+    best_overall_idx = -1
+
+    for idx, (dataset_bits_coarse, dataset_bits_fine) in enumerate(zip(dataset_bits_coarse_chunk, dataset_bits_fine_chunk)):
+        best_start, best_score = match_query_in_video_np_v2(max_qlen, query_bits_coarse, dataset_bits_coarse, query_bits_fine, dataset_bits_fine, coarse_unit, coarse_interval)
         
         if best_score < best_overall_score:
             best_overall_score = best_score
@@ -118,6 +142,7 @@ class VideoSearchEngine:
             self.log = logging.getLogger(__name__)
         self.video_dir = config['video_dir']
         self.hash_search_processors = config['hash_search_processors']
+        self.matcher = cmatcher.HashMatcher(config['hash_search_v2_coarse_unit'], config['hash_search_v2_coarse_interval'])
         self.reload_video_db()
 
     def get_video_info(self, index:int):
@@ -129,18 +154,13 @@ class VideoSearchEngine:
         collection_name = config['collection']
 
         self.video_db = []
-        self.hash_bits_chunks = []
-    
+
         self.log.info(f"2️ Reloading video database from {collection_name}...")
         try:
             collection = client[db_name][collection_name]
             doc_count = collection.count_documents({})
             self.log.info(f"2️ Found {doc_count} documents in collection")
-            self.chunk_size = doc_count // self.hash_search_processors
-
             start_time = time.time()
-            hash_bits_arr = []
-
             for doc in collection.find():
                 if 'hashes' in doc and doc['hashes']:
                     self.video_db.append({
@@ -151,58 +171,22 @@ class VideoSearchEngine:
                         'height': doc['height'],
                         'frame_count' : doc['frame_count'],
                     })
-                    hashes = [imagehash.hex_to_hash(h) for h in doc['hashes']]
-                    hash_bits = np.array([np.unpackbits(np.array(h.hash, dtype=np.uint8)) for h in hashes])
-                    hash_bits_arr.append(hash_bits)
-                    if len(hash_bits_arr) >= self.chunk_size:
-                        self.hash_bits_chunks.append(hash_bits_arr)
-                        hash_bits_arr = []
-            if hash_bits_arr:
-                self.hash_bits_chunks.append(hash_bits_arr)
-                
+                    self.matcher.add_dataset(doc['hashes'])
             duration = time.time() - start_time
-            self.log.info(f"2️✅ Loaded {len(self.video_db)} videos in {duration:.2f} seconds")
+            self.log.info(f"2️ ✅ Loaded {len(self.video_db)} videos in {duration:.2f} seconds")
         except Exception as e:
-            self.log.error(f"2️❌ Error initializing database: {e}")
+            self.log.error(f"2️ ❌ Error initializing database: {e}")
         finally:
             client.close()
 
-    def _search_hash(self, query_path : str, query_scale : int = 2):
+    def _search_hash(self, query_path : str):
         query_hashes, fps, width, height, frame_count = video_to_phashes(os.path.join(self.video_dir, query_path), 16)
 
-        query_bits = np.array([np.unpackbits(np.array(h.hash, dtype=np.uint8)) for h in query_hashes])
-        query_bits_coarse = query_bits[:int(fps*2)]
-        query_bits_fine = query_bits[:int(fps*5)]
-        q_len = len(query_bits)
+        query_hashes_str = [str(h) for h in query_hashes]
+        self.matcher.set_query(query_hashes_str, int(fps))
 
-        # Create a pool of workers for parallel processing
-        with Pool(processes=self.hash_search_processors) as pool:
-            # Prepare arguments for each worker
-            search_args = []
-            for i in range(self.hash_search_processors):
-                search_args.append((
-                    q_len,
-                    query_bits_coarse,
-                    query_bits_fine,
-                    self.hash_bits_chunks[i],
-                    int(fps/2)
-                ))
-            
-            # Process chunks in parallel
-            results = pool.starmap(find_query_in_chunk, search_args)
-            
-            # Find best match across all chunks
-            best_score = float('inf')
-            best_start = -1
-            best_video_idx = -1
-            
-            for chunk_idx, (start, score, idx) in enumerate(results):
-                if score < best_score:
-                    best_score = score
-                    best_start = start
-                    best_video_idx = chunk_idx * self.chunk_size  + idx
-            
-            return best_start, best_score, best_video_idx
+        best_dataset_idx, best_start = self.matcher.match() 
+        return best_dataset_idx, best_start, frame_count
 
     def _trim_and_validate(self, query_path : str, query_scale : int, query_frame_count : int, best_video : dict, best_start : int):
         try:
@@ -210,6 +194,7 @@ class VideoSearchEngine:
             actual_duration = query_frame_count / best_video['fps']
             query_filename = os.path.splitext(os.path.basename(query_path))[0]
             vmaf_output_path = os.path.join(get_ramfs_path(), f"{query_filename}_vmaf.xml")
+            ref_path = os.path.join(self.video_dir, best_video['filename'])
             # VMAF based fine tuning
 
             start_time = time.time()
@@ -221,7 +206,7 @@ class VideoSearchEngine:
                 end_idx = query_frame_count - 1
 
             query_y4m_path = convert_mp4_to_y4m_downscale(query_path, list(range(0, 2)))
-            clip_y4m_path = convert_mp4_to_y4m_downscale(clip_path, list(range(start_idx, end_idx+1)), query_scale)
+            clip_y4m_path = convert_mp4_to_y4m_downscale(ref_path, list(range(start_idx, end_idx+1)), query_scale)
 
             max_vmaf_score = -1
             max_vmaf_idx = -1
@@ -232,13 +217,13 @@ class VideoSearchEngine:
                     max_vmaf_idx = i
 
             self.log.info(f"2️✅ VMAF based fine tuning duration: {time.time() - start_time:.2f} seconds")
-            print(f"2️✅ Max VMAF score: {max_vmaf_score}, Max VMAF idx: {max_vmaf_idx}")
+            print(f"2️ ✅ Max VMAF score: {max_vmaf_score}, Max VMAF idx: {max_vmaf_idx}")
 
             # Final clip
-            clip_path = os.path.join(get_ramfs_path(), f"{query_filename}_clipped_{best_start}_{query_frame_count}.mp4")
+            clipped_path = os.path.join(get_ramfs_path(), f"{query_filename}_clipped_{best_start}_{query_frame_count}.mp4")
             trim_cmd = [
                 "taskset", "-c", "0,1,2,3,4,5",
-                "ffmpeg", "-y", "-i", str(source_path), "-ss", str(start_time_clip), 
+                "ffmpeg", "-y", "-i", str(ref_path), "-ss", str(start_time_clip), 
                 "-t", str(actual_duration), "-c:v", "libx264", "-preset", "ultrafast",
                 "-c:a", "aac", str(clipped_path), "-hide_banner", "-loglevel", "error"
             ]
@@ -247,38 +232,48 @@ class VideoSearchEngine:
             subprocess.run(trim_cmd, check=True)
 
             random_frames = sorted(random.sample(range(query_frame_count), 3))
-            clip_y4m_path = convert_mp4_to_y4m_downscale(clip_path, random_frames, query_scale)
+            clip_y4m_path = convert_mp4_to_y4m_downscale(clipped_path, random_frames, query_scale)
             query_y4m_path = convert_mp4_to_y4m_downscale(query_path, random_frames)
 
             
             vmaf_score = vmaf_metric(query_y4m_path, clip_y4m_path, vmaf_output_path)
-            self.log.info(f"2️✅ query_path: {query_path}, ref_video: {best_video['filename']}, VMAF score: {vmaf_score}")
+            self.log.info(f"2️ ✅ query_path: {query_path}, ref_video: {best_video['filename']}, VMAF score: {vmaf_score}")
 
             os.remove(clip_y4m_path)
             os.remove(query_y4m_path)
             os.remove(vmaf_output_path)
 
             elapsed_time = time.time() - start_time
-            self.log.info(f"2️✅ Final clip generated and validated in {elapsed_time:.2f} seconds")
+            self.log.info(f"2️ ✅ Final clip generated and validated in {elapsed_time:.2f} seconds")
 
             if vmaf_score < 75:
-                self.log.info(f"2️❌ VMAF score is too low: {vmaf_score}")
-                os.remove(clip_path)
+                self.log.info(f"2️ ❌ VMAF score is too low: {vmaf_score}")
+                os.remove(clipped_path)
                 return None
 
-            return clip_path
+            return clipped_path
         except subprocess.SubprocessError as e:
-            self.log.error(f"2️❌ Error trimming video: {e}")
+            self.log.error(f"2️ ❌ Error trimming video: {e}")
             return None
         return None
     
     def search_and_clip(self, query_path : str, query_scale : int = 2):
-        best_start, best_score, best_video_idx = self._search_hash(query_path, query_scale)
-        if best_score < 0:
+        start_time = time.time()
+        best_dataset_idx, best_start, query_frame_count = self._search_hash(query_path)
+        duration = time.time() - start_time
+        print(f"2️ query_file: {os.path.basename(query_path)} best_start: {best_start}, best_dataset_idx: {best_dataset_idx}")
+        print(f"2️ _search_hash execution duration: {duration:.2f} seconds")
+        if best_start < 0:
             return None
 
-        best_video = self.video_db[best_video_idx]
-        return self._trim_and_validate(query_path, query_scale, best_video, best_start)
+        best_video = self.video_db[best_dataset_idx]
+        # start_time = time.time()
+        #clip_path = self._trim_and_validate(query_path, query_scale, query_frame_count, best_video, best_start)
+        #duration = time.time() - start_time
+        #print(f"2️ clip_path: {clip_path}, _trim_and_validate execution duration: {duration:.2f} seconds")
+
+        # return clip_path
+        return ""
 
 
 if __name__ == "__main__":

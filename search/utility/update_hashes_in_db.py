@@ -15,9 +15,9 @@ def process_single_doc(doc):
     if filename:
         file_path = os.path.join(video_dir, filename)
         if os.path.exists(file_path):
-            raw_hashes = video_to_phashes(file_path, 16)
+            raw_hashes, *_ = video_to_phashes(file_path, 16)
             return doc["_id"], raw_hashes
-    return None
+    return None, None
 
 def process_docs(docs):
     docs_list = list(docs)
