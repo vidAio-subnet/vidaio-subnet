@@ -200,7 +200,6 @@ def get_pexels_random_vids(
     with open(yaml_file_path, "r") as file:
         yaml_data = yaml.safe_load(file)
         query_list = yaml_data.get("pexels_categories", [])
-    query_list = ["nature"]
     random.shuffle(query_list) 
     
     max_results = max_results or num_needed * 3
