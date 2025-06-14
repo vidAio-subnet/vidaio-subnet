@@ -132,27 +132,24 @@ def clean_old_files(directory: str, age_limit_in_hours: int, check_interval_in_s
     """
     age_limit_in_seconds = age_limit_in_hours * 60 * 60
 
-    while True:
-        now = time.time()  # Current time in seconds since the epoch
-        print(f"Checking directory: {directory} at {datetime.now()}")
+    now = time.time()  # Current time in seconds since the epoch
+    logger.info(f"Checking directory: {directory} at {datetime.now()}")
 
-        if not os.path.exists(directory):
-            print(f"Directory '{directory}' does not exist. Skipping...")
-        else:
-            for filename in os.listdir(directory):
-                file_path = os.path.join(directory, filename)
+    if not os.path.exists(directory):
+        logger.info(f"Directory '{directory}' does not exist. Skipping...")
+    else:
+        for filename in os.listdir(directory):
+            file_path = os.path.join(directory, filename)
 
-                if os.path.isfile(file_path):
-                    file_age_in_seconds = now - os.path.getmtime(file_path)
+            if os.path.isfile(file_path):
+                file_age_in_seconds = now - os.path.getmtime(file_path)
 
-                    if file_age_in_seconds > age_limit_in_seconds:
-                        try:
-                            os.remove(file_path)
-                            print(f"Deleted file: {file_path} (Age: {file_age_in_seconds / 3600:.2f} hours)")
-                        except Exception as e:
-                            print(f"Error deleting file {file_path}: {e}")
-
-        time.sleep(check_interval_in_seconds)
+                if file_age_in_seconds > age_limit_in_seconds:
+                    try:
+                        os.remove(file_path)
+                        logger.info(f"Deleted file: {file_path} (Age: {file_age_in_seconds / 3600:.2f} hours)")
+                    except Exception as e:
+                        logger.info(f"Error deleting file {file_path}: {e}")
 
 def get_pexels_random_vids(
     num_needed: int, 
@@ -329,7 +326,7 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis,
 
             os.unlink(challenge_local_path)
 
-            print(f"Sharing_link:{sharing_link} ")
+            logger.info(f"Sharing_link:{sharing_link} ")
 
             if not sharing_link:
                 logger.info("Upload failed. Retrying...")
@@ -377,6 +374,8 @@ async def main():
         
         task_thresholds = calculate_task_thresholds(scheduler_config)
         
+        logger.info(task_thresholds)
+
         while True:
 
             try:
