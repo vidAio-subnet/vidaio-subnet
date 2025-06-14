@@ -13,11 +13,11 @@
 ## 1. search/modules/hashengine.py
     Hash search test
 
-## 2. search/video_search_engine.py
+## 2. search/modules/video_search_engine.py
     Video search test
 
-## 3. search/test/uploader.py
-    Upscale offline test
+## 3. search/test/upscaler.py
+    Upscaler offline test
 
 ## 4. search/test/validator.py
     Validator based online test

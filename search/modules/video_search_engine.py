@@ -16,7 +16,7 @@ import xml.etree.ElementTree as ET
 from multiprocessing import Pool
 import logging
 from search.hashmatcher import cmatcher
- 
+
 def get_ramfs_path():
     candidates = ['/dev/shm', '/run', '/tmp']
     for path in candidates:
@@ -149,6 +149,17 @@ class VideoSearchEngine:
             self.log.error(f"2️ ❌ Error initializing database: {e}")
         finally:
             client.close()
+
+    def put_video_info(self, video_info: dict):
+        self.log.info(f"✅ Video search engine received video info {video_info['filename']}")
+        self.video_db.append({
+            'filename': video_info['filename'],
+            'fps': video_info['fps'],
+            'width': video_info['width'],
+            'height': video_info['height'],
+            'frame_count': video_info['frame_count']
+        })
+        self.matcher.add_dataset(video_info['hashes'])
 
     def _search_hash(self, query_path : str):
         query_hashes, fps, width, height, frame_count = video_to_phashes(os.path.join(self.video_dir, query_path), 16)
@@ -311,7 +322,3 @@ def test_single_file(query_path : str, query_scale : int = 2):
 if __name__ == "__main__":
     test_single_file("/root/vidaio/test_videos/SD2HD_32269855_downscale_632_10.mp4", 2)
     test_multiple_files(10)
-    
-
-
-    

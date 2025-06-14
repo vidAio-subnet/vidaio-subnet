@@ -11,6 +11,10 @@ hash_search_v2_coarse_interval: 3
 max_workers: 6
 evaluated_file: "eval.json"
 PEXELS_API_KEY: "WD9OjZcFWztgC6no5AQksf5ixmdrW1EfLqpiYqxOWozhLX2DKzCYVkcO"
+PEXELS_DOWNLOAD_API_KEY: ["WD9OjZcFWztgC6no5AQksf5ixmdrW1EfLqpiYqxOWozhLX2DKzCYVkcO", "IVVpGOKxM8vkqJQGziB7PN9FX8WhxWAFlusWe9UvMyPgPpMcAkNR2YNK", "nFfgK7tYZqdcBKPOQ3xhg1MNsofTa9KoWHfRtqFgtPT9TOMfg6uqV07R"]
 MIN_VIDEO_LEN: 25
 MAX_VIDEO_LEN: 50
-PEXELS_CHECK_INTERVAL: 900 # 15 minutes
+PEXELS_CHECK_INTERVAL: 3600 # 1 hour
+
+search_service_host: "localhost"
+search_service_port: 5005
