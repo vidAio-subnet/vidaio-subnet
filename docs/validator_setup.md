@@ -8,7 +8,7 @@ To achieve optimal results, we recommend the following setup:
 
 - **Operating System**: Ubuntu 24.04 LTS or higher
   [Learn more about Ubuntu 24.04 LTS](https://ubuntu.com/blog/tag/ubuntu-24-04-lts)
-- **GPU**: NVIDIA RTX A6000 or higher (At least 48GB VRAM and 10 CPU Cores)
+- **GPU**: NVIDIA RTX A6000 with 48GB VRAM and 30 CPU Cores
 
 ---
 
