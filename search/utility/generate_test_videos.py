@@ -1,5 +1,5 @@
 from pymongo import MongoClient
-from search.modules.config import config
+from search.modules.search_config import search_config
 import asyncio
 import os
 import json
@@ -12,8 +12,8 @@ from tqdm import tqdm
 
 async def main():
     # Initialize MongoDB client
-    test_video_dir = config['test_video_dir']
-    video_dir = config['video_dir']
+    test_video_dir = search_config['TEST_VIDEO_DIR']
+    video_dir = search_config['VIDEO_DIR']
 
     try:
         if not os.path.exists(test_video_dir):
@@ -48,7 +48,9 @@ async def main():
                 start_time = time.time()
                 
                 chunk_duration = random.choice([5, 10, 20])
-
+                if chunk_duration == 5:
+                    chunk_duration = random.choice([1, 2, 3, 4, 5])
+                    
                 start_time_clip = 0
                 if chunk_duration < duration:
                     start_time_clip = random.uniform(0, duration - chunk_duration)

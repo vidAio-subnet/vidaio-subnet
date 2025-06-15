@@ -1,14 +1,14 @@
 from pymongo import MongoClient
-from search.modules.config import config
+from search.modules.search_config import search_config
 import os
 from moviepy.editor import VideoFileClip
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from search.modules.hash_engine import video_to_phashes
 
-db_name = config['db_name']
-collection_name = config['collection']
-video_dir = config['video_dir']
+db_name = search_config['DB_NAME']
+collection_name = search_config['COLLECTION_NAME']
+video_dir = search_config['VIDEO_DIR']
 
 def process_single_doc(doc):
     filename = doc.get('filename')
@@ -50,7 +50,7 @@ def process_docs(docs):
     return hash_dict
 
 def main():
-    client = MongoClient(config['mongo_uri'])
+    client = MongoClient(search_config['MONGO_URI'])
 
     try:
         if collection_name not in client[db_name].list_collection_names():

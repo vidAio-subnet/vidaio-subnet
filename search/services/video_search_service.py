@@ -1,15 +1,24 @@
 from fastapi.responses import JSONResponse
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from search.modules.config import config
-from search.modules.video_search_engine import VideoSearchEngine
+from search.modules.search_config import search_config
+from search.modules.video_search_engine import VideoSearchEngine, get_ramfs_path
+from services.miner_utilities.redis_utils import schedule_local_file_deletion
+import os
+import json
+import aiohttp
+import logging
+from fastapi.responses import FileResponse
+import time
+from vidaio_subnet_core.utilities import download_video
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 search_engine = VideoSearchEngine()
 
 class SearchRequest(BaseModel):
     payload_url: str
-    payload_path: str
     task_type: str
 
 class VideoInfo(BaseModel):
@@ -23,66 +32,63 @@ class VideoInfo(BaseModel):
 @app.post("/search")
 async def search(request: SearchRequest):
     try:
-        clip_path, max_vmaf_idx = search_engine.search_and_clip(request.payload_path, request.task_type)
-        return {
-            "clip_path": clip_path,
-            "max_vmaf_idx": max_vmaf_idx
-        }
+        start_time = time.time()
+        logger.info("📻 Downloading video...")
+        payload_video_path: str = await download_video(request.payload_url)
+        elapsed_time = time.time() - start_time
+        logger.info(f"📻 Download video finished, Path: {payload_video_path}, Time: {elapsed_time:.2f}s")
     except Exception as e:
-        return {
-            "clip_path": None,
-            "max_vmaf_idx": None,
-            "error": str(e)
-        }
-
-@app.post("/put_video_info")
-async def put_video_info(video_info: VideoInfo):
-    try:
-        logger.info(f"✅ Video search service received video info {video_info.filename}")
-        search_engine.put_video_info({
-            'filename': video_info.filename,
-            'fps': video_info.fps,
-            'width': video_info.width,
-            'height': video_info.height,
-            'frame_count': video_info.frame_count,
-            'hashes': video_info.hashes
-        })
-        return {
-            "success": True
-        }
-    except Exception as e:
+        logger.error(f"❌ Failed to download video: {e}")
         return {
             "success": False,
             "error": str(e)
         }
 
-async def search_video(payload_url: str, payload_path : str, task_type: str) -> str | None:
-    url = f"http://{config.search_service_host}:{config.search_service_port}/search"
-    headers = {"Content-Type": "application/json"}
-    data = {
-        "payload_url": payload_url,
-        "payload_path": payload_path,
-        "task_type": task_type,
-    }
-    
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, headers=headers, data=json.dumps(data)) as response:
-            if response.status == 200:
-                result = await response.json()
-                clip_path = result.get("clip_path")
-                max_vmaf_idx = result.get("max_vmaf_idx")
-                if clip_path is None:
-                    logger.info("🩸 Received None response from video search service 🩸")
-                    return None
-                logger.info("✈️ Received response from video search service correctly ✈️")
-                return clip_path
-            logger.error(f"Video search service error: {response.status}")
-            return None
+    try:
+        clip_path, max_vmaf_idx = search_engine.search_and_clip(payload_video_path, request.task_type)
+        schedule_local_file_deletion(clip_path, 2 * 60)
+        clip_filename = os.path.basename(clip_path)
+        if max_vmaf_idx >= 0:
+            return {
+                "success": True,
+                "filename": clip_filename,
+            }
+        else:
+            return {
+                "success": False,
+                "error": "No clip found"
+            }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+    finally:
+        if payload_video_path and os.path.exists(payload_video_path):
+            os.remove(payload_video_path)
+
+@app.get("/download/{filename}")
+async def download_file(filename: str):
+    try:
+        file_path = os.path.join(get_ramfs_path(), filename)
+        if not os.path.exists(file_path):
+            file_path = os.path.join(search_config['VIDEO_DIR'], filename)
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="File not found")
+            
+        return FileResponse(
+            path=file_path,
+            filename=filename,
+            media_type='video/mp4'
+        )
+    except Exception as e:
+        logger.error(f"Error downloading file {filename}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
 
-    host = config['search_service_host']
-    port = config['search_service_port']
+    host = search_config['SEARCH_SERVICE_HOST']
+    port = search_config['SEARCH_SERVICE_PORT']
 
     uvicorn.run(app, host=host, port=port)

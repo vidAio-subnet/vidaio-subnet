@@ -6,6 +6,7 @@ from search.hashmatcher import cmatcher
 import numpy as np
 import os
 from numba import njit
+from search.modules.search_config import search_config
 
 
 def video_to_phashes(video_path, hash_size=16, max_frames=None):
@@ -76,12 +77,12 @@ if __name__ == "__main__":
     """
     Main function to demonstrate video hash matching functionality.
     """
-    query_path = "/root/vidaio/test_videos/SD24K_6235636_downscale_551_10.mp4"
-    video_path = "/root/vidaio/video_src_files/SD24K_6235636_original.mp4"
+    query_path = f"{search_config['TEST_VIDEO_DIR']}/SD24K_6235636_downscale_551_10.mp4"
+    video_path = f"{search_config['VIDEO_DIR']}/SD24K_6235636_original.mp4"
     test_file_cpp_matcher(query_path, video_path, iterations=10)
 
-    test_video_dir = "/root/vidaio/test_videos"
-    video_dir = "/root/vidaio/video_src_files"
+    test_video_dir = search_config['TEST_VIDEO_DIR']
+    video_dir = search_config['VIDEO_DIR']
     for file in os.listdir(test_video_dir):
         if file.endswith(".mp4") and "downscale" in file:
             query_path = os.path.join(test_video_dir, file)

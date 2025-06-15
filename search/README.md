@@ -1,10 +1,10 @@
 # Utility
 ## 1. search/init_db_from_src_files.py
-    Construct MongoDB from config['video_dir'] with original video files
+    Construct MongoDB from config['VIDEO_DIR'] with original video files
 
 ## 2. search/utility/generate_test_videos.py
     Generate test videos (trim, downscaled) from original files
-    Those test videos will be stored in config['test_video_dir']
+    Those test videos will be stored in config['TEST_VIDEO_DIR']
 
 ## 3. search/utility/update_hashes_in_db.py
     Update hashes field in MongoDB

@@ -3,8 +3,9 @@ import cv2
 import asyncio
 import time
 import subprocess
+from search.modules.search_config import search_config
 
-videodb_path = "/root/vidaio/videodb"
+videodb_path = search_config['VIDEO_DIR']
 db_original_file = "HD24K_854678_original.mp4"
 db_trimmed_file = "HD24K_854678_trim.mp4"
 db_downscaled_file = "HD24K_854678_downscale-2x_FPS-29.97_Frames-30.mp4"

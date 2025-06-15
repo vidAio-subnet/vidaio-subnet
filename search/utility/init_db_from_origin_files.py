@@ -1,5 +1,5 @@
 from pymongo import MongoClient
-from search.modules.config import config
+from search.modules.search_config import search_config
 import asyncio
 import os
 import json
@@ -8,10 +8,10 @@ import cv2
 
 async def main():
     # Initialize MongoDB client
-    client = MongoClient(config['mongo_uri'])
-    db_name = config['db_name']
-    collection_name = config['collection']
-    video_dir = config['video_dir']
+    client = MongoClient(search_config['MONGO_URI'])
+    db_name = search_config['DB_NAME']
+    collection_name = search_config['COLLECTION_NAME']
+    video_dir = search_config['VIDEO_DIR']
 
     try:
         # Check if collection exists, if not create it

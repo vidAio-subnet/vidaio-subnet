@@ -12,6 +12,7 @@
 #include <regex>
 #include <pybind11/functional.h>
 #include <fstream>
+#include <thread>
 
 namespace py = pybind11;
 namespace fs = std::filesystem;
@@ -24,6 +25,7 @@ typedef std::vector<HashBits> HashBitsVector;
 
 class HashMatcher {
 private:
+    int threads;
     int coarse_unit;
     int coarse_interval;
     int max_query_length;
@@ -34,8 +36,8 @@ private:
     std::vector<HashBitsVector> dataset_bits_fine_arr;
 
 public:
-    HashMatcher(int coarse_unit = 4, int coarse_interval = 3) 
-        : coarse_unit(coarse_unit), coarse_interval(coarse_interval) {}
+    HashMatcher(int threads = 4, int coarse_unit = 4, int coarse_interval = 3) 
+        : threads(threads), coarse_unit(coarse_unit), coarse_interval(coarse_interval) {}
 
     void set_query(const std::vector<std::string>& query_hashes, int fps) {
         // Set coarse query bits
@@ -64,6 +66,13 @@ public:
         }
 
         max_query_length = query_hashes.size();
+    }
+
+    void remove_dataset(int index) {
+        if (index >= 0 && index < dataset_bits_coarse_arr.size()) {
+            dataset_bits_coarse_arr.erase(dataset_bits_coarse_arr.begin() + index);
+            dataset_bits_fine_arr.erase(dataset_bits_fine_arr.begin() + index);
+        }
     }
 
     void add_dataset(const std::vector<std::string>& dataset_hashes) {
@@ -96,14 +105,51 @@ public:
         int best_start = -1;
         int best_score = std::numeric_limits<int>::max();
         int best_dataset_idx = -1;
-        for (size_t i = 0; i < dataset_bits_coarse_arr.size(); i++) {
-            std::pair<int, int> result = match_item(dataset_bits_coarse_arr[i], dataset_bits_fine_arr[i]);
-            if (result.second < best_score) {
-                best_score = result.second;
-                best_start = result.first;
-                best_dataset_idx = i;
+        
+        // Get number of available CPU cores
+        unsigned int num_threads = threads;
+        if (num_threads > std::thread::hardware_concurrency() || num_threads == 0)
+            num_threads = std::thread::hardware_concurrency() / 2;
+        if (num_threads == 0) 
+            num_threads = 4;
+        
+        // Create thread pool
+        std::vector<std::thread> threads;
+        std::vector<std::pair<int, int>> results(num_threads, {-1, std::numeric_limits<int>::max()});
+        std::vector<int> dataset_indices(num_threads, -1);
+        
+        // Split work among threads
+        size_t items_per_thread = (dataset_bits_coarse_arr.size() + num_threads - 1) / num_threads;
+        
+        for (unsigned int t = 0; t < num_threads; t++) {
+            threads.emplace_back([&, t]() {
+                size_t start_idx = t * items_per_thread;
+                size_t end_idx = std::min(start_idx + items_per_thread, dataset_bits_coarse_arr.size());
+                
+                for (size_t i = start_idx; i < end_idx; i++) {
+                    std::pair<int, int> result = match_item(dataset_bits_coarse_arr[i], dataset_bits_fine_arr[i]);
+                    if (result.second < results[t].second) {
+                        results[t] = result;
+                        dataset_indices[t] = i;
+                    }
+                }
+            });
+        }
+        
+        // Wait for all threads to complete
+        for (auto& thread : threads) {
+            thread.join();
+        }
+        
+        // Find best result across all threads
+        for (unsigned int t = 0; t < num_threads; t++) {
+            if (results[t].second < best_score) {
+                best_score = results[t].second;
+                best_start = results[t].first;
+                best_dataset_idx = dataset_indices[t];
             }
         }
+        
         return {best_dataset_idx, best_start};
     }
 
@@ -191,5 +237,6 @@ PYBIND11_MODULE(cmatcher, m) {
         .def(py::init<int, int>())
         .def("set_query", &HashMatcher::set_query)
         .def("add_dataset", &HashMatcher::add_dataset)
+        .def("remove_dataset", &HashMatcher::remove_dataset)
         .def("match", &HashMatcher::match);
 }

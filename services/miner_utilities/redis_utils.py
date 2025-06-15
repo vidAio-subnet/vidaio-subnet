@@ -129,3 +129,42 @@ def release_gpu(gpu_index: int):
     """
     redis_conn = get_redis_connection()
     redis_conn.set(f"gpu:{gpu_index}", 0)
+
+def schedule_local_file_deletion(filepath: str, delay_seconds : int) -> bool:
+    try:
+        redis_conn = get_redis_connection()
+        deletion_time = int(time.time()) + delay_seconds
+        
+        file_info = {
+            "filepath": filepath,
+            "deletion_time": deletion_time
+        }
+        
+        # Add to a sorted set with score as deletion time
+        redis_conn.zadd("local_file_deletion_queue", {json.dumps(file_info): deletion_time})
+        return True
+    except Exception as e:
+        print(f"Error scheduling file deletion: {e}")
+        return False
+
+def get_local_files_to_delete() -> List[Dict]:
+    try:
+        redis_conn = get_redis_connection()
+        current_time = int(time.time())
+        
+        # Get all items with score <= current_time
+        items = redis_conn.zrangebyscore("local_file_deletion_queue", 0, current_time)
+        
+        files_to_delete = []
+        for item in items:
+            file_info = json.loads(item)
+            files_to_delete.append(file_info)
+            
+        # Remove these items from the queue
+        if items:
+            redis_conn.zrem("local_file_deletion_queue", *items)
+            
+        return files_to_delete
+    except Exception as e:
+        print(f"Error getting files to delete: {e}")
+        return []

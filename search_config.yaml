@@ -1,20 +1,27 @@
-mongo_uri: "mongodb://localhost:27017/?replicaSet=rs0"
-db_name: "vidaio"
-collection: "videos"
-video_dir: "/root/vidaio/video_src_files/"
-test_video_dir: "/root/vidaio/test_videos/"
-hash_search_processors: 8
-tolerance: 5
-vmaf_score_threshold: 60
-hash_search_v2_coarse_unit: 4
-hash_search_v2_coarse_interval: 3
-max_workers: 6
-evaluated_file: "eval.json"
-PEXELS_API_KEY: "WD9OjZcFWztgC6no5AQksf5ixmdrW1EfLqpiYqxOWozhLX2DKzCYVkcO"
-PEXELS_DOWNLOAD_API_KEY: ["WD9OjZcFWztgC6no5AQksf5ixmdrW1EfLqpiYqxOWozhLX2DKzCYVkcO", "IVVpGOKxM8vkqJQGziB7PN9FX8WhxWAFlusWe9UvMyPgPpMcAkNR2YNK", "nFfgK7tYZqdcBKPOQ3xhg1MNsofTa9KoWHfRtqFgtPT9TOMfg6uqV07R"]
+MONGO_URI: "mongodb://localhost:27017/?replicaSet=rs0"
+DB_NAME: "vidaio"
+COLLECTION_NAME: "videos"
+
+VIDEO_DIR: "/root/vidaio/videodb/original/"
+TEST_VIDEO_DIR: "/root/vidaio/videodb/test/"
+HASH_SEARCH_PROCESSORS: 8
+VMAF_SCORE_THRESHOLD: 60
+
+HASH_SEARCH_V2_COARSE_UNIT: 4
+HASH_SEARCH_V2_COARSE_INTERVAL: 3
+
+PEXELS_API_KEYS:
+  - Hr7vQTTceNDmGOuFiADPVZg0ITLSjIWzqHlH8ulG1GWuc9vq33ga03Eu
+  - u29jD9N3XijeltoDgMaBKsx25S1RFuGaSmSnHwCb3fBHybpvF7xYBKz7
+  - 1ajHAlPwl5OJahbq7TAYTZKWR7CzNGvOeaEDPtovm1oqtTEwfi7Ua2jA
+  - OLv8J0RfL3iNt2tkw88PZ7FoM704JJXjshqGx5WKi0zejtV8s0PR4Q42
+  - WD9OjZcFWztgC6no5AQksf5ixmdrW1EfLqpiYqxOWozhLX2DKzCYVkcO
+  - IVVpGOKxM8vkqJQGziB7PN9FX8WhxWAFlusWe9UvMyPgPpMcAkNR2YNK
+  - nFfgK7tYZqdcBKPOQ3xhg1MNsofTa9KoWHfRtqFgtPT9TOMfg6uqV07R
+
 MIN_VIDEO_LEN: 25
 MAX_VIDEO_LEN: 50
 PEXELS_CHECK_INTERVAL: 3600 # 1 hour
 
-search_service_host: "localhost"
-search_service_port: 5005
+SEARCH_SERVICE_HOST: "localhost"
+SEARCH_SERVICE_PORT: 5005

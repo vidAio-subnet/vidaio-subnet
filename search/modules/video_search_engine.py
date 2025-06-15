@@ -4,7 +4,7 @@ import imagehash
 import os
 import time
 from threading import Thread
-from search.modules.config import config
+from search.modules.search_config import search_config
 from search.modules.hash_engine import video_to_phashes
 from services.scoring.vmaf_metric import vmaf_metric
 from loguru import logger
@@ -16,6 +16,8 @@ import xml.etree.ElementTree as ET
 from multiprocessing import Pool
 import logging
 from search.hashmatcher import cmatcher
+from threading import Thread
+from bson import ObjectId
 
 def get_ramfs_path():
     candidates = ['/dev/shm', '/run', '/tmp']
@@ -111,18 +113,67 @@ class VideoSearchEngine:
             self.log = log
         else:
             self.log = logging.getLogger(__name__)
-        self.video_dir = config['video_dir']
-        self.hash_search_processors = config['hash_search_processors']
-        self.matcher = cmatcher.HashMatcher(config['hash_search_v2_coarse_unit'], config['hash_search_v2_coarse_interval'])
-        self.reload_video_db()
+        self.video_dir = search_config['VIDEO_DIR']
+        self.hash_search_processors = search_config['HASH_SEARCH_PROCESSORS']
+        self.matcher = cmatcher.HashMatcher(search_config['HASH_SEARCH_V2_COARSE_UNIT'], search_config['HASH_SEARCH_V2_COARSE_INTERVAL'])
+        self._reload_video_db()
+        self._start_mongodb_change_listener()
+
+    def _start_mongodb_change_listener(self):
+        self.watch_db = MongoClient(search_config['MONGO_URI'])
+        self.watch_collection = self.watch_db[search_config['DB_NAME']][search_config['COLLECTION_NAME']]
+
+        def watch_changes():
+            self.log.info("📡 Starting MongoDB change stream...")
+            try:
+                with self.watch_collection.watch(
+                    [{'$match': {'operationType': {'$in': ['insert', 'update', 'replace', 'delete']}}}],
+                    full_document='updateLookup'
+                ) as stream:
+                    for change in stream:
+                        op_type = change["operationType"]
+                        doc_id = change["documentKey"]["_id"]
+                        if op_type == "insert":
+                            full_doc = change.get("fullDocument")
+                            self._insert_video_to_buffer(full_doc)
+                        elif op_type == "delete":
+                            self._delete_video_from_buffer(doc_id)
+                        else:
+                            self.log.error(f"2️ ❌ Unknown operation type: {op_type}")
+            except KeyboardInterrupt:
+                self.log.info("2️ 👋 Stopping MongoDB change stream...")
+                return
+            except Exception as e:
+                self.log.error(f"2️ ❌ Error in watch_changes: {e}")
+                time.sleep(5)
+
+        Thread(target=watch_changes, daemon=True).start()
+
+    def _insert_video_to_buffer(self, doc: dict):
+        self.video_db.append({
+            '_id': doc['_id'],
+            'filename': doc['filename'],
+            'fps': doc['fps'],
+            'width': doc['width'],
+            'height': doc['height'],
+            'frame_count' : doc['frame_count'],
+        })
+        self.matcher.add_dataset(doc['hashes'])
+
+    def _delete_video_from_buffer(self, doc_id: ObjectId):
+        for i, video in enumerate(self.video_db):
+            if video['_id'] == doc_id:
+                self.video_db.pop(i)
+                self.matcher.remove_dataset(i)
+                break
 
     def get_video_info(self, index:int):
         return self.video_db[index]
         
-    def reload_video_db(self):
-        client = MongoClient(config['mongo_uri'])
-        db_name = config['db_name']
-        collection_name = config['collection']
+    def _reload_video_db(self):
+        client = MongoClient(search_config['MONGO_URI'])
+        db_name = search_config['DB_NAME']
+        collection_name = search_config['COLLECTION_NAME']
 
         self.video_db = []
 
@@ -149,17 +200,6 @@ class VideoSearchEngine:
             self.log.error(f"2️ ❌ Error initializing database: {e}")
         finally:
             client.close()
-
-    def put_video_info(self, video_info: dict):
-        self.log.info(f"✅ Video search engine received video info {video_info['filename']}")
-        self.video_db.append({
-            'filename': video_info['filename'],
-            'fps': video_info['fps'],
-            'width': video_info['width'],
-            'height': video_info['height'],
-            'frame_count': video_info['frame_count']
-        })
-        self.matcher.add_dataset(video_info['hashes'])
 
     def _search_hash(self, query_path : str):
         query_hashes, fps, width, height, frame_count = video_to_phashes(os.path.join(self.video_dir, query_path), 16)
@@ -255,7 +295,7 @@ class VideoSearchEngine:
 
 def test_multiple_files(file_count : int = -1):
     # search_and_clip
-    test_video_dir = "/root/vidaio/test_videos"
+    test_video_dir = search_config['TEST_VIDEO_DIR']
     search_engine = VideoSearchEngine(logger)
 
     count = 0
@@ -320,5 +360,5 @@ def test_single_file(query_path : str, query_scale : int = 2):
         os.remove(clip_path)
 
 if __name__ == "__main__":
-    test_single_file("/root/vidaio/test_videos/SD2HD_32269855_downscale_632_10.mp4", 2)
+    #test_single_file(f"{search_config['TEST_VIDEO_DIR']}/SD2HD_32269855_downscale_632_10.mp4", 2)
     test_multiple_files(10)

@@ -10,20 +10,20 @@ from vidaio_subnet_core import CONFIG
 import re
 from pydantic import BaseModel
 from typing import Optional
-from services.miner_utilities.redis_utils import schedule_file_deletion
+from services.miner_utilities.redis_utils import schedule_file_deletion, schedule_local_file_deletion
 from vidaio_subnet_core.utilities import storage_client, download_video
 from loguru import logger
 import traceback
-from features.modules.search_engine import VideoSearchEngine
 import shutil
-
 from services.miner_utilities.redis_utils import init_gpus, acquire_gpu, release_gpu, get_gpu_count
 import cv2
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import aiohttp
+import json
+from search.modules.search_config import search_config
 
 app = FastAPI()
-engine = VideoSearchEngine(logger)
 
 # initialize GPU
 @app.on_event("startup")
@@ -62,7 +62,7 @@ def get_frame_rate(input_file: Path) -> float:
         raise HTTPException(status_code=500, detail="Unable to determine frame rate of the video.")
 
 
-def upscale_video(payload_video_path: str, task_type: str, delete_input_file: bool = True):
+async def upscale_video2x(payload_url: str, task_type: str):
     """
     Upscales a video using the video2x tool and returns the full paths of the upscaled video and the converted mp4 file.
 
@@ -73,13 +73,23 @@ def upscale_video(payload_video_path: str, task_type: str, delete_input_file: bo
     Returns:
         str: The full path to the upscaled video.
     """
+    try:
+        start_time = time.time()
+        logger.info("📻 Downloading video...")
+        payload_video_path: str = await download_video(payload_url)
+        elapsed_time = time.time() - start_time
+        logger.info(f"📻 Download video finished, Path: {payload_video_path}, Time: {elapsed_time:.2f}s")
+    except Exception as e:
+        logger.error(f"❌ Failed to download video: {e}")
+        return None
+    
     gpu_index = -1
     try:
         # Acquire GPU
         gpu_index = acquire_gpu()
         if gpu_index is None:
             logger.error("1️❌ No GPU available for processing.")
-            return JSONResponse(status_code=503, content={"error": "No GPU available for processing."})
+            return None
 
         input_file = Path(payload_video_path)
         scale_factor = "2"
@@ -88,7 +98,7 @@ def upscale_video(payload_video_path: str, task_type: str, delete_input_file: bo
 
         # Validate input file
         if not input_file.exists() or not input_file.is_file():
-            raise HTTPException(status_code=400, detail="Input file does not exist or is not a valid file.")
+            return None
 
         # Generate output file paths
         output_file_upscaled = f"{input_file.stem}_video2x_upscaled.mp4"
@@ -153,7 +163,7 @@ def upscale_video(payload_video_path: str, task_type: str, delete_input_file: bo
             else:
                 logger.info("1️❌ Failed to release GPU index, it was never acquired.")
 
-            raise HTTPException(status_code=500, detail=f"video2x: Upscaling failed: {video2x_process.stderr.strip()}")
+            return None
         if not os.path.exists(str(output_file_upscaled)):
             logger.info("1️❌ video2x: Upscaled MP4 video file was not created.")
 
@@ -163,9 +173,10 @@ def upscale_video(payload_video_path: str, task_type: str, delete_input_file: bo
             else:
                 logger.info("1️❌ Failed to release GPU index, it was never acquired.")
 
-            raise HTTPException(status_code=500, detail="video2x: Upscaled MP4 video file was not created.")
+            return None
         
         logger.info(f"1️✅ Returning from FastAPI: {output_file_upscaled}")
+        schedule_local_file_deletion(output_file_upscaled, 2 * 60)
         return str(output_file_upscaled)
     except Exception as e:
         logger.info(f"1️❌ Error: {str(e)}")
@@ -176,53 +187,65 @@ def upscale_video(payload_video_path: str, task_type: str, delete_input_file: bo
         else:
             logger.info("1️❌ Failed to release GPU index, it was never acquired.")
 
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+        return None
     finally:
         # Release the GPU
         if gpu_index != -1:
             release_gpu(gpu_index)
         else:
             logger.info("1️❌ Failed to release GPU index, it was never acquired.")
+        if payload_video_path and os.path.exists(payload_video_path):
+            os.remove(payload_video_path)  
 
-def upscale_query_based(payload_video_path: str, task_type: str, delete_input_file: bool = True):
-    """
-    Upscales a video based on a query.
-    """
-    try:
-        query_scale = 2
-        if task_type == "SD24K":
-            query_scale = 4
-        result = engine.search(query_path=payload_video_path, query_scale=query_scale, top_n=1)
-        if len(result) > 0:
-            upscaled_video_path = result[0][0]
-            return upscaled_video_path
-        else:
-            logger.info("2️ ❌ No result found for query_based upscaling")
+async def search_video(payload_url: str, task_type: str) -> str | None:
+    url = f"http://{search_config['SEARCH_SERVICE_HOST']}:{search_config['SEARCH_SERVICE_PORT']}/search"
+    headers = {"Content-Type": "application/json"}
+    data = {
+        "payload_url": payload_url,
+        "task_type": task_type,
+    }
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, headers=headers, data=json.dumps(data)) as response:
+            if response.status == 200:
+                result = await response.json()
+                if result.get("success"):
+                    return result.get("filename")
+                else:
+                    return None
+            logger.error(f"Video search service error: {response.status}")
             return None
-    except Exception as e:
-        logger.error(f"2️ ❌ upscale_query_based failed: {e}")
-        traceback.print_exc()
-        return None
 
-async def upscale_video_wrapper(payload_video_path: str, task_type: str, delete_input_file: bool = True):
+async def upscale_search(payload_url: str, task_type: str) -> str | None:
+    filename = await search_video(payload_url, task_type)
+    if filename is None:
+        return None
+    try:
+        start_time = time.time()
+        logger.info("📻 Downloading video...")
+        upscaled_video_path: str = await download_video(f"http://{search_config['SEARCH_SERVICE_HOST']}:{search_config['SEARCH_SERVICE_PORT']}/download/{filename}")
+        elapsed_time = time.time() - start_time
+        logger.info(f"📻 Download video finished, Path: {upscaled_video_path}, Time: {elapsed_time:.2f}s")
+        schedule_local_file_deletion(upscaled_video_path, 2 * 60)
+        return upscaled_video_path
+    except Exception as e:
+        logger.error(f"❌ Failed to download video: {e}")
+        return None
+    
+async def upscale_video_wrapper(payload_url: str, task_type: str):
     """
     Wrapper function for upscale_video.
     """
     try:
         start_time = time.time()
-        # Copy the video file to /home/online_data
-        if delete_input_file:
-            target_path = f"/home/online_data/{Path(payload_video_path).name}"
-            shutil.copy2(payload_video_path, target_path)
-            logger.info(f"Copied video file to {target_path}")
-
+        
         async def run_upscale_methods():
             # Create a ThreadPoolExecutor for running the synchronous functions
             with ThreadPoolExecutor() as executor:
                 # Create tasks for both upscaling methods
                 loop = asyncio.get_event_loop()
-                task1 = loop.run_in_executor(executor, upscale_video, payload_video_path, task_type, False)
-                task2 = loop.run_in_executor(executor, upscale_query_based, payload_video_path, task_type, False)
+                task1 = loop.run_in_executor(executor, upscale_video2x, payload_url, task_type)
+                task2 = loop.run_in_executor(executor, upscale_search, payload_url, task_type)
                 
                 # Wait for the first task to complete
                 done, pending = await asyncio.wait(
@@ -261,9 +284,6 @@ async def upscale_video_wrapper(payload_video_path: str, task_type: str, delete_
         
         processed_video_path = await run_upscale_methods()
 
-        if delete_input_file and os.path.exists(payload_video_path):
-            os.remove(payload_video_path)
-
         if processed_video_path is not None:
             processed_video_name = Path(processed_video_path).name
             elapsed_time = time.time() - start_time
@@ -271,11 +291,6 @@ async def upscale_video_wrapper(payload_video_path: str, task_type: str, delete_
         else:
             logger.info(f"❌ Upscaled video: {processed_video_name} failed")
             return None
-
-        if delete_input_file:
-            target_path = f"/home/online_data/{Path(payload_video_path).name}_outscaled.mp4"
-            shutil.copy2(processed_video_path, target_path)
-            logger.info(f"Copied video file to {target_path}")
 
         return processed_video_path
     except Exception as e:
@@ -288,29 +303,17 @@ async def video_upscaler(request: UpscaleRequest):
     logger.info(f"📻 upscale-video request payload: {request.json()}")
 
     try:
+        start_time = time.time()
         payload_url = request.payload_url
         task_type = request.task_type
-
-        start_time = time.time()
-        logger.info("📻 Downloading video...")
-        payload_video_path: str = await download_video(payload_url)
-        elapsed_time = time.time() - start_time
-        logger.info(f"📻 Download video finished, Path: {payload_video_path}, Time: {elapsed_time:.2f}s")
-
-        processed_video_path = await upscale_video_wrapper(payload_video_path, task_type, True)
+        
+        processed_video_path = await upscale_video_wrapper(payload_url, task_type)
 
         if processed_video_path is not None:
             object_name: str = Path(processed_video_path).name
             
             await storage_client.upload_file(object_name, processed_video_path)
             logger.info("📻 Video uploaded successfully.")
-            
-            # Delete the local file since we've already uploaded it to MinIO
-            if os.path.exists(processed_video_path):
-                os.remove(processed_video_path)
-                logger.info(f"📻 {processed_video_path} has been deleted.")
-            else:
-                logger.info(f"❌ {processed_video_path} does not exist.")
                 
             sharing_link: str | None = await storage_client.get_presigned_url(object_name)
             if not sharing_link:
