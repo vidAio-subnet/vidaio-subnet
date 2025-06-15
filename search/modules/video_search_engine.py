@@ -115,7 +115,9 @@ class VideoSearchEngine:
             self.log = logging.getLogger(__name__)
         self.video_dir = search_config['VIDEO_DIR']
         self.hash_search_processors = search_config['HASH_SEARCH_PROCESSORS']
-        self.matcher = cmatcher.HashMatcher(search_config['HASH_SEARCH_V2_COARSE_UNIT'], search_config['HASH_SEARCH_V2_COARSE_INTERVAL'])
+        self.matcher = cmatcher.HashMatcher(search_config['HASH_SEARCH_V2_THREADS'], 
+            search_config['HASH_SEARCH_V2_COARSE_UNIT'], 
+            search_config['HASH_SEARCH_V2_COARSE_INTERVAL'])
         self._reload_video_db()
         self._start_mongodb_change_listener()
 
