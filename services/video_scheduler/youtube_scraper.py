@@ -1,5 +1,5 @@
 import os
-from sqlalchemy import create_engine, Column, String
+from sqlalchemy import create_engine, Column, String, Integer, Float
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 if __name__ == "__main__": # for testing
@@ -17,6 +17,7 @@ class Video(Base):
     format_1440_id = Column(String)
     format_2160_id = Column(String)
     format_4320_id = Column(String)
+    duration = Column(Float)
 
 def get_1080p_videos(session) -> list[Video]:
     return session.query(Video).filter(Video.format_1080_id.isnot(None)).all()
@@ -43,32 +44,54 @@ def get_matching_formats(videos:list["dict"], resolution) -> dict:
     return matches
 
 
-def populate_database(session, search_term:str, count=10, wipe_old=False) -> list[str]:
+def populate_database(
+    session,
+    search_term: str,
+    count = 10,
+    wipe_old = False,
+    min_length: int = 0,
+    max_length: int = float('inf')
+) -> list[str]:
     """
-    Populates database with videos based on search term
-    Returns a list of string ids of videos added to db
+    Populates database with videos based on search term and optional duration filter.
+    Returns a list of string IDs of videos added to the DB.
+    - min_length and max_length are in seconds.
     """
     if wipe_old:
-        vids = Video.query.all()
-        for v in vids:
+        for v in session.query(Video).all():
             session.delete(v)
         session.commit()
 
     handler = YouTubeHandler()
     results = handler.search_videos_raw(search_term, max_results=count)
-    
+
+    # Filter by video length
+    filtered_results = []
+    durations = {} 
+    for video in results:
+        duration = video.get("duration")
+        durations[video.get("id")] = duration
+        if duration is None:
+            continue
+        if min_length <= duration <= max_length:
+            filtered_results.append(video)
+
+    if not filtered_results:
+        print("No videos matched duration criteria.")
+        return []
+
     # Resolutions / DB Column names
-    resolutions = { 
-        RESOLUTIONS.HD_1080 : "format_1080_id",
-        RESOLUTIONS.HD_1440 : "format_1440_id",
-        RESOLUTIONS.HD_2160 : "format_2160_id",
-        RESOLUTIONS.HD_4320 : "format_4320_id"
+    resolutions = {
+        RESOLUTIONS.HD_1080: "format_1080_id",
+        RESOLUTIONS.HD_1440: "format_1440_id",
+        RESOLUTIONS.HD_2160: "format_2160_id",
+        RESOLUTIONS.HD_4320: "format_4320_id"
     }
 
     # Find matches by resolution
-    matches = { 
-        res : get_matching_formats(results, res)
-        for res in resolutions.keys()
+    matches = {
+        res: get_matching_formats(filtered_results, res)
+        for res in resolutions
     }
 
     # Collect unique video IDs
@@ -88,6 +111,7 @@ def populate_database(session, search_term:str, count=10, wipe_old=False) -> lis
         for res, col_key in resolutions.items():
             if (fmt := matches.get(res, {}).get(vid, {}).get("format_id")):
                 v[col_key] = fmt
+        v["duration"] = durations.get(vid)
         additions.append(Video(**v))
 
     session.bulk_save_objects(additions)
@@ -107,7 +131,7 @@ if __name__ == "__main__":
         "Nature 4K 1 Minute",
         "Sports 4K 1 Minute",
     ]:
-        populate_database(session, term, count=2)
+        populate_database(session, term, count=5, min_length=30, max_length=360)
     
     downloader = YouTubeHandler()
 
