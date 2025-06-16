@@ -28,19 +28,22 @@ private:
     int threads;
     int coarse_unit;
     int coarse_interval;
+    int query_width;
     int max_query_length;
     HashBitsVector query_bits_coarse;
     HashBitsVector query_bits_fine;
 
     std::vector<HashBitsVector> dataset_bits_coarse_arr;
     std::vector<HashBitsVector> dataset_bits_fine_arr;
+    std::vector<int> dataset_width_arr;
 
 public:
     HashMatcher(int threads = 4, int coarse_unit = 4, int coarse_interval = 3) 
         : threads(threads), coarse_unit(coarse_unit), coarse_interval(coarse_interval) {}
 
-    void set_query(const std::vector<std::string>& query_hashes, int fps) {
+    void set_query(const std::vector<std::string>& query_hashes, int fps, int width) {
         // Set coarse query bits
+        query_width = width;
         query_bits_coarse.clear();
         for (size_t i = 0; i < query_hashes.size(); i += coarse_unit) {
             if (i < fps * 2) {
@@ -75,7 +78,7 @@ public:
         }
     }
 
-    void add_dataset(const std::vector<std::string>& dataset_hashes) {
+    void add_dataset(const std::vector<std::string>& dataset_hashes, int width) {
         // Set coarse dataset bits
         HashBitsVector dataset_bits_coarse;
         for (size_t i = 0; i < dataset_hashes.size(); i += coarse_unit) {
@@ -99,6 +102,8 @@ public:
             dataset_bits_fine.push_back(packed_bits);
         }
         dataset_bits_fine_arr.push_back(dataset_bits_fine);
+
+        dataset_width_arr.push_back(width);
     }
 
     std::pair<int, int> match() {
@@ -127,6 +132,9 @@ public:
                 size_t end_idx = std::min(start_idx + items_per_thread, dataset_bits_coarse_arr.size());
                 
                 for (size_t i = start_idx; i < end_idx; i++) {
+                    if (dataset_width_arr[i] != query_width) {
+                        continue;
+                    }
                     std::pair<int, int> result = match_item(dataset_bits_coarse_arr[i], dataset_bits_fine_arr[i]);
                     if (result.second < results[t].second) {
                         results[t] = result;

@@ -47,8 +47,8 @@ def test_file_cpp_matcher(query_path, video_path, iterations=10):
     dataset_hashes_str = [str(h) for h in video_hashes]
 
     matcher = cmatcher.HashMatcher(4, coarse_unit, coarse_interval)
-    matcher.set_query(query_hashes_str, int(fps))
-    matcher.add_dataset(dataset_hashes_str)
+    matcher.set_query(query_hashes_str, int(fps), width)
+    matcher.add_dataset(dataset_hashes_str, width)
 
     start_time = time.time()
     total_time = 0

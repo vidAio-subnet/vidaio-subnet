@@ -36,13 +36,27 @@ def download_video(
     url = f"https://api.pexels.com/videos/videos/{vid}"
     headers = {"Authorization": api_key}
     
+    if task_type == "HD24K" or task_type == "SD24K":
+        task_type = random.choice(["HD24K", "SD24K"]) # This is test purpose
+    
     video_id = f'{task_type}_{vid}'
     origin_path = Path(search_config['VIDEO_DIR']) / f"{video_id}_original.mp4"
-    if origin_path.exists():
-        logger.info(f"⚠️ Already existing: {origin_path}, deleted")
-        return origin_path
-    temp_path = Path(search_config['VIDEO_DIR']) / f"{video_id}_original_tmp.mp4"
     
+    if task_type == "HD24K" or task_type == "SD24K":
+        if task_type == "HD24K":
+            other_path = Path(search_config['VIDEO_DIR']) / f"SD24K_{vid}_original.mp4"
+        else:
+            other_path = Path(search_config['VIDEO_DIR']) / f"HD24K_{vid}_original.mp4"
+        if other_path.exists():
+            logger.info(f"⚠️ Already existing: {other_path}")
+            os.rename(other_path, origin_path)
+            return origin_path
+        
+    if origin_path.exists():
+        logger.info(f"⚠️ Already existing: {origin_path}")
+        return origin_path
+
+    temp_path = Path(search_config['VIDEO_DIR']) / f"{video_id}_original_tmp.mp4"
     start_time = time.time()
 
     EXPECTED_RESOLUTIONS = {
@@ -113,32 +127,28 @@ def download_video(
 async def get_pexels_all_vids_async(
     min_len: int,
     max_len: int,
-    cur_video_ids: List[int],
-    all_new_video_ids: List[int],
+    db_video_ids: List[int],
+    chunk_new_videos: List[int],
     api_keys: List[str],
     last_page: int = 0,
-    width: int = None,
-    height: int = None,
-    task_type: str = None,
+    task_class: str = None,
     query: str = None,
     per_page: int = 80,
     delay: float = 1.0
-) -> Tuple[List[int], List[int], int]:
+):
 
-    RESOLUTIONS = {
+    LARGE_RESOLUTIONS = {
         "HD24K": (3840, 2160),
-        "SD2HD": (1920, 1080),
         "SD24K": (3840, 2160),
         "4K28K": (7680, 4320),
         "HD28K": (7680, 4320),
     }
 
-    width, height = (width, height) if width and height else RESOLUTIONS.get(task_type, (3840, 2160))
-
-    logger.info(f"🔎 Fetching video ids for task_type: {task_type}, query: {query}, {width}x{height}, {min_len}-{max_len}s")
+    logger.info(f"🔎 Fetching video ids for task_class: {task_class}, query: {query}, {min_len}-{max_len}s")
 
     new_video_ids = []
     matched_video_ids = []
+    new_video_task_type_map = {}
     MAX_RETRIES = 3
     page = last_page
     api_key_index = 0
@@ -156,7 +166,7 @@ async def get_pexels_all_vids_async(
                 "size": "large",
             }
 
-            if task_type == "SD2HD":
+            if task_class == "SD2HD":
                 params.pop("size", None)
 
             retries = 0
@@ -179,26 +189,31 @@ async def get_pexels_all_vids_async(
                 logger.info(f"[END] No more videos on page {page}")
                 break
 
-            matched = 0
-            skipped = 0
-            new_count = 0
             for video in data["videos"]:
-                if video["id"] in cur_video_ids or video["id"] in all_new_video_ids:
-                    matched += 1
-                    matched_video_ids.append(video["id"])
-                if min_len <= video["duration"] <= max_len and video["width"] == width and video["height"] == height:
-                    new_video_ids.append(video["id"])
-                    new_count += 1
+                dimension_matched = False
+                if task_class == "SD2HD":
+                    dimension_matched = video["width"] == 1920 and video["height"] == 1080
+                    task_type = "SD2HD"
                 else:
-                    skipped += 1
+                    for key, (width, height) in LARGE_RESOLUTIONS.items():
+                        if video["width"] == width and video["height"] == height:
+                            dimension_matched = True
+                            task_type = key
+                            break
 
+                if min_len <= video["duration"] <= max_len and dimension_matched:
+                    if video["id"] in db_video_ids or video["id"] in chunk_new_videos:
+                        matched_video_ids.append(video["id"])
+                    else:
+                        new_video_ids.append(video["id"])
+                        new_video_task_type_map[video["id"]] = task_type
             if len(data["videos"]) < per_page:
                 break  # Last page
             page += 1
             await asyncio.sleep(delay)
 
-    logger.info(f"✅ task_type: {task_type}, query: {query}, Total new videos: {len(new_video_ids)}, matched videos: {len(matched_video_ids)}")
-    return new_video_ids, matched_video_ids, page
+    logger.info(f"✅ task_class: {task_class}, query: {query}, Total new videos: {len(new_video_ids)}, matched videos: {len(matched_video_ids)}")
+    return new_video_ids, matched_video_ids, new_video_task_type_map
     
 class VideoDbUpdateService:
     def __init__(self):
@@ -208,14 +223,6 @@ class VideoDbUpdateService:
         self.db_name = search_config['DB_NAME']
         self.collection_name = search_config['COLLECTION_NAME']
         self.collection = self.client[self.db_name][self.collection_name]
-        self.video_ids = []
-        for doc in self.collection.find():
-            try:
-                self.video_ids.append(int(doc['filename'].split('_')[1]))
-            except Exception as e:
-                logger.info(f"Invalid filename format: {doc['filename']}")
-                continue
-        logger.info(f"✅ Loaded {len(self.video_ids)} videos from database")
 
     async def insert_video_to_db(self, origin_path: str):
         try:
@@ -247,45 +254,48 @@ class VideoDbUpdateService:
             return False
         return True
 
-    async def fetch_video_ids(self, task_type: str, query_chunks: List[List[str]], api_keys_chunks: List[List[str]]):
-        all_new_video_ids = []
-        all_matched_video_ids = []
+    async def fetch_video_ids(self, task_class: str, query_chunks: List[List[str]], api_keys_chunks: List[List[str]], db_video_ids: List[int]):
+        
         async def process_query_chunk(chunk, api_keys_chunk):
             chunk_new_videos = []
             chunk_matched_videos = []
-            chunk_pages = {}
-            logger.info(f"task_type: {task_type}, processing query chunk: {chunk}")
+            chunk_new_video_task_type_map = {}
+            logger.info(f"task_class: {task_class}, processing query chunk: {chunk}")
             
             for query in chunk:
-                new_video_ids, matched_video_ids, page = await get_pexels_all_vids_async(
-                    cur_video_ids = self.video_ids,
-                    all_new_video_ids = all_new_video_ids,
+                new_video_ids, matched_video_ids, new_video_task_type_map = await get_pexels_all_vids_async(
+                    db_video_ids = db_video_ids,
+                    chunk_new_videos = chunk_new_videos,
                     last_page = 0,
                     min_len = search_config['MIN_VIDEO_LEN'],
                     max_len = search_config['MAX_VIDEO_LEN'],
-                    task_type = task_type,
+                    task_class = task_class,
                     query = query,
                     api_keys = api_keys_chunk
                 )
                 chunk_new_videos.extend(new_video_ids)
                 chunk_matched_videos.extend(matched_video_ids)
-                chunk_pages[f"{task_type}_{query}"] = page
+                chunk_new_video_task_type_map.update(new_video_task_type_map)
             
-            return chunk_new_videos, chunk_matched_videos, chunk_pages
+            return chunk_new_videos, chunk_matched_videos, chunk_new_video_task_type_map
         
         # Process chunks in parallel
         tasks = [process_query_chunk(chunk, api_keys_chunk) for chunk, api_keys_chunk in zip(query_chunks, api_keys_chunks)]
         results = await asyncio.gather(*tasks)
-            
+        
+        all_new_video_ids = []
+        all_matched_video_ids = []
+        all_new_video_task_type_map = {}
         # Combine results
-        for chunk_new_videos, chunk_matched_videos, chunk_pages in results:
+        for chunk_new_videos, chunk_matched_videos, chunk_new_video_task_type_map in results:
             all_new_video_ids.extend(chunk_new_videos)
             all_matched_video_ids.extend(chunk_matched_videos)
+            all_new_video_task_type_map.update(chunk_new_video_task_type_map)
         all_new_video_ids = list(dict.fromkeys(all_new_video_ids))           
         all_matched_video_ids = list(dict.fromkeys(all_matched_video_ids))
-        return all_new_video_ids, all_matched_video_ids
+        return all_new_video_ids, all_matched_video_ids, all_new_video_task_type_map
 
-    async def download_and_insert_videos(self, task_type: str, video_chunks: List[List[int]], api_keys_chunks: List[List[str]]):
+    async def download_and_insert_videos(self, new_video_task_type_map: Dict[int, str], video_chunks: List[List[int]], api_keys_chunks: List[List[str]]):
         def process_video_chunk(chunk, api_keys_chunk):
             chunk_results = []
             api_key_index = 0
@@ -295,7 +305,7 @@ class VideoDbUpdateService:
                     origin_path = None
                     for retry in range(3):
                         try:
-                            origin_path = download_video(video_id, api_keys_chunk[api_key_index], task_type)
+                            origin_path = download_video(video_id, api_keys_chunk[api_key_index], new_video_task_type_map[video_id])
                             api_key_index = (api_key_index + 1) % len(api_keys_chunk)
                             if origin_path is not None:
                                 break
@@ -322,47 +332,45 @@ class VideoDbUpdateService:
         for thread in threads:
             thread.join()
 
-        count = 0
+        success_countcount = 0
+        failed_count = 0
         for thread in threads:
             results = thread.result if hasattr(thread, 'result') else []
             for video_id, origin_path in results:
                 if await self.insert_video_to_db(origin_path):
-                    self.video_ids.append(video_id)
-                    count += 1
+                    success_count += 1
                 else:
                     if origin_path and os.path.exists(origin_path):
                         os.remove(origin_path)
                     logger.info(f"❌ Failed to insert video {video_id} to db")
-        logger.info(f"✅ Inserted {count} videos to db")
+                    failed_count += 1
+        if success_count > 0:
+            logger.info(f"✅ Inserted {success_count} videos to db")
+        if failed_count > 0:
+            logger.info(f"❌ Failed to insert {failed_count} videos to db")
+        return success_count, failed_count
 
     async def clean_up_videos(self, all_valid_video_ids: List[int]):
-        missing_video_ids = [video_id for video_id in self.video_ids if video_id not in all_valid_video_ids]
+        collection = self.client[self.db_name][self.collection_name]
+        datetime_threshold = datetime.now() - timedelta(days=7)
 
-        if missing_video_ids:
-            logger.info(f"Found {len(missing_video_ids)} video IDs that are not in all_valid_video_ids")
+        # Only fetch documents older than 7 days
+        old_docs_cursor = collection.find({"created_at": {"$lt": datetime_threshold}})
+        ids_to_delete = []
 
-            collection = self.client[self.db_name][self.collection_name]
-            datetime_threshold = datetime.now() - timedelta(days=7)
+        for doc in old_docs_cursor:
+            try:
+                video_id = int(doc['filename'].split('_')[1])
+            except (IndexError, ValueError):
+                logger.info(f"Invalid filename format: {doc['filename']}")
+                continue
 
-            # Only fetch documents older than 7 days
-            old_docs_cursor = collection.find({"created_at": {"$lt": datetime_threshold}})
-            ids_to_delete = []
+            if video_id not in all_valid_video_ids:
+                ids_to_delete.append(doc['_id'])
 
-            for doc in old_docs_cursor:
-                try:
-                    video_id = int(doc['filename'].split('_')[1])
-                except (IndexError, ValueError):
-                    logger.info(f"Invalid filename format: {doc['filename']}")
-                    continue
-
-                if video_id not in all_valid_video_ids:
-                    ids_to_delete.append(doc['_id'])
-
-            if ids_to_delete:
-                collection.delete_many({"_id": {"$in": ids_to_delete}})
-                logger.info(f"✅ Deleted {len(ids_to_delete)} videos from db")
-        else:
-            logger.info("All video IDs are present in all_valid_video_ids")
+        if ids_to_delete:
+            collection.delete_many({"_id": {"$in": ids_to_delete}})
+            logger.info(f"✅ Deleted {len(ids_to_delete)} videos from db")
     
     async def check_and_download(self):
         yaml_file_path = "services/video_scheduler/pexels_categories.yaml"
@@ -376,27 +384,44 @@ class VideoDbUpdateService:
         if not api_keys:
             logger.info("Missing Pexels API Key")
             return []
-        
+
+        db_video_ids = []
+        for doc in self.collection.find():
+            try:
+                db_video_ids.append(int(doc['filename'].split('_')[1]))
+            except Exception as e:
+                logger.info(f"Invalid filename format: {doc['filename']}")
+                continue
+        logger.info(f"✅ Loaded {len(db_video_ids)} videos from database")
+
         all_valid_video_ids = []
 
-        for task_type in ["HD24K", "SD2HD", "SD24K", "4K28K", "HD28K"]:
+        for task_class in ["LARGE", "SD2HD"]:
             query_chunks = np.array_split(query_list, 5)
             api_keys_chunks = np.array_split(api_keys, 5)
 
-            new_video_ids, matched_video_ids = await self.fetch_video_ids(task_type, query_chunks, api_keys_chunks)             
-            logger.info(f"Task type: {task_type} - ✅ Fetched {len(new_video_ids)} new videos")
+            yaml_file_path = f"{search_config['VIDEO_DIR']}/../pexels_video_ids_{task_class}.yaml"
+            if os.path.exists(yaml_file_path):
+                with open(yaml_file_path, "r") as file:
+                    existing_data = yaml.safe_load(file)
+                    new_video_ids = existing_data.get("new_video_ids", [])
+                    matched_video_ids = existing_data.get("matched_video_ids", [])
+                    new_video_task_type_map = existing_data.get("new_video_task_type_map", {})
+                    logger.info(f"Loaded existing video IDs from {yaml_file_path}")
+            else:
+                new_video_ids, matched_video_ids, new_video_task_type_map = await self.fetch_video_ids(task_class, query_chunks, api_keys_chunks, db_video_ids)             
+                logger.info(f"Task class: {task_class} - ✅ Fetched {len(new_video_ids)} new videos")
+                with open(yaml_file_path, "w") as file:
+                    yaml.dump({"new_video_ids": new_video_ids, "matched_video_ids": matched_video_ids, "new_video_task_type_map": new_video_task_type_map}, file)
+                logger.info(f"✅ Saved {len(new_video_ids)} video ids to {yaml_file_path}")
 
             all_valid_video_ids.extend(new_video_ids)
             all_valid_video_ids.extend(matched_video_ids)
-
-            yaml_file_path = f"{search_config['VIDEO_DIR']}/../pexels_video_ids_{task_type}.yaml"
-            with open(yaml_file_path, "w") as file:
-                yaml.dump({"new_video_ids": new_video_ids}, file)
-
-            logger.info(f"✅ Saved {len(new_video_ids)} video ids to {yaml_file_path}")
-
+            all_valid_video_ids = list(dict.fromkeys(all_valid_video_ids))
+            logger.info(f"✅ Removed duplicates from video IDs. Total unique videos: {len(all_valid_video_ids)}")
+            
             #video_chunks = np.array_split(new_video_ids, 5)
-            #await self.download_and_insert_videos(task_type, video_chunks, api_keys_chunks)
+            #await self.download_and_insert_videos(new_video_task_type_map, video_chunks, api_keys_chunks)
         
         # all_valid_video_ids = list(dict.fromkeys(all_valid_video_ids))
         # logger.info(f"✅ Fetched {len(all_valid_video_ids)} valid video ids")

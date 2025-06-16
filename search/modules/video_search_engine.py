@@ -159,7 +159,7 @@ class VideoSearchEngine:
             'height': doc['height'],
             'frame_count' : doc['frame_count'],
         })
-        self.matcher.add_dataset(doc['hashes'])
+        self.matcher.add_dataset(doc['hashes'], doc['width'])
 
     def _delete_video_from_buffer(self, doc_id: ObjectId):
         for i, video in enumerate(self.video_db):
@@ -194,7 +194,7 @@ class VideoSearchEngine:
                         'height': doc['height'],
                         'frame_count' : doc['frame_count'],
                     })
-                    self.matcher.add_dataset(doc['hashes'])
+                    self.matcher.add_dataset(doc['hashes'], doc['width'])
             duration = time.time() - start_time
             self.log.info(f"2️ ✅ Loaded {len(self.video_db)} videos in {duration:.2f} seconds")
         except Exception as e:
@@ -202,11 +202,11 @@ class VideoSearchEngine:
         finally:
             client.close()
 
-    def _search_hash(self, query_path : str):
+    def _search_hash(self, query_path : str, query_scale : int):
         query_hashes, fps, width, height, frame_count = video_to_phashes(os.path.join(self.video_dir, query_path), 16)
 
         query_hashes_str = [str(h) for h in query_hashes]
-        self.matcher.set_query(query_hashes_str, int(fps))
+        self.matcher.set_query(query_hashes_str, int(fps), width * query_scale)
 
         best_dataset_idx, best_start = self.matcher.match() 
         return best_dataset_idx, best_start, frame_count
@@ -281,7 +281,7 @@ class VideoSearchEngine:
     
     def search_and_clip(self, query_path : str, query_scale : int = 2):
         start_time = time.time()
-        best_dataset_idx, best_start, query_frame_count = self._search_hash(query_path)
+        best_dataset_idx, best_start, query_frame_count = self._search_hash(query_path, query_scale)
         duration = time.time() - start_time
         # self.log.info(f"2️ _search_hash execution duration: {duration:.2f} seconds, best_start: {best_start}")
         if best_start < 0:
