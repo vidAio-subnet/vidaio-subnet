@@ -93,7 +93,6 @@ def download_video(
         cookie_file = fetch_cookies()
 
     # TODO: Generate output temppath if output_path is not specified
-
     format_id = video_format['format_id']
     actual_width = video_format.get('width')
     actual_height = video_format.get('height')
@@ -192,6 +191,9 @@ class YouTubeHandler:
         metadata = self.fetch_video_metadata(vid)
         video_format = get_matching_format(metadata, resolution)
         return self._download_video(vid, video_format, **kw)
+    
+    def download_video_by_format(self, vid:str, video_format:str, **kw) -> os.PathLike:
+        return self._download_video(vid, {"format_id":video_format}, **kw)
 
     def search_videos_by_resolution(
         self,
@@ -227,6 +229,30 @@ class YouTubeHandler:
                     continue
 
             return matching_videos
+    
+    def search_videos_raw(
+        self,
+        search_term: str,
+        max_results: int = 10
+    ) -> list[dict]:
+        """
+        Searches YouTube for videos matching the given term
+        This function is fairly slow as it has to fetch the metadata for each 
+        video in the search sequentially.
+        Returns a list of dicts for matches.
+        """
+        search_query = f"ytsearch{max_results}:{search_term}"
+        ydl_opts = {
+            "quiet": False,
+            "cookiefile": self.cookie_file,
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            search_result = ydl.extract_info(search_query, download=False)
+            if "entries" not in search_result:
+                return {}
+            
+            return search_result["entries"]
 
 if __name__ == "__main__":
     resolution = RESOLUTIONS.HD_2160
@@ -235,9 +261,13 @@ if __name__ == "__main__":
     videos = downloader.search_videos_by_resolution("Nature 4K 1 Minute", resolution, max_results=4)
     elapsed_time = time.time() - start_time
     print(f"Search took {elapsed_time:.2f} seconds")
-    print("\n Found IDs:")
-    for k, v in videos.items():
-        print(f"  {k}, ...")
+    # print("\n Found IDs:")
+    # for k, v in videos.items():
+    #     print(f"  {k}, ...")
+    import json
+    print(json.dumps(videos, indent=4))
+
+
     # get first video in list
     vid = [k for k,v in videos.items()][0]
     downloader.download_video(vid, resolution, output_path="test.mp4")
