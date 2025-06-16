@@ -5,31 +5,26 @@ import os
 import json
 from moviepy.editor import VideoFileClip
 import cv2
+from datetime import datetime
 
 async def main():
-    # Initialize MongoDB client
     client = MongoClient(search_config['MONGO_URI'])
     db_name = search_config['DB_NAME']
     collection_name = search_config['COLLECTION_NAME']
     video_dir = search_config['VIDEO_DIR']
 
     try:
-        # Check if collection exists, if not create it
         if collection_name not in client[db_name].list_collection_names():
             client[db_name].create_collection(collection_name)
 
-        # Delete all documents in the collection
         collection = client[db_name][collection_name]
         collection.delete_many({})
         print(f"Successfully deleted all documents from {collection_name}")
 
-        # Iterate through all files in video_dir
         for filename in os.listdir(video_dir):
             file_path = os.path.join(video_dir, filename)
             
-            # Check if it's a file (not a directory)
             if os.path.isfile(file_path):
-                # Create document for each video file
                 cap = cv2.VideoCapture(file_path)
                 fps = cap.get(cv2.CAP_PROP_FPS)
                 width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -42,10 +37,11 @@ async def main():
                     "fps": fps,
                     "width": width,
                     "height": height,
-                    "frame_count": frame_count
+                    "frame_count": frame_count,
+                    "created_at": datetime.now(),
+                    "updated_at": datetime.now()
                 }
                 
-                # Insert document into collection
                 collection.insert_one(video_doc)
                 print(f"Added {filename} to database")
     except Exception as e:

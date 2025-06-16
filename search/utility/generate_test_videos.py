@@ -10,7 +10,7 @@ import time
 import subprocess
 from tqdm import tqdm
 
-async def main():
+async def main(count : int = -1):
     # Initialize MongoDB client
     test_video_dir = search_config['TEST_VIDEO_DIR']
     video_dir = search_config['VIDEO_DIR']
@@ -22,7 +22,7 @@ async def main():
             
         test_files = os.listdir(test_video_dir)
         print(f"Found {len(test_files)} files in test video directory")
-
+        index = 0
         # Loop through all files in video_dir
         for filename in tqdm(os.listdir(video_dir), desc="Processing videos"):
             try:
@@ -30,6 +30,9 @@ async def main():
                 # Check if it's a file (not a directory)
                 if not os.path.isfile(file_path):
                     continue
+                index += 1
+                if count > 0 and index >= count:
+                    break
                 
                 filename_without_ext = os.path.splitext(filename)[0]
                 if filename_without_ext.endswith('_original'):
@@ -99,4 +102,11 @@ async def main():
         print(f"Error processing {filename}: {e}")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Generate test videos from original videos')
+    parser.add_argument('--count', type=int, default=1, help='Number of test videos to generate per original video')
+    args = parser.parse_args()
+
+    count = args.count
+    asyncio.run(main(count))

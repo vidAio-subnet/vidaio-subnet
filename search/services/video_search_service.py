@@ -74,6 +74,8 @@ async def download_file(filename: str):
         if not os.path.exists(file_path):
             file_path = os.path.join(search_config['VIDEO_DIR'], filename)
         if not os.path.exists(file_path):
+            file_path = os.path.join(search_config['TEST_VIDEO_DIR'], filename)
+        if not os.path.exists(file_path):
             raise HTTPException(status_code=404, detail="File not found")
             
         return FileResponse(

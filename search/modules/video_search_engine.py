@@ -114,7 +114,6 @@ class VideoSearchEngine:
         else:
             self.log = logging.getLogger(__name__)
         self.video_dir = search_config['VIDEO_DIR']
-        self.hash_search_processors = search_config['HASH_SEARCH_PROCESSORS']
         self.matcher = cmatcher.HashMatcher(search_config['HASH_SEARCH_V2_THREADS'], 
             search_config['HASH_SEARCH_V2_COARSE_UNIT'], 
             search_config['HASH_SEARCH_V2_COARSE_INTERVAL'])
@@ -269,13 +268,15 @@ class VideoSearchEngine:
             if vmaf_score < 75:
                 self.log.info(f"2️ ❌ VMAF score is too low: {vmaf_score}")
                 os.remove(clipped_path)
-                return None
+                return None, None
 
             self.log.info(f"2️ ✅ Valid final clip generated in {elapsed_time:.2f} seconds, vmaf_score: {vmaf_score}, max_vmaf_idx: {max_vmaf_idx}")
             return clipped_path, max_vmaf_idx
         except subprocess.SubprocessError as e:
             self.log.error(f"2️ ❌ Error trimming video: {e}")
             return None, None
+        except Exception as e:
+            self.log.error(f"2️ ❌ Error trimming video: {e}")
         return None, None
     
     def search_and_clip(self, query_path : str, query_scale : int = 2):
@@ -284,7 +285,7 @@ class VideoSearchEngine:
         duration = time.time() - start_time
         # self.log.info(f"2️ _search_hash execution duration: {duration:.2f} seconds, best_start: {best_start}")
         if best_start < 0:
-            return None
+            return None, None
 
         best_video = self.video_db[best_dataset_idx]
         start_time = time.time()

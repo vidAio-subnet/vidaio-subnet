@@ -234,7 +234,7 @@ public:
 
 PYBIND11_MODULE(cmatcher, m) {
     py::class_<HashMatcher>(m, "HashMatcher")
-        .def(py::init<int, int>())
+        .def(py::init<int, int, int>())
         .def("set_query", &HashMatcher::set_query)
         .def("add_dataset", &HashMatcher::add_dataset)
         .def("remove_dataset", &HashMatcher::remove_dataset)

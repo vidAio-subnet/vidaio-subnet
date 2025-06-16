@@ -23,10 +23,11 @@ import asyncio
 from vidaio_subnet_core.utilities import storage_client, download_video
 import traceback
 import requests
-
+from services.miner_utilities.redis_utils import schedule_file_deletion
 # Set up logging
 from loguru import logger
 import httpx
+from search.modules.search_config import search_config
 
 # Initialize score client
 score_client = None
@@ -40,36 +41,42 @@ async def init_score_client():
         f"💧 Initialized score client with base URL: http://{CONFIG.score.host}:{CONFIG.score.port} 💧"
     )
 
-async def score_video(downscaled_video_path, ref_video_path):
+async def check_file(input_file_path, ref_file_path):
     start_time = time.time()
 
     try:
 
-        input_file = Path(downscaled_video_path)
-        task_type = "SD24K" if str(input_file.name).startswith("SD24K") else "NOT-SD24K"
+        input_file = Path(input_file_path)
+        task_type = input_file.name[:5]
 
         start_time = time.time()
+        url = f"http://{search_config['SEARCH_SERVICE_HOST']}:{search_config['SEARCH_SERVICE_PORT']}/download/{input_file.name}"
+        processed_video_path = await upscale_video_wrapper(url, task_type)
 
-        processed_video_path = await upscale_video_wrapper(downscaled_video_path, task_type, False)
         if processed_video_path is not None:
             object_name: str = Path(processed_video_path).name
             
             await storage_client.upload_file(object_name, processed_video_path)
-            #await storage_client.upload_file(object_name, ref_video_path)
                             
             sharing_link: str | None = await storage_client.get_presigned_url(object_name)
             if not sharing_link:
                 logger.error(f"File: {input_file.name} Upload failed")
                 return (None, None)
 
+            deletion_scheduled = schedule_file_deletion(object_name)
+            if deletion_scheduled:
+                logger.info(f"Scheduled deletion of {object_name} after 10 minutes")
+            else:
+                logger.warning(f"Failed to schedule deletion of {object_name}")
+
             logger.info(f"File: {input_file.name} Total processing time: {time.time() - start_time:.2f} seconds")
-            video_duration = VideoFileClip(ref_video_path).duration
+            video_duration = VideoFileClip(ref_file_path).duration
             uids = [1]
             
             post_json = {
                 "uids": uids,
                 "distorted_urls": [sharing_link],
-                "reference_paths": [ref_video_path],
+                "reference_paths": [ref_file_path],
                 "video_ids": [input_file.name],
                 "uploaded_object_names": [object_name],
                 "content_lengths": [math.floor(video_duration)]
@@ -106,14 +113,14 @@ async def score_video(downscaled_video_path, ref_video_path):
         traceback.print_exc()
         return (None, None)
 
-
-async def do_score_check(file_list):
+async def check_file_list(file_list):
     vmaf_scores = []
     final_scores = []
     for file in file_list:
         try:
-            vmaf_score, final_score = await score_video(file[0], file[1])
-            file_name = os.path.splitext(os.path.basename(file[0]))[0]
+            input_file_path, ref_file_path = file  # Unpack tuple for better readability
+            vmaf_score, final_score = await check_file(input_file_path, ref_file_path)
+            file_name = os.path.basename(input_file_path)
             logger.info(f"🔯🔯🔯 File: {file_name} VMAF: {vmaf_score} Final: {final_score} 🔯🔯🔯")
             if vmaf_score is not None:
                 vmaf_scores.append(vmaf_score)  
@@ -160,5 +167,5 @@ if __name__ == "__main__":
         ref_file = path.split('downscale')[0] + 'trim.mp4'
         file_list = [(path, ref_file)]
     logger.info(f"🔯🔯🔯 file_list length: {len(file_list)} 🔯🔯🔯")
-    asyncio.run(do_score_check(file_list))
+    asyncio.run(check_file_list(file_list))
 

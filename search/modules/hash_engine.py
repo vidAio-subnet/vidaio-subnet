@@ -77,8 +77,8 @@ if __name__ == "__main__":
     """
     Main function to demonstrate video hash matching functionality.
     """
-    query_path = f"{search_config['TEST_VIDEO_DIR']}/SD24K_6235636_downscale_551_10.mp4"
-    video_path = f"{search_config['VIDEO_DIR']}/SD24K_6235636_original.mp4"
+    query_path = f"{search_config['TEST_VIDEO_DIR']}/HD24K_19763305_downscale_514_2.mp4"
+    video_path = f"{search_config['VIDEO_DIR']}/HD24K_19763305_original.mp4"
     test_file_cpp_matcher(query_path, video_path, iterations=10)
 
     test_video_dir = search_config['TEST_VIDEO_DIR']
