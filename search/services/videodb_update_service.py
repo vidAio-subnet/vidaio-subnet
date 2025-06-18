@@ -23,6 +23,13 @@ import asyncio
 from typing import List, Tuple
 import numpy as np
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+import time
+import os
+from concurrent.futures import ProcessPoolExecutor
+
+#logger.add(sys.stdout, level="INFO", enqueue=True)
+#logger.add(sys.stderr, level="ERROR", enqueue=True)
 
 def download_video(
     vid: int,
@@ -90,26 +97,19 @@ def download_video(
         return None
     
     # Download video with progress bar
-    logger.info(f"\nDownloading video ID: {vid}")
+    logger.info(f"Downloading video ID: {vid}")
     response = requests.get(video_url, stream=True)
     total_size = int(response.headers.get('content-length', 0))
     
-    with open(temp_path, 'wb') as f, tqdm(
-        desc="Downloading",
-        total=total_size,
-        unit='iB',
-        unit_scale=True,
-        unit_divisor=1024,
-    ) as pbar:
+    with open(temp_path, 'wb') as f:
         for chunk in response.iter_content(chunk_size=1024):
-            size = f.write(chunk)
-            pbar.update(size)
+            f.write(chunk)
             
-    logger.info(f"\nVideo downloaded successfully to: {temp_path}")
+    logger.info(f"Video downloaded successfully to: {temp_path}")
     elapsed_time = time.time() - start_time
     logger.info(f"Time taken to download video: {elapsed_time:.2f} seconds")
 
-    logger.info("\nChecking video resolution...")
+    logger.info("Checking video resolution...")
     video_clip = VideoFileClip(str(temp_path))
     actual_width, actual_height = video_clip.size
     
@@ -214,7 +214,7 @@ async def get_pexels_all_vids_async(
 
     logger.info(f"✅ task_class: {task_class}, query: {query}, Total new videos: {len(new_video_ids)}, matched videos: {len(matched_video_ids)}")
     return new_video_ids, matched_video_ids, new_video_task_type_map
-    
+
 class VideoDbUpdateService:
     def __init__(self):
         self.video_dir = search_config['VIDEO_DIR']
@@ -246,7 +246,6 @@ class VideoDbUpdateService:
             }
 
             self.collection.insert_one(video_info)
-            logger.info(f"✅ Inserted video {filename} to db")
             
             cap.release()
         except Exception as e:
@@ -295,55 +294,72 @@ class VideoDbUpdateService:
         all_matched_video_ids = list(dict.fromkeys(all_matched_video_ids))
         return all_new_video_ids, all_matched_video_ids, all_new_video_task_type_map
 
-    async def download_and_insert_videos(self, new_video_task_type_map: Dict[int, str], video_chunks: List[List[int]], api_keys_chunks: List[List[str]]):
-        def process_video_chunk(chunk, api_keys_chunk):
+    async def download_and_insert_videos(self, new_video_task_type_map, video_chunks, api_keys_chunks):
+        loop = asyncio.get_event_loop()
+
+        def download_video_chunk(chunk, api_keys_chunk, chunk_index):
             chunk_results = []
             api_key_index = 0
-            for video_id in chunk:
+            total_videos = len(chunk)
+            logger.info(f"Processing chunk {chunk_index + 1}/{len(video_chunks)} with {total_videos} videos")
+            
+            for idx, video_id in enumerate(chunk, 1):
                 try:
-                    logger.info(f"Downloading video {video_id}")
+                    logger.info(f"Downloading video {video_id} ({idx}/{total_videos} in chunk {chunk_index + 1})")
                     origin_path = None
                     for retry in range(3):
                         try:
                             origin_path = download_video(video_id, api_keys_chunk[api_key_index], new_video_task_type_map[video_id])
                             api_key_index = (api_key_index + 1) % len(api_keys_chunk)
-                            if origin_path is not None:
-                                break
+                            break
                         except Exception as e:
                             logger.info(f"❌ Retry {retry} Failed to download video {video_id}: {str(e)}")
                             time.sleep(15 * (retry + 1))
-                    
+
                     if origin_path is None:
                         logger.info(f"❌ Failed to download video {video_id}: No origin path returned")
                         continue
-                        
+                    percentage = (idx / total_videos) * 100
+                    logger.info(f"✅ Downloaded video {video_id} ({idx}/{total_videos} - {percentage:.1f}% in chunk {chunk_index + 1})")
                     chunk_results.append((video_id, origin_path))
                 except Exception as e:
                     logger.info(f"❌ Failed to download video {video_id}: {str(e)}")
                     continue
             return chunk_results
 
-        threads = []
-        for chunk, api_keys_chunk in zip(video_chunks, api_keys_chunks):
-            thread = Thread(target=lambda: process_video_chunk(chunk, api_keys_chunk))
-            threads.append(thread)
-            thread.start()
-
-        for thread in threads:
-            thread.join()
-
-        success_countcount = 0
+        results = []
+        success_count = 0
         failed_count = 0
-        for thread in threads:
-            results = thread.result if hasattr(thread, 'result') else []
-            for video_id, origin_path in results:
-                if await self.insert_video_to_db(origin_path):
-                    success_count += 1
-                else:
-                    if origin_path and os.path.exists(origin_path):
-                        os.remove(origin_path)
-                    logger.info(f"❌ Failed to insert video {video_id} to db")
-                    failed_count += 1
+
+        with ThreadPoolExecutor(max_workers=len(video_chunks)) as executor:
+            futures = [
+                loop.run_in_executor(executor, download_video_chunk, chunk, api_keys_chunk, idx)
+                for idx, (chunk, api_keys_chunk) in enumerate(zip(video_chunks, api_keys_chunks))
+            ]
+
+            for completed in asyncio.as_completed(futures):
+                try:
+                    chunk_result = await completed
+                    results.extend(chunk_result)
+                except Exception as e:
+                    logger.info(f"❌ Error in thread: {e}")
+
+        # Process DB inserts
+        start_time = time.time()
+        
+        total_videos = len(results)
+        for idx, (video_id, origin_path) in enumerate(results, 1):
+            try:
+                await self.insert_video_to_db(origin_path)
+                success_count += 1
+                percentage = (idx / total_videos) * 100
+                logger.info(f"✅ Inserted video {video_id} ({idx}/{total_videos} - {percentage:.1f}%)")
+            except Exception as e:
+                logger.info(f"❌ Failed to insert video {video_id} to db: {str(e)}")
+                failed_count += 1
+
+        end_time = time.time()
+        logger.info(f"Time taken to insert videos to db: {end_time - start_time:.2f} seconds")
         if success_count > 0:
             logger.info(f"✅ Inserted {success_count} videos to db")
         if failed_count > 0:
@@ -396,7 +412,8 @@ class VideoDbUpdateService:
 
         all_valid_video_ids = []
 
-        for task_class in ["LARGE", "SD2HD"]:
+        #for task_class in ["LARGE", "SD2HD"]:
+        for task_class in ["SD2HD"]:
             query_chunks = np.array_split(query_list, 5)
             api_keys_chunks = np.array_split(api_keys, 5)
 
@@ -408,6 +425,11 @@ class VideoDbUpdateService:
                     matched_video_ids = existing_data.get("matched_video_ids", [])
                     new_video_task_type_map = existing_data.get("new_video_task_type_map", {})
                     logger.info(f"Loaded existing video IDs from {yaml_file_path}")
+
+                    prev_len = len(new_video_ids)
+                    new_video_ids = [vid for vid in new_video_ids if vid not in db_video_ids]
+                    logger.info(f"Removed {prev_len - len(new_video_ids)} videos that were already in database")
+                    logger.info(f"✅ Fetched {len(new_video_ids)} new videos")
             else:
                 new_video_ids, matched_video_ids, new_video_task_type_map = await self.fetch_video_ids(task_class, query_chunks, api_keys_chunks, db_video_ids)             
                 logger.info(f"Task class: {task_class} - ✅ Fetched {len(new_video_ids)} new videos")
@@ -420,8 +442,18 @@ class VideoDbUpdateService:
             all_valid_video_ids = list(dict.fromkeys(all_valid_video_ids))
             logger.info(f"✅ Removed duplicates from video IDs. Total unique videos: {len(all_valid_video_ids)}")
             
-            #video_chunks = np.array_split(new_video_ids, 5)
-            #await self.download_and_insert_videos(new_video_task_type_map, video_chunks, api_keys_chunks)
+            # Check for duplicates in new_video_ids
+            if len(new_video_ids) != len(set(new_video_ids)):
+                duplicates = [x for x in new_video_ids if new_video_ids.count(x) > 1]
+                logger.warning(f"Found {len(duplicates)} duplicate items in new_video_ids: {duplicates}")
+                # Remove duplicates from new_video_ids
+                new_video_ids = list(dict.fromkeys(new_video_ids))
+                logger.info(f"Removed duplicates. New count: {len(new_video_ids)}")
+            else:
+                logger.info(f"No duplicates found in new_video_ids. Count: {len(new_video_ids)}")
+
+            video_chunks = np.array_split(new_video_ids, 5)
+            await self.download_and_insert_videos(new_video_task_type_map, video_chunks, api_keys_chunks)
         
         # all_valid_video_ids = list(dict.fromkeys(all_valid_video_ids))
         # logger.info(f"✅ Fetched {len(all_valid_video_ids)} valid video ids")

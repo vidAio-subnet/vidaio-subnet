@@ -21,7 +21,9 @@ async def main():
         collection.delete_many({})
         print(f"Successfully deleted all documents from {collection_name}")
 
-        for filename in os.listdir(video_dir):
+        total_files = len(os.listdir(video_dir))
+        for idx, filename in enumerate(os.listdir(video_dir), 1):
+            print(f"Processing file {idx}/{total_files}: {filename}")
             file_path = os.path.join(video_dir, filename)
             
             if os.path.isfile(file_path):
@@ -43,7 +45,7 @@ async def main():
                 }
                 
                 collection.insert_one(video_doc)
-                print(f"Added {filename} to database")
+                print(f"✅ Inserted {filename} into database")
     except Exception as e:
         print(f"Error initializing database: {e}")
     finally:
