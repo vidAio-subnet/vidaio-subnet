@@ -253,6 +253,7 @@ def get_pexels_random_vids(
                     break 
                 
                 page += random.randint(1, 3)  
+                time.sleep(random.randint(3, 7)) # due to rate limiting, test-purpose
             
             except requests.exceptions.RequestException as e:
                 logger.info(f"[ERROR] Error fetching videos for '{query}': {e}")
@@ -277,6 +278,23 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis,
     remaining_count = num_needed
 
     while remaining_count > 0:
+        
+        # Check if Pexels queue is running low and replenish if needed
+        pexels_queue_size = get_pexels_queue_size(redis_conn)
+        if pexels_queue_size <= 5:  # Replenish when queue gets low
+            logger.info(f"Pexels queue running low ({pexels_queue_size}), replenishing...")
+            scheduler_config = CONFIG.video_scheduler
+            queue_thresholds = {
+                "pexels": scheduler_config.pexels_threshold,
+                "pexels_max": scheduler_config.pexels_max_size
+            }
+            video_constraints = {
+                "min_length": scheduler_config.min_video_len,
+                "max_length": scheduler_config.max_video_len
+            }
+            task_thresholds = calculate_task_thresholds(scheduler_config)
+            
+            await manage_pexels_queue(redis_conn, queue_thresholds, video_constraints, task_thresholds)
         
         video_id_data = pop_pexels_video_id(redis_conn)
         
