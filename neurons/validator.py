@@ -193,6 +193,8 @@ class Validator(base.BaseValidator):
         
         logger.info(f"Updating miner manager with {len(quality_scores)} miner scores after synthetic requests processing")
 
+        miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
+        
         accumulate_scores, applied_multipliers = self.miner_manager.step_synthetics(
             round_id, uids, miner_hotkeys, vmaf_scores, pieapp_scores, quality_scores, length_scores, final_scores, content_lengths
         )
@@ -229,8 +231,6 @@ class Validator(base.BaseValidator):
                 f"{uid} ** VMAF: {vmaf_score:.2f} ** PieAPP: {pieapp_score:.2f} ** Quality: {quality_score:.4f} "
                 f"** Length: {length_score:.4f} ** Content Length: {content_length} ** Applied_multiplier {applied_multiplier} ** Final: {final_score:.4f} || {reason}"
             )
-
-        miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
 
         miner_data = {
             "validator_uid": self.my_subnet_uid,
@@ -480,7 +480,7 @@ class WeightSynthesizer:
 if __name__ == "__main__":
     validator = Validator()
     weight_synthesizer = WeightSynthesizer(validator)
-    time.sleep(1000) # wait till the video scheduler is ready
+    time.sleep(2000) # wait till the video scheduler is ready, # should be removed in production
 
     async def main():
         validator_synthetic_task = asyncio.create_task(validator.run_synthetic())
