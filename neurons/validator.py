@@ -480,7 +480,7 @@ class WeightSynthesizer:
 if __name__ == "__main__":
     validator = Validator()
     weight_synthesizer = WeightSynthesizer(validator)
-    time.sleep(2000) # wait till the video scheduler is ready, # should be removed in production
+    time.sleep(1000) # wait till the video scheduler is ready, # should be removed in production
 
     async def main():
         validator_synthetic_task = asyncio.create_task(validator.run_synthetic())
