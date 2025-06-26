@@ -25,6 +25,8 @@ from redis_utils import (
     push_pexels_video_ids,
     get_pexels_queue_size,
     pop_pexels_video_id,
+    set_scheduler_ready,
+    is_scheduler_ready,
 )
 from video_utils import download_trim_downscale_video
 from services.google_drive.google_drive_manager import GoogleDriveManager
@@ -377,6 +379,10 @@ async def main():
         redis_conn = get_redis_connection()
         await initialize_environment(redis_conn)
         
+        # Initially set scheduler as not ready
+        set_scheduler_ready(redis_conn, False)
+        logger.info("Set scheduler readiness flag to False")
+        
         scheduler_config = CONFIG.video_scheduler
         queue_thresholds = {
             "refill": scheduler_config.refill_threshold,
@@ -411,13 +417,34 @@ async def main():
                 
                 log_queue_status(redis_conn)
                 
+                # Track if any queue needed replenishment
+                any_replenished = False
+                
                 for duration in [5, 10, 20]:
-                    await replenish_synthetic_queue(
+                    replenished = await replenish_synthetic_queue(
                         redis_conn,
                         duration,
                         queue_thresholds["refill"],
                         queue_thresholds["target"]
                     )
+                    if replenished:
+                        any_replenished = True
+                
+                # Check if all queues are above threshold and update readiness
+                all_queues_ready = (
+                    get_5s_queue_size(redis_conn) >= queue_thresholds["refill"] and
+                    get_10s_queue_size(redis_conn) >= queue_thresholds["refill"] and
+                    get_20s_queue_size(redis_conn) >= queue_thresholds["refill"]
+                )
+                
+                current_ready_status = is_scheduler_ready(redis_conn)
+                
+                if all_queues_ready and not current_ready_status:
+                    set_scheduler_ready(redis_conn, True)
+                    logger.info("🟢 Scheduler is now READY - all synthetic queues are above threshold! 🟢")
+                elif not all_queues_ready and current_ready_status:
+                    set_scheduler_ready(redis_conn, False)
+                    logger.info("🔴 Scheduler is now NOT READY - some queues below threshold 🔴")
                 
                 processed_time = time.time() - cycle_start_time
 
@@ -523,8 +550,12 @@ async def replenish_synthetic_queue(redis_conn, duration, threshold, target):
             
             push_chunks_by_duration(redis_conn, chunk_data, duration)
             logger.info(f"Successfully added {len(chunk_data)} chunks to {duration}s queue")
+            return True  # Indicate that replenishment occurred
         except Exception as e:
             logger.error(f"Failed to replenish {duration}s queue: {str(e)}")
+            return True  # Still considered as attempted replenishment
+    
+    return False  # No replenishment needed
 
 
 def get_queue_size_by_duration(redis_conn, duration):
