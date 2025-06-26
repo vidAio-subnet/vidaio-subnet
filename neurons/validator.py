@@ -16,7 +16,7 @@ from vidaio_subnet_core.utilities.version import get_version
 from vidaio_subnet_core.protocol import LengthCheckProtocol
 from services.dashboard.server import send_data_to_dashboard
 from services.video_scheduler.video_utils import get_trim_video_path
-from services.video_scheduler.redis_utils import get_redis_connection, get_organic_queue_size
+from services.video_scheduler.redis_utils import get_redis_connection, get_organic_queue_size, set_scheduler_ready
 
 class Validator(base.BaseValidator):
     def __init__(self):
@@ -51,8 +51,48 @@ class Validator(base.BaseValidator):
         self.organic_gateway_base_url = f"http://localhost:{CONFIG.organic_gateway.port}"
 
         self.push_result_endpoint = f"http://{CONFIG.video_scheduler.host}:{CONFIG.video_scheduler.port}/api/push_result"
+        
+        self.scheduler_ready_endpoint = f"http://{CONFIG.video_scheduler.host}:{CONFIG.video_scheduler.port}/api/scheduler_ready"
+
+    async def check_scheduler_ready(self) -> bool:
+        """
+        Check if the video scheduler is ready to process synthetic requests.
+        
+        Returns:
+            bool: True if scheduler is ready, False otherwise
+        """
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(self.scheduler_ready_endpoint, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+                return data.get("ready", False)
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTP error checking scheduler readiness: {e.response.status_code}")
+            return False
+        except httpx.RequestError as e:
+            logger.error(f"Request error checking scheduler readiness: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error checking scheduler readiness: {e}")
+            return False
+
+    async def wait_for_scheduler_ready(self) -> None:
+        """
+        Wait for the scheduler to be ready before proceeding with synthetic requests.
+        """
+        logger.info("🔄 Checking if video scheduler is ready...")
+        
+        while not await self.check_scheduler_ready():
+            logger.info("⏳ Waiting for scheduler server to be ready (all synthetic queues need to be populated)...")
+            await asyncio.sleep(10)  # Wait 10 seconds before checking again
+        
+        logger.info("✅ Scheduler is ready! Proceeding with synthetic requests.")
 
     async def start_synthetic_epoch(self):
+        # Wait for scheduler to be ready first
+        await self.wait_for_scheduler_ready()
+        
         logger.info("✅✅✅✅✅ Starting synthetic forward ✅✅✅✅✅")
         epoch_start_time = time.time()
 
@@ -480,7 +520,10 @@ class WeightSynthesizer:
 if __name__ == "__main__":
     validator = Validator()
     weight_synthesizer = WeightSynthesizer(validator)
-    time.sleep(1000) # wait till the video scheduler is ready, # should be removed in production
+    # time.sleep(1000) # wait till the video scheduler is ready, # should be removed in production
+
+    set_scheduler_ready(validator.redis_conn, False)
+    logger.info("Set scheduler readiness flag to False")
 
     async def main():
         validator_synthetic_task = asyncio.create_task(validator.run_synthetic())
