@@ -146,3 +146,26 @@ def get_pexels_queue_size(r: redis.Redis) -> int:
         int: Size of the pexels video ids queue.
     """
     return r.llen(REDIS_CONFIG.pexels_video_ids_key)
+
+def set_scheduler_ready(r: redis.Redis, is_ready: bool) -> None:
+    """
+    Set the scheduler readiness flag in Redis.
+    
+    Args:
+        r (redis.Redis): Redis connection
+        is_ready (bool): Whether the scheduler is ready
+    """
+    r.set("scheduler_ready", "true" if is_ready else "false")
+
+def is_scheduler_ready(r: redis.Redis) -> bool:
+    """
+    Check if the scheduler is ready by checking the flag in Redis.
+    
+    Args:
+        r (redis.Redis): Redis connection
+        
+    Returns:
+        bool: True if scheduler is ready, False otherwise
+    """
+    flag = r.get("scheduler_ready")
+    return flag == "true" if flag else False

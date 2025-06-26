@@ -15,7 +15,8 @@ from redis_utils import (
     get_20s_queue_size,
     pop_5s_chunk,
     pop_10s_chunk,
-    pop_20s_chunk
+    pop_20s_chunk,
+    is_scheduler_ready,
 )
 
 app = FastAPI()
@@ -156,6 +157,28 @@ def api_get_organic_chunks(needed: int):
         return {"message": "No organic chunks available", "chunks": chunks}
     
     return {"chunks": chunks}
+
+@app.get("/api/scheduler_ready")
+def api_scheduler_ready():
+    """
+    Check if the scheduler is ready to process synthetic requests.
+    Returns True if all synthetic queues are above their thresholds.
+    """
+    try:
+        r = get_redis_connection()
+        ready = is_scheduler_ready(r)
+        return {
+            "ready": ready,
+            "status": "ready" if ready else "not_ready",
+            "message": "All synthetic queues are ready" if ready else "Waiting for synthetic queues to be populated"
+        }
+    except Exception as e:
+        print(f"Error checking scheduler readiness: {e}")
+        return {
+            "ready": False,
+            "status": "error",
+            "message": f"Error checking readiness: {str(e)}"
+        }
 
 @app.get("/api/queue_sizes")
 def api_queue_sizes():
