@@ -27,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 import time
 import os
 from concurrent.futures import ProcessPoolExecutor
-
+from datetime import timedelta
 #logger.add(sys.stdout, level="INFO", enqueue=True)
 #logger.add(sys.stderr, level="ERROR", enqueue=True)
 
@@ -317,7 +317,7 @@ class VideoDbUpdateService:
                             time.sleep(15 * (retry + 1))
 
                     if origin_path is None:
-                        logger.info(f"❌ Failed to download video {video_id}: No origin path returned")
+                        logger.info(f"Skipped video {video_id}: No origin path returned")
                         continue
                     percentage = (idx / total_videos) * 100
                     logger.info(f"✅ Downloaded video {video_id} ({idx}/{total_videos} - {percentage:.1f}% in chunk {chunk_index + 1})")
@@ -382,6 +382,15 @@ class VideoDbUpdateService:
                 continue
 
             if video_id not in all_valid_video_ids:
+                video_file_path = Path(search_config['VIDEO_DIR']) / doc['filename']
+                if video_file_path.exists():
+                    try:
+                        os.remove(video_file_path)
+                        logger.info(f"🗑️ Deleted video file: {video_file_path}")
+                    except Exception as e:
+                        logger.info(f"❌ Failed to delete video file {video_file_path}: {str(e)}")
+                else:
+                    logger.info(f"⚠️ Video file not found: {video_file_path}")
                 ids_to_delete.append(doc['_id'])
 
         if ids_to_delete:
@@ -412,19 +421,18 @@ class VideoDbUpdateService:
 
         all_valid_video_ids = []
 
-        #for task_class in ["LARGE", "SD2HD"]:
-        for task_class in ["SD2HD"]:
+        for task_class in ["LARGE", "SD2HD"]:
             query_chunks = np.array_split(query_list, 5)
             api_keys_chunks = np.array_split(api_keys, 5)
 
-            yaml_file_path = f"{search_config['VIDEO_DIR']}/../pexels_video_ids_{task_class}.yaml"
-            if os.path.exists(yaml_file_path):
-                with open(yaml_file_path, "r") as file:
+            video_id_list_path = f"{search_config['VIDEO_DIR']}/../pexels_video_ids_{task_class}.yaml"
+            if os.path.exists(video_id_list_path):
+                with open(video_id_list_path, "r") as file:
                     existing_data = yaml.safe_load(file)
                     new_video_ids = existing_data.get("new_video_ids", [])
                     matched_video_ids = existing_data.get("matched_video_ids", [])
                     new_video_task_type_map = existing_data.get("new_video_task_type_map", {})
-                    logger.info(f"Loaded existing video IDs from {yaml_file_path}")
+                    logger.info(f"Loaded existing video IDs from {video_id_list_path}")
 
                     prev_len = len(new_video_ids)
                     new_video_ids = [vid for vid in new_video_ids if vid not in db_video_ids]
@@ -433,9 +441,9 @@ class VideoDbUpdateService:
             else:
                 new_video_ids, matched_video_ids, new_video_task_type_map = await self.fetch_video_ids(task_class, query_chunks, api_keys_chunks, db_video_ids)             
                 logger.info(f"Task class: {task_class} - ✅ Fetched {len(new_video_ids)} new videos")
-                with open(yaml_file_path, "w") as file:
+                with open(video_id_list_path, "w") as file:
                     yaml.dump({"new_video_ids": new_video_ids, "matched_video_ids": matched_video_ids, "new_video_task_type_map": new_video_task_type_map}, file)
-                logger.info(f"✅ Saved {len(new_video_ids)} video ids to {yaml_file_path}")
+                logger.info(f"✅ Saved {len(new_video_ids)} video ids to {video_id_list_path}")
 
             all_valid_video_ids.extend(new_video_ids)
             all_valid_video_ids.extend(matched_video_ids)
@@ -454,10 +462,15 @@ class VideoDbUpdateService:
 
             video_chunks = np.array_split(new_video_ids, 5)
             await self.download_and_insert_videos(new_video_task_type_map, video_chunks, api_keys_chunks)
-        
-        # all_valid_video_ids = list(dict.fromkeys(all_valid_video_ids))
-        # logger.info(f"✅ Fetched {len(all_valid_video_ids)} valid video ids")
-        # await self.clean_up_videos(all_valid_video_ids)
+            logger.info(f"✅ Downloaded and inserted {len(new_video_ids)} videos to db")
+
+            if os.path.exists(video_id_list_path):
+                os.remove(video_id_list_path)
+                logger.info(f"✅ Deleted {video_id_list_path}")
+
+        all_valid_video_ids = list(dict.fromkeys(all_valid_video_ids))
+        logger.info(f"✅ Fetched {len(all_valid_video_ids)} valid video ids")
+        await self.clean_up_videos(all_valid_video_ids)
 
 if __name__ == "__main__":
     try:
