@@ -477,7 +477,12 @@ class HippiusClient:
         self.executor = ThreadPoolExecutor()
         
         # Placeholder for the actual client implementation
-        self.client = None
+        self.client = Minio(
+            endpoint,
+            access_key=self.access_key,
+            secret_key=self.secret_key,
+            secure=self.secure,
+        )
 
     async def upload_file(self, object_name, file_path):
         """
@@ -490,9 +495,11 @@ class HippiusClient:
         Returns:
             dict: Information about the uploaded object, including etag and version_id
         """
-        print(f"[PLACEHOLDER] Uploading {file_path} to Hippius as {object_name}")
-
-        return {"etag": "placeholder", "version_id": "placeholder"}
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            self.executor, self.client.fput_object, self.bucket_name, object_name, file_path
+        )
+        return {"etag": result.etag, "version_id": result.version_id}
 
     async def download_file(self, object_name, file_path):
         """
@@ -505,8 +512,8 @@ class HippiusClient:
         Returns:
             dict: Information about the downloaded object
         """
-        print(f"[PLACEHOLDER] Downloading {object_name} from Hippius to {file_path}")
-
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(self.executor, self.client.fget_object, self.bucket_name, object_name, file_path)
         return {"status": "success"}
 
     async def delete_file(self, object_name):
@@ -519,8 +526,8 @@ class HippiusClient:
         Returns:
             dict: Information about the deletion operation
         """
-        print(f"[PLACEHOLDER] Deleting {object_name} from Hippius")
-
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(self.executor, self.client.remove_object, self.bucket_name, object_name)
         return {"status": "success"}
 
     async def list_objects(self, prefix=None, recursive=True):
@@ -534,27 +541,52 @@ class HippiusClient:
         Returns:
             list: List of objects with attributes matching other client implementations
         """
-        print(f"[PLACEHOLDER] Listing objects in Hippius bucket {self.bucket_name}")
-
-        return []
+        loop = asyncio.get_event_loop()
+        objects = await loop.run_in_executor(
+            self.executor, lambda: list(self.client.list_objects(self.bucket_name, prefix=prefix, recursive=recursive))
+        )
+        return objects
 
     async def ensure_bucket_exists(self):
         """
         Ensure the specified bucket exists, creating it if necessary.
         """
-        print(f"[PLACEHOLDER] Ensuring Hippius bucket {self.bucket_name} exists")
+        loop = asyncio.get_event_loop()
+        exists = await loop.run_in_executor(self.executor, self.client.bucket_exists, self.bucket_name)
+        if not exists:
+            await loop.run_in_executor(self.executor, self.client.make_bucket, self.bucket_name)
 
     async def set_bucket_public_policy(self):
         """
         Sets the bucket policy to allow public read access.
         """
-        print(f"[PLACEHOLDER] Setting public policy for Hippius bucket {self.bucket_name}")
+        policy = {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": "*",
+                    "Action": "s3:GetObject",
+                    "Resource": f"arn:aws:s3:::{self.bucket_name}/*",
+                }
+            ],
+        }
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            self.executor, self.client.set_bucket_policy, self.bucket_name, str(policy).replace("'", '"')
+        )
 
     async def delete_all_items(self):
         """
         Deletes all items in the Hippius bucket.
         """
-        print(f"[PLACEHOLDER] Deleting all items in Hippius bucket {self.bucket_name}")
+        objects = await self.list_objects()
+        if objects:
+            object_names = [obj.object_name for obj in objects]
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                self.executor, lambda: list(self.client.remove_objects(self.bucket_name, object_names))
+            )
 
     async def get_presigned_url(self, object_name, expires=604800):
         """
@@ -567,13 +599,15 @@ class HippiusClient:
         Returns:
             str: Presigned URL
         """
-        print(f"[PLACEHOLDER] Generating presigned URL for {object_name} in Hippius")
-
-        return f"https://placeholder-hippius-url/{self.bucket_name}/{object_name}"
+        loop = asyncio.get_event_loop()
+        url = await loop.run_in_executor(
+            self.executor, self.client.presigned_get_object, self.bucket_name, object_name, timedelta(seconds=expires)
+        )
+        return url
 
     def __del__(self):
         try:
-            if hasattr(self, 'executor') and self.executor:
+            if hasattr(self, "executor") and self.executor:
                 self.executor.shutdown(wait=False)
         except (TypeError, AttributeError, RuntimeError):
             pass
@@ -605,10 +639,12 @@ def get_storage_client():
         )
     elif bucket_type == "hippius":
         return HippiusClient(
-            endpoint=CONFIG.storage.endpoint,
-            access_key=CONFIG.storage.access_key,
-            secret_key=CONFIG.storage.secret_key,
+            endpoint=CONFIG.storage.endpoint,  # s3.hippius.com
+            access_key=CONFIG.storage.access_key,  # base64 encoded subaccount seed phrase
+            secret_key=CONFIG.storage.secret_key,  # the raw seed phrase from above (used locally for signing)
             bucket_name=CONFIG.storage.bucket_name,
+            secure=True,
+            region="decentralized",
         )
     else:
         raise ValueError(f"Unsupported bucket type: {bucket_type}")
