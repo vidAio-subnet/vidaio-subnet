@@ -210,14 +210,15 @@ def download_trim_downscale_video(
         trim_cmd = [
             "taskset", "-c", "0,1,2,3,4,5,6,7,8,9,10,11",
             "ffmpeg", "-y", "-i", str(source_path), "-ss", str(start_time_clip), 
-            "-t", str(actual_duration), "-c:v", "libx264", "-preset", "ultrafast",
-            "-c:a", "aac", str(clipped_path), "-hide_banner", "-loglevel", "error"
+            "-t", str(actual_duration), "-c:v", "libx264", "-preset", "fast",
+            "-crf", "20", "-c:a", "aac", str(clipped_path), "-hide_banner",
+            "-loglevel", "error"
         ]
         
         scale_cmd = [
             "taskset", "-c", "0,1,2,3,4,5,6,7,8,9,10,11",
             "ffmpeg", "-y", "-i", str(clipped_path), "-vf", f"scale=-1:{downscale_height}", 
-            "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", 
+            "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-c:a", "aac",
             str(downscale_path), "-hide_banner", "-loglevel", "error"
         ]
         
