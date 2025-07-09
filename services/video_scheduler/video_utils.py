@@ -1,3 +1,4 @@
+import math
 import requests
 import os
 import time
@@ -16,7 +17,7 @@ load_dotenv()
 
 MAX_WORKERS = 5  
 
-def apply_color_space_transformation(video_path: str, output_path: str = None) -> str:
+def apply_video_transformations(video_path: str, output_path: str = None) -> str:
     """
     Apply color space transformation to make videos less identifiable while maintaining quality.
     
@@ -40,7 +41,7 @@ def apply_color_space_transformation(video_path: str, output_path: str = None) -
         output_path = str(video_path_obj.parent / f"{video_path_obj.stem}_transformed{video_path_obj.suffix}")
     
     # Define various color transformation options
-    transformations = [
+    color_space_transformations = [
         # Slight hue shift
         "hue=h=15:s=1.1",
         "hue=h=-10:s=1.05", 
@@ -69,14 +70,63 @@ def apply_color_space_transformation(video_path: str, output_path: str = None) -
         "colorbalance=rs=0.05:bs=-0.03:gm=0.08,eq=brightness=-0.01:contrast=1.01",
         "curves=r='0/0 0.5/0.51 1/1':g='0/0 0.5/0.49 1/1',hue=h=-8:s=1.03",
     ]
+
+    nonmonotonic_color_transformations = [
+        # Nonmonotnic curve-based adjustments
+        "curves=r='0/0 0.47/0.51 0.53/0.49 1/1':g='0/0 0.5/0.49 1/1'",
+        "curves=r='0/0 0.47/0.51 0.53/0.49 1/1':b='0/0 0.5/0.49 1/1'",
+        "curves=g='0/0 0.47/0.51 0.53/0.49 1/1':r='0/0 0.5/0.49 1/1'",
+        "curves=g='0/0 0.47/0.51 0.53/0.49 1/1':b='0/0 0.5/0.49 1/1'",
+        "curves=b='0/0 0.47/0.51 0.53/0.49 1/1':r='0/0 0.5/0.49 1/1'",
+        "curves=b='0/0 0.47/0.51 0.53/0.49 1/1':g='0/0 0.5/0.49 1/1'",
+    ]
+
+    convolution_transformations = [
+        "convolution='-1 -1 -1 -1 5 -1 -1 -1 -1'",  # sharpen
+        "convolution='-1 -1 -1 -1 8 -1 -1 -1 -1'",  # sharpen
+        "convolution='0 -1 0 -1 5 -1 0 -1 0'",      # sharpen
+        "convolution='1 1 1 1 1 1 1 1 1'",          # box blur
+        "convolution='1 1 1 1 2 1 1 1 1'",          # a slight twist on the above
+        "convolution='1 2 1 2 4 2 1 2 1'",          # Gaussian blur
+        "convolution='1  4  6  4 1 "                # Gaussian blur
+                     "4 16 24 16 4 "
+                     "6 24 36 24 6 "
+                     "4 16 24 16 4 "
+                     "1  4  6  4 1'",
+        "convolution='0  1  2  1  0 "               # Gaussian blur
+                     "1  4  8  4  1 "
+                     "2  8 16  8  2 "
+                     "1  4  8  4  1 "
+                     "0  1  2  1  0'",
+        "convolution='0  0 -1  0  0 "               # mild sharpen
+                     "0 -1 -2 -1  0 "
+                     "-1 -2 28 -2 -1 "
+                     "0 -1 -2 -1  0 "
+                     "0  0 -1  0  0'"
+    ]
     
-    # Randomly select a transformation
-    selected_transformation = random.choice(transformations)
-    
+    # Randomly select several transformations to apply. This increases the space of
+    # possible challenge videos by a large factor, making it impractical for miners
+    # to apply strategies like precomputing perceptual hashes of frames for all
+    # possible output videos. We apply both color transforms and more complex filters
+    # to defeat approaches like dhash.
+    transformations = [
+        random.choice(color_space_transformations),
+        random.choice(nonmonotonic_color_transformations),
+        random.choice(convolution_transformations)
+    ]
+
+    # Slight rotation
+    rotation_angle_deg = random.uniform(-5, 5)  # -5 to 5 degrees
+    transformations.append(f"rotate={2*math.pi*rotation_angle_deg/360}")
+
+    # Zoom & crop to remove black background left after rotation
+    transformations.append(f"crop=iw*0.87:ih*0.87,scale=iw/0.87:ih/0.87")
+
     # Build FFmpeg command for color space transformation
     transform_cmd = [
         "ffmpeg", "-y", "-i", str(video_path),
-        "-vf", selected_transformation,
+        "-vf", ",".join(transformations),
         "-c:v", "libx264", "-preset", "fast", "-crf", "20",  # Faster preset, slightly higher CRF for speed
         "-c:a", "aac", "-b:a", "128k",
         str(output_path),
@@ -84,13 +134,13 @@ def apply_color_space_transformation(video_path: str, output_path: str = None) -
     ]
     
     try:
-        print(f"Applying color transformation: {selected_transformation}")
+        print(f"Applying video transformations: {transformations}")
         start_time = time.time()
         
-        result = subprocess.run(transform_cmd, check=True, capture_output=True, text=True)
+        subprocess.run(transform_cmd, check=True, capture_output=True, text=True)
         
         elapsed_time = time.time() - start_time
-        print(f"Color transformation completed in {elapsed_time:.2f}s: {video_path} -> {output_path}")
+        print(f"Video transformation completed in {elapsed_time:.2f}s: {video_path} -> {output_path}")
         
         # Verify the output file was created and is not empty
         if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
