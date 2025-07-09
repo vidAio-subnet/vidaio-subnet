@@ -147,6 +147,42 @@ def get_pexels_queue_size(r: redis.Redis) -> int:
     """
     return r.llen(REDIS_CONFIG.pexels_video_ids_key)
 
+def push_youtube_video_ids(r: redis.Redis, data_list: List[Dict[str, str]]) -> None:
+    """
+    Push multiple YouTube video IDs to the queue (FIFO).
+
+    Args:
+        r (redis.Redis): Redis connection instance.
+        data_list (List[Dict[str, str]]): List of YouTube video data to push.
+    """
+    r.rpush(REDIS_CONFIG.youtube_video_ids_key, *[json.dumps(data) for data in data_list])
+    print("Pushed all YouTube video IDs with task_type correctly in the Redis queue")
+
+def pop_youtube_video_id(r: redis.Redis) -> Optional[Dict[str, str]]:
+    """
+    Pop YouTube video id from queue
+    
+    Args:
+        r (redis.Redis): Redis connection
+        
+    Returns:
+        Optional[Dict[str, str]]: YouTube video data or None if empty
+    """
+    data = r.lpop(REDIS_CONFIG.youtube_video_ids_key)
+    return json.loads(data) if data else None
+
+def get_youtube_queue_size(r: redis.Redis) -> int:
+    """
+    Get the size of the youtube video ids queue.
+    
+    Args:
+        r (redis.Redis): Redis connection
+        
+    Returns:
+        int: Size of the youtube video ids queue.
+    """
+    return r.llen(REDIS_CONFIG.youtube_video_ids_key)
+
 def set_scheduler_ready(r: redis.Redis, is_ready: bool) -> None:
     """
     Set the scheduler readiness flag in Redis.
