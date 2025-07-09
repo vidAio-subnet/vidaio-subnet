@@ -27,8 +27,11 @@ from redis_utils import (
     pop_pexels_video_id,
     set_scheduler_ready,
     is_scheduler_ready,
+    push_youtube_video_ids,
+    get_youtube_queue_size,
+    pop_youtube_video_id,
 )
-from video_utils import download_trim_downscale_video
+from video_utils import download_trim_downscale_video, apply_color_space_transformation
 from services.google_drive.google_drive_manager import GoogleDriveManager
 from vidaio_subnet_core import CONFIG
 from vidaio_subnet_core.utilities.storage_client import storage_client
@@ -46,6 +49,7 @@ def clear_queues(redis_conn) -> None:
     redis_conn.delete(CONFIG.redis.synthetic_10s_clip_queue_key)
     redis_conn.delete(CONFIG.redis.synthetic_20s_clip_queue_key)
     redis_conn.delete(CONFIG.redis.pexels_video_ids_key)
+    redis_conn.delete(CONFIG.redis.youtube_video_ids_key)
 
 def read_synthetic_urls(config_path: str) -> List[str]:
     """Read synthetic URLs from a YAML configuration file."""
@@ -164,6 +168,7 @@ def get_pexels_random_vids(
 ):
     """
     Fetch video IDs of a specific resolution from Pexels API with randomized selection.
+    Optimized to request fewer videos since we extract multiple chunks per video.
 
     Args:
         num_needed (int): Number of video IDs required.
@@ -171,23 +176,23 @@ def get_pexels_random_vids(
         max_len (int): Maximum video length in seconds.
         width (int): Required video width (default: 3840).
         height (int): Required video height (default: 2160).
-        max_results (int, optional): Max videos to fetch before selecting randomly (default: num_needed * 10).
+        max_results (int, optional): Max videos to fetch before selecting randomly.
         task_type: The type of task
     Returns:
-        list: A shuffled list of `num_needed` video IDs.
+        list: A shuffled list of video IDs (fewer than before since each yields more chunks).
     """
 
     RESOLUTIONS = {
         "HD24K": (3840, 2160),
         "SD2HD": (1920, 1080),
         "SD24K": (3840, 2160),
-        "4K28K": (7680, 4320),
-        "HD28K": (7680, 4320),
+        # "4K28K": (7680, 4320),
+        # "HD28K": (7680, 4320),
     }
-
 
     width, height = (width, height) if width and height else RESOLUTIONS.get(task_type, (3840, 2160))
 
+    load_dotenv()
     api_key = os.getenv("PEXELS_API_KEY")
     if not api_key:
         logger.error("[ERROR] Missing Pexels API Key")
@@ -201,21 +206,39 @@ def get_pexels_random_vids(
         query_list = yaml_data.get("pexels_categories", [])
     random.shuffle(query_list) 
     
-    max_results = max_results or num_needed * 3
+    # Estimate average chunks per video based on typical video length and our chunking strategy
+    avg_chunks_per_video = {
+        "1s": 15,   # ~15 chunks per video on average
+        "2s": 12,   # ~12 chunks per video on average  
+        "3s": 10,   # ~10 chunks per video on average
+        "4s": 8,    # ~8 chunks per video on average
+        "5s": 6,    # ~6 chunks per video on average
+        "10s": 4,   # ~4 chunks per video on average
+        "20s": 3    # ~3 chunks per video on average
+    }
+    
+    # Calculate how many videos we actually need (much fewer than before)
+    estimated_videos_needed = max(1, num_needed // avg_chunks_per_video.get("5s", 6))  # Default to 5s estimate
+    
+    # Add some buffer for videos that might not yield expected chunks
+    videos_to_fetch = min(estimated_videos_needed * 2, num_needed)
+    
+    max_results = max_results or videos_to_fetch
 
     if task_type == "4K28K":
-        max_results = num_needed
+        max_results = estimated_videos_needed  # Keep minimal for 4K28K due to size
 
     valid_video_ids = []
     
     per_page = 80
     
-    logger.info(f"[INFO] Fetching {num_needed} video IDs with resolution {width}x{height}")
-    logger.info(f"[INFO] Searching through a maximum of {max_results} potential videos")
+    logger.info(f"[INFO] Optimized fetching: Need {num_needed} chunks, fetching {videos_to_fetch} videos")
+    logger.info(f"[INFO] Expected chunk yield: ~{avg_chunks_per_video.get('5s', 6)} chunks per video")
+    logger.info(f"[INFO] Fetching videos with resolution {width}x{height}")
     
     for query in query_list:
         page = random.randint(1, 10)  
-        # logger.info(f"[INFO] Searching for query: '{query}', starting from page {page}")
+        logger.info(f"[INFO] Searching for query: '{query}', starting from page {page}")
         while len(valid_video_ids) < max_results:
             params = {
                 "query": query,
@@ -235,10 +258,7 @@ def get_pexels_random_vids(
                 response = requests.get("https://api.pexels.com/videos/search", headers=headers, params=params)
                 response.raise_for_status()
                 data = response.json()
-                import json
-                with open("output.json", "w") as file:
-                    # writing the JSON data to the file with indentation for better readability
-                    json.dump(data, file, indent=4)
+                
                 if "videos" not in data or not data["videos"]:
                     logger.info(f"[WARNING] No videos found for query '{query}' on page {page}")
                     break  
@@ -246,36 +266,58 @@ def get_pexels_random_vids(
                 logger.info(f"[INFO] Found {len(data['videos'])} videos for query '{query}' on page {page}")
                 
                 for video in data["videos"]:
-                    if min_len <= video["duration"] <= max_len and video["width"] == width and video["height"] == height:
+                    # Prefer longer videos since they yield more chunks
+                    if (min_len <= video["duration"] <= max_len and 
+                        video["width"] == width and 
+                        video["height"] == height and
+                        video["duration"] >= 30):  # Prefer videos >= 30s for better chunk yield
+                        
                         valid_video_ids.append(video["id"])
-                        logger.info(f"[INFO] Added video ID {video['id']} ({video['width']}x{video['height']})")
+                        logger.info(f"[INFO] Added video ID {video['id']} ({video['width']}x{video['height']}, {video['duration']}s)")
                 
                 if len(data["videos"]) < per_page:
                     logger.info(f"[INFO] No more pages available for query '{query}'")
                     break 
                 
                 page += random.randint(1, 3)  
-                time.sleep(random.randint(3, 7)) # due to rate limiting, test-purpose
+                time.sleep(random.randint(4, 8))  # Slightly longer delay to be more respectful to API
             
             except requests.exceptions.RequestException as e:
                 logger.info(f"[ERROR] Error fetching videos for '{query}': {e}")
                 break  
+        
+        # Break if we have enough videos
+        if len(valid_video_ids) >= max_results:
+            break
     
     logger.info(f"[INFO] Total matching videos found: {len(valid_video_ids)}")
     elapsed_time = time.time() - start_time
-    logger.info(f"Time taken to get {num_needed} vids: {elapsed_time:.2f} seconds")
+    logger.info(f"Time taken to get {len(valid_video_ids)} videos: {elapsed_time:.2f} seconds")
+    logger.info(f"Expected total chunks from these videos: ~{len(valid_video_ids) * avg_chunks_per_video.get('5s', 6)}")
     
     random.shuffle(valid_video_ids)
 
-    return_val = valid_video_ids[:num_needed]
+    return_val = valid_video_ids[:videos_to_fetch]
 
+    logger.info(f"Returning {len(return_val)} video IDs for processing")
     logger.info(return_val)
 
     return return_val
-    
 
 async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis, chunk_duration: int) -> List[Dict[str, str]]:
-    """Generate synthetic Google Drive URLs by uploading trimmed videos."""
+    """
+    Generate synthetic sharing URLs by uploading trimmed videos.
+    
+    OPTIMIZATION: This function now uses a sliding window chunking approach to extract
+    multiple overlapping chunks from each downloaded video, significantly reducing
+    the number of API requests to Pexels while maintaining chunk variety.
+    
+    For example, from a 60s video with 10s chunks:
+    - Old approach: 6 non-overlapping chunks (0-10s, 10-20s, 20-30s, etc.)
+    - New approach: Up to 26 overlapping chunks (0-10s, 2-12s, 4-14s, etc.)
+    
+    This reduces API calls by ~80% while providing more diverse content.
+    """
     uploaded_video_chunks = []
     remaining_count = num_needed
 
@@ -337,7 +379,42 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis,
             logger.info("Failed to download and trim video. Retrying...")
             continue
 
-        for video_id, challenge_local_path in zip(video_ids, challenge_local_paths):
+        # Apply color space transformation to each video chunk
+        # This helps reduce recognizability of Pexels videos by applying random color transformations
+        # while maintaining visual quality for training purposes.
+        # 
+        # Configuration:
+        # - Set ENABLE_COLOR_TRANSFORM=true to enable (default)
+        # - Set ENABLE_COLOR_TRANSFORM=false to disable
+        logger.info("Applying color space transformations to video chunks...")
+        transformed_paths = []
+        
+        # Check if color space transformation is enabled (default: True)
+        enable_color_transform = os.getenv("ENABLE_COLOR_TRANSFORM", "true").lower() == "true"
+        
+        if enable_color_transform:
+            logger.info("Color space transformation is ENABLED")
+        else:
+            logger.info("Color space transformation is DISABLED")
+        
+        for i, challenge_local_path in enumerate(challenge_local_paths):
+            try:
+                if enable_color_transform:
+                    logger.info(f"Transforming video chunk {i+1}/{len(challenge_local_paths)}: {challenge_local_path}")
+                    transformed_path = apply_color_space_transformation(challenge_local_path)
+                    transformed_paths.append(transformed_path)
+                    logger.info(f"Successfully transformed chunk {i+1}")
+                else:
+                    logger.info(f"Skipping transformation for chunk {i+1}/{len(challenge_local_paths)}: {challenge_local_path}")
+                    transformed_paths.append(challenge_local_path)
+            except Exception as e:
+                logger.error(f"Failed to transform video chunk {challenge_local_path}: {str(e)}")
+                # If transformation fails, use the original path
+                transformed_paths.append(challenge_local_path)
+
+        logger.info(f"Completed color space transformation for {len(transformed_paths)} video chunks")
+
+        for video_id, challenge_local_path in zip(video_ids, transformed_paths):
             uploaded_file_id = video_id
             object_name = f"{uploaded_file_id}.mp4"
         
@@ -485,14 +562,21 @@ async def manage_pexels_queue(redis_conn, thresholds, video_constraints, task_th
     logger.info(f"Pexels video IDs queue size: {pexels_queue_size}")
     
     if pexels_queue_size <= thresholds["pexels"]:
-        needed = thresholds["pexels_max"] - pexels_queue_size
+        # Since we now extract more chunks per video, we need fewer videos
+        # Estimate based on expected chunk yield per video
+        avg_chunks_per_video = 6  # Conservative estimate for mixed duration chunks
+        estimated_videos_needed = max(2, (thresholds["pexels_max"] - pexels_queue_size) // avg_chunks_per_video)
+        
+        # Add small buffer but keep it reasonable
+        needed = min(estimated_videos_needed + 2, thresholds["pexels_max"] - pexels_queue_size)
         
         task_type = select_task_type(task_thresholds)
-        logger.info(f"Replenishing queue with {needed} videos for task type: {task_type}")
+        logger.info(f"Optimized replenishment: Need to fill {thresholds['pexels_max'] - pexels_queue_size} queue slots")
+        logger.info(f"Fetching {needed} videos (expect ~{needed * avg_chunks_per_video} total chunks) for task type: {task_type}")
         
         try:
             video_ids = get_pexels_random_vids(
-                num_needed=needed,
+                num_needed=needed,  # Much smaller number now
                 min_len=video_constraints["min_length"],
                 max_len=video_constraints["max_length"],
                 task_type=task_type
@@ -502,6 +586,7 @@ async def manage_pexels_queue(redis_conn, thresholds, video_constraints, task_th
             push_pexels_video_ids(redis_conn, video_entries)
             
             logger.info(f"Added {len(video_entries)} new video IDs to Pexels queue")
+            logger.info(f"Expected chunk yield from these videos: ~{len(video_entries) * avg_chunks_per_video}")
         except Exception as e:
             logger.error(f"Failed to replenish Pexels queue: {str(e)}")
 
