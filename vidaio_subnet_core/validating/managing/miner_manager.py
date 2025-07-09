@@ -13,6 +13,11 @@ import pandas as pd
 from datetime import datetime
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy import desc
+import os
+from pathlib import Path
+import requests
+import hashlib
+import time
 
 class MinerManager:
     def __init__(self, uid, wallet, metagraph):
@@ -25,8 +30,15 @@ class MinerManager:
         self.redis_client = redis.Redis(
             host=CONFIG.redis.host, port=CONFIG.redis.port, db=CONFIG.redis.db
         )
-        logger.info(f"Creating SQL engine with URL: {CONFIG.sql.url}")
-        self.engine = create_engine(CONFIG.sql.url)
+        
+        # Clean up old database files before connecting to new database
+        self._cleanup_old_database_files()
+        
+        # Download database from URL if needed
+        db_url = self._download_database_from_url()
+        
+        logger.info(f"Creating SQL engine with URL: {db_url}")
+        self.engine = create_engine(db_url)
         Base.metadata.create_all(self.engine)
         Session = sessionmaker(bind=self.engine)
         self.session = Session()
@@ -55,6 +67,86 @@ class MinerManager:
         self.df = self.df.set_index('uid')
 
         logger.success("MinerManager initialization complete")
+        
+    def _cleanup_old_database_files(self):
+        """Delete old local database files if they exist before connecting to new database URL"""
+        old_db_files = [
+            "video_subnet_validator.db",
+            "video_subnet_validator.db-journal",
+            "video_subnet_validator.db-wal", 
+            "video_subnet_validator.db-shm"
+        ]
+        
+        for db_file in old_db_files:
+            db_path = Path(db_file)
+            if db_path.exists():
+                try:
+                    db_path.unlink()
+                    logger.info(f"🗑️ Deleted old local database file: {db_file}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to delete old database file {db_file}: {e}")
+        
+        # Also check for any other .db files in the current directory
+        current_dir = Path(".")
+        for db_file in current_dir.glob("*.db"):
+            if db_file.name.startswith("video_subnet") or db_file.name.startswith("validator"):
+                try:
+                    db_file.unlink()
+                    logger.info(f"🗑️ Deleted old database file: {db_file.name}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to delete old database file {db_file.name}: {e}")
+        
+        logger.info("✅ Database cleanup completed")
+        
+    def _download_database_from_url(self) -> str:
+        """Download database file from URL if the config URL is a HTTP/HTTPS URL"""
+        config_url = CONFIG.sql.url
+        
+        # Check if the URL is a HTTP/HTTPS download URL
+        if not config_url.startswith(('http://', 'https://')):
+            logger.info(f"Database URL is not HTTP/HTTPS, using as direct connection: {config_url}")
+            return config_url
+        
+        # Extract filename from URL or use default
+        try:
+            filename = config_url.split('/')[-1]
+            if not filename.endswith('.db'):
+                filename = "video_subnet_validator.db"
+        except:
+            filename = "video_subnet_validator.db"
+        
+        local_db_path = Path(filename)
+        
+        logger.info(f"📥 Downloading database from URL: {config_url}")
+        logger.info(f"📁 Local database path: {local_db_path}")
+        
+        try:
+            # Download the database file
+            response = requests.get(config_url, timeout=60)
+            response.raise_for_status()
+            
+            # Write the downloaded content to local file
+            with open(local_db_path, 'wb') as f:
+                f.write(response.content)
+            
+            # Calculate file hash for verification
+            file_hash = hashlib.md5(response.content).hexdigest()
+            file_size = len(response.content)
+            
+            logger.info(f"✅ Database downloaded successfully")
+            logger.info(f"📊 File size: {file_size:,} bytes")
+            logger.info(f"🔐 MD5 hash: {file_hash}")
+            
+            # Return SQLite connection string for the downloaded file
+            return f"sqlite:///{local_db_path}"
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"❌ Failed to download database from URL: {e}")
+            logger.error(f"💡 Please check if the URL is accessible: {config_url}")
+            raise RuntimeError(f"Database download failed: {e}")
+        except Exception as e:
+            logger.error(f"❌ Unexpected error downloading database: {e}")
+            raise RuntimeError(f"Database download failed: {e}")
         
     def initialize_serving_counter(self, uids: list[int]):
         rate_limit = build_rate_limit(self.metagraph, self.uid)

@@ -11,3 +11,5 @@ class DashboardConfig(BaseModel):
     max_retries: int = Field(default=3)
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=29117)
+    token: str = Field(default=os.getenv("DASHBOARD_TOKEN", ""))
+    api_key: str = Field(default=os.getenv("DASHBOARD_API_KEY", ""))
