@@ -31,7 +31,7 @@ from redis_utils import (
     get_youtube_queue_size,
     pop_youtube_video_id,
 )
-from video_utils import download_trim_downscale_video, apply_color_space_transformation
+from video_utils import download_trim_downscale_video, apply_video_transformations
 from services.google_drive.google_drive_manager import GoogleDriveManager
 from vidaio_subnet_core import CONFIG
 from vidaio_subnet_core.utilities.storage_client import storage_client
@@ -401,7 +401,7 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis,
             try:
                 if enable_color_transform:
                     logger.info(f"Transforming video chunk {i+1}/{len(challenge_local_paths)}: {challenge_local_path}")
-                    transformed_path = apply_color_space_transformation(challenge_local_path)
+                    transformed_path = apply_video_transformations(challenge_local_path)
                     transformed_paths.append(transformed_path)
                     logger.info(f"Successfully transformed chunk {i+1}")
                 else:
