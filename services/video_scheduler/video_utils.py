@@ -14,7 +14,15 @@ import random
 
 load_dotenv()
 
-MAX_WORKERS = 5  
+MAX_WORKERS = 5
+
+
+print_lock = threading.Lock()
+
+def safe_print(message):
+    with print_lock:
+        print(message)
+
 
 def apply_color_space_transformation(video_path: str, output_path: str = None) -> str:
     """
@@ -117,6 +125,130 @@ def apply_color_space_transformation(video_path: str, output_path: str = None) -
         print(f"Unexpected error applying color transformation: {e}")
         return video_path
 
+
+def generate_chunk_timestamps(total_duration, clip_duration):
+    """
+    Generate chunk timestamps using sliding window approach to maximize chunks per video.
+    This reduces API requests by extracting many overlapping chunks from each downloaded video.
+
+    Strategy:
+    - 5s clips: Slide by 1s intervals (1-6s, 2-7s, 3-8s, etc.)
+    - 10s clips: Slide by 2s intervals (0-10s, 2-12s, 4-14s, etc.)
+    - 20s clips: Slide by 3s intervals (0-20s, 3-23s, 6-26s, etc.)
+    """
+    chunks = []
+
+    # Define slide intervals for each clip duration
+    slide_intervals = {
+        1: 0.5,  # For 1s clips, slide by 0.5s
+        2: 0.5,  # For 2s clips, slide by 0.5s
+        3: 1,  # For 3s clips, slide by 1s
+        4: 1,  # For 4s clips, slide by 1s
+        5: 1,  # For 5s clips, slide by 1s
+        10: 2,  # For 10s clips, slide by 2s
+        20: 3  # For 20s clips, slide by 3s
+    }
+
+    slide_interval = slide_intervals.get(clip_duration, 1)
+
+    # Calculate maximum number of chunks we can extract
+    max_chunks_possible = int((total_duration - clip_duration) / slide_interval)
+
+    # Set reasonable limits to avoid over-extraction from one video
+    max_chunks_per_video = {
+        1: max(20, max_chunks_possible),  # Max 20 chunks for 1s clips
+        2: max(15, max_chunks_possible),  # Max 15 chunks for 2s clips
+        3: max(12, max_chunks_possible),  # Max 12 chunks for 3s clips
+        4: max(10, max_chunks_possible),  # Max 10 chunks for 4s clips
+        5: max(8, max_chunks_possible),  # Max 8 chunks for 5s clips
+        10: max(6, max_chunks_possible),  # Max 6 chunks for 10s clips
+        20: max(4, max_chunks_possible)  # Max 4 chunks for 20s clips
+    }
+
+    max_chunks = max_chunks_per_video.get(clip_duration, max_chunks_possible)
+
+    # Ensure we have enough video duration
+    if max_chunks_possible <= 0:
+        return [(0, 0, min(total_duration, clip_duration))]
+
+    # Generate sliding window chunks
+    current_start = random.uniform(0, slide_interval)
+    chunk_index = 0
+
+    while (current_start + clip_duration <= total_duration and
+           chunk_index < max_chunks):
+        end_time = current_start + clip_duration
+        chunks.append((chunk_index, current_start, end_time))
+
+        current_start += slide_interval
+        chunk_index += 1
+
+    # Add one final chunk from the end if we have remaining duration
+    if (chunk_index < max_chunks and
+            total_duration > clip_duration and
+            current_start < total_duration - 2):  # At least 2s remaining
+
+        final_start = total_duration - clip_duration
+        # Only add if it doesn't overlap too much with the last chunk
+        if not chunks or final_start - chunks[-1][1] >= slide_interval:
+            chunks.append((chunk_index, final_start, total_duration))
+
+    safe_print(f"Generated {len(chunks)} chunks for {clip_duration}s duration from {total_duration:.1f}s video")
+    safe_print(f"Chunk extraction details: slide_interval={slide_interval}s, max_chunks={max_chunks}")
+
+    return chunks
+
+
+def generate_youtube_chunk_timestamps(total_duration, clip_duration):
+    """
+    Generate chunk timestamps using sliding window approach.
+    Similar to Pexels but adapted for potentially longer YouTube videos.
+    """
+    chunks = []
+
+    # Define slide intervals for each clip duration
+    slide_intervals = {
+        5: 2,     # For 5s clips, slide by 2s
+        10: 4,    # For 10s clips, slide by 4s
+        20: 6     # For 20s clips, slide by 6s
+    }
+
+    slide_interval = slide_intervals.get(clip_duration, 2)
+
+    # Calculate maximum number of chunks we can extract
+    max_chunks_possible = int((total_duration - clip_duration) / slide_interval)
+
+    # Set reasonable limits for YouTube videos (can be longer)
+    max_chunks_per_video = {
+        5: max(30, max_chunks_possible),   # Max 30 chunks for 5s clips
+        10: max(20, max_chunks_possible),  # Max 20 chunks for 10s clips
+        20: max(15, max_chunks_possible)   # Max 15 chunks for 20s clips
+    }
+
+    max_chunks = max_chunks_per_video.get(clip_duration, max_chunks_possible)
+
+    # Ensure we have enough video duration
+    if max_chunks_possible <= 0:
+        return [(0, 0, min(total_duration, clip_duration))]
+
+    # Generate sliding window chunks
+    current_start = random.uniform(0, slide_interval)
+    chunk_index = 0
+
+    while (current_start + clip_duration <= total_duration and
+           chunk_index < max_chunks):
+
+        end_time = current_start + clip_duration
+        chunks.append((chunk_index, current_start, end_time))
+
+        current_start += slide_interval
+        chunk_index += 1
+
+    safe_print(f"Generated {len(chunks)} chunks for {clip_duration}s duration from {total_duration:.1f}s YouTube video")
+
+    return chunks
+
+
 def download_trim_downscale_video(
     clip_duration: int,
     vid: int,
@@ -147,12 +279,6 @@ def download_trim_downscale_video(
         "SD2HD": (1920, 1080),
         "4K28K": (7680, 4320),
     }
-
-    print_lock = threading.Lock()
-    
-    def safe_print(message):
-        with print_lock:
-            print(message)
 
     downscale_height = DOWNSCALE_HEIGHTS.get(task_type, 540)
     expected_width, expected_height = EXPECTED_RESOLUTIONS.get(task_type, (3840, 2160))
@@ -232,79 +358,6 @@ def download_trim_downscale_video(
         except subprocess.SubprocessError as e:
             safe_print(f"Error processing chunk {i+1}: {e}")
             return None
-
-    def generate_chunk_timestamps(total_duration, clip_duration):
-        """
-        Generate chunk timestamps using sliding window approach to maximize chunks per video.
-        This reduces API requests by extracting many overlapping chunks from each downloaded video.
-        
-        Strategy:
-        - 5s clips: Slide by 1s intervals (1-6s, 2-7s, 3-8s, etc.)
-        - 10s clips: Slide by 2s intervals (0-10s, 2-12s, 4-14s, etc.)  
-        - 20s clips: Slide by 3s intervals (0-20s, 3-23s, 6-26s, etc.)
-        """
-        chunks = []
-        
-        # Define slide intervals for each clip duration
-        slide_intervals = {
-            1: 0.5,   # For 1s clips, slide by 0.5s
-            2: 0.5,   # For 2s clips, slide by 0.5s  
-            3: 1,     # For 3s clips, slide by 1s
-            4: 1,     # For 4s clips, slide by 1s
-            5: 1,     # For 5s clips, slide by 1s
-            10: 2,    # For 10s clips, slide by 2s
-            20: 3     # For 20s clips, slide by 3s
-        }
-        
-        slide_interval = slide_intervals.get(clip_duration, 1)
-        
-        # Calculate maximum number of chunks we can extract
-        max_chunks_possible = int((total_duration - clip_duration) / slide_interval) + 1
-        
-        # Set reasonable limits to avoid over-extraction from one video
-        max_chunks_per_video = {
-            1: min(20, max_chunks_possible),   # Max 20 chunks for 1s clips
-            2: min(15, max_chunks_possible),   # Max 15 chunks for 2s clips
-            3: min(12, max_chunks_possible),   # Max 12 chunks for 3s clips
-            4: min(10, max_chunks_possible),   # Max 10 chunks for 4s clips
-            5: min(8, max_chunks_possible),    # Max 8 chunks for 5s clips
-            10: min(6, max_chunks_possible),   # Max 6 chunks for 10s clips
-            20: min(4, max_chunks_possible)    # Max 4 chunks for 20s clips
-        }
-        
-        max_chunks = max_chunks_per_video.get(clip_duration, max_chunks_possible)
-        
-        # Ensure we have enough video duration
-        if total_duration < clip_duration:
-            return [(0, 0, min(total_duration, clip_duration))]
-        
-        # Generate sliding window chunks
-        current_start = 0
-        chunk_index = 0
-        
-        while (current_start + clip_duration <= total_duration and 
-               chunk_index < max_chunks):
-            
-            end_time = current_start + clip_duration
-            chunks.append((chunk_index, current_start, end_time))
-            
-            current_start += slide_interval
-            chunk_index += 1
-        
-        # Add one final chunk from the end if we have remaining duration
-        if (chunk_index < max_chunks and 
-            total_duration > clip_duration and 
-            current_start < total_duration - 2):  # At least 2s remaining
-            
-            final_start = total_duration - clip_duration
-            # Only add if it doesn't overlap too much with the last chunk
-            if not chunks or final_start - chunks[-1][1] >= slide_interval:
-                chunks.append((chunk_index, final_start, total_duration))
-        
-        safe_print(f"Generated {len(chunks)} chunks for {clip_duration}s duration from {total_duration:.1f}s video")
-        safe_print(f"Chunk extraction details: slide_interval={slide_interval}s, max_chunks={max_chunks}")
-        
-        return chunks
 
     def process_video_20s(vid, task_type, output_dir):
         """
@@ -605,55 +658,6 @@ def download_trim_downscale_youtube_video(
             safe_print(f"Error processing YouTube chunk {i+1}: {e}")
             return None
 
-    def generate_chunk_timestamps(total_duration, clip_duration):
-        """
-        Generate chunk timestamps using sliding window approach.
-        Similar to Pexels but adapted for potentially longer YouTube videos.
-        """
-        chunks = []
-        
-        # Define slide intervals for each clip duration
-        slide_intervals = {
-            5: 2,     # For 5s clips, slide by 2s
-            10: 4,    # For 10s clips, slide by 4s  
-            20: 6     # For 20s clips, slide by 6s
-        }
-        
-        slide_interval = slide_intervals.get(clip_duration, 2)
-        
-        # Calculate maximum number of chunks we can extract
-        max_chunks_possible = int((total_duration - clip_duration) / slide_interval) + 1
-        
-        # Set reasonable limits for YouTube videos (can be longer)
-        max_chunks_per_video = {
-            5: min(30, max_chunks_possible),   # Max 30 chunks for 5s clips
-            10: min(20, max_chunks_possible),  # Max 20 chunks for 10s clips
-            20: min(15, max_chunks_possible)   # Max 15 chunks for 20s clips
-        }
-        
-        max_chunks = max_chunks_per_video.get(clip_duration, max_chunks_possible)
-        
-        # Ensure we have enough video duration
-        if total_duration < clip_duration:
-            return [(0, 0, min(total_duration, clip_duration))]
-        
-        # Generate sliding window chunks
-        current_start = 0
-        chunk_index = 0
-        
-        while (current_start + clip_duration <= total_duration and 
-               chunk_index < max_chunks):
-            
-            end_time = current_start + clip_duration
-            chunks.append((chunk_index, current_start, end_time))
-            
-            current_start += slide_interval
-            chunk_index += 1
-        
-        safe_print(f"Generated {len(chunks)} chunks for {clip_duration}s duration from {total_duration:.1f}s YouTube video")
-        
-        return chunks
-
     try:
         start_time = time.time()
         
@@ -684,7 +688,7 @@ def download_trim_downscale_youtube_video(
             os.remove(temp_path)
             return None, None
         
-        chunks_info = generate_chunk_timestamps(total_duration, clip_duration)
+        chunks_info = generate_youtube_chunk_timestamps(total_duration, clip_duration)
         safe_print(f"Extracting {len(chunks_info)} chunks of {clip_duration}s each from YouTube video")
         
         video_ids = [uuid.uuid4() for _ in range(len(chunks_info))]
