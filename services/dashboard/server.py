@@ -3,7 +3,7 @@ import requests
 from typing import List, Dict, Any, Union
 from datetime import datetime
 from loguru import logger
-from model import MinerData
+from services.dashboard.model import MinerData
 from vidaio_subnet_core import CONFIG
 
 config = CONFIG.dashboard

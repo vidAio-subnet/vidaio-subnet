@@ -291,7 +291,11 @@ class Validator(base.BaseValidator):
             "timestamp": timestamp
         }
         
-        # success = send_data_to_dashboard(miner_data)
+        success = send_data_to_dashboard(miner_data)
+        if success:
+            logger.info("Data successfully sent to dashboard")
+        else:
+            logger.info("Failed to send data to dashboard")
 
     async def score_organics(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: list[str], task_types: list[str], timestamp: str):
 
@@ -351,7 +355,11 @@ class Validator(base.BaseValidator):
             "timestamp": timestamp
         }
         
-        # success = send_data_to_dashboard(miner_data)
+        success = send_data_to_dashboard(miner_data)
+        if success:
+            logger.info("Data successfully sent to dashboard")
+        else:
+            logger.info("Failed to send data to dashboard")
 
 
     def filter_miners(self):
