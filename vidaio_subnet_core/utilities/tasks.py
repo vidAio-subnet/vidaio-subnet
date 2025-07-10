@@ -12,6 +12,11 @@ def get_task_target_resolution(task_type: str) -> Tuple[int, int]:
     return TASK_RESOLUTIONS.get(task_type, (3840, 2160))
 
 
+def get_max_optimized_bitrate_for_resolution(width: int, height: int) -> int:
+    n_pixels = width * height
+    return int(40000 * n_pixels / (1920 * 1080))
+
+
 def get_max_optimized_bitrate(task_type: str) -> int:
     """
     Get the maximum bitrate of optimized videos (task responses) for a given
@@ -25,5 +30,4 @@ def get_max_optimized_bitrate(task_type: str) -> int:
     # Bitrate budget: 40 Mbit/s for 4K - necessitates rate control when
     # encoding H264 videos. Effectively caps 20s 4K videos at ~100 MB.
     width, height = get_task_target_resolution(task_type)
-    n_pixels = width * height
-    return int(40000 * n_pixels / (1920 * 1080))
+    return get_max_optimized_bitrate_for_resolution(width, height)

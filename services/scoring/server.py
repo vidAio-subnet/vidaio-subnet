@@ -18,6 +18,8 @@ from firerequests import FireRequests
 from moviepy.editor import VideoFileClip
 from pieapp_metric import calculate_pieapp_score
 from pydantic import BaseModel
+
+from vidaio_subnet_core.utilities.tasks import get_max_optimized_bitrate_for_resolution
 from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m
 
 from services.video_scheduler.video_utils import delete_videos_with_fileid
@@ -429,6 +431,8 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
                 continue
 
             ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            ref_width = int(ref_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            ref_height = int(ref_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             step_time = time.time() - uid_start_time
             print(f"♎️ 2. Retrieved reference video frame count ({ref_total_frames}) in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
@@ -483,7 +487,9 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
                 reasons.append("Invalid download URL: the distorted video download URL must be at least 10 characters long.")
                 continue
 
-            max_size = 150*1024*1024  # FIXME
+            max_kbps = get_max_optimized_bitrate_for_resolution(ref_width, ref_height)
+            max_size = max_kbps * 8 * content_length
+            print(f"Ref video resolution: {ref_width}x{ref_height}; max bitrate: {max_kbps}kbps; max size: {max_size/1024/1024:.2f}MB ")
             try:
                 dist_path, download_time = await download_video(dist_url, request.verbose, max_size)
             except Exception as e:
@@ -688,6 +694,7 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
             distorted_video_paths.append(None)
             continue
         try:
+            # Don't specify max_size here, fall back to the default of 150MB
             path, download_time = await download_video(dist_url, request.verbose)
             distorted_video_paths.append(path)
         except Exception as e:
@@ -720,7 +727,7 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
                 continue
 
 
-
+            # Don't specify max_size here, fall back to the default of 150MB
             ref_path, download_time = await download_video(ref_url, request.verbose)
             ref_cap = cv2.VideoCapture(ref_path)
             ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
