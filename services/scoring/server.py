@@ -495,6 +495,8 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
                 length_scores.append(0.0)
                 final_scores.append(0.0)
                 reasons.append("video download problem")
+                if dist_path and os.path.exists(dist_path):
+                    os.unlink(dist_path)
                 continue
 
             step_time = time.time() - uid_start_time
