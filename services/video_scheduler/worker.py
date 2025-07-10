@@ -435,7 +435,6 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis,
             
     return uploaded_video_chunks
 
-
 async def main():
     """
     Main service function that manages video processing workflow and queue maintenance.

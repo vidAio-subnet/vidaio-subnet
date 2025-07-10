@@ -1,25 +1,27 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import Optional, List
+import asyncio
+import glob
+import logging
+import math
+import os
+import random
+import subprocess
+import tempfile
+import time
+from typing import List, Optional
+from urllib.parse import urlparse
+
+import aiohttp
 import cv2
 import numpy as np
+from fastapi import FastAPI, HTTPException
 from firerequests import FireRequests
-import tempfile
-import os
-import glob
-import random
-import asyncio
 from moviepy.editor import VideoFileClip
-import aiohttp
-import logging
-import time
-import math
-import subprocess
-from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video
-from lpips_metric import calculate_lpips
 from pieapp_metric import calculate_pieapp_score
+from pydantic import BaseModel
+from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m
+
+from services.video_scheduler.video_utils import delete_videos_with_fileid
 from vidaio_subnet_core import CONFIG
-from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
 from vidaio_subnet_core.utilities.storage_client import storage_client
 
 # Set up logging
@@ -72,13 +74,16 @@ class ScoringResponse(BaseModel):
     final_scores: List[float]
     reasons: List[str]
 
-async def download_video(video_url: str, verbose: bool) -> tuple[str, float]:
+async def download_video(
+    video_url: str, verbose: bool, max_size: int=150*1024*1024
+) -> tuple[str, float]:
     """
     Download a video from the given URL and save it to a temporary file.
 
     Args:
         video_url (str): The URL of the video to download.
         verbose (bool): Whether to show download progress.
+        max_size (int): The maximum size (in bytes) of the downloaded file.
 
     Returns:
         tuple[str, float]: A tuple containing the path to the downloaded video file
@@ -102,9 +107,13 @@ async def download_video(video_url: str, verbose: bool) -> tuple[str, float]:
                 if response.status != 200:
                     raise Exception(f"Failed to download video. HTTP status: {response.status}")
 
+                download_total = 0
                 with open(file_path, "wb") as f:
                     async for chunk in response.content.iter_chunked(2 * 1024 * 1024):
                         f.write(chunk)
+                        download_total += len(chunk)
+                        if download_total > max_size:
+                            raise Exception(f"Download failed, file too large: {file_path}")
 
         end_time = time.time()  # Record end time
         download_time = end_time - start_time  # Calculate download duration
@@ -352,6 +361,19 @@ def upscale_video(input_path, scale_factor=2):
         print(f"Error upscaling video: {e}")
         return input_path
 
+
+def is_dist_url_valid(url: str) -> bool:
+    """
+    Checks whether url is a valid distorted video URL. We allow http(s)://
+    addresses only.
+    """
+    try:
+        result = urlparse(url)
+        return result.scheme in ('http', 'https') and bool(result.netloc)
+    except ValueError:
+        return False
+
+
 @app.post("/score_synthetics")
 async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse:
     print("#################### 🤖 start scoring ####################")
@@ -451,7 +473,7 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
 
             dist_path = None
 
-            if len(dist_url) < 10:
+            if not is_dist_url_valid(dist_url):
                 print(f"Wrong dist download URL: {dist_url}. Assigning score of 0.")
                 vmaf_scores.append(0.0)
                 pieapp_scores.append(0.0)
@@ -461,8 +483,9 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
                 reasons.append("Invalid download URL: the distorted video download URL must be at least 10 characters long.")
                 continue
 
+            max_size = 150*1024*1024  # FIXME
             try:
-                dist_path, download_time = await download_video(dist_url, request.verbose)
+                dist_path, download_time = await download_video(dist_url, request.verbose, max_size)
             except Exception as e:
                 error_msg = f"Failed to download video from {dist_url}: {str(e)}"
                 print(f"{error_msg}. Assigning score of 0.")
@@ -471,7 +494,7 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
                 quality_scores.append(0.0)
                 length_scores.append(0.0)
                 final_scores.append(0.0)
-                reasons.append("failed to download video file from url")
+                reasons.append("video download problem")
                 continue
 
             step_time = time.time() - uid_start_time
@@ -666,7 +689,7 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
             path, download_time = await download_video(dist_url, request.verbose)
             distorted_video_paths.append(path)
         except Exception as e:
-            print(f"failed to download distorted video: {dist_url}, error: {e}")
+            print(f"video download problem: {dist_url}, error: {e}")
             distorted_video_paths.append(None)
 
     for idx, (ref_url, dist_path, uid, task_type) in enumerate(
