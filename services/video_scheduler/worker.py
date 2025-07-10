@@ -1,7 +1,7 @@
 import asyncio
 import os
 import yaml
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 import httpx
 from dotenv import load_dotenv
 from loguru import logger
@@ -40,6 +40,18 @@ load_dotenv()
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 yaml_file_path = os.path.join(script_dir, "pexels_categories.yaml")
+
+
+def get_task_target_resolution(task_type: str) -> Tuple[int, int]:
+    TASK_RESOLUTIONS = {
+        "HD24K": (3840, 2160),
+        "SD2HD": (1920, 1080),
+        "SD24K": (3840, 2160),
+        # "4K28K": (7680, 4320),
+        # "HD28K": (7680, 4320),
+    }
+    return TASK_RESOLUTIONS.get(task_type, (3840, 2160))
+
 
 def clear_queues(redis_conn) -> None:
     """Clear both organic and synthetic queues before starting."""
@@ -181,16 +193,7 @@ def get_pexels_random_vids(
     Returns:
         list: A shuffled list of video IDs (fewer than before since each yields more chunks).
     """
-
-    RESOLUTIONS = {
-        "HD24K": (3840, 2160),
-        "SD2HD": (1920, 1080),
-        "SD24K": (3840, 2160),
-        # "4K28K": (7680, 4320),
-        # "HD28K": (7680, 4320),
-    }
-
-    width, height = (width, height) if width and height else RESOLUTIONS.get(task_type, (3840, 2160))
+    width, height = (width, height) if width and height else get_task_target_resolution(task_type)
 
     load_dotenv()
     api_key = os.getenv("PEXELS_API_KEY")
@@ -435,10 +438,29 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis,
                 "uploaded_object_name": object_name,
                 "sharing_link": sharing_link,
                 "task_type": task_type,
+                "maximum_optimized_bitrate": get_max_optimized_bitrate(task_type),
             })
             remaining_count -= 1
             
     return uploaded_video_chunks
+
+
+def get_max_optimized_bitrate(task_type: str) -> int:
+    """
+    Get the maximum bitrate of optimized videos (task responses) for a given
+    task type.
+
+    Args:
+        task_type (str): The type of task, e.g. "SD2HD", "HD24K" etc
+    Returns:
+        int: Maximum bitrate of optimized videos in kbit/s
+    """
+    # Bitrate budget: 50 Mbit/s for 4K - necessitates rate control when
+    # encoding H264 videos.
+    width, height = get_task_target_resolution(task_type)
+    n_pixels = width * height
+    return int(50000 * n_pixels / (1920 * 1080))
+
 
 async def main():
     """

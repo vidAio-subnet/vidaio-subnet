@@ -78,7 +78,8 @@ class Synthesizer:
                     synapse = VideoUpscalingProtocol(
                         miner_payload=MinerPayload(
                             reference_video_url=chunk["sharing_link"],
-                            task_type=chunk["task_type"]
+                            task_type=chunk["task_type"],
+                            maximum_optimized_bitrate=chunk["maximum_optimized_bitrate"],
                         ),
                         version=version,
                         round_id=round_id

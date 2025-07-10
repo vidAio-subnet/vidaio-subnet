@@ -27,9 +27,8 @@ class MinerPayload(BaseModel):
         default="",
         min_length=1,
     )
-    maximum_optimized_size_mb: int = Field(
-        description="The maximum size of the optimized video in MB",
-        default=100,
+    maximum_optimized_bitrate: int = Field(
+        description="The maximum bitrate of the optimized video in kbit/s",
         gt=0,
     )
     task_type: str = Field(
