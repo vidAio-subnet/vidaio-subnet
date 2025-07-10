@@ -20,6 +20,7 @@ app = FastAPI()
 class UpscaleRequest(BaseModel):
     payload_url: str
     task_type: str
+    max_bitrate: int
     # output_file_upscaled: Optional[str] = None
     
 
@@ -49,7 +50,7 @@ def get_frame_rate(input_file: Path) -> float:
         raise HTTPException(status_code=500, detail="Unable to determine frame rate of the video.")
 
 
-def upscale_video(payload_video_path: str, task_type: str):
+def upscale_video(payload_video_path: str, task_type: str, max_bitrate: int):
     """
     Upscales a video using the video2x tool and returns the full paths of the upscaled video and the converted mp4 file.
 
@@ -120,8 +121,8 @@ def upscale_video(payload_video_path: str, task_type: str):
             "-p", "realesrgan",  
             "-s", scale_factor,  # Scale factor of 2 or 4
             "-c", "libx264",  
-            "-e", "preset=slow",  
-            "-e", "crf=28"
+            "-e", "preset=slow",
+            "-e", f"b:v={max_bitrate}k"
         ]
         video2x_process = subprocess.run(video2x_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         elapsed_time = time.time() - start_time
@@ -153,12 +154,13 @@ async def video_upscaler(request: UpscaleRequest):
     try:
         payload_url = request.payload_url
         task_type = request.task_type
+        max_bitrate = request.max_bitrate
 
         logger.info("📻 Downloading video....")
         payload_video_path: str = await download_video(payload_url)
         logger.info(f"Download video finished, Path: {payload_video_path}")
 
-        processed_video_path = upscale_video(payload_video_path, task_type)
+        processed_video_path = upscale_video(payload_video_path, task_type, max_bitrate)
         processed_video_name = Path(processed_video_path).name
 
         logger.info(f"Processed video path: {processed_video_path}, video name: {processed_video_name}")

@@ -57,13 +57,15 @@ async def download_video(video_url: str) -> Path:
         raise HTTPException(status_code=500, detail=f"Error downloading video: {str(e)}")
 
 
-async def video_upscaler(payload_url: str, task_type: str) -> str | None:
+async def video_upscaler(payload_url: str, task_type: str, max_bitrate: int) -> str | None:
     """
     Sends a video file path to the upscaling service and retrieves the processed video path.
     
     Args:
         payload_url (str): The url of the video to be upscaled.
-    
+        task_type (str): SD2HD, HD2K4 etc
+        max_bitrate (int): Maximum bitrate of optimized videos in kbit/s
+
     Returns:
         str | None: The path of the upscaled video or None if an error occurs.
     """
@@ -72,6 +74,7 @@ async def video_upscaler(payload_url: str, task_type: str) -> str | None:
     data = {
         "payload_url": payload_url,
         "task_type": task_type,
+        "max_bitrate": max_bitrate,
     }
     
     async with aiohttp.ClientSession() as session:

@@ -30,6 +30,7 @@ class Miner(BaseMiner):
 
         task_type: str = synapse.miner_payload.task_type      
         payload_url: str = synapse.miner_payload.reference_video_url
+        max_bitrate: int = synapse.miner_payload.maximum_optimized_bitrate
         validator_uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
 
         logger.info(f"✅✅✅ Receiving {task_type} Request from validator: {synapse.dendrite.hotkey} with uid: {validator_uid}: round_id : {synapse.round_id}")
@@ -37,7 +38,7 @@ class Miner(BaseMiner):
         check_version(synapse.version)
 
         try:
-            processed_video_url = await video_upscaler(payload_url, task_type)
+            processed_video_url = await video_upscaler(payload_url, task_type, max_bitrate)
             
             if processed_video_url is None:
                 logger.info(f"💔 Failed to upscaling video 💔")
