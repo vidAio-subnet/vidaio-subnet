@@ -12,6 +12,7 @@ import yaml
 import redis
 import shutil
 from datetime import datetime
+from pathlib import Path
 
 from redis_utils import (
     get_redis_connection,
@@ -379,65 +380,189 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis,
             logger.info("Failed to download and trim video. Retrying...")
             continue
 
-        # Apply color space transformation to each video chunk
+        # Apply color space transformation to each video chunk and upload immediately
         # This helps reduce recognizability of Pexels videos by applying random color transformations
         # while maintaining visual quality for training purposes.
         # 
         # Configuration:
         # - Set ENABLE_COLOR_TRANSFORM=true to enable (default)
         # - Set ENABLE_COLOR_TRANSFORM=false to disable
-        logger.info("Applying color space transformations to video chunks...")
-        transformed_paths = []
+        # - Set TRANSFORMATIONS_PER_CHUNK=N to apply N transformations per chunk (default: 3)
+        logger.info("Processing video chunks with transformation and upload...")
         
         # Check if color space transformation is enabled (default: True)
         enable_color_transform = os.getenv("ENABLE_COLOR_TRANSFORM", "true").lower() == "true"
         
+        # Number of transformations to apply per chunk (default: 3)
+        transformations_per_chunk = int(os.getenv("TRANSFORMATIONS_PER_CHUNK", "3"))
+        
         if enable_color_transform:
-            logger.info("Color space transformation is ENABLED")
+            logger.info(f"Color space transformation is ENABLED")
+            logger.info(f"Will apply {transformations_per_chunk} transformations per chunk")
         else:
             logger.info("Color space transformation is DISABLED")
         
-        for i, challenge_local_path in enumerate(challenge_local_paths):
+        for i, (video_id, challenge_local_path) in enumerate(zip(video_ids, challenge_local_paths)):
             try:
+                # Get the corresponding trimmed file path for scoring reference
+                # The challenge_local_path contains the downscaled version (_downscale.mp4)
+                # But we need to preserve the trimmed version (_trim.mp4) for scoring
+                challenge_local_path_obj = Path(challenge_local_path)
+                if challenge_local_path_obj.name.endswith('_downscale.mp4'):
+                    # Convert downscale path to trim path for scoring reference
+                    trim_path = str(challenge_local_path_obj.parent / challenge_local_path_obj.name.replace('_downscale.mp4', '_trim.mp4'))
+                else:
+                    # Fallback: assume it's already a trim path
+                    trim_path = str(challenge_local_path_obj.parent / f"{challenge_local_path_obj.stem}_trim.mp4")
+                
+                # Apply multiple transformations to each chunk (or skip if disabled)
                 if enable_color_transform:
-                    logger.info(f"Transforming video chunk {i+1}/{len(challenge_local_paths)}: {challenge_local_path}")
-                    transformed_path = apply_color_space_transformation(challenge_local_path)
-                    transformed_paths.append(transformed_path)
-                    logger.info(f"Successfully transformed chunk {i+1}")
+                    logger.info(f"Applying {transformations_per_chunk} transformations to chunk {i+1}/{len(challenge_local_paths)}: {challenge_local_path}")
+                    
+                    # Apply multiple transformations to the same source chunk (downscaled version)
+                    for transform_idx in range(transformations_per_chunk):
+                        try:
+                            # Create a unique output path for each transformation
+                            transformed_path = str(challenge_local_path_obj.parent / f"{challenge_local_path_obj.stem}_transform_{transform_idx}{challenge_local_path_obj.suffix}")
+                            
+                            # Apply specific transformation to the downscaled file, preserving original for other transformations
+                            transformed_path = apply_color_space_transformation(
+                                challenge_local_path, 
+                                transformed_path, 
+                                transformation_index=transform_idx % total_transformations,
+                                preserve_original=True
+                            )
+                            
+                            logger.info(f"Successfully applied transformation {transform_idx + 1}/{transformations_per_chunk} to chunk {i+1}")
+                            
+                            # Generate unique video ID for this transformed version
+                            transformed_video_id = f"{video_id}_{transform_idx}"
+                            
+                            # Create a matching trimmed reference file for this transformation
+                            # The validator expects reference files to match the transformed video IDs
+                            if challenge_local_path_obj.name.endswith('_downscale.mp4'):
+                                original_trim_path = str(challenge_local_path_obj.parent / challenge_local_path_obj.name.replace('_downscale.mp4', '_trim.mp4'))
+                            else:
+                                original_trim_path = str(challenge_local_path_obj.parent / f"{challenge_local_path_obj.stem}_trim.mp4")
+                            
+                            # Create the reference file with the transformed video ID
+                            reference_trim_path = str(challenge_local_path_obj.parent / f"{transformed_video_id}_trim.mp4")
+                            
+                            # Copy the original trimmed file to the new reference file name
+                            if os.path.exists(original_trim_path):
+                                shutil.copy2(original_trim_path, reference_trim_path)
+                                logger.info(f"Created reference file for scoring: {reference_trim_path}")
+                            else:
+                                logger.warning(f"Original trimmed file not found: {original_trim_path}")
+                            
+                            # Upload immediately after transformation
+                            uploaded_file_id = transformed_video_id
+                            object_name = f"{uploaded_file_id}.mp4"
+                        
+                            await storage_client.upload_file(object_name, transformed_path)
+                            sharing_link = await storage_client.get_presigned_url(object_name)
+
+                            # Clean up the transformed file immediately after upload
+                            if os.path.exists(transformed_path):
+                                os.unlink(transformed_path)
+
+                            logger.info(f"Sharing_link for transform {transform_idx + 1}: {sharing_link}")
+
+                            if not sharing_link:
+                                logger.info(f"Upload failed for chunk {i+1}, transform {transform_idx + 1}. Skipping...")
+                                continue
+                                
+                            logger.info(f"Successfully uploaded chunk {i+1}, transform {transform_idx + 1}")
+
+                            uploaded_video_chunks.append({
+                                "video_id": str(transformed_video_id),
+                                "uploaded_object_name": object_name,
+                                "sharing_link": sharing_link,
+                                "task_type": task_type,
+                            })
+                            remaining_count -= 1
+                            
+                            # Check if we've generated enough chunks
+                            if remaining_count <= 0:
+                                break
+                                
+                        except Exception as e:
+                            logger.error(f"Error applying transformation {transform_idx + 1} to chunk {i+1} ({challenge_local_path}): {str(e)}")
+                            continue
+                    
+                    # Clean up the original downscaled file after all transformations
+                    if os.path.exists(challenge_local_path):
+                        os.unlink(challenge_local_path)
+                        logger.info(f"Cleaned up downscaled file after transformations: {challenge_local_path}")
+                    
+                    # Clean up the original trimmed file after creating all reference copies
+                    if challenge_local_path_obj.name.endswith('_downscale.mp4'):
+                        original_trim_path = str(challenge_local_path_obj.parent / challenge_local_path_obj.name.replace('_downscale.mp4', '_trim.mp4'))
+                    else:
+                        original_trim_path = str(challenge_local_path_obj.parent / f"{challenge_local_path_obj.stem}_trim.mp4")
+                    
+                    if os.path.exists(original_trim_path):
+                        os.unlink(original_trim_path)
+                        logger.info(f"Cleaned up original trimmed file after creating references: {original_trim_path}")
+                        
                 else:
                     logger.info(f"Skipping transformation for chunk {i+1}/{len(challenge_local_paths)}: {challenge_local_path}")
-                    transformed_paths.append(challenge_local_path)
+                    
+                    # Upload original downscaled chunk without transformation
+                    uploaded_file_id = video_id
+                    object_name = f"{uploaded_file_id}.mp4"
+                
+                    await storage_client.upload_file(object_name, challenge_local_path)
+                    sharing_link = await storage_client.get_presigned_url(object_name)
+
+                    # Clean up the downscaled file after upload
+                    if os.path.exists(challenge_local_path):
+                        os.unlink(challenge_local_path)
+                        logger.info(f"Cleaned up downscaled file after upload: {challenge_local_path}")
+                    
+                    # For non-transformed uploads, preserve the original trimmed file with the video ID
+                    if challenge_local_path_obj.name.endswith('_downscale.mp4'):
+                        original_trim_path = str(challenge_local_path_obj.parent / challenge_local_path_obj.name.replace('_downscale.mp4', '_trim.mp4'))
+                    else:
+                        original_trim_path = str(challenge_local_path_obj.parent / f"{challenge_local_path_obj.stem}_trim.mp4")
+                    
+                    if os.path.exists(original_trim_path):
+                        logger.info(f"Preserving trimmed reference file for scoring: {original_trim_path}")
+                    else:
+                        logger.warning(f"Trimmed reference file not found: {original_trim_path}")
+
+                    logger.info(f"Sharing_link: {sharing_link}")
+
+                    if not sharing_link:
+                        logger.info(f"Upload failed for chunk {i+1}. Skipping...")
+                        continue
+                        
+                    logger.info(f"Successfully uploaded chunk {i+1}")
+
+                    uploaded_video_chunks.append({
+                        "video_id": str(video_id),
+                        "uploaded_object_name": object_name,
+                        "sharing_link": sharing_link,
+                        "task_type": task_type,
+                    })
+                    remaining_count -= 1
+                
+                # Check if we've generated enough chunks
+                if remaining_count <= 0:
+                    break
+                    
             except Exception as e:
-                logger.error(f"Failed to transform video chunk {challenge_local_path}: {str(e)}")
-                # If transformation fails, use the original path
-                transformed_paths.append(challenge_local_path)
-
-        logger.info(f"Completed color space transformation for {len(transformed_paths)} video chunks")
-
-        for video_id, challenge_local_path in zip(video_ids, transformed_paths):
-            uploaded_file_id = video_id
-            object_name = f"{uploaded_file_id}.mp4"
-        
-            await storage_client.upload_file(object_name, challenge_local_path)
-            sharing_link = await storage_client.get_presigned_url(object_name)
-
-            os.unlink(challenge_local_path)
-
-            logger.info(f"Sharing_link:{sharing_link} ")
-
-            if not sharing_link:
-                logger.info("Upload failed. Retrying...")
+                logger.error(f"Error processing chunk {i+1} ({challenge_local_path}): {str(e)}")
+                # Try to preserve the trimmed file for scoring even on error
+                challenge_local_path_obj = Path(challenge_local_path)
+                if challenge_local_path_obj.name.endswith('_downscale.mp4'):
+                    trim_path = str(challenge_local_path_obj.parent / challenge_local_path_obj.name.replace('_downscale.mp4', '_trim.mp4'))
+                    if os.path.exists(trim_path):
+                        logger.info(f"Preserving trimmed reference file for scoring (after error): {trim_path}")
                 continue
-            logger.info("Uploading success!")
 
-            uploaded_video_chunks.append({
-                "video_id": str(video_id),
-                "uploaded_object_name": object_name,
-                "sharing_link": sharing_link,
-                "task_type": task_type,
-            })
-            remaining_count -= 1
-            
+        logger.info(f"Completed processing {len(uploaded_video_chunks)} video chunks")
+    
     return uploaded_video_chunks
 
 async def main():
@@ -514,6 +639,14 @@ async def main():
                     get_20s_queue_size(redis_conn) >= queue_thresholds["refill"]
                 )
                 
+                # Check if all queues are healthy (above target)
+                all_queues_healthy = (
+                    get_5s_queue_size(redis_conn) >= queue_thresholds["target"] and
+                    get_10s_queue_size(redis_conn) >= queue_thresholds["target"] and
+                    get_20s_queue_size(redis_conn) >= queue_thresholds["target"] and
+                    get_pexels_queue_size(redis_conn) >= queue_thresholds["pexels"]
+                )
+                
                 current_ready_status = is_scheduler_ready(redis_conn)
                 
                 if all_queues_ready and not current_ready_status:
@@ -524,12 +657,28 @@ async def main():
                     logger.info("🔴 Scheduler is now NOT READY - some queues below threshold 🔴")
                 
                 processed_time = time.time() - cycle_start_time
-
-                logger.info(f"✳️✳️✳️ One cycle processed in {processed_time:.2f} ✳️✳️✳️")
-
-                await asyncio.sleep(5)
+                logger.info(f"✳️✳️✳️ One cycle processed in {processed_time:.2f} seconds ✳️✳️✳️")
+                
+                # Intelligent sleep logic based on queue health
+                if all_queues_healthy:
+                    # All queues are healthy, sleep longer
+                    sleep_time = 5
+                    logger.info(f"🟢 All queues healthy, sleeping for {sleep_time}s")
+                elif all_queues_ready:
+                    # Queues are ready but not all at target, sleep shorter
+                    sleep_time = 2
+                    logger.info(f"🟡 Queues ready but not all at target, sleeping for {sleep_time}s")
+                else:
+                    # Some queues are low, work continuously with minimal sleep
+                    sleep_time = 0.5
+                    logger.info(f"🔴 Some queues low, working continuously (minimal {sleep_time}s sleep)")
+                
+                await asyncio.sleep(sleep_time)
+                
             except Exception as e:
                 logger.error(f"Error in main service loop: {str(e)}")
+                # Even on error, don't sleep too long to keep trying
+                await asyncio.sleep(2)
             
     except Exception as e:
         logger.error(f"Critical error in main service loop: {str(e)}")
@@ -619,12 +768,12 @@ def log_queue_status(redis_conn):
 
 
 async def replenish_synthetic_queue(redis_conn, duration, threshold, target):
-    """Replenish a specific synthetic chunk queue if below threshold."""
+    """Replenish a specific synthetic chunk queue if below target."""
     queue_size = get_queue_size_by_duration(redis_conn, duration)
     
-    if queue_size < threshold:
+    if queue_size < target:  # Changed from threshold to target
         needed = target - queue_size
-        logger.info(f"Replenishing {duration}s chunk queue with {needed} items")
+        logger.info(f"Replenishing {duration}s chunk queue with {needed} items (current: {queue_size}, target: {target})")
         
         try:
             chunk_data = await get_synthetic_requests_paths(

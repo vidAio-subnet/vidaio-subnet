@@ -258,25 +258,88 @@ class YouTubeWorker:
                 logger.error(f"❌ Failed to download YouTube video: {video_id}")
                 return []
             
+            # Number of transformations to apply per chunk (default: 3)
+            transformations_per_chunk = int(os.getenv("TRANSFORMATIONS_PER_CHUNK", "3"))
+            
             # Apply color space transformation if enabled
             transformed_paths = []
             if self.enable_color_transform:
-                logger.info(f"🎨 Applying color transformations to {len(challenge_local_paths)} YouTube chunks...")
+                logger.info(f"🎨 Applying {transformations_per_chunk} color transformations to {len(challenge_local_paths)} YouTube chunks...")
+                
                 for i, challenge_local_path in enumerate(challenge_local_paths):
-                    try:
-                        transformed_path = apply_color_space_transformation(challenge_local_path)
-                        transformed_paths.append(transformed_path)
-                        logger.debug(f"✅ Transformed YouTube chunk {i+1}")
-                    except Exception as e:
-                        logger.error(f"❌ Failed to transform YouTube chunk {challenge_local_path}: {str(e)}")
-                        transformed_paths.append(challenge_local_path)
+                    # Get the corresponding trimmed file path for scoring reference
+                    challenge_local_path_obj = Path(challenge_local_path)
+                    if challenge_local_path_obj.name.endswith('_downscale.mp4'):
+                        # Convert downscale path to trim path for scoring reference
+                        trim_path = str(challenge_local_path_obj.parent / challenge_local_path_obj.name.replace('_downscale.mp4', '_trim.mp4'))
+                    else:
+                        # Fallback: assume it's already a trim path
+                        trim_path = str(challenge_local_path_obj.parent / f"{challenge_local_path_obj.stem}_trim.mp4")
+                    
+                    # Apply multiple transformations to the same source chunk (downscaled version)
+                    for transform_idx in range(transformations_per_chunk):
+                        try:
+                            # Create a unique output path for each transformation
+                            transformed_path = str(challenge_local_path_obj.parent / f"{challenge_local_path_obj.stem}_ytransform_{transform_idx}{challenge_local_path_obj.suffix}")
+                            
+                            # Apply specific transformation to the downscaled file, preserving original for other transformations
+                            transformed_path = apply_color_space_transformation(
+                                challenge_local_path, 
+                                transformed_path, 
+                                transformation_index=transform_idx % total_transformations,
+                                preserve_original=True
+                            )
+                            
+                            transformed_paths.append(transformed_path)
+                            logger.debug(f"✅ Applied YouTube transformation {transform_idx + 1}/{transformations_per_chunk} to chunk {i+1}")
+                            
+                        except Exception as e:
+                            logger.error(f"❌ Failed to apply YouTube transformation {transform_idx + 1} to chunk {challenge_local_path}: {str(e)}")
+                            # If transformation fails, use the original path
+                            transformed_paths.append(challenge_local_path)
+                    
+                    # Clean up the downscaled file after all transformations since it's no longer needed
+                    if os.path.exists(challenge_local_path):
+                        os.unlink(challenge_local_path)
+                        logger.debug(f"🧹 Cleaned up downscaled file after transformations: {challenge_local_path}")
+                    
+                    # Preserve the original trimmed file with the original video ID for scoring reference
+                    # All transformations of the same source video will reference this same file
+                    if challenge_local_path_obj.name.endswith('_downscale.mp4'):
+                        original_trim_path = str(challenge_local_path_obj.parent / challenge_local_path_obj.name.replace('_downscale.mp4', '_trim.mp4'))
+                    else:
+                        original_trim_path = str(challenge_local_path_obj.parent / f"{challenge_local_path_obj.stem}_trim.mp4")
+                    
+                    if os.path.exists(original_trim_path):
+                        logger.debug(f"📁 Preserving original YouTube trimmed reference file for scoring: {original_trim_path}")
+                    else:
+                        logger.warning(f"⚠️ Original YouTube trimmed reference file not found: {original_trim_path}")
             else:
+                # No transformation - use original paths directly
                 transformed_paths = challenge_local_paths
+                
+                # Still preserve trimmed files for scoring when no transformation is applied
+                for challenge_local_path in challenge_local_paths:
+                    challenge_local_path_obj = Path(challenge_local_path)
+                    if challenge_local_path_obj.name.endswith('_downscale.mp4'):
+                        original_trim_path = str(challenge_local_path_obj.parent / challenge_local_path_obj.name.replace('_downscale.mp4', '_trim.mp4'))
+                        if os.path.exists(original_trim_path):
+                            logger.debug(f"📁 Preserving trimmed reference file for scoring: {original_trim_path}")
+                        else:
+                            logger.warning(f"⚠️ Trimmed reference file not found: {original_trim_path}")
             
             # Upload chunks and create sharing links
             uploaded_video_chunks = []
-            for video_chunk_id, chunk_path in zip(video_ids, transformed_paths):
+            for i, chunk_path in enumerate(transformed_paths):
                 try:
+                    # Generate unique video ID for transformed chunks
+                    base_video_id = video_ids[i // transformations_per_chunk if self.enable_color_transform else i]
+                    if self.enable_color_transform:
+                        transform_idx = i % transformations_per_chunk
+                        video_chunk_id = f"{base_video_id}_yt_{transform_idx}"
+                    else:
+                        video_chunk_id = base_video_id
+                    
                     object_name = f"youtube_{video_chunk_id}.mp4"
                     
                     # Upload to storage
