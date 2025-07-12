@@ -16,7 +16,7 @@ load_dotenv()
 
 MAX_WORKERS = 5  
 
-def apply_color_space_transformation(video_path: str, output_path: str = None) -> str:
+def apply_color_space_transformation(video_path: str, output_path: str = None, transformation_index: int = None, preserve_original: bool = False) -> str:
     """
     Apply color space transformation to make videos less identifiable while maintaining quality.
     
@@ -26,6 +26,8 @@ def apply_color_space_transformation(video_path: str, output_path: str = None) -
     Args:
         video_path (str): Path to the input video file
         output_path (str, optional): Path for the output video. If None, creates a new path.
+        transformation_index (int, optional): Index of the transformation to apply. If None, selects randomly.
+        preserve_original (bool, optional): If True, don't delete the original file after transformation.
     
     Returns:
         str: Path to the transformed video file
@@ -70,8 +72,11 @@ def apply_color_space_transformation(video_path: str, output_path: str = None) -
         "curves=r='0/0 0.5/0.51 1/1':g='0/0 0.5/0.49 1/1',hue=h=-8:s=1.03",
     ]
     
-    # Randomly select a transformation
-    selected_transformation = random.choice(transformations)
+    # Select transformation based on index or randomly
+    if transformation_index is not None and 0 <= transformation_index < len(transformations):
+        selected_transformation = transformations[transformation_index]
+    else:
+        selected_transformation = random.choice(transformations)
     
     # Build FFmpeg command for color space transformation
     transform_cmd = [
@@ -97,8 +102,8 @@ def apply_color_space_transformation(video_path: str, output_path: str = None) -
             print(f"Warning: Output file is empty or doesn't exist: {output_path}")
             return video_path
         
-        # Remove original file to save space only if transformation was successful
-        if os.path.exists(video_path) and os.path.exists(output_path):
+        # Remove original file to save space only if transformation was successful and preserve_original is False
+        if not preserve_original and os.path.exists(video_path) and os.path.exists(output_path):
             try:
                 os.remove(video_path)
                 print(f"Removed original file: {video_path}")
@@ -593,9 +598,9 @@ def download_trim_downscale_youtube_video(
             subprocess.run(trim_cmd, check=True)
             subprocess.run(scale_cmd, check=True)
             
-            # Clean up intermediate file
-            if os.path.exists(clipped_path):
-                os.remove(clipped_path)
+            # Don't clean up intermediate file - keep trim.mp4 for scoring reference
+            # if os.path.exists(clipped_path):
+            #     os.remove(clipped_path)
             
             chunk_elapsed_time = time.time() - chunk_start_time
             safe_print(f"Time taken to process YouTube chunk {i+1}: {chunk_elapsed_time:.2f} seconds")
