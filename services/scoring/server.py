@@ -391,6 +391,8 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
 
             ref_cap = None
             dist_cap = None
+            ref_y4m_path = None
+            dist_path = None
 
             ref_cap = cv2.VideoCapture(ref_path)
             step_time = time.time() - uid_start_time
@@ -448,8 +450,6 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
             print("The reference video has been successfully converted to Y4M format.")
             step_time = time.time() - uid_start_time
             print(f"♎️ 6. Converted reference video to Y4M in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
-            dist_path = None
 
             if len(dist_url) < 10:
                 print(f"Wrong dist download URL: {dist_url}. Assigning score of 0.")
@@ -611,7 +611,7 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
         finally:
             # Clean up resources for this pair
             ref_cap.release()
-            if os.path.exists(ref_y4m_path):
+            if ref_y4m_path and os.path.exists(ref_y4m_path):
                 os.unlink(ref_y4m_path)
             if dist_path and os.path.exists(dist_path):
                 os.unlink(dist_path)
@@ -855,10 +855,16 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
     processed_time = time.time() - start_time
     print(f"🔯🔯🔯 calculated score: {scores} 🔯🔯🔯")
     print(f"completed one batch scoring within {processed_time:.2f} seconds")
+    quality_scores = [0.0] * len(request.uids)
+    length_scores = [0.0] * len(request.uids)
+    final_scores = [0.0] * len(request.uids)
     return ScoringResponse(
         scores=scores,
         vmaf_scores=vmaf_scores,
         pieapp_scores=pieapp_scores,
+        quality_scores=quality_scores,
+        length_scores=length_scores,
+        final_scores=scores,
         reasons=reasons
     )
 
