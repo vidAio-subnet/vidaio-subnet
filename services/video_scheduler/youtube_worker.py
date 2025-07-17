@@ -282,16 +282,16 @@ class YouTubeWorker:
                             # Create a unique output path for each transformation
                             transformed_path = str(challenge_local_path_obj.parent / f"{challenge_local_path_obj.stem}_ytransform_{transform_idx}{challenge_local_path_obj.suffix}")
                             
-                            # Apply specific transformation to the downscaled file, preserving original for other transformations
+                            # Apply RANDOM transformation to the downscaled file for better variation
+                            # No need to specify transformation_index - it defaults to None which selects random
                             transformed_path = apply_color_space_transformation(
                                 challenge_local_path, 
                                 transformed_path, 
-                                transformation_index=transform_idx % total_transformations,
                                 preserve_original=True
                             )
                             
                             transformed_paths.append(transformed_path)
-                            logger.debug(f"✅ Applied YouTube transformation {transform_idx + 1}/{transformations_per_chunk} to chunk {i+1}")
+                            logger.debug(f"✅ Applied YouTube random transformation ({transform_idx + 1}/{transformations_per_chunk}) to chunk {i+1}")
                             
                         except Exception as e:
                             logger.error(f"❌ Failed to apply YouTube transformation {transform_idx + 1} to chunk {challenge_local_path}: {str(e)}")

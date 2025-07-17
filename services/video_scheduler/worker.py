@@ -425,15 +425,14 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis,
                             # Create a unique output path for each transformation
                             transformed_path = str(challenge_local_path_obj.parent / f"{challenge_local_path_obj.stem}_transform_{transform_idx}{challenge_local_path_obj.suffix}")
                             
-                            # Apply specific transformation to the downscaled file, preserving original for other transformations
+                            # Apply RANDOM transformation to the downscaled file for better variation
                             transformed_path = apply_color_space_transformation(
                                 challenge_local_path, 
                                 transformed_path, 
-                                transformation_index=transform_idx % total_transformations,
                                 preserve_original=True
                             )
                             
-                            logger.info(f"Successfully applied transformation {transform_idx + 1}/{transformations_per_chunk} to chunk {i+1}")
+                            logger.info(f"Successfully applied random transformation ({transform_idx + 1}/{transformations_per_chunk}) to chunk {i+1}")
                             
                             # Generate unique video ID for this transformed version
                             transformed_video_id = f"{video_id}_{transform_idx}"
@@ -607,8 +606,6 @@ async def main():
             try:
                 
                 cycle_start_time = time.time()
-
-                clean_old_files(directory="videos", age_limit_in_hours=36, check_interval_in_seconds=200)
 
                 await manage_pexels_queue(
                     redis_conn, 
