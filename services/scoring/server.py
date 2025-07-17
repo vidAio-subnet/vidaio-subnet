@@ -395,18 +395,30 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
             dist_path = None
 
             ref_cap = cv2.VideoCapture(ref_path)
-            step_time = time.time() - uid_start_time
-            print(f"♎️ 1. Opened reference video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
+            
+            # Check if the reference video was actually opened successfully
             if not ref_cap.isOpened():
-                print(f"Error opening reference video file {ref_path}. Assigning score of 0.")
+                # Add diagnostic information
+                file_exists = os.path.exists(ref_path)
+                file_size = os.path.getsize(ref_path) if file_exists else 0
+                
+                print(f"Error opening reference video file {ref_path}.")
+                print(f"  File exists: {file_exists}")
+                print(f"  File size: {file_size} bytes")
+                print(f"  Current working directory: {os.getcwd()}")
+                print(f"  Assigning score of 0.")
+                
                 vmaf_scores.append(0.0)
                 pieapp_scores.append(0.0)
                 quality_scores.append(0.0)
                 length_scores.append(0.0)
                 final_scores.append(-100)
-                reasons.append(f"error opening reference video file: {ref_path}")
+                reasons.append(f"error opening reference video file: {ref_path} (exists: {file_exists}, size: {file_size})")
                 continue
+            
+            # Only log success after confirming the file was opened
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 1. Opened reference video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
             step_time = time.time() - uid_start_time
@@ -698,6 +710,25 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
 
             ref_path, download_time = await download_video(ref_url, request.verbose)
             ref_cap = cv2.VideoCapture(ref_path)
+            
+            # Check if the reference video was actually opened successfully
+            if not ref_cap.isOpened():
+                # Add diagnostic information
+                file_exists = os.path.exists(ref_path)
+                file_size = os.path.getsize(ref_path) if file_exists else 0
+                
+                print(f"error opening reference video file from {ref_url}.")
+                print(f"  File path: {ref_path}")
+                print(f"  File exists: {file_exists}")
+                print(f"  File size: {file_size} bytes")
+                print(f"  Skipping...")
+                
+                vmaf_scores.append(-1)
+                pieapp_scores.append(-1)
+                reasons.append(f"error opening reference video file from {ref_url} (exists: {file_exists}, size: {file_size})")
+                scores.append(-100)
+                continue
+            
             ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
             if ref_total_frames <= 0:
@@ -711,14 +742,6 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
 
             random_frames = sorted(random.sample(range(ref_total_frames), VMAF_SAMPLE_COUNT))
             print(f"randomly selected {VMAF_SAMPLE_COUNT}frames for vmaf score: frame list: {random_frames}")
-
-            if not ref_cap.isOpened():
-                print(f"error opening reference video file from {ref_url}. skipping...")
-                vmaf_scores.append(-1)
-                pieapp_scores.append(-1)
-                reasons.append("error opening reference video file")
-                scores.append(-100)
-                continue
 
             # check if distorted video failed to download
             if dist_path is None:
