@@ -13,6 +13,11 @@ import pandas as pd
 from datetime import datetime
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy import desc
+import os
+from pathlib import Path
+import requests
+import hashlib
+import time
 
 class MinerManager:
     def __init__(self, uid, wallet, metagraph):
@@ -25,8 +30,15 @@ class MinerManager:
         self.redis_client = redis.Redis(
             host=CONFIG.redis.host, port=CONFIG.redis.port, db=CONFIG.redis.db
         )
-        logger.info(f"Creating SQL engine with URL: {CONFIG.sql.url}")
-        self.engine = create_engine(CONFIG.sql.url)
+        
+        # Clean up old database files before connecting to new database
+        self._cleanup_old_database_files()
+        
+        # Download database from URL if needed
+        db_url = self._download_database_from_url()
+        
+        logger.info(f"Creating SQL engine with URL: {db_url}")
+        self.engine = create_engine(db_url)
         Base.metadata.create_all(self.engine)
         Session = sessionmaker(bind=self.engine)
         self.session = Session()
@@ -55,6 +67,86 @@ class MinerManager:
         self.df = self.df.set_index('uid')
 
         logger.success("MinerManager initialization complete")
+        
+    def _cleanup_old_database_files(self):
+        """Delete old local database files if they exist before connecting to new database URL"""
+        old_db_files = [
+            "video_subnet_validator.db",
+            "video_subnet_validator.db-journal",
+            "video_subnet_validator.db-wal", 
+            "video_subnet_validator.db-shm"
+        ]
+        
+        for db_file in old_db_files:
+            db_path = Path(db_file)
+            if db_path.exists():
+                try:
+                    db_path.unlink()
+                    logger.info(f"🗑️ Deleted old local database file: {db_file}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to delete old database file {db_file}: {e}")
+        
+        # Also check for any other .db files in the current directory
+        current_dir = Path(".")
+        for db_file in current_dir.glob("*.db"):
+            if db_file.name.startswith("video_subnet") or db_file.name.startswith("validator"):
+                try:
+                    db_file.unlink()
+                    logger.info(f"🗑️ Deleted old database file: {db_file.name}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to delete old database file {db_file.name}: {e}")
+        
+        logger.info("✅ Database cleanup completed")
+        
+    def _download_database_from_url(self) -> str:
+        """Download database file from URL if the config URL is a HTTP/HTTPS URL"""
+        config_url = CONFIG.sql.url
+        
+        # Check if the URL is a HTTP/HTTPS download URL
+        if not config_url.startswith(('http://', 'https://')):
+            logger.info(f"Database URL is not HTTP/HTTPS, using as direct connection: {config_url}")
+            return config_url
+        
+        # Extract filename from URL or use default
+        try:
+            filename = config_url.split('/')[-1]
+            if not filename.endswith('.db'):
+                filename = "video_subnet_validator.db"
+        except:
+            filename = "video_subnet_validator.db"
+        
+        local_db_path = Path(filename)
+        
+        logger.info(f"📥 Downloading database from URL: {config_url}")
+        logger.info(f"📁 Local database path: {local_db_path}")
+        
+        try:
+            # Download the database file
+            response = requests.get(config_url, timeout=60)
+            response.raise_for_status()
+            
+            # Write the downloaded content to local file
+            with open(local_db_path, 'wb') as f:
+                f.write(response.content)
+            
+            # Calculate file hash for verification
+            file_hash = hashlib.md5(response.content).hexdigest()
+            file_size = len(response.content)
+            
+            logger.info(f"✅ Database downloaded successfully")
+            logger.info(f"📊 File size: {file_size:,} bytes")
+            logger.info(f"🔐 MD5 hash: {file_hash}")
+            
+            # Return SQLite connection string for the downloaded file
+            return f"sqlite:///{local_db_path}"
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"❌ Failed to download database from URL: {e}")
+            logger.error(f"💡 Please check if the URL is accessible: {config_url}")
+            raise RuntimeError(f"Database download failed: {e}")
+        except Exception as e:
+            logger.error(f"❌ Unexpected error downloading database: {e}")
+            raise RuntimeError(f"Database download failed: {e}")
         
     def initialize_serving_counter(self, uids: list[int]):
         rate_limit = build_rate_limit(self.metagraph, self.uid)
@@ -441,23 +533,132 @@ class MinerManager:
             session.close()
 
 
-    def step_organics(self, scores: list[float], total_uids: list[int]):
-        logger.info(f"Updating scores for {len(total_uids)} miners")
+    def step_organics(self, scores: list[float], total_uids: list[int], round_id: str = None):
+        """
+        Process scores from organic mining step and update miner records
+        Organic scoring should be more lenient than synthetic scoring
+        """
+        logger.info(f"Updating organic scores for {len(total_uids)} miners")
+        
+        if round_id is None:
+            round_id = f"organic_{int(time.time())}"
         
         acc_scores = []
-        for uid, score in zip(total_uids, scores):
-            miner = self.query([uid]).get(uid, None)
-            if miner is None:
-                logger.info(f"Creating new metadata record for UID {uid}")
-                miner = MinerMetadata(uid=uid)
-                self.session.add(miner)
-            if score == 0.0:
-                miner.accumulate_score = 0
-            acc_scores.append(miner.accumulate_score)
-        self.session.commit()
-        logger.success(f"Updated metadata for {len(total_uids)} uids")
+        applied_multipliers = []
 
-        return acc_scores
+        try:
+            for uid, score in zip(total_uids, scores):
+                # Skip processing if score is -1 (skipped)
+                if score == -1:
+                    logger.debug(f"Skipping UID {uid} due to score -1 (skipped)")
+                    # Get current miner state for return values
+                    miner = self.query([uid]).get(uid, None)
+                    if miner:
+                        acc_scores.append(miner.accumulate_score)
+                        applied_multipliers.append(miner.total_multiplier)
+                    else:
+                        acc_scores.append(0.0)
+                        applied_multipliers.append(1.0)
+                    continue
+                
+                miner = self.query([uid]).get(uid, None)
+                
+                if miner is None:
+                    logger.info(f"Creating new metadata record for UID {uid}")
+                    miner = MinerMetadata(
+                        uid=uid,
+                        hotkey="",  # Will be updated when synthetic scoring runs
+                        accumulate_score=0.0,
+                        bonus_multiplier=1.0,
+                        penalty_f_multiplier=1.0,
+                        penalty_q_multiplier=1.0,
+                        total_multiplier=1.0,
+                        performance_tier="New Miner"
+                    )
+                    self.session.add(miner)
+                
+                # Convert organic scores to synthetic-like format
+                if score == 1.0:  # Success
+                    organic_s_f = 0.3  # Moderate success score
+                    organic_s_q = 0.5   # Moderate quality score
+                    organic_s_l = 0.5   # Moderate length score
+                    success = True
+                elif score == 0.0:  # Failure
+                    # Deduct from current accumulated score for failure
+                    deduction_factor = 0.1  # Deduct 10% of current score
+                    current_score = miner.accumulate_score
+                    deduction = current_score * deduction_factor
+                    organic_s_f = -deduction  # Negative score to deduct
+                    organic_s_q = 0.0
+                    organic_s_l = 0.0
+                    success = False
+                else:
+                    # Unknown score value
+                    organic_s_f = 0.0
+                    organic_s_q = 0.0
+                    organic_s_l = 0.0
+                    success = False
+                
+                # Add performance record for organic scoring
+                self._add_performance_record(
+                    self.session,
+                    uid,
+                    round_id,
+                    vmaf_score=0.0,  # Not applicable for organic
+                    pie_app_score=0.0, # Not applicable for organic
+                    s_q=organic_s_q,
+                    s_l=organic_s_l,
+                    s_f=organic_s_f,
+                    content_length=20.0,  # Default length for organic
+                    content_type="organic",
+                    success=success
+                )
+                
+                # Update miner metadata (recalculate multipliers, etc.)
+                self._update_miner_metadata(self.session, miner)
+                
+                # Apply multiplier to organic score
+                applied_multiplier = miner.total_multiplier
+                score_with_multiplier = organic_s_f * applied_multiplier
+                
+                # Accumulate score with decay factor (same as synthetic)
+                if organic_s_f != -100:  # Not a system error
+                    miner.accumulate_score = (
+                        miner.accumulate_score * CONFIG.score.decay_factor
+                        + score_with_multiplier * (1 - CONFIG.score.decay_factor)
+                    )
+                    miner.accumulate_score = max(0, miner.accumulate_score)
+                
+                acc_scores.append(miner.accumulate_score)
+                applied_multipliers.append(applied_multiplier)
+                
+                # Update miner statistics
+                miner.total_rounds_completed += 1
+                miner.last_update_timestamp = datetime.now()
+                
+                # Update success rate
+                if miner.total_rounds_completed > 0:
+                    success_count = self.session.query(MinerPerformanceHistory).filter(
+                        MinerPerformanceHistory.uid == uid,
+                        MinerPerformanceHistory.success == True
+                    ).count()
+                    miner.success_rate = success_count / miner.total_rounds_completed
+                
+                # Update longest content processed (organic default)
+                if 20.0 > miner.longest_content_processed:
+                    miner.longest_content_processed = 20.0
+            
+            self.session.commit()
+            logger.success(f"Updated organic metadata for {len(total_uids)} miners")
+            
+            return acc_scores, applied_multipliers
+            
+        except Exception as e:
+            self.session.rollback()
+            logger.error(f"Error in step_organics: {e}")
+            raise
+        finally:
+            self.session.close()
 
     def consume(self, uids: list[int]) -> list[int]:
         logger.info(f"Consuming {len(uids)} UIDs")
@@ -474,7 +675,10 @@ class MinerManager:
         # Collect uids and scores
         for uid, miner in self.query().items():
             uids.append(uid)
-            scores.append(miner.accumulate_score)
+            if miner.accumulate_score == -1:
+                continue
+            else:
+                scores.append(miner.accumulate_score)
 
         scores = np.array(scores)
 

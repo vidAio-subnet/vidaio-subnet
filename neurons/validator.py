@@ -17,6 +17,7 @@ from vidaio_subnet_core.protocol import LengthCheckProtocol
 from services.dashboard.server import send_data_to_dashboard
 from services.video_scheduler.video_utils import get_trim_video_path
 from services.video_scheduler.redis_utils import get_redis_connection, get_organic_queue_size, set_scheduler_ready
+import os
 
 class Validator(base.BaseValidator):
     def __init__(self):
@@ -172,6 +173,15 @@ class Validator(base.BaseValidator):
             reference_video_paths = []
             for video_id in video_ids:
                 reference_video_path = get_trim_video_path(video_id)
+                
+                # Verify the reference video file exists before scoring
+                if not os.path.exists(reference_video_path):
+                    logger.warning(f"⚠️ Reference video file missing for video_id {video_id}: {reference_video_path}")
+                    # You could either skip this video or create a placeholder
+                    # For now, we'll still add it but log the warning
+                else:
+                    logger.debug(f"✅ Reference video file exists for video_id {video_id}: {reference_video_path}")
+                    
                 reference_video_paths.append(reference_video_path)
             
             asyncio.create_task(self.score_synthetics(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, content_lengths, round_id))
@@ -291,7 +301,11 @@ class Validator(base.BaseValidator):
             "timestamp": timestamp
         }
         
-        # success = send_data_to_dashboard(miner_data)
+        success = send_data_to_dashboard(miner_data)
+        if success:
+            logger.info("Data successfully sent to dashboard")
+        else:
+            logger.info("Failed to send data to dashboard")
 
     async def score_organics(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: list[str], task_types: list[str], timestamp: str):
 
@@ -330,8 +344,11 @@ class Validator(base.BaseValidator):
         for uid, vmaf_score, pieapp_score, score, reason in zip(uids, vmaf_scores, pieapp_scores, scores, reasons):
             logger.info(f"{uid} ** {vmaf_score:.2f} ** {pieapp_score:.2f} ** {score:.4f} || {reason}")
 
+        # Generate round_id for organic scoring
+        round_id = f"organic_{int(time.time())}"
+        
         logger.info(f"updating miner manager with {len(scores)} miner scores after organic requests processing…")
-        accumulate_scores = self.miner_manager.step_organics(scores, uids)
+        accumulate_scores, applied_multipliers = self.miner_manager.step_organics(scores, uids, round_id)
 
         miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
 
@@ -345,13 +362,18 @@ class Validator(base.BaseValidator):
             "pieapp_scores": pieapp_scores,
             "final_scores": scores,
             "accumulate_scores": accumulate_scores,
+            "applied_multipliers": applied_multipliers,
             "status": reasons,
             "task_urls": reference_urls,
             "processed_urls": distorted_urls,
             "timestamp": timestamp
         }
         
-        # success = send_data_to_dashboard(miner_data)
+        success = send_data_to_dashboard(miner_data)
+        if success:
+            logger.info("Data successfully sent to dashboard")
+        else:
+            logger.info("Failed to send data to dashboard")
 
 
     def filter_miners(self):

@@ -17,6 +17,7 @@ class MinerData:
     processed_urls: List[str]
     status: List[str]
     timestamp: str
+    p_time: List[float]
     
     def __post_init__(self):
         """Validate that list fields have consistent lengths"""
@@ -29,7 +30,8 @@ class MinerData:
             self.accumulate_scores,
             self.status,
             self.task_urls,
-            self.processed_urls
+            self.processed_urls,
+            self.p_time
         ]
         
         # Check if all lists have the same length
@@ -57,7 +59,8 @@ class MinerData:
             "accumulate_scores": self.accumulate_scores,
             "status": self.status,
             "task_url": self.task_urls,
-            "processed_url": self.processed_urls
+            "processed_url": self.processed_urls,
+            "p_time": self.p_time
         }
 
 @dataclass

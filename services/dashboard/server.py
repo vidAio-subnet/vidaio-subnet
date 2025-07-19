@@ -3,7 +3,7 @@ import requests
 from typing import List, Dict, Any, Union
 from datetime import datetime
 from loguru import logger
-from .model import MinerData
+from services.dashboard.model import MinerData
 from vidaio_subnet_core import CONFIG
 
 config = CONFIG.dashboard
@@ -71,7 +71,7 @@ def main():
     """Example usage of the send_data_to_dashboard function"""
     # Example data
     sample_data = MinerData(
-        validator_uid=12345,
+        validator_uid=0,
         validator_hotkey="0x1234567890abcdef1234567890abcdef12345678",
         miner_uids=[101, 102, 103],
         miner_hotkeys=[
@@ -87,6 +87,7 @@ def main():
         accumulate_scores=[450.2, 320.7, 410.5],
         status=["completed", "completed", "completed"],
         task_urls = ["https://storage.example.com/tasks/image123.jpg"] * 3,
+        p_time=[10.0, 15.0, 12.0],
         processed_urls=[
             "https://storage.example.com/processed/image123_miner101.jpg",
             "https://storage.example.com/processed/image123_miner102.jpg",
@@ -95,10 +96,10 @@ def main():
     )
     
     # Configuration
-    dashboard_url = "https://dashboard-api.example.com/requests"
+    # dashboard_url = "https://dashboard-api.example.com/requests"
     
     # Send the data
-    success = send_data_to_dashboard(sample_data, dashboard_url)
+    success = send_data_to_dashboard(sample_data)
     if success:
         logger.info("Data successfully sent to dashboard")
     else:
