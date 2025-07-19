@@ -545,6 +545,8 @@ class MinerManager:
                 self.session.add(miner)
             if score == 0.0:
                 miner.accumulate_score = 0
+            elif score == -1:
+                continue
             acc_scores.append(miner.accumulate_score)
         self.session.commit()
         logger.success(f"Updated metadata for {len(total_uids)} uids")
@@ -566,7 +568,10 @@ class MinerManager:
         # Collect uids and scores
         for uid, miner in self.query().items():
             uids.append(uid)
-            scores.append(miner.accumulate_score)
+            if miner.accumulate_score == -1:
+                continue
+            else:
+                scores.append(miner.accumulate_score)
 
         scores = np.array(scores)
 

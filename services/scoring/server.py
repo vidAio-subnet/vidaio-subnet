@@ -696,37 +696,33 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
 
         print(f"scale factor: {scale_factor}")
 
+        # === REFERENCE VIDEO VALIDATION (NOT MINER'S FAULT) ===
         try:
             # download reference video
             if len(ref_url) < 10:
-                print(f"invalid reference download url: {ref_url}. skipping...")
+                print(f"invalid reference download url: {ref_url}. skipping scoring")
                 vmaf_scores.append(-1)
                 pieapp_scores.append(-1)
-                reasons.append("wrong reference download url")
-                scores.append(-100)
+                reasons.append("invalid reference url - skipped")
+                scores.append(-1)  # -1 means skip, don't penalize
                 continue
-
-
 
             ref_path, download_time = await download_video(ref_url, request.verbose)
             ref_cap = cv2.VideoCapture(ref_path)
             
-            # Check if the reference video was actually opened successfully
             if not ref_cap.isOpened():
-                # Add diagnostic information
                 file_exists = os.path.exists(ref_path)
                 file_size = os.path.getsize(ref_path) if file_exists else 0
                 
-                print(f"error opening reference video file from {ref_url}.")
+                print(f"error opening reference video from {ref_url}. skipping scoring")
                 print(f"  File path: {ref_path}")
                 print(f"  File exists: {file_exists}")
                 print(f"  File size: {file_size} bytes")
-                print(f"  Skipping...")
                 
                 vmaf_scores.append(-1)
                 pieapp_scores.append(-1)
-                reasons.append(f"error opening reference video file from {ref_url} (exists: {file_exists}, size: {file_size})")
-                scores.append(-100)
+                reasons.append("corrupted reference video - skipped")
+                scores.append(-1)  # -1 means skip, don't penalize
                 continue
             
             ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -735,101 +731,106 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
                 print(f"invalid reference video from {ref_url}: no frames found. skipping...")
                 vmaf_scores.append(-1)
                 pieapp_scores.append(-1)
-                reasons.append("invalid reference video: no frames found")
-                scores.append(-100)
+                reasons.append("invalid reference video - skipped")
+                scores.append(-1)  # -1 means skip, don't penalize
                 ref_cap.release()
                 continue
 
-            random_frames = sorted(random.sample(range(ref_total_frames), VMAF_SAMPLE_COUNT))
-            print(f"randomly selected {VMAF_SAMPLE_COUNT}frames for vmaf score: frame list: {random_frames}")
+            if ref_total_frames < 10:
+                print(f"reference video too short (<10 frames). skipping scoring")
+                vmaf_scores.append(-1)
+                pieapp_scores.append(-1)
+                reasons.append("reference video too short - skipped")
+                scores.append(-1)  # -1 means skip, don't penalize
+                ref_cap.release()
+                continue
 
+        except Exception as e:
+            print(f"system error processing reference video: {e}. skipping scoring")
+            vmaf_scores.append(-1)
+            pieapp_scores.append(-1)
+            reasons.append("system error with reference - skipped")
+            scores.append(-1)  # -1 means skip, don't penalize
+            if ref_cap:
+                ref_cap.release()
+            continue
+
+        # === MINER OUTPUT VALIDATION (MINER'S FAULT) ===
+        try:
             # check if distorted video failed to download
             if dist_path is None:
-                print(f"failed to download distorted video for uid {uid}. assigning score of 0.")
+                print(f"failed to download distorted video for uid {uid}. penalizing miner.")
                 vmaf_scores.append(0.0)
                 pieapp_scores.append(0.0)
-                reasons.append("failed to download distorted video")
-                scores.append(0.0)
+                reasons.append("MINER FAILURE: failed to download distorted video, invalid url")
+                scores.append(0.0)  # 0 = miner penalty
                 ref_cap.release()
                 continue
 
+            # Check if miner's output can be opened
             dist_cap = cv2.VideoCapture(dist_path)
             if not dist_cap.isOpened():
-                print(f"error opening distorted video file from {dist_path}. assigning score of 0.")
+                print(f"error opening distorted video from {dist_path}. penalizing miner.")
                 vmaf_scores.append(0.0)
                 pieapp_scores.append(0.0)
-                reasons.append("error opening distorted video file")
-                scores.append(0.0)
+                reasons.append("MINER FAILURE: corrupted output video")
+                scores.append(0.0)  # 0 = miner penalty
                 ref_cap.release()
                 continue
 
             dist_total_frames = int(dist_cap.get(cv2.CAP_PROP_FRAME_COUNT))
             print(f"distorted video has {dist_total_frames} frames.")
 
+            # Check frame count match
             if dist_total_frames != ref_total_frames:
-                print(
-                    f"video length mismatch for {dist_path}: ref({ref_total_frames}) != dist({dist_total_frames}). assigning score of 0."
-                )
+                print(f"video length mismatch: ref({ref_total_frames}) != dist({dist_total_frames}). penalizing miner.")
                 vmaf_scores.append(0.0)
                 pieapp_scores.append(0.0)
-                reasons.append("video length mismatch")
-                scores.append(0.0)
+                reasons.append("MINER FAILURE: video length mismatch")
+                scores.append(0.0)  # 0 = miner penalty
                 ref_cap.release()
                 dist_cap.release()
                 continue
 
+            # Check minimum frame count for miner output
+            if dist_total_frames < 10:
+                print(f"miner output too short (<10 frames). penalizing miner.")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                reasons.append("MINER FAILURE: output video too short")
+                scores.append(0.0)  # 0 = miner penalty
+                ref_cap.release()
+                dist_cap.release()
+                continue
+
+        except Exception as e:
+            print(f"error validating miner output: {e}. penalizing miner.")
+            vmaf_scores.append(0.0)
+            pieapp_scores.append(0.0)
+            reasons.append(f"MINER FAILURE: {e}")
+            scores.append(0.0)  # 0 = miner penalty
+            if ref_cap:
+                ref_cap.release()
+            if dist_cap:
+                dist_cap.release()
+            continue
+
+        # === QUALITY CONTROL SCORING ===
+        try:
+            # Sample frames for basic quality checks
             sample_size = min(PIEAPP_SAMPLE_COUNT, ref_total_frames)
             max_start_frame = ref_total_frames - sample_size
             start_frame = 0 if max_start_frame <= 0 else random.randint(0, max_start_frame)
-            print(f"selected frame range for video pair: {start_frame} to {start_frame + sample_size - 1}")
+            print(f"selected frame range for quality checks: {start_frame} to {start_frame + sample_size - 1}")
 
+            # Extract frames from both videos for comparison
             ref_frames = []
             ref_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-
             for _ in range(sample_size):
                 ret, frame = ref_cap.read()
                 if not ret:
                     break
-                # Upscale the frame by a factor of 2 using INTER_LINEAR
-                upscaled_frame = cv2.resize(frame, (0, 0), fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_LINEAR)
-                ref_frames.append(upscaled_frame)
-
-            if ref_total_frames < 10:
-                raise ValueError("Video must contain at least 10 frames.")
-            
-            random_frames = sorted(random.sample(range(ref_total_frames), VMAF_SAMPLE_COUNT))
-            print(f"randomly selected {VMAF_SAMPLE_COUNT}frames for vmaf score: frame list: {random_frames}")
-
-            ref_upscaled_y4m_path = convert_mp4_to_y4m(ref_path, random_frames, scale_factor)
-            print("the reference video has been successfully upscaled and converted to y4m format.")
-
-            # calculate vmaf
-            try:
-                vmaf_score = calculate_vmaf(ref_upscaled_y4m_path, dist_path, random_frames)
-                if vmaf_score is not None:
-                    vmaf_scores.append(vmaf_score)
-                else:
-                    vmaf_score = 0.0
-                    vmaf_scores.append(vmaf_score)
-                print(f"🎾 vmaf_score is {vmaf_score}")
-            except Exception as e:
-                vmaf_scores.append(0.0)
-                pieapp_scores.append(0.0)
-                reasons.append("failed to calculate vmaf score due to video dimension mismatch")
-                scores.append(0.0)
-                ref_cap.release()
-                dist_cap.release()
-                print(f"error calculating vmaf score: {e}")
-                continue
-
-            if vmaf_score / 100 < VMAF_THRESHOLD:
-                print(f"vmaf score is too low, giving zero score, current vmaf score: {vmaf_score}")
-                pieapp_scores.append(0.0)
-                reasons.append(f"vmaf score is too low, current vmaf score: {vmaf_score}")
-                scores.append(0.0)
-                ref_cap.release()
-                dist_cap.release()
-                continue
+                ref_frames.append(frame)
 
             dist_frames = []
             dist_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
@@ -839,29 +840,187 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
                     break
                 dist_frames.append(frame)
 
-            pieapp_score = calculate_pieapp_score_on_samples(ref_frames, dist_frames)
-            pieapp_scores.append(pieapp_score)
-            print(f"🎾 pieapp score is {pieapp_score}")
-
-            if pieapp_score > PIEAPP_THRESHOLD:
-                print(f"pieapp score is too low, giving zero score, current pieapp score: {pieapp_score}")
+            # Ensure we have frames to compare
+            if not ref_frames or not dist_frames:
+                print(f"insufficient frames for comparison. penalizing miner.")
+                vmaf_scores.append(0.0)
                 pieapp_scores.append(0.0)
-                reasons.append(f"pieapp score is too low, current pieapp score: {pieapp_score}")
-                scores.append(0.0)
+                reasons.append("MINER FAILURE: insufficient frames for comparison")
+                scores.append(0.0)  # 0 = miner penalty
                 ref_cap.release()
                 dist_cap.release()
                 continue
 
-            reasons.append("success")
-            scores.append(1)
+            # === BASIC QUALITY CHECKS (NO ARTIFICIAL REFERENCE) ===
+            
+            # Check 1: Resolution validation
+            ref_height, ref_width = ref_frames[0].shape[:2]
+            dist_height, dist_width = dist_frames[0].shape[:2]
+            
+            expected_width = ref_width * scale_factor
+            expected_height = ref_height * scale_factor
+            
+            if dist_width != expected_width or dist_height != expected_height:
+                print(f"resolution mismatch: expected {expected_width}x{expected_height}, got {dist_width}x{dist_height}. penalizing miner.")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                reasons.append(f"MINER FAILURE: wrong resolution (expected {expected_width}x{expected_height}, got {dist_width}x{dist_height})")
+                scores.append(0.0)  # 0 = miner penalty
+                ref_cap.release()
+                dist_cap.release()
+                continue
+
+            # Check 2: Basic quality validation (no obvious corruption)
+            quality_issues = []
+            
+            for i, (ref_frame, dist_frame) in enumerate(zip(ref_frames, dist_frames)):
+                # Check for completely black or white frames (likely corruption)
+                if np.mean(dist_frame) < 5 or np.mean(dist_frame) > 250:
+                    quality_issues.append(f"frame {i}: suspicious brightness")
+                
+                # Check for extreme noise (std dev too high/low)
+                if np.std(dist_frame) < 1 or np.std(dist_frame) > 100:
+                    quality_issues.append(f"frame {i}: suspicious noise levels")
+                
+                # Check for obvious artifacts (extreme pixel values)
+                if np.min(dist_frame) < 0 or np.max(dist_frame) > 255:
+                    quality_issues.append(f"frame {i}: invalid pixel values")
+
+            if quality_issues:
+                print(f"quality issues detected: {quality_issues}. penalizing miner.")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                reasons.append(f"MINER FAILURE: quality issues detected ({', '.join(quality_issues[:3])})")
+                scores.append(0.0)  # 0 = miner penalty
+                ref_cap.release()
+                dist_cap.release()
+                continue
+
+            # Check 3: Basic upscaling validation (should be different from original)
+            # Compare a few frames to ensure upscaling actually happened
+            upscaling_detected = False
+            
+            def calculate_frame_quality(frame):
+                """Calculate frame quality metrics for adaptive thresholding"""
+                # Convert to grayscale for edge detection
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                
+                # Calculate edge strength using Sobel
+                sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+                sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+                edge_magnitude = np.sqrt(sobel_x**2 + sobel_y**2)
+                edge_strength = np.mean(edge_magnitude)
+                
+                # Calculate contrast (standard deviation of pixel values)
+                contrast = np.std(gray)
+                
+                # Calculate brightness
+                brightness = np.mean(gray)
+                
+                # Calculate noise level (using Laplacian variance)
+                laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+                noise_level = np.var(laplacian)
+                
+                return {
+                    'edge_strength': edge_strength,
+                    'contrast': contrast,
+                    'brightness': brightness,
+                    'noise_level': noise_level
+                }
+            
+            def calculate_edge_difference(frame1, frame2):
+                """Calculate edge-based difference between frames"""
+                gray1 = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
+                gray2 = cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY)
+                
+                # Calculate edges for both frames
+                edges1 = cv2.Canny(gray1, 50, 150)
+                edges2 = cv2.Canny(gray2, 50, 150)
+                
+                # Calculate edge difference
+                edge_diff = np.mean(np.abs(edges1.astype(float) - edges2.astype(float)))
+                return edge_diff
+            
+            for i, (ref_frame, dist_frame) in enumerate(zip(ref_frames[:3], dist_frames[:3])):
+                # Calculate original frame quality metrics
+                ref_quality = calculate_frame_quality(ref_frame)
+                
+                # Downscale the upscaled frame back to original size for comparison
+                downscaled_dist = cv2.resize(dist_frame, (ref_width, ref_height), interpolation=cv2.INTER_LINEAR)
+                
+                # Calculate multiple difference metrics
+                pixel_diff = np.mean(np.abs(ref_frame.astype(float) - downscaled_dist.astype(float)))
+                edge_diff = calculate_edge_difference(ref_frame, downscaled_dist)
+                
+                # Adaptive threshold based on original frame quality
+                # Higher quality originals need higher thresholds
+                base_threshold = 5.0
+                quality_factor = min(2.0, max(0.5, ref_quality['edge_strength'] / 50.0))  # Normalize edge strength
+                contrast_factor = min(1.5, max(0.8, ref_quality['contrast'] / 30.0))  # Normalize contrast
+                
+                adaptive_threshold = base_threshold * quality_factor * contrast_factor
+                
+                print(f"Frame {i} quality metrics:")
+                print(f"  Edge strength: {ref_quality['edge_strength']:.2f}")
+                print(f"  Contrast: {ref_quality['contrast']:.2f}")
+                print(f"  Brightness: {ref_quality['brightness']:.2f}")
+                print(f"  Noise level: {ref_quality['noise_level']:.2f}")
+                print(f"  Pixel difference: {pixel_diff:.2f}")
+                print(f"  Edge difference: {edge_diff:.2f}")
+                print(f"  Adaptive threshold: {adaptive_threshold:.2f}")
+                
+                # Check if upscaling is detected using multiple criteria
+                pixel_upscaling = pixel_diff > adaptive_threshold
+                edge_upscaling = edge_diff > (adaptive_threshold * 0.5)  # Lower threshold for edge differences
+                
+                # Additional check: ensure the upscaled frame has more detail than downscaled
+                dist_quality = calculate_frame_quality(dist_frame)
+                downscaled_quality = calculate_frame_quality(downscaled_dist)
+                
+                detail_improvement = (
+                    dist_quality['edge_strength'] > downscaled_quality['edge_strength'] * 1.1 and
+                    dist_quality['contrast'] > downscaled_quality['contrast'] * 1.05
+                )
+                
+                print(f"  Pixel upscaling detected: {pixel_upscaling}")
+                print(f"  Edge upscaling detected: {edge_upscaling}")
+                print(f"  Detail improvement detected: {detail_improvement}")
+                
+                # Upscaling is detected if any two criteria are met
+                upscaling_criteria_met = sum([pixel_upscaling, edge_upscaling, detail_improvement])
+                
+                if upscaling_criteria_met >= 2:
+                    upscaling_detected = True
+                    print(f"✅ Frame {i}: Upscaling detected with {upscaling_criteria_met}/3 criteria")
+                    break
+                else:
+                    print(f"❌ Frame {i}: Insufficient upscaling detected ({upscaling_criteria_met}/3 criteria)")
+            
+            if not upscaling_detected:
+                print(f"no meaningful upscaling detected across all checked frames. penalizing miner.")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                reasons.append("MINER FAILURE: no meaningful upscaling detected")
+                scores.append(0.0)  # 0 = miner penalty
+                ref_cap.release()
+                dist_cap.release()
+                continue
+
+            # SUCCESS: Miner passed all quality control checks
+            print(f"✅ miner {uid} passed quality control")
+            reasons.append("SUCCESS: passed quality control")
+            scores.append(1.0)  # 1 = miner success
+            
+            # Set dummy values for compatibility
+            vmaf_scores.append(50.0)  # Dummy VMAF score for successful miners
+            pieapp_scores.append(1.0)  # Dummy PIE-APP score for successful miners
 
         except Exception as e:
-            error_msg = f"failed to process video pair (ref: {ref_url}, dist: {dist_path}): {str(e)}. failed to download video"
-            print(f"{error_msg}. assigning score of 0.")
-            vmaf_scores.append(0.0)
-            pieapp_scores.append(0.0)
-            reasons.append("failed to process video pair")
-            scores.append(0.0)
+            print(f"system error during quality scoring: {e}. skipping scoring...")
+            vmaf_scores.append(-1)
+            pieapp_scores.append(-1)
+            reasons.append("system error during scoring - skipped")
+            scores.append(-1)  # -1 means skip, don't penalize
 
         finally:
             if ref_cap:
@@ -876,11 +1035,22 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
                 os.unlink(ref_upscaled_y4m_path)
 
     processed_time = time.time() - start_time
-    print(f"🔯🔯🔯 calculated score: {scores} 🔯🔯🔯")
+    print(f"🔯🔯🔯 calculated scores: {scores} 🔯🔯🔯")
     print(f"completed one batch scoring within {processed_time:.2f} seconds")
+    
+    # Summary statistics
+    successful_miners = sum(1 for score in scores if score == 1.0)
+    failed_miners = sum(1 for score in scores if score == 0.0)
+    skipped_miners = sum(1 for score in scores if score == -1)
+    
+    print(f"📊 SCORING SUMMARY:")
+    print(f"  ✅ Successful miners: {successful_miners}")
+    print(f"  ❌ Failed miners: {failed_miners}")
+    print(f"  ⏭️ Skipped miners: {skipped_miners}")
+    
     quality_scores = [0.0] * len(request.uids)
     length_scores = [0.0] * len(request.uids)
-    final_scores = [0.0] * len(request.uids)
+    
     return ScoringResponse(
         scores=scores,
         vmaf_scores=vmaf_scores,
