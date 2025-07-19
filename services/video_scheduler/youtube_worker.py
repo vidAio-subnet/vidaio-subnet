@@ -284,7 +284,7 @@ class YouTubeWorker:
                             
                             # Apply RANDOM transformation to the downscaled file for better variation
                             # No need to specify transformation_index - it defaults to None which selects random
-                            transformed_path = apply_color_space_transformation(
+                            transformed_path = apply_video_transformations(
                                 challenge_local_path, 
                                 transformed_path, 
                                 preserve_original=True
