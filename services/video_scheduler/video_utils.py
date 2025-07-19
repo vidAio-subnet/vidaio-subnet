@@ -186,7 +186,7 @@ def apply_color_space_transformation(video_path: str, output_path: str = None, t
     # Build FFmpeg command for video transformation
     transform_cmd = [
         "ffmpeg", "-y", "-i", str(video_path),
-        "-vf", ",".join(transformations),
+        "-vf", selected_transformation,
         "-c:v", "libx264", "-preset", "fast", "-crf", "20",  # Faster preset, slightly higher CRF for speed
         "-c:a", "aac", "-b:a", "128k",
         str(output_path),
