@@ -144,7 +144,7 @@ def get_transformation_by_index(index: int) -> str:
     else:
         return get_random_transformation()
 
-def apply_color_space_transformation(video_path: str, output_path: str = None, transformation_index: int = None, preserve_original: bool = False) -> str:
+def apply_video_transformations(video_path: str, output_path: str = None, transformation_index: int = None, preserve_original: bool = False) -> str:
     """
     Apply video transformation to make videos less identifiable while maintaining quality.
     
