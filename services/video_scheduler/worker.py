@@ -201,6 +201,7 @@ def get_pexels_random_vids(
     
     start_time = time.time()
     headers = {"Authorization": api_key}
+    logger.info(f"Headers: {headers}")
 
     with open(yaml_file_path, "r") as file:
         yaml_data = yaml.safe_load(file)
@@ -245,7 +246,7 @@ def get_pexels_random_vids(
                 "query": query,
                 "per_page": per_page,
                 "page": page,
-                "size": "large",
+                # "size": "large",
             }
 
             if task_type == "SD2HD":
@@ -285,7 +286,12 @@ def get_pexels_random_vids(
             
             except requests.exceptions.RequestException as e:
                 logger.info(f"[ERROR] Error fetching videos for '{query}': {e}")
-                break  
+                time.sleep(10)
+                if "429" in str(e):
+                    logger.info(f"[ERROR] Rate limit exceeded, sleeping for 10 seconds")
+                    continue
+                else:
+                    break  
         
         # Break if we have enough videos
         if len(valid_video_ids) >= max_results:
