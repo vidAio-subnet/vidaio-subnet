@@ -432,7 +432,7 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis,
                             transformed_path = str(challenge_local_path_obj.parent / f"{challenge_local_path_obj.stem}_transform_{transform_idx}{challenge_local_path_obj.suffix}")
                             
                             # Apply RANDOM transformation to the downscaled file for better variation
-                            transformed_path = apply_color_space_transformation(
+                            transformed_path = apply_video_transformations(
                                 challenge_local_path, 
                                 transformed_path, 
                                 preserve_original=True
