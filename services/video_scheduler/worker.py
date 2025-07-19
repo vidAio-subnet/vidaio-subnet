@@ -32,7 +32,7 @@ from redis_utils import (
     get_youtube_queue_size,
     pop_youtube_video_id,
 )
-from video_utils import download_trim_downscale_video, apply_color_space_transformation
+from video_utils import download_trim_downscale_video, apply_video_transformations
 from services.google_drive.google_drive_manager import GoogleDriveManager
 from vidaio_subnet_core import CONFIG
 from vidaio_subnet_core.utilities.storage_client import storage_client
@@ -432,7 +432,7 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis,
                             transformed_path = str(challenge_local_path_obj.parent / f"{challenge_local_path_obj.stem}_transform_{transform_idx}{challenge_local_path_obj.suffix}")
                             
                             # Apply RANDOM transformation to the downscaled file for better variation
-                            transformed_path = apply_color_space_transformation(
+                            transformed_path = apply_video_transformations(
                                 challenge_local_path, 
                                 transformed_path, 
                                 preserve_original=True

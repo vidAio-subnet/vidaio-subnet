@@ -1,3 +1,4 @@
+import math
 import requests
 import os
 import time
@@ -37,6 +38,12 @@ VIDEO_TRANSFORMATIONS = [
     "curves=r='0/0 0.5/0.48 1/1':g='0/0 0.5/0.52 1/1':b='0/0 0.5/0.50 1/1'",
     "curves=r='0/0 0.5/0.52 1/1':g='0/0 0.5/0.50 1/1':b='0/0 0.5/0.48 1/1'",
     "curves=r='0/0 0.5/0.49 1/1':g='0/0 0.5/0.51 1/1':b='0/0 0.5/0.52 1/1'",
+    "curves=r='0/0 0.47/0.51 0.53/0.49 1/1':g='0/0 0.5/0.49 1/1'",
+    "curves=r='0/0 0.47/0.51 0.53/0.49 1/1':b='0/0 0.5/0.49 1/1'",
+    "curves=g='0/0 0.47/0.51 0.53/0.49 1/1':r='0/0 0.5/0.49 1/1'",
+    "curves=g='0/0 0.47/0.51 0.53/0.49 1/1':b='0/0 0.5/0.49 1/1'",
+    "curves=b='0/0 0.47/0.51 0.53/0.49 1/1':r='0/0 0.5/0.49 1/1'",
+    "curves=b='0/0 0.47/0.51 0.53/0.49 1/1':g='0/0 0.5/0.49 1/1'",
     
     # Exposure and vibrance
     "eq=brightness=0.02:contrast=1.05:saturation=1.1",
@@ -63,6 +70,10 @@ VIDEO_TRANSFORMATIONS = [
     # Edge enhancement (very subtle)
     "convolution='0 -1 0 -1 5 -1 0 -1 0':0.1",
     "convolution='-1 -1 -1 -1 9 -1 -1 -1 -1':0.08",
+    "convolution='0 -1 0 -1 5 -1 0 -1 0'",      # sharpen
+    "convolution='1 1 1 1 1 1 1 1 1'",          # box blur
+    "convolution='1 1 1 1 2 1 1 1 1'",          # a slight twist on the above
+    "convolution='1 2 1 2 4 2 1 2 1'",          # Gaussian blur
     
     # === NOISE AND TEXTURE EFFECTS ===
     # Subtle noise (film grain effect)
@@ -133,7 +144,7 @@ def get_transformation_by_index(index: int) -> str:
     else:
         return get_random_transformation()
 
-def apply_color_space_transformation(video_path: str, output_path: str = None, transformation_index: int = None, preserve_original: bool = False) -> str:
+def apply_video_transformations(video_path: str, output_path: str = None, transformation_index: int = None, preserve_original: bool = False) -> str:
     """
     Apply video transformation to make videos less identifiable while maintaining quality.
     
@@ -158,7 +169,14 @@ def apply_color_space_transformation(video_path: str, output_path: str = None, t
         # Create output path by adding "_transformed" before the extension
         video_path_obj = Path(video_path)
         output_path = str(video_path_obj.parent / f"{video_path_obj.stem}_transformed{video_path_obj.suffix}")
-    
+
+    # Slight rotation, commented for now
+    # rotation_angle_deg = random.uniform(-5, 5)  # -5 to 5 degrees
+    # transformations.append(f"rotate={2*math.pi*rotation_angle_deg/360}")
+
+    # Zoom & crop to remove black background left after rotation
+    # transformations.append(f"crop=iw*0.87:ih*0.87,scale=iw/0.87:ih/0.87")
+
     # Select transformation based on index or randomly
     if transformation_index is not None:
         selected_transformation = get_transformation_by_index(transformation_index)
@@ -177,9 +195,10 @@ def apply_color_space_transformation(video_path: str, output_path: str = None, t
     
     try:
         print(f"Applying video transformation: {selected_transformation}")
+
         start_time = time.time()
         
-        result = subprocess.run(transform_cmd, check=True, capture_output=True, text=True)
+        subprocess.run(transform_cmd, check=True, capture_output=True, text=True)
         
         elapsed_time = time.time() - start_time
         print(f"Video transformation completed in {elapsed_time:.2f}s: {video_path} -> {output_path}")

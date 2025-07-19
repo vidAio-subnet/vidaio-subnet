@@ -19,7 +19,7 @@ from redis_utils import (
     get_10s_queue_size,
     get_20s_queue_size,
 )
-from video_utils import download_trim_downscale_youtube_video, apply_color_space_transformation
+from video_utils import download_trim_downscale_youtube_video, apply_video_transformations
 from youtube_scraper import populate_database, get_1080p_videos, get_2160p_videos, get_4320p_videos
 from youtube_requests import YouTubeHandler, RESOLUTIONS
 from vidaio_subnet_core import CONFIG
@@ -284,7 +284,7 @@ class YouTubeWorker:
                             
                             # Apply RANDOM transformation to the downscaled file for better variation
                             # No need to specify transformation_index - it defaults to None which selects random
-                            transformed_path = apply_color_space_transformation(
+                            transformed_path = apply_video_transformations(
                                 challenge_local_path, 
                                 transformed_path, 
                                 preserve_original=True
