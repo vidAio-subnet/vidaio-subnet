@@ -26,6 +26,7 @@ def push_organic_chunk(r: redis.Redis, data: Dict[str, str]) -> None:
         data (Dict[str, str]): Organic chunk dictionary to push
     """
     r.rpush(REDIS_CONFIG.organic_queue_key, json.dumps(data))
+    print("Pushed organic chunk correctly in the Redis queue")
 
 def push_5s_chunks(r: redis.Redis, data_list: List[Dict[str, str]]) -> None:
 
