@@ -340,7 +340,7 @@ def upscale_video(input_path, scale_factor=2):
         "-c:v", "libx264",
         "-preset", "medium",  
         "-crf", "18",         
-        "-c:a", "copy",       
+        "-an",
         output_path
     ]
     
