@@ -17,16 +17,146 @@ load_dotenv()
 
 MAX_WORKERS = 5  
 
-def apply_video_transformations(video_path: str, output_path: str = None) -> str:
-    """
-    Apply color space transformation to make videos less identifiable while maintaining quality.
+# Comprehensive video transformations for content variation
+# These transformations are designed to reduce video recognizability while maintaining quality
+VIDEO_TRANSFORMATIONS = [
+    # === COLOR SPACE TRANSFORMATIONS ===
+    # Hue shifts
+    "hue=h=15:s=1.1",
+    "hue=h=-10:s=1.05", 
+    "hue=h=25:s=0.95",
+    "hue=h=-18:s=1.08",
+    "hue=h=20:s=0.92",
     
-    This function applies various color transformations to reduce the recognizability of 
-    Pexels videos while preserving visual quality for training purposes.
+    # Color balance adjustments
+    "colorbalance=rs=0.1:gs=-0.05:bs=0.05:rm=0.05:gm=0.1:bm=-0.05",
+    "colorbalance=rs=-0.08:gs=0.1:bs=-0.02:rm=-0.05:gm=0.05:bm=0.1",
+    "colorbalance=rs=0.05:gs=-0.03:bs=0.08:rm=-0.02:gm=0.08:bm=-0.06",
+    "colorbalance=rs=-0.06:gs=0.08:bs=-0.04:rm=0.07:gm=-0.03:bm=0.09",
+    
+    # Curves adjustments (gamma and contrast changes)
+    "curves=r='0/0 0.5/0.48 1/1':g='0/0 0.5/0.52 1/1':b='0/0 0.5/0.50 1/1'",
+    "curves=r='0/0 0.5/0.52 1/1':g='0/0 0.5/0.50 1/1':b='0/0 0.5/0.48 1/1'",
+    "curves=r='0/0 0.5/0.49 1/1':g='0/0 0.5/0.51 1/1':b='0/0 0.5/0.52 1/1'",
+    "curves=r='0/0 0.47/0.51 0.53/0.49 1/1':g='0/0 0.5/0.49 1/1'",
+    "curves=r='0/0 0.47/0.51 0.53/0.49 1/1':b='0/0 0.5/0.49 1/1'",
+    "curves=g='0/0 0.47/0.51 0.53/0.49 1/1':r='0/0 0.5/0.49 1/1'",
+    "curves=g='0/0 0.47/0.51 0.53/0.49 1/1':b='0/0 0.5/0.49 1/1'",
+    "curves=b='0/0 0.47/0.51 0.53/0.49 1/1':r='0/0 0.5/0.49 1/1'",
+    "curves=b='0/0 0.47/0.51 0.53/0.49 1/1':g='0/0 0.5/0.49 1/1'",
+    
+    # Exposure and vibrance
+    "eq=brightness=0.02:contrast=1.05:saturation=1.1",
+    "eq=brightness=-0.015:contrast=1.03:saturation=0.95",
+    "eq=brightness=0.01:contrast=0.98:saturation=1.08",
+    "eq=brightness=-0.01:contrast=1.07:saturation=1.02",
+    
+    # Temperature shifts
+    "colortemperature=temperature=5800:mix=0.3",
+    "colortemperature=temperature=6500:mix=0.25",
+    "colortemperature=temperature=5200:mix=0.35",
+    "colortemperature=temperature=6200:mix=0.28",
+    
+    # === CONVOLUTION FILTERS ===
+    # Subtle blur effects
+    "gblur=sigma=0.3",
+    "gblur=sigma=0.5",
+    "boxblur=2:1",
+    
+    # Subtle sharpen effects
+    "unsharp=5:5:0.3:3:3:0.3",
+    "unsharp=3:3:0.5:3:3:0.5",
+    
+    # Edge enhancement (very subtle)
+    "convolution='0 -1 0 -1 5 -1 0 -1 0':0.1",
+    "convolution='-1 -1 -1 -1 9 -1 -1 -1 -1':0.08",
+    "convolution='0 -1 0 -1 5 -1 0 -1 0'",      # sharpen
+    "convolution='1 1 1 1 1 1 1 1 1'",          # box blur
+    "convolution='1 1 1 1 2 1 1 1 1'",          # a slight twist on the above
+    "convolution='1 2 1 2 4 2 1 2 1'",          # Gaussian blur
+    
+    # === NOISE AND TEXTURE EFFECTS ===
+    # Subtle noise (film grain effect)
+    "noise=alls=2:allf=t",
+    "noise=alls=3:allf=t+u",
+    
+    # === DISTORTION EFFECTS (VERY SUBTLE) ===
+    # Subtle barrel distortion
+    "lenscorrection=k1=-0.001:k2=0.0001",
+    "lenscorrection=k1=0.001:k2=-0.0001",
+    
+    # === GAMMA AND LEVELS ===
+    # Gamma adjustments
+    "lutyuv=y=gammaval(0.9)",
+    "lutyuv=y=gammaval(1.1)",
+    "lutyuv=y=gammaval(0.95)",
+    
+    # === COMBINATION TRANSFORMATIONS ===
+    # Multiple effects combined for more variation
+    "hue=h=12:s=1.02,eq=brightness=0.01:contrast=1.02:saturation=1.05",
+    "colorbalance=rs=0.05:bs=-0.03:gm=0.08,eq=brightness=-0.01:contrast=1.01",
+    "curves=r='0/0 0.5/0.51 1/1':g='0/0 0.5/0.49 1/1',hue=h=-8:s=1.03",
+    "gblur=sigma=0.2,unsharp=3:3:0.3:3:3:0.3",
+    "colortemperature=temperature=5900:mix=0.3,eq=brightness=0.005:contrast=1.02",
+    "hue=h=-12:s=1.04,colorbalance=rs=-0.03:gs=0.05:bs=-0.02",
+    "noise=alls=1:allf=t,eq=brightness=0.008:contrast=1.01",
+    "lenscorrection=k1=0.0008,colortemperature=temperature=6100:mix=0.25",
+    "lutyuv=y=gammaval(0.98),hue=h=8:s=1.01",
+    "convolution='0 -1 0 -1 5 -1 0 -1 0':0.05,eq=saturation=1.03",
+    
+    # === ADVANCED COMBINATIONS ===
+    # Triple combinations for maximum variation
+    "hue=h=10:s=1.03,gblur=sigma=0.25,eq=brightness=0.005:contrast=1.015",
+    "colorbalance=rs=0.04:bs=-0.02,noise=alls=1.5:allf=t,colortemperature=temperature=5700:mix=0.2",
+    "curves=r='0/0 0.5/0.505 1/1':g='0/0 0.5/0.495 1/1',unsharp=4:4:0.25:4:4:0.25,hue=h=-5:s=1.02",
+]
+
+def get_total_transformations() -> int:
+    """
+    Get the total number of available video transformations.
+    
+    Returns:
+        int: Total number of transformations available
+    """
+    return len(VIDEO_TRANSFORMATIONS)
+
+def get_random_transformation() -> str:
+    """
+    Get a random transformation from the available transformations.
+    
+    Returns:
+        str: Random transformation string
+    """
+    return random.choice(VIDEO_TRANSFORMATIONS)
+
+def get_transformation_by_index(index: int) -> str:
+    """
+    Get a transformation by its index.
+    
+    Args:
+        index (int): Index of the transformation (0-based)
+        
+    Returns:
+        str: Transformation string, or random if index is out of range
+    """
+    if 0 <= index < len(VIDEO_TRANSFORMATIONS):
+        return VIDEO_TRANSFORMATIONS[index]
+    else:
+        return get_random_transformation()
+
+def apply_color_space_transformation(video_path: str, output_path: str = None, transformation_index: int = None, preserve_original: bool = False) -> str:
+    """
+    Apply video transformation to make videos less identifiable while maintaining quality.
+    
+    This function applies various video transformations including color space adjustments,
+    convolution filters, noise effects, and distortion to reduce the recognizability of 
+    videos while preserving visual quality for training purposes.
     
     Args:
         video_path (str): Path to the input video file
         output_path (str, optional): Path for the output video. If None, creates a new path.
+        transformation_index (int, optional): Index of the transformation to apply. If None, selects randomly.
+        preserve_original (bool, optional): If True, don't delete the original file after transformation.
     
     Returns:
         str: Path to the transformed video file
@@ -39,91 +169,21 @@ def apply_video_transformations(video_path: str, output_path: str = None) -> str
         # Create output path by adding "_transformed" before the extension
         video_path_obj = Path(video_path)
         output_path = str(video_path_obj.parent / f"{video_path_obj.stem}_transformed{video_path_obj.suffix}")
-    
-    # Define various color transformation options
-    color_space_transformations = [
-        # Slight hue shift
-        "hue=h=15:s=1.1",
-        "hue=h=-10:s=1.05", 
-        "hue=h=25:s=0.95",
-        
-        # Color balance adjustments
-        "colorbalance=rs=0.1:gs=-0.05:bs=0.05:rm=0.05:gm=0.1:bm=-0.05",
-        "colorbalance=rs=-0.08:gs=0.1:bs=-0.02:rm=-0.05:gm=0.05:bm=0.1",
-        
-        # Curves adjustments (subtle gamma and contrast changes)
-        "curves=r='0/0 0.5/0.48 1/1':g='0/0 0.5/0.52 1/1':b='0/0 0.5/0.50 1/1'",
-        "curves=r='0/0 0.5/0.52 1/1':g='0/0 0.5/0.50 1/1':b='0/0 0.5/0.48 1/1'",
-        
-        # Exposure and vibrance
-        "eq=brightness=0.02:contrast=1.05:saturation=1.1",
-        "eq=brightness=-0.015:contrast=1.03:saturation=0.95",
-        "eq=brightness=0.01:contrast=0.98:saturation=1.08",
-        
-        # Temperature shifts (subtle)
-        "colortemperature=temperature=5800:mix=0.3",
-        "colortemperature=temperature=6500:mix=0.25",
-        "colortemperature=temperature=5200:mix=0.35",
-        
-        # Combination transformations for more variation
-        "hue=h=12:s=1.02,eq=brightness=0.01:contrast=1.02:saturation=1.05",
-        "colorbalance=rs=0.05:bs=-0.03:gm=0.08,eq=brightness=-0.01:contrast=1.01",
-        "curves=r='0/0 0.5/0.51 1/1':g='0/0 0.5/0.49 1/1',hue=h=-8:s=1.03",
-    ]
 
-    nonmonotonic_color_transformations = [
-        # Nonmonotnic curve-based adjustments
-        "curves=r='0/0 0.47/0.51 0.53/0.49 1/1':g='0/0 0.5/0.49 1/1'",
-        "curves=r='0/0 0.47/0.51 0.53/0.49 1/1':b='0/0 0.5/0.49 1/1'",
-        "curves=g='0/0 0.47/0.51 0.53/0.49 1/1':r='0/0 0.5/0.49 1/1'",
-        "curves=g='0/0 0.47/0.51 0.53/0.49 1/1':b='0/0 0.5/0.49 1/1'",
-        "curves=b='0/0 0.47/0.51 0.53/0.49 1/1':r='0/0 0.5/0.49 1/1'",
-        "curves=b='0/0 0.47/0.51 0.53/0.49 1/1':g='0/0 0.5/0.49 1/1'",
-    ]
-
-    convolution_transformations = [
-        "convolution='-1 -1 -1 -1 5 -1 -1 -1 -1'",  # sharpen
-        "convolution='-1 -1 -1 -1 8 -1 -1 -1 -1'",  # sharpen
-        "convolution='0 -1 0 -1 5 -1 0 -1 0'",      # sharpen
-        "convolution='1 1 1 1 1 1 1 1 1'",          # box blur
-        "convolution='1 1 1 1 2 1 1 1 1'",          # a slight twist on the above
-        "convolution='1 2 1 2 4 2 1 2 1'",          # Gaussian blur
-        "convolution='1  4  6  4 1 "                # Gaussian blur
-                     "4 16 24 16 4 "
-                     "6 24 36 24 6 "
-                     "4 16 24 16 4 "
-                     "1  4  6  4 1'",
-        "convolution='0  1  2  1  0 "               # Gaussian blur
-                     "1  4  8  4  1 "
-                     "2  8 16  8  2 "
-                     "1  4  8  4  1 "
-                     "0  1  2  1  0'",
-        "convolution='0  0 -1  0  0 "               # mild sharpen
-                     "0 -1 -2 -1  0 "
-                     "-1 -2 28 -2 -1 "
-                     "0 -1 -2 -1  0 "
-                     "0  0 -1  0  0'"
-    ]
-    
-    # Randomly select several transformations to apply. This increases the space of
-    # possible challenge videos by a large factor, making it impractical for miners
-    # to apply strategies like precomputing perceptual hashes of frames for all
-    # possible output videos. We apply both color transforms and more complex filters
-    # to defeat approaches like dhash.
-    transformations = [
-        random.choice(color_space_transformations),
-        random.choice(nonmonotonic_color_transformations),
-        random.choice(convolution_transformations)
-    ]
-
-    # Slight rotation
-    rotation_angle_deg = random.uniform(-5, 5)  # -5 to 5 degrees
-    transformations.append(f"rotate={2*math.pi*rotation_angle_deg/360}")
+    # Slight rotation, commented for now
+    # rotation_angle_deg = random.uniform(-5, 5)  # -5 to 5 degrees
+    # transformations.append(f"rotate={2*math.pi*rotation_angle_deg/360}")
 
     # Zoom & crop to remove black background left after rotation
-    transformations.append(f"crop=iw*0.87:ih*0.87,scale=iw/0.87:ih/0.87")
+    # transformations.append(f"crop=iw*0.87:ih*0.87,scale=iw/0.87:ih/0.87")
 
-    # Build FFmpeg command for color space transformation
+    # Select transformation based on index or randomly
+    if transformation_index is not None:
+        selected_transformation = get_transformation_by_index(transformation_index)
+    else:
+        selected_transformation = get_random_transformation()
+    
+    # Build FFmpeg command for video transformation
     transform_cmd = [
         "ffmpeg", "-y", "-i", str(video_path),
         "-vf", ",".join(transformations),
@@ -134,7 +194,8 @@ def apply_video_transformations(video_path: str, output_path: str = None) -> str
     ]
     
     try:
-        print(f"Applying video transformations: {transformations}")
+        print(f"Applying video transformation: {selected_transformation}")
+
         start_time = time.time()
         
         subprocess.run(transform_cmd, check=True, capture_output=True, text=True)
@@ -147,8 +208,8 @@ def apply_video_transformations(video_path: str, output_path: str = None) -> str
             print(f"Warning: Output file is empty or doesn't exist: {output_path}")
             return video_path
         
-        # Remove original file to save space only if transformation was successful
-        if os.path.exists(video_path) and os.path.exists(output_path):
+        # Remove original file to save space only if transformation was successful and preserve_original is False
+        if not preserve_original and os.path.exists(video_path) and os.path.exists(output_path):
             try:
                 os.remove(video_path)
                 print(f"Removed original file: {video_path}")
@@ -158,13 +219,13 @@ def apply_video_transformations(video_path: str, output_path: str = None) -> str
         return output_path
         
     except subprocess.CalledProcessError as e:
-        print(f"FFmpeg error applying color transformation: {e}")
+        print(f"FFmpeg error applying video transformation: {e}")
         if e.stderr:
             print(f"FFmpeg stderr: {e.stderr}")
         # If transformation fails, return the original path
         return video_path
     except Exception as e:
-        print(f"Unexpected error applying color transformation: {e}")
+        print(f"Unexpected error applying video transformation: {e}")
         return video_path
 
 def download_trim_downscale_video(
@@ -643,9 +704,9 @@ def download_trim_downscale_youtube_video(
             subprocess.run(trim_cmd, check=True)
             subprocess.run(scale_cmd, check=True)
             
-            # Clean up intermediate file
-            if os.path.exists(clipped_path):
-                os.remove(clipped_path)
+            # Don't clean up intermediate file - keep trim.mp4 for scoring reference
+            # if os.path.exists(clipped_path):
+            #     os.remove(clipped_path)
             
             chunk_elapsed_time = time.time() - chunk_start_time
             safe_print(f"Time taken to process YouTube chunk {i+1}: {chunk_elapsed_time:.2f} seconds")
