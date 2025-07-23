@@ -64,7 +64,6 @@ class ScoringResponse(BaseModel):
     """
     Response model for scoring. Contains the list of calculated scores for each d ofistorted video.
     """
-    scores: List[float]
     vmaf_scores: List[float]
     pieapp_scores: List[float]
     quality_scores: List[float]
@@ -1052,7 +1051,6 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
     length_scores = [0.0] * len(request.uids)
     
     return ScoringResponse(
-        scores=scores,
         vmaf_scores=vmaf_scores,
         pieapp_scores=pieapp_scores,
         quality_scores=quality_scores,

@@ -328,7 +328,7 @@ class Validator(base.BaseValidator):
         )
 
         response_data = score_response.json()
-        scores = response_data.get("scores", [])
+        scores = response_data.get("final_scores", [])
         vmaf_scores = response_data.get("vmaf_scores", [])
         pieapp_scores = response_data.get("pieapp_scores", [])
         reasons = response_data.get("reasons", [])
