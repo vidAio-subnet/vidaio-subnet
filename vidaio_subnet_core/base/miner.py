@@ -4,7 +4,7 @@ import threading
 from loguru import logger
 import time
 import traceback
-from vidaio_subnet_core.protocol import VideoUpscalingProtocol, LengthCheckProtocol
+from vidaio_subnet_core.protocol import VideoUpscalingProtocol, LengthCheckProtocol, VideoCompressionProtocol
 import argparse
 from .config import add_common_config
 import os
@@ -33,6 +33,10 @@ class BaseMiner(ABC):
             forward_fn=self.forward_length_check_requests,
             blacklist_fn=self.blacklist_length_check_requests,
             priority_fn=self.priority_length_check_requests,
+        ).attach(
+            forward_fn=self.forward_compression_requests,
+            blacklist_fn=self.blacklist_compression_requests,
+            priority_fn=self.priority_compression_requests,
         )
 
         self.check_registered()
@@ -83,6 +87,15 @@ class BaseMiner(ABC):
 
     @abstractmethod
     async def priority_length_check_requests(self, synapse: LengthCheckProtocol) -> float: ...
+
+    @abstractmethod
+    async def forward_compression_requests(self, synapse: VideoCompressionProtocol) -> bt.Synapse: ...
+
+    @abstractmethod
+    async def blacklist_compression_requests(self, synapse: VideoCompressionProtocol) -> bool: ...
+
+    @abstractmethod
+    async def priority_compression_requests(self, synapse: VideoCompressionProtocol) -> float: ...
 
     def run(self):
         """

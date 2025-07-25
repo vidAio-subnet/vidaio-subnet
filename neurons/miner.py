@@ -6,7 +6,7 @@ from typing import Tuple
 from loguru import logger
 import bittensor as bt
 from vidaio_subnet_core.base.miner import BaseMiner
-from vidaio_subnet_core.protocol import VideoUpscalingProtocol, LengthCheckProtocol, ContentLength
+from vidaio_subnet_core.protocol import VideoUpscalingProtocol, LengthCheckProtocol, ContentLength, VideoCompressionProtocol
 from services.miner_utilities.miner_utils import video_upscaler
 
 from vidaio_subnet_core.utilities.version import check_version
@@ -53,6 +53,42 @@ class Miner(BaseMiner):
             
         except Exception as e:
             logger.error(f"Failed to process upscaling request: {e}")
+            traceback.print_exc()
+            return synapse
+
+    async def forward_compression_requests(self, synapse: VideoCompressionProtocol) -> VideoCompressionProtocol:
+        """
+        Processes a video compression request by downloading, compressing,
+        uploading, and returning a sharing link.
+        """
+        
+        start_time = time.time()
+        
+        vmaf_threshold: float = synapse.miner_payload.vmaf_threshold
+        payload_url: str = synapse.miner_payload.reference_video_url
+        validator_uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
+        
+        logger.info(f"🛜🛜🛜 Receiving CompressionRequest from validator: {synapse.dendrite.hotkey} with uid: {validator_uid} 🛜🛜🛜")
+
+        check_version(synapse.version)
+        
+        try:
+            processed_video_url = await video_compressor(payload_url, vmaf_threshold)
+            
+            if processed_video_url is None:
+                logger.info(f"💔 Failed to compress video 💔")
+                return synapse
+            
+            synapse.miner_response.optimized_video_url = processed_video_url
+            
+            processed_time = time.time() - start_time
+
+            logger.info(f"💜 Returning Response, Processed in {processed_time:.2f} seconds 💜")
+            
+            return synapse
+
+        except Exception as e:
+            logger.error(f"Failed to process compression request: {e}")
             traceback.print_exc()
             return synapse
 
@@ -117,6 +153,38 @@ class Miner(BaseMiner):
         return False, "Hotkey recognized!"
 
     async def priority_length_check_requests(self, synapse: LengthCheckProtocol) -> float:
+        """
+        Assigns a priority to requests based on the stake of the requesting entity.
+        Higher stakes result in higher priority.
+        """
+        if not synapse.dendrite or not synapse.dendrite.hotkey:
+            logger.warning("Received a request without a dendrite or hotkey.")
+            return 0.0
+
+        caller_uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
+        priority: float = float(self.metagraph.S[caller_uid])
+        
+        logger.trace(f"Prioritizing {synapse.dendrite.hotkey} with value: {priority}")
+        return priority
+
+    async def blacklist_compression_requests(self, synapse: VideoCompressionProtocol) -> Tuple[bool, str]:
+        """
+        Determines whether a request should be blacklisted based on the hotkey status.
+        """
+        if not synapse.dendrite or not synapse.dendrite.hotkey:
+            logger.warning("Received a request without a dendrite or hotkey.")
+            return True, "Missing dendrite or hotkey"
+
+        uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
+
+        if not self.metagraph.validator_permit[uid]:
+            logger.warning(f"Blacklisting non-validator hotkey {synapse.dendrite.hotkey}")
+            return True, "Non-validator hotkey"
+
+        logger.trace(f"Hotkey {synapse.dendrite.hotkey} recognized and allowed.")
+        return False, "Hotkey recognized!"
+
+    async def priority_compression_requests(self, synapse: VideoCompressionProtocol) -> float:
         """
         Assigns a priority to requests based on the stake of the requesting entity.
         Higher stakes result in higher priority.
