@@ -9,6 +9,7 @@ from .configs import (
     VideoUpscalerConfig,
     OrganicGatewayConfig,
     DashboardConfig,
+    VideoCompressorConfig,
 )
 from loguru import logger
 
@@ -23,6 +24,7 @@ class GlobalConfig(BaseSettings):
     video_upscaler: VideoUpscalerConfig = VideoUpscalerConfig()
     organic_gateway: OrganicGatewayConfig = OrganicGatewayConfig()
     dashboard: DashboardConfig = DashboardConfig()
+    video_compressor: VideoCompressorConfig = VideoCompressorConfig()
     SUBNET_TEMPO: int = 100
 
     class Config:
