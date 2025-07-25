@@ -8,7 +8,8 @@ app = FastAPI()
 
 
 class VideoPath(BaseModel):
-    input_path: str
+    payload_url: str
+    vmaf_threshold: float
 
 
 @app.post("/compress-video")
