@@ -7,7 +7,7 @@ from loguru import logger
 import bittensor as bt
 from vidaio_subnet_core.base.miner import BaseMiner
 from vidaio_subnet_core.protocol import VideoUpscalingProtocol, LengthCheckProtocol, ContentLength, VideoCompressionProtocol
-from services.miner_utilities.miner_utils import video_upscaler
+from services.miner_utilities.miner_utils import video_upscaler, video_compressor
 
 from vidaio_subnet_core.utilities.version import check_version
 
