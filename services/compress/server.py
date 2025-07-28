@@ -9,17 +9,16 @@ import json
 import argparse
 import time
 from datetime import datetime
+
 from .video_preprocessor import pre_processing
 from .scene_detector import scene_detection
 from .encoder import ai_encoding, load_encoding_resources  
 from .vmaf_calculator import scene_vmaf_calculation  
 from .validator_merger import validation_and_merging 
-
 from vidaio_subnet_core.global_config import CONFIG
 from vidaio_subnet_core.utilities import storage_client, download_video
 
 app = FastAPI()
-
 
 class CompressPayload(BaseModel):
     payload_url: str
@@ -27,7 +26,6 @@ class CompressPayload(BaseModel):
     target_quality: str = 'Medium'  # High, Medium, Low
     max_duration: int = 3600  # Maximum allowed video duration in seconds
     output_dir: str = './output'  # Output directory for final files
-
 
 @app.post("/compress-video")
 async def compress_video(video: CompressPayload):

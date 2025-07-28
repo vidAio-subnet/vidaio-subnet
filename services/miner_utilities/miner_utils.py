@@ -40,7 +40,7 @@ async def download_video(video_url: str) -> Path:
 
                 # Write the content to the temp file in chunks
                 with open(output_path, "wb") as f:
-                    async for chunk in response.content.iter_chunked(3 * 1024 * 1024):  # 2 MB chunks
+                    async for chunk in response.content.iter_chunked(3 * 1024 * 1024):  # 3 MB chunks
                         f.write(chunk)
         elapsed_time = time.time() - start_time
         logger.info(f"Chunk download time: {elapsed_time:.2f} seconds")
