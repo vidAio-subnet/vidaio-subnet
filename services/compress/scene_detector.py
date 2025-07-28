@@ -2,15 +2,11 @@ import os
 import json
 import subprocess
 import sys
-# Add utils directory to Python path
-UTILS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__),'utils'))
-if UTILS_DIR not in sys.path:
-    sys.path.insert(0, UTILS_DIR)
 
-from fast_scene_detect import adaptive_scene_detection_check
-from split_video_into_scenes import split_video_into_scenes
+from .utils.fast_scene_detect import adaptive_scene_detection_check
+from .utils.split_video_into_scenes import split_video_into_scenes
 
-def part2_scene_detection(video_metadata):
+def scene_detection(video_metadata):
     """
     Part 2: Scene detection based on video length using metadata from part 1.
     

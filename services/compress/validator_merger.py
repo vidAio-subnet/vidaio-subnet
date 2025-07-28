@@ -5,15 +5,11 @@ import subprocess
 import time
 from datetime import datetime
 import sys
-# Add utils directory to Python path
-UTILS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__),'utils'))
-if UTILS_DIR not in sys.path:
-    sys.path.insert(0, UTILS_DIR)
 
-from calculate_vmaf_adv import calculate_vmaf_advanced
-from merge_videos import merge_videos
+from .utils.calculate_vmaf_adv import calculate_vmaf_advanced
+from .utils.merge_videos import merge_videos
 
-def part5_validation_and_merging(original_video_path, encoded_scenes_data_with_vmaf, config, logging_enabled=True):
+def validation_and_merging(original_video_path, encoded_scenes_data_with_vmaf, config, logging_enabled=True):
     """
     Part 5: Validation and merging of encoded scenes with existing VMAF data.
     """

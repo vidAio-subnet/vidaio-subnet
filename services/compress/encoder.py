@@ -12,8 +12,8 @@ from .utils.processing_utils import (
     analyze_input_compression,
     classify_scene_from_path 
 )
-from encode_video import encode_video
-from classify_scene import load_scene_classifier_model, CombinedModel
+from .utils.encode_video import encode_video
+from .utils.classify_scene import load_scene_classifier_model, CombinedModel
 
 def get_cq_from_lookup_table(scene_type, config):
     """
@@ -57,7 +57,7 @@ def load_encoding_resources(config, logging_enabled=True):
         "class_mapping": class_mapping
     }
 
-def part3_ai_encoding(scene_metadata, config, resources, target_vmaf=None, logging_enabled=True):
+def ai_encoding(scene_metadata, config, resources, target_vmaf=None, logging_enabled=True):
     """
     Part 3: BASIC AI-powered analysis and encoding for a single scene.
     This version uses a scene classifier and a CQ lookup table.

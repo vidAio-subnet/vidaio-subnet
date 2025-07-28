@@ -3,12 +3,9 @@ import subprocess
 import json
 import sys
 
-UTILS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__),'utils'))
-if UTILS_DIR not in sys.path:
-    sys.path.insert(0, UTILS_DIR)
 
-from video_utils import get_video_duration, get_video_codec
-from encode_video import encode_lossless_video
+from .utils.video_utils import get_video_duration, get_video_codec
+from .utils.encode_video import encode_lossless_video
 
 #TODO: Add more checks for max resolution, bitrate, etc. as needed
 #TODO: Add checks for user defined parameters and override defaults in config
@@ -17,7 +14,7 @@ from encode_video import encode_lossless_video
 
 
 
-def part1_pre_processing(video_path, target_quality='Medium',codec='auto', max_duration=60, output_dir='./output'):
+def pre_processing(video_path, target_quality='Medium',codec='auto', max_duration=60, output_dir='./output'):
     """
     Part 1: Initial video checks and lossless encoding if necessary.
 

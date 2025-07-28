@@ -2,13 +2,8 @@ import os
 import time
 import json
 import sys
-# Add utils directory to Python path
-UTILS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__),'utils'))
-if UTILS_DIR not in sys.path:
-    sys.path.insert(0, UTILS_DIR)
 
-
-from calculate_vmaf_adv import calculate_vmaf_advanced
+from .utils.calculate_vmaf_adv import calculate_vmaf_advanced
 
 def calculate_scene_vmaf(scene_metadata, config, logging_enabled=True):
     """
@@ -328,7 +323,7 @@ def calculate_multiple_scenes_vmaf(scenes_metadata_list, config, logging_enabled
     return updated_scenes
 
 
-def part4_scene_vmaf_calculation(encoded_scenes_data, config, logging_enabled=True):
+def scene_vmaf_calculation(encoded_scenes_data, config, logging_enabled=True):
     """
     Part 4: Calculate VMAF for individual encoded scenes.
     
