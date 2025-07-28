@@ -21,6 +21,14 @@ class ContentLength(IntEnum):
     # ONE_SIXTY = 160  
     # THREE_TWENTY = 320 
 
+class TaskType(Enum):
+    """
+    Enumeration of allowed task types that miners can handle.
+    These represent the types of video processing tasks that miners can warrant.
+    """
+    COMPRESSION = "compression"
+    UPSCALING = "upscaling"
+
 class UpscalingMinerPayload(BaseModel):
     reference_video_url: str = Field(
         description="The URL of the reference video to be optimized",
@@ -148,4 +156,25 @@ class LengthCheckProtocol(Synapse):
     max_content_length: ContentLength = Field(
         description="Maximum content length miner can process (5, 10, or 20)",
         default=ContentLength.FIVE
+    )
+
+
+class TaskWarrantProtocol(Synapse):
+    """
+    Protocol for verifying and warranting task types that miners can handle.
+    
+    This protocol ensures that miners can specify which types of video processing
+    tasks they are capable of handling. This helps in task distribution and
+    ensures miners only receive tasks they can process.
+    
+    Attributes:
+        version (Optional[Version]): The version of the protocol implementation.
+        warrant_task (TaskType): The type of task the miner can handle,
+            must be one of the predefined values (COMPRESSION or UPSCALING).
+    """
+    
+    version: Optional[Version] = None
+    warrant_task: TaskType = Field(
+        description="Type of task miner can handle: COMPRESSION or UPSCALING",
+        default=TaskType.UPSCALING
     )
