@@ -170,7 +170,7 @@ class MinerManager:
         result = {miner.uid: miner for miner in query.all()}
         return result
 
-    def step_synthetics(
+    def step_synthetics_upscaling(
         self,
         round_id: str,
         total_uids: List[int],
@@ -204,8 +204,11 @@ class MinerManager:
                 miner = session.query(MinerMetadata).filter(MinerMetadata.uid == uid).first()
                 
                 is_new_miner = False
+                task_changed = False
+
                 if not miner:
                     miner = MinerMetadata(
+                        processing_task_type="upscaling",
                         uid=uid,
                         hotkey=hotkey,
                         accumulate_score=0.0,
@@ -221,6 +224,7 @@ class MinerManager:
                     bt.logging.info(f"Hotkey change detected for UID {uid}: {miner.hotkey} -> {hotkey}")
                     miner.hotkey = hotkey
                     miner.accumulate_score = 0
+                    miner.processing_task_type = "upscaling"
                     
                     miner.bonus_multiplier = 1.0
                     miner.penalty_f_multiplier = 1.0
@@ -248,10 +252,37 @@ class MinerManager:
                     
                     is_new_miner = True
                 
+                elif miner.processing_task_type != "upscaling":
+                    miner.processing_task_type = "upscaling"
+                    task_changed = True
+
+                    miner.accumulate_score = 0
+                    miner.bonus_multiplier = 1.0
+                    miner.penalty_f_multiplier = 1.0
+                    miner.penalty_q_multiplier = 1.0
+                    miner.total_multiplier = 1.0
+
+                    miner.avg_s_q = 0.0
+                    miner.avg_s_l = 0.0
+                    miner.avg_s_f = 0.0
+                    miner.avg_content_length = 0.0
+
+                    miner.bonus_count = 0
+                    miner.penalty_f_count = 0
+                    miner.penalty_q_count = 0
+
+                    miner.success_rate = 1
+                    miner.last_update_timestamp = datetime.now()
+
+                    miner.total_rounds_completed = 0
+                    miner.performance_tier = "New Miner"
+
+                    task_changed = True
+                
                 success = s_f > 0.08
 
                 self._add_performance_record(
-                    session, 
+                    session,
                     uid, 
                     round_id,
                     vmaf_score,
@@ -261,7 +292,8 @@ class MinerManager:
                     s_f, 
                     content_length, 
                     content_type,
-                    success
+                    success,
+                    processed_task_type="upscaling"
                 )
                 
                 if not is_new_miner:
@@ -305,6 +337,173 @@ class MinerManager:
         finally:
             session.close()
 
+    def step_synthetics_compression(
+        self,
+        round_id: str,
+        total_uids: List[int],
+        hotkeys: List[str],
+        vmaf_scores: List[float],
+        pieapp_scores: List[float],
+        scores: List[float],
+        length_scores: List[float],
+        final_scores: List[float],
+        content_lengths: List[float],
+        content_type: str = "video"
+    ) -> None:
+        """
+        Process scores from a synthetic compression mining step and update miner records
+        """
+        session = self.session
+
+        acc_scores = []
+        applied_multipliers = []
+
+        try:
+            for i, uid in enumerate(total_uids):
+                hotkey = hotkeys[i]
+                vmaf_score = vmaf_scores[i]
+                pieapp_score = pieapp_scores[i]
+                s_q = scores[i]
+                s_l = length_scores[i]
+                s_f = final_scores[i]
+                content_length = content_lengths[i]
+                
+                miner = session.query(MinerMetadata).filter(MinerMetadata.uid == uid).first()
+                
+                is_new_miner = False
+                task_changed = False
+
+                if not miner:
+                    miner = MinerMetadata(
+                        processing_task_type="compression",
+                        uid=uid,
+                        hotkey=hotkey,
+                        accumulate_score=0.0,
+                        bonus_multiplier=1.0,
+                        penalty_f_multiplier=1.0,
+                        penalty_q_multiplier=1.0,
+                        total_multiplier=1.0,
+                        performance_tier="New Miner"
+                    )
+                    session.add(miner)
+                    is_new_miner = True
+                elif miner.hotkey != hotkey:
+                    bt.logging.info(f"Hotkey change detected for UID {uid}: {miner.hotkey} -> {hotkey}")
+                    miner.hotkey = hotkey
+                    miner.accumulate_score = 0
+                    miner.processing_task_type = "compression"
+                    
+                    miner.bonus_multiplier = 1.0
+                    miner.penalty_f_multiplier = 1.0
+                    miner.penalty_q_multiplier = 1.0
+                    miner.total_multiplier = 1.0
+
+                    miner.avg_s_q = 0.0
+                    miner.avg_s_l = 0.0
+                    miner.avg_s_f = 0.0
+                    miner.avg_content_length = 0.0
+
+                    miner.bonus_count = 0
+                    miner.penalty_f_count = 0
+                    miner.penalty_q_count = 0
+
+                    miner.total_rounds_completed = 0
+                    miner.performance_tier = "New Miner"
+                    
+                    miner.success_rate = 1
+                    miner.longest_content_processed = 0
+
+                    session.query(MinerPerformanceHistory).filter(
+                        MinerPerformanceHistory.uid == uid
+                    ).delete()
+                    
+                    is_new_miner = True
+                
+                elif miner.processing_task_type != "compression":
+                    miner.processing_task_type = "compression"
+                    task_changed = True
+
+                    miner.accumulate_score = 0
+                    miner.bonus_multiplier = 1.0
+                    miner.penalty_f_multiplier = 1.0
+                    miner.penalty_q_multiplier = 1.0
+                    miner.total_multiplier = 1.0
+
+                    miner.avg_s_q = 0.0
+                    miner.avg_s_l = 0.0
+                    miner.avg_s_f = 0.0
+                    miner.avg_content_length = 0.0
+
+                    miner.bonus_count = 0
+                    miner.penalty_f_count = 0
+                    miner.penalty_q_count = 0
+
+                    miner.success_rate = 1
+                    miner.last_update_timestamp = datetime.now()
+
+                    miner.total_rounds_completed = 0
+                    miner.performance_tier = "New Miner"
+
+                    task_changed = True
+                
+                success = s_f > 0.08
+
+                self._add_performance_record(
+                    session,
+                    uid, 
+                    round_id,
+                    vmaf_score,
+                    pieapp_score,
+                    s_q, 
+                    s_l, 
+                    s_f, 
+                    content_length, 
+                    content_type,
+                    success,
+                    processed_task_type="compression"
+                )
+                
+                if not is_new_miner:
+                    self._update_miner_metadata(session, miner)
+                
+                applied_multiplier = miner.total_multiplier
+                score_with_multiplier = s_f * applied_multiplier
+                
+                if s_f != -100:
+                    miner.accumulate_score = (
+                        miner.accumulate_score * CONFIG.score.decay_factor
+                        + score_with_multiplier * (1 - CONFIG.score.decay_factor)
+                    )
+                    miner.accumulate_score = max(0, miner.accumulate_score)
+
+                acc_scores.append(miner.accumulate_score)
+                applied_multipliers.append(applied_multiplier)
+
+                miner.total_rounds_completed += 1
+                miner.last_update_timestamp = datetime.now()
+                
+                if miner.total_rounds_completed > 0:
+                    success_count = session.query(MinerPerformanceHistory).filter(
+                        MinerPerformanceHistory.uid == uid,
+                        MinerPerformanceHistory.success == True
+                    ).count()
+                    miner.success_rate = success_count / miner.total_rounds_completed
+                
+                if content_length > miner.longest_content_processed:
+                    miner.longest_content_processed = content_length
+            
+            session.commit()
+            logger.success(f"Updated compression metadata for {len(total_uids)} miners")
+            
+            return acc_scores, applied_multipliers
+
+        except Exception as e:
+            session.rollback()
+            bt.logging.error(f"Error in step_synthetics_compression: {e}")
+            raise
+        finally:
+            session.close()    
+
     def _add_performance_record(
         self,
         session: Session,
@@ -317,7 +516,8 @@ class MinerManager:
         s_f: float,
         content_length: float,
         content_type: str,
-        success: bool
+        success: bool,
+        processed_task_type: str
     ) -> None:
         """
         Add a new performance record and prune history if needed
@@ -334,7 +534,8 @@ class MinerManager:
             content_length=content_length,
             content_type=content_type,
             applied_multiplier=1.0,  
-            success=success
+            success=success,
+            processed_task_type=processed_task_type
         )
         session.add(new_record)
         session.flush()
@@ -669,23 +870,73 @@ class MinerManager:
 
     @property
     def weights(self):
+        """
+        Calculate weights for reward distribution with 60% for compression and 40% for upscaling.
+        Within each task type, rewards are distributed proportionally based on accumulated scores.
+        """
+        # Collect miners by task type
+        compression_miners = []
+        upscaling_miners = []
+        
+        for uid, miner in self.query().items():
+            if miner.accumulate_score == -1:
+                continue
+                
+            if miner.processing_task_type == "compression":
+                compression_miners.append((uid, miner.accumulate_score))
+            elif miner.processing_task_type == "upscaling":
+                upscaling_miners.append((uid, miner.accumulate_score))
+        
+        # Initialize result arrays
         uids = []
         scores = []
         
-        # Collect uids and scores
-        for uid, miner in self.query().items():
-            uids.append(uid)
-            if miner.accumulate_score == -1:
-                continue
+        # Process compression miners (60% of total rewards)
+        if compression_miners:
+            compression_uids, compression_scores = zip(*compression_miners)
+            compression_scores = np.array(compression_scores)
+            
+            # Normalize compression scores and apply 60% allocation
+            if compression_scores.sum() > 0:
+                compression_weights = (compression_scores / compression_scores.sum()) * 0.6
             else:
-                scores.append(miner.accumulate_score)
-
+                # If no scores, distribute 60% equally among compression miners
+                compression_weights = np.full(len(compression_scores), 0.6 / len(compression_scores))
+            
+            uids.extend(compression_uids)
+            scores.extend(compression_weights)
+        
+        # Process upscaling miners (40% of total rewards)
+        if upscaling_miners:
+            upscaling_uids, upscaling_scores = zip(*upscaling_miners)
+            upscaling_scores = np.array(upscaling_scores)
+            
+            # Normalize upscaling scores and apply 40% allocation
+            if upscaling_scores.sum() > 0:
+                upscaling_weights = (upscaling_scores / upscaling_scores.sum()) * 0.4
+            else:
+                # If no scores, distribute 40% equally among upscaling miners
+                upscaling_weights = np.full(len(upscaling_scores), 0.4 / len(upscaling_scores))
+            
+            uids.extend(upscaling_uids)
+            scores.extend(upscaling_weights)
+        
+        # Convert to numpy arrays and sort by UID
+        uids = np.array(uids)
         scores = np.array(scores)
-
-        scores = scores / scores.sum()
-
-        sorted_indices = np.argsort(uids)  
-        uids = np.array(uids)[sorted_indices]  
-        scores = scores[sorted_indices]  
-
+        
+        # Sort by UID for consistent ordering
+        sorted_indices = np.argsort(uids)
+        uids = uids[sorted_indices]
+        scores = scores[sorted_indices]
+        
+        # Log distribution summary
+        compression_count = len(compression_miners)
+        upscaling_count = len(upscaling_miners)
+        compression_total_weight = sum(scores[i] for i, uid in enumerate(uids) if uid in [c[0] for c in compression_miners])
+        upscaling_total_weight = sum(scores[i] for i, uid in enumerate(uids) if uid in [u[0] for u in upscaling_miners])
+        
+        logger.info(f"Reward distribution: {compression_count} compression miners ({compression_total_weight:.3f} weight), "
+                   f"{upscaling_count} upscaling miners ({upscaling_total_weight:.3f} weight)")
+        
         return uids, scores

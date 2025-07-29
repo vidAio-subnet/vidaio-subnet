@@ -11,6 +11,8 @@ class MinerMetadata(Base):
     """
     __tablename__ = "miner_metadata"
     
+    processing_task_type = Column(String(32), nullable=True)
+
     uid = Column(Integer, primary_key=True)
     hotkey = Column(String(64), nullable=False)
     accumulate_score = Column(Float, default=0.0)
@@ -55,6 +57,8 @@ class MinerPerformanceHistory(Base):
     uid = Column(Integer, ForeignKey('miner_metadata.uid'), nullable=False)
     round_id = Column(String(64), nullable=False)
     timestamp = Column(DateTime, default=datetime.now, index=True)
+    
+    processed_task_type = Column(String(32), nullable=True)
     
     s_q = Column(Float, nullable=False)
     s_l = Column(Float, nullable=False)

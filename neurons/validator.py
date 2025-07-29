@@ -349,7 +349,7 @@ class Validator(base.BaseValidator):
 
         miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
         
-        accumulate_scores, applied_multipliers = self.miner_manager.step_synthetics(
+        accumulate_scores, applied_multipliers = self.miner_manager.step_synthetics_upscaling(
             round_id, uids, miner_hotkeys, vmaf_scores, pieapp_scores, quality_scores, length_scores, final_scores, content_lengths
         )
 
@@ -453,7 +453,7 @@ class Validator(base.BaseValidator):
         miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
         
         # Use the same step_synthetics method for now, but with compression context
-        accumulate_scores, applied_multipliers = self.miner_manager.step_synthetics(
+        accumulate_scores, applied_multipliers = self.miner_manager.step_synthetics_compression(
             round_id, uids, miner_hotkeys, vmaf_scores, pieapp_scores, quality_scores, length_scores, final_scores, [5] * len(uids)
         )
 
