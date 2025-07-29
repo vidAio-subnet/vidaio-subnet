@@ -137,7 +137,7 @@ class Validator(base.BaseValidator):
             else:
                 logger.warning(f"UID {uid} has unknown task warrant: {response.warrant_task}")
         
-        logger.info(f"Grouped miners: {len(upscaling_miners)} upscaling, {len(compression_miners)} compression")
+        logger.info(f"🛜 Grouped miners: {len(upscaling_miners)} upscaling, {len(compression_miners)} compression 🛜")
 
         # Step 3: Send LengthCheckProtocol requests to upscaling miners
         if upscaling_miners:
@@ -442,10 +442,8 @@ class Validator(base.BaseValidator):
         response_data = score_response.json()
 
         quality_scores = response_data.get("quality_scores", [])
-        length_scores = response_data.get("length_scores", [])
         final_scores = response_data.get("final_scores", [])
         vmaf_scores = response_data.get("vmaf_scores", [])
-        pieapp_scores = response_data.get("pieapp_scores", [])
         reasons = response_data.get("reasons", [])
         
         logger.info(f"Updating miner manager with {len(quality_scores)} compression miner scores after synthetic requests processing")
@@ -454,26 +452,21 @@ class Validator(base.BaseValidator):
         
         # Use the same step_synthetics method for now, but with compression context
         accumulate_scores, applied_multipliers = self.miner_manager.step_synthetics_compression(
-            round_id, uids, miner_hotkeys, vmaf_scores, pieapp_scores, quality_scores, length_scores, final_scores, [5] * len(uids)
+            round_id, uids, miner_hotkeys, vmaf_scores, quality_scores, final_scores, [10] * len(uids)
         )
 
         max_length = max(
             len(uids),
             len(quality_scores),
-            len(length_scores),
             len(final_scores),
             len(vmaf_scores),
-            len(pieapp_scores),
             len(reasons),
-            len(vmaf_thresholds),
             len(applied_multipliers),
             len(accumulate_scores),
         )
 
         vmaf_scores.extend([0.0] * (max_length - len(vmaf_scores)))
-        pieapp_scores.extend([0.0] * (max_length - len(pieapp_scores)))
         quality_scores.extend([0.0] * (max_length - len(quality_scores)))
-        length_scores.extend([0.0] * (max_length - len(length_scores)))
         final_scores.extend([0.0] * (max_length - len(final_scores)))
         reasons.extend(["No reason provided"] * (max_length - len(reasons)))
         vmaf_thresholds.extend([90.0] * (max_length - len(vmaf_thresholds)))
@@ -482,12 +475,12 @@ class Validator(base.BaseValidator):
         logger.info(f"Compression scoring results for {len(uids)} miners")
         logger.info(f"Uids: {uids}")
 
-        for uid, vmaf_score, pieapp_score, quality_score, length_score, final_score, reason, vmaf_threshold, applied_multiplier in zip(
-            uids, vmaf_scores, pieapp_scores, quality_scores, length_scores, final_scores, reasons, vmaf_thresholds, applied_multipliers
+        for uid, vmaf_score, quality_score, final_score, reason, vmaf_threshold, applied_multiplier in zip(
+            uids, vmaf_scores, quality_scores, final_scores, reasons, vmaf_thresholds, applied_multipliers
         ):
             logger.info(
-                f"{uid} ** VMAF: {vmaf_score:.2f} ** PieAPP: {pieapp_score:.2f} ** Quality: {quality_score:.4f} "
-                f"** Length: {length_score:.4f} ** VMAF Threshold: {vmaf_threshold} ** Applied_multiplier {applied_multiplier} ** Final: {final_score:.4f} || {reason}"
+                f"{uid} ** VMAF: {vmaf_score:.2f} ** Quality: {quality_score:.4f} "
+                f"** VMAF Threshold: {vmaf_threshold} ** Applied_multiplier {applied_multiplier} ** Final: {final_score:.4f} || {reason}"
             )
 
         miner_data = {
@@ -497,9 +490,7 @@ class Validator(base.BaseValidator):
             "miner_uids": uids,
             "miner_hotkeys": miner_hotkeys,
             "vmaf_scores": vmaf_scores,
-            "pieapp_scores": pieapp_scores,
             "quality_scores": quality_scores,
-            "length_scores": length_scores,
             "final_scores": final_scores,
             "accumulate_scores": accumulate_scores,
             "applied_multipliers": applied_multipliers,
@@ -509,11 +500,11 @@ class Validator(base.BaseValidator):
             "timestamp": timestamp
         }
         
-        success = send_data_to_dashboard(miner_data)
-        if success:
-            logger.info("Compression data successfully sent to dashboard")
-        else:
-            logger.info("Failed to send compression data to dashboard")
+        # success = send_data_to_dashboard(miner_data)
+        # if success:
+        #     logger.info("Compression data successfully sent to dashboard")
+        # else:
+        #     logger.info("Failed to send compression data to dashboard")
 
     async def score_organics(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: list[str], task_types: list[str], timestamp: str):
 
