@@ -32,9 +32,9 @@ PIEAPP_SAMPLE_COUNT = CONFIG.score.pieapp_sample_count
 PIEAPP_THRESHOLD = CONFIG.score.pieapp_threshold
 VMAF_SAMPLE_COUNT = CONFIG.score.vmaf_sample_count
 
-class SyntheticsScoringRequest(BaseModel):
+class UpscalingScoringRequest(BaseModel):
     """
-    Request model for scoring. Contains URLs for distorted videos and the reference video path.
+    Request model for upscaling scoring. Contains URLs for distorted videos and the reference video path.
     """
     distorted_urls: List[str]
     reference_paths: List[str]
@@ -42,6 +42,20 @@ class SyntheticsScoringRequest(BaseModel):
     video_ids: List[str]
     uploaded_object_names: List[str]
     content_lengths: List[int]
+    fps: Optional[float] = None
+    subsample: Optional[int] = 1
+    verbose: Optional[bool] = False
+    progress: Optional[bool] = False
+
+class CompressionScoringRequest(BaseModel):
+    """
+    Request model for compression scoring. Contains URLs for distorted videos and the reference video path.
+    """
+    distorted_urls: List[str]
+    reference_paths: List[str]
+    uids: List[int]
+    video_ids: List[str]
+    uploaded_object_names: List[str]
     fps: Optional[float] = None
     subsample: Optional[int] = 1
     verbose: Optional[bool] = False
@@ -60,9 +74,30 @@ class OrganicsScoringRequest(BaseModel):
     verbose: Optional[bool] = False
     progress: Optional[bool] = False
 
-class ScoringResponse(BaseModel):
+class UpscalingScoringResponse(BaseModel):
     """
-    Response model for scoring. Contains the list of calculated scores for each d ofistorted video.
+    Response model for upscaling scoring. Contains the list of calculated scores for each distorted video.
+    """
+    vmaf_scores: List[float]
+    pieapp_scores: List[float]
+    quality_scores: List[float]
+    length_scores: List[float]
+    final_scores: List[float]
+    reasons: List[str]
+
+class CompressionScoringResponse(BaseModel):
+    """
+    Response model for compression scoring. Contains the list of calculated scores for each distorted video.
+    """
+    vmaf_scores: List[float]
+    quality_scores: List[float]
+    compression_scores: List[float]
+    final_scores: List[float]
+    reasons: List[str]
+
+class OrganicsScoringResponse(BaseModel):
+    """
+    Response model for organics scoring. Contains the list of calculated scores for each distorted video.
     """
     vmaf_scores: List[float]
     pieapp_scores: List[float]
@@ -351,8 +386,8 @@ def upscale_video(input_path, scale_factor=2):
         print(f"Error upscaling video: {e}")
         return input_path
 
-@app.post("/score_synthetics")
-async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse:
+@app.post("/score_upscaling_synthetics")
+async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> UpscalingScoringResponse:
     print("#################### 🤖 start scoring ####################")
 
     start_time = time.time()
@@ -650,7 +685,7 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
     print(f"Completed batch scoring of {len(request.distorted_urls)} pairs within {processed_time:.2f} seconds")
     print(f"🔯🔯🔯 Calculated final scores: {final_scores} 🔯🔯🔯")
     
-    return ScoringResponse(
+    return UpscalingScoringResponse(
         vmaf_scores=vmaf_scores,
         pieapp_scores=pieapp_scores,
         quality_scores=quality_scores,
@@ -659,8 +694,280 @@ async def score_synthetics(request: SyntheticsScoringRequest) -> ScoringResponse
         reasons=reasons
     )
 
+@app.post("/score_compression_synthetics")
+async def score_compression_synthetics(request: CompressionScoringRequest) -> CompressionScoringResponse:
+    print("#################### 🤖 start scoring ####################")
+    start_time = time.time()
+    quality_scores = []
+    compression_scores = []
+    final_scores = []
+    vmaf_scores = []
+    reasons = []
+
+    if len(request.reference_paths) != len(request.distorted_urls):
+        raise HTTPException(
+            status_code=400, 
+            detail="Number of reference paths must match number of distorted URLs"
+        )
+    
+    if len(request.uids) != len(request.distorted_urls):
+        raise HTTPException(
+            status_code=400, 
+            detail="Number of UIDs must match number of distorted URLs"
+        )
+
+    for idx, (ref_path, dist_url, uid, video_id, uploaded_object_name) in enumerate(zip(
+        request.reference_paths, 
+        request.distorted_urls, 
+        request.uids,
+        request.video_ids,
+        request.uploaded_object_names
+    )):
+        try:
+            print(f"🧩 Processing pair {idx+1}/{len(request.distorted_urls)}: UID {uid} 🧩")
+            
+            uid_start_time = time.time()  # Start time for this UID
+
+            ref_cap = None
+            dist_cap = None
+            ref_y4m_path = None
+            dist_path = None
+
+            ref_cap = cv2.VideoCapture(ref_path)
+            
+            # Check if the reference video was actually opened successfully
+            if not ref_cap.isOpened():
+                # Add diagnostic information
+                file_exists = os.path.exists(ref_path)
+                file_size = os.path.getsize(ref_path) if file_exists else 0
+                
+                print(f"Error opening reference video file {ref_path}.")
+                print(f"  File exists: {file_exists}")
+                print(f"  File size: {file_size} bytes")
+                print(f"  Current working directory: {os.getcwd()}")
+                print(f"  Assigning score of 0.")
+                
+                vmaf_scores.append(0.0)
+                quality_scores.append(0.0)
+                compression_scores.append(0.0)
+                final_scores.append(-100)
+                reasons.append(f"error opening reference video file: {ref_path} (exists: {file_exists}, size: {file_size})")
+                continue
+            
+            # Only log success after confirming the file was opened
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 1. Opened reference video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 2. Retrieved reference video frame count ({ref_total_frames}) in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            if ref_total_frames < 10:
+                print(f"Video must contain at least 10 frames. Assigning score of 0.")
+                vmaf_scores.append(0.0)
+                quality_scores.append(0.0)
+                compression_scores.append(0.0)
+                final_scores.append(-100)
+                reasons.append("reference video has fewer than 10 frames")
+                ref_cap.release()
+                continue
+
+            # Get reference video file size for compression rate calculation
+            ref_file_size = os.path.getsize(ref_path)
+            print(f"Reference video file size: {ref_file_size} bytes")
+
+            if len(dist_url) < 10:
+                print(f"Wrong dist download URL: {dist_url}. Assigning score of 0.")
+                vmaf_scores.append(0.0)
+                quality_scores.append(0.0)
+                compression_scores.append(0.0)
+                final_scores.append(0.0)
+                reasons.append("Invalid download URL: the distorted video download URL must be at least 10 characters long.")
+                continue
+
+            try:
+                dist_path, download_time = await download_video(dist_url, request.verbose)
+            except Exception as e:
+                error_msg = f"Failed to download video from {dist_url}: {str(e)}"
+                print(f"{error_msg}. Assigning score of 0.")
+                vmaf_scores.append(0.0)
+                quality_scores.append(0.0)
+                compression_scores.append(0.0)
+                final_scores.append(0.0)
+                reasons.append("failed to download video file from url")
+                continue
+
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 3. Downloaded distorted video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            dist_cap = cv2.VideoCapture(dist_path)
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 4. Opened distorted video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            if not dist_cap.isOpened():
+                print(f"Error opening distorted video file from {dist_url}. Assigning score of 0.")
+                vmaf_scores.append(0.0)
+                quality_scores.append(0.0)
+                compression_scores.append(0.0)
+                final_scores.append(0.0)
+                reasons.append("error opening distorted video file")
+                dist_cap.release()
+                if dist_path and os.path.exists(dist_path):
+                    os.unlink(dist_path)
+                continue
+
+            dist_total_frames = int(dist_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            print(f"Distorted video has {dist_total_frames} frames.")
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 5. Retrieved distorted video frame count in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            if dist_total_frames != ref_total_frames:
+                print(
+                    f"Video length mismatch for pair {idx+1}: ref({ref_total_frames}) != dist({dist_total_frames}). Assigning score of 0."
+                )
+                vmaf_scores.append(0.0)
+                quality_scores.append(0.0)
+                compression_scores.append(0.0)
+                final_scores.append(0.0)
+                reasons.append("video length mismatch")
+                dist_cap.release()
+                if dist_path and os.path.exists(dist_path):
+                    os.unlink(dist_path)
+                continue
+
+            # Get distorted video file size for compression rate calculation
+            dist_file_size = os.path.getsize(dist_path)
+            print(f"Distorted video file size: {dist_file_size} bytes")
+
+            # Calculate compression rate
+            if ref_file_size > 0:
+                compression_rate = dist_file_size / ref_file_size
+                print(f"Compression rate: {compression_rate:.4f} ({dist_file_size}/{ref_file_size})")
+            else:
+                compression_rate = 1.0
+                print("Reference file size is 0, setting compression rate to 1.0")
+
+            # Calculate compression score (lower is better for compression)
+            compression_score = max(0.0, 1.0 - compression_rate)
+            print(f"Compression score: {compression_score:.4f}")
+
+            # Sample frames for VMAF calculation
+            random_frames = sorted(random.sample(range(ref_total_frames), VMAF_SAMPLE_COUNT))
+            print(f"Randomly selected {VMAF_SAMPLE_COUNT} frames for VMAF score: frame list: {random_frames}")
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 6. Selected random frames for VMAF in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            ref_y4m_path = convert_mp4_to_y4m(ref_path, random_frames)
+            print("The reference video has been successfully converted to Y4M format.")
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 7. Converted reference video to Y4M in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            # Calculate VMAF
+            try:
+                vmaf_start = time.time()
+                vmaf_score = calculate_vmaf(ref_y4m_path, dist_path, random_frames)
+                vmaf_calc_time = time.time() - vmaf_start
+                print(f"☣️☣️ VMAF calculation took {vmaf_calc_time:.2f} seconds.")
+
+                step_time = time.time() - uid_start_time
+                print(f"♎️ 8. Completed VMAF calculation in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+                if vmaf_score is not None:
+                    vmaf_scores.append(vmaf_score)
+                else:
+                    vmaf_score = 0.0
+                    vmaf_scores.append(vmaf_score)
+                print(f"🎾 VMAF score is {vmaf_score}")
+            except Exception as e:
+                vmaf_scores.append(0.0)
+                quality_scores.append(0.0)
+                compression_scores.append(0.0)
+                final_scores.append(0.0)
+                reasons.append("failed to calculate VMAF score due to video dimension mismatch")
+                dist_cap.release()
+                print(f"Error calculating VMAF score: {e}")
+                continue
+
+            if vmaf_score / 100 < VMAF_THRESHOLD:
+                print(f"VMAF score is too low, giving zero score, current VMAF score: {vmaf_score}")
+                quality_scores.append(0.0)
+                compression_scores.append(0.0)
+                final_scores.append(0.0)
+                reasons.append(f"VMAF score is too low, current VMAF score: {vmaf_score}")
+                dist_cap.release()
+                continue
+
+            # Calculate quality score from VMAF
+            quality_score = min(1.0, vmaf_score / 100.0)  # Normalize VMAF to 0-1 range
+            print(f"🏀 Quality score is {quality_score}")
+
+            dist_cap.release()
+
+            # Calculate final score combining quality and compression
+            # Weight: 70% quality, 30% compression
+            final_score = (quality_score * 0.7) + (compression_score * 0.3)
+            print(f"🎯 Final score is {final_score}")
+
+            quality_scores.append(quality_score)
+            compression_scores.append(compression_score)
+            final_scores.append(final_score)
+            reasons.append("success")
+
+            step_time = time.time() - uid_start_time
+            print(f"🛑 Processed one UID in {step_time:.2f} seconds.")
+
+        except Exception as e:
+            error_msg = f"Failed to process video from {dist_url}: {str(e)}"
+            print(f"{error_msg}. Assigning score of 0.")
+            vmaf_scores.append(0.0)
+            quality_scores.append(0.0)
+            compression_scores.append(0.0)
+            final_scores.append(0.0)
+            reasons.append("failed to process video")
+
+        finally:
+            # Clean up resources for this pair
+            if ref_cap:
+                ref_cap.release()
+            if ref_y4m_path and os.path.exists(ref_y4m_path):
+                os.unlink(ref_y4m_path)
+            if dist_path and os.path.exists(dist_path):
+                os.unlink(dist_path)
+            if ref_path and os.path.exists(ref_path):
+                os.unlink(ref_path)
+
+            # Delete the uploaded object
+            storage_client.delete_file(uploaded_object_name)
+            
+            delete_videos_with_fileid(video_id)
+
+    tmp_directory = "/tmp"
+    try:
+        print("🧹 Cleaning up temporary files in /tmp...")
+        for file_path in glob.glob(os.path.join(tmp_directory, "*.mp4")):
+            os.remove(file_path)
+            print(f"Deleted: {file_path}")
+        for file_path in glob.glob(os.path.join(tmp_directory, "*.y4m")):
+            os.remove(file_path)
+            print(f"Deleted: {file_path}")
+    except Exception as e:
+        print(f"⚠️ Error during cleanup: {e}")
+
+    processed_time = time.time() - start_time
+    print(f"Completed batch scoring of {len(request.distorted_urls)} pairs within {processed_time:.2f} seconds")
+    print(f"🔯🔯🔯 Calculated final scores: {final_scores} 🔯🔯🔯")
+    
+    return CompressionScoringResponse(
+        vmaf_scores=vmaf_scores,
+        quality_scores=quality_scores,
+        compression_scores=compression_scores,
+        final_scores=final_scores,
+        reasons=reasons
+    )
+            
+
 @app.post("/score_organics")
-async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
+async def score_organics(request: OrganicsScoringRequest) -> OrganicsScoringResponse:
     print("#################### 🤖 start scoring ####################")
     start_time = time.time()
     scores = []
@@ -1050,7 +1357,7 @@ async def score_organics(request: OrganicsScoringRequest) -> ScoringResponse:
     quality_scores = [0.0] * len(request.uids)
     length_scores = [0.0] * len(request.uids)
     
-    return ScoringResponse(
+    return OrganicsScoringResponse(
         vmaf_scores=vmaf_scores,
         pieapp_scores=pieapp_scores,
         quality_scores=quality_scores,
