@@ -3,15 +3,12 @@ import subprocess
 import json
 import sys
 
-
 from .utils.video_utils import get_video_duration, get_video_codec
 from .utils.encode_video import encode_lossless_video
 
 #TODO: Add more checks for max resolution, bitrate, etc. as needed
 #TODO: Add checks for user defined parameters and override defaults in config
 #TODO: Add more lossless codecs as needed and check if more containers are needed
-
-
 
 
 def pre_processing(video_path, target_quality='Medium',codec='auto', max_duration=60, output_dir='./output'):
@@ -197,7 +194,7 @@ if __name__ == '__main__':
         print(f"\n🧪 Testing with quality: {quality}, codec: {test_codec}")
         print("=" * 60)
         
-        result = part1_pre_processing(
+        result = pre_processing(
             video_path=dummy_video,
             target_quality=quality,
             max_duration=7200,  # 2 hours
@@ -232,7 +229,7 @@ if __name__ == '__main__':
         ], capture_output=True)
         print(f"✅ Created lossless test video: {lossless_video}")
     
-    result = part1_pre_processing(
+    result = pre_processing(
         video_path=lossless_video,
         target_quality='High',
         max_duration=7200,

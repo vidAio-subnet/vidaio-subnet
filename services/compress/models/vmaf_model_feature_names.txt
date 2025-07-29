@@ -1,0 +1,11 @@
+metrics_avg_motion
+metrics_avg_edge_density
+metrics_avg_texture
+metrics_avg_temporal_information
+metrics_avg_spatial_information
+metrics_avg_color_complexity
+metrics_avg_motion_variance
+metrics_avg_grain_noise
+metrics_frame_rate
+metrics_resolution
+cq
