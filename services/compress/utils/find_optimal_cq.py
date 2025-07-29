@@ -76,15 +76,11 @@ from pathlib import Path       # Object-oriented filesystem paths
 # This enables the system to find and import custom transformer classes and utilities
 
 # Get current directory (should be src/ when running from main project)
-current_dir = Path(__file__).parent
-# Construct path to utilities directory
-utils_dir = os.path.join(current_dir, 'utils')
+
 
 # Add source directory to Python path for module imports
 # This allows importing custom preprocessing transformers and utilities
-if str(utils_dir) not in sys.path:
-    sys.path.insert(0, str(utils_dir))
-from encoder_configs import CODEC_CQ_LIMITS
+from .encoder_configs import CODEC_CQ_LIMITS
 # =============================================================================
 # GLOBAL CACHE VARIABLES FOR PERFORMANCE OPTIMIZATION
 # =============================================================================

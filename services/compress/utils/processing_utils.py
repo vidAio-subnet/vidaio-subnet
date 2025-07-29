@@ -16,13 +16,13 @@ if UTILS_DIR not in sys.path:
 
 
 
-from analyze_video_fast import analyze_video_fast
-from find_optimal_cq import find_optimal_cq
-from encode_video import encode_video
-from classify_scene import classify_scene_with_model, extract_frames_from_scene
-from calculate_vmaf_adv import calculate_parallel_vmaf  # Preferred for batching
-from video_utils import get_video_duration, calculate_contrast_adjusted_cq
-from logging_utils import VideoProcessingLogger
+from .analyze_video_fast import analyze_video_fast
+from .find_optimal_cq import find_optimal_cq
+from .encode_video import encode_video
+from .classify_scene import classify_scene_with_model, extract_frames_from_scene
+from .calculate_vmaf_adv import calculate_parallel_vmaf  # Preferred for batching
+from .video_utils import get_video_duration, calculate_contrast_adjusted_cq
+from .logging_utils import VideoProcessingLogger
 
 
 def get_video_bitrate(video_path):

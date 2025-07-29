@@ -10,11 +10,11 @@ import argparse
 import time
 from datetime import datetime
 
-from .video_preprocessor import pre_processing
-from .scene_detector import scene_detection
-from .encoder import ai_encoding, load_encoding_resources  
-from .vmaf_calculator import scene_vmaf_calculation  
-from .validator_merger import validation_and_merging 
+from video_preprocessor import pre_processing
+from scene_detector import scene_detection
+from encoder import ai_encoding, load_encoding_resources  
+from vmaf_calculator import scene_vmaf_calculation  
+from validator_merger import validation_and_merging 
 from vidaio_subnet_core.global_config import CONFIG
 from vidaio_subnet_core.utilities import storage_client, download_video
 
@@ -26,6 +26,9 @@ class CompressPayload(BaseModel):
     target_quality: str = 'Medium'  # High, Medium, Low
     max_duration: int = 3600  # Maximum allowed video duration in seconds
     output_dir: str = './output'  # Output directory for final files
+
+class TestCompressPayload(BaseModel):
+    video_path: str
 
 @app.post("/compress-video")
 async def compress_video(video: CompressPayload):
@@ -68,6 +71,37 @@ async def compress_video(video: CompressPayload):
             raise HTTPException(status_code=500, detail="Video compression failed")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Video compression error: {str(e)}")
+
+
+@app.post("/test-compress")
+async def test_compress_video(test_payload: TestCompressPayload):
+    """
+    Test endpoint for video compression that only requires a local video path.
+    Uses default parameters for testing purposes.
+    """
+    video_path = test_payload.video_path
+    
+    # Check if input file exists
+    if not os.path.exists(video_path):
+        raise HTTPException(status_code=400, detail=f"Video file does not exist: {video_path}")
+    
+    try:
+        # Call the test function
+        compressed_video_path = test_video_compression(video_path)
+        
+        if compressed_video_path and os.path.exists(compressed_video_path):
+            return {
+                "status": "success",
+                "message": "Video compression test completed successfully",
+                "input_path": video_path,
+                "output_path": compressed_video_path,
+                "output_size_mb": round(os.path.getsize(compressed_video_path) / (1024 * 1024), 2)
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Video compression test failed")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Video compression test error: {str(e)}")
 
 
 def video_compressor(input_file, target_quality='Medium', max_duration=3600, output_dir='./output'):
@@ -426,13 +460,68 @@ def video_compressor(input_file, target_quality='Medium', max_duration=3600, out
     return final_video_path
 
 
-
+def test_video_compression(video_path: str):
+    """
+    Test function for video compression that only requires a video path.
+    Uses default parameters for testing purposes.
+    
+    Args:
+        video_path (str): Path to the input video file
+        
+    Returns:
+        str: Path to the compressed video file, or None if failed
+    """
+    print(f"\n🧪 === Testing Video Compression ===")
+    print(f"   📁 Input: {video_path}")
+    print(f"   🎯 Using default test parameters")
+    
+    # Default test parameters
+    test_params = {
+        'target_quality': 'Medium',
+        'max_duration': 3600,
+        'output_dir': './test_output'
+    }
+    
+    try:
+        # Check if input file exists
+        if not os.path.exists(video_path):
+            print(f"❌ Input file does not exist: {video_path}")
+            return None
+            
+        # Create test output directory if it doesn't exist
+        os.makedirs(test_params['output_dir'], exist_ok=True)
+        
+        # Call the main video_compressor function with test parameters
+        result = video_compressor(
+            input_file=video_path,
+            target_quality=test_params['target_quality'],
+            max_duration=test_params['max_duration'],
+            output_dir=test_params['output_dir']
+        )
+        
+        if result and os.path.exists(result):
+            print(f"\n✅ Test completed successfully!")
+            print(f"   📁 Compressed video: {result}")
+            return result
+        else:
+            print(f"\n❌ Test failed - no output file generated")
+            return None
+            
+    except Exception as e:
+        print(f"\n❌ Test failed with exception: {e}")
+        return None
 
 
 if __name__ == "__main__":
-    import uvicorn
+    # import uvicorn
 
-    logger.info("Starting video compressor server")
-    logger.info(f"Video compressor server running on http://{CONFIG.video_compressor.host}:{CONFIG.video_compressor.port}")
+    # logger.info("Starting video compressor server")
+    # logger.info(f"Video compressor server running on http://{CONFIG.video_compressor.host}:{CONFIG.video_compressor.port}")
 
-    uvicorn.run(app, host=CONFIG.video_compressor.host, port=CONFIG.video_compressor.port)
+    # uvicorn.run(app, host=CONFIG.video_compressor.host, port=CONFIG.video_compressor.port)
+
+    result = test_video_compression('test1.mp4')
+    print(result)
+
+
+    #python services/compress/server.py

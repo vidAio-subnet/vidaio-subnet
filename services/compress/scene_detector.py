@@ -3,8 +3,8 @@ import json
 import subprocess
 import sys
 
-from .utils.fast_scene_detect import adaptive_scene_detection_check
-from .utils.split_video_into_scenes import split_video_into_scenes
+from utils.fast_scene_detect import adaptive_scene_detection_check
+from utils.split_video_into_scenes import split_video_into_scenes
 
 def scene_detection(video_metadata):
     """
@@ -33,7 +33,7 @@ def scene_detection(video_metadata):
     """
     # Load configuration
     try:
-        with open('config.json', 'r') as f:
+        with open('services/compress/config.json', 'r') as f:
             config = json.load(f)
         print("✅ Configuration loaded successfully")
     except FileNotFoundError:

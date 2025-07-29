@@ -1,7 +1,7 @@
 import asyncio
 import httpx
 from typing import Tuple, Dict, List
-from ...protocol import VideoUpscalingProtocol, MinerPayload, VideoCompressionProtocol, CompressionMinerPayload
+from ...protocol import VideoUpscalingProtocol, UpscalingMinerPayload, VideoCompressionProtocol, CompressionMinerPayload
 from ...global_config import CONFIG
 from loguru import logger
 
@@ -76,7 +76,7 @@ class Synthesizer:
                     uploaded_object_names.append(chunk["uploaded_object_name"])
                     
                     synapse = VideoUpscalingProtocol(
-                        miner_payload=MinerPayload(
+                        miner_payload=UpscalingMinerPayload(
                             reference_video_url=chunk["sharing_link"],
                             task_type=chunk["task_type"]
                         ),
@@ -235,7 +235,7 @@ class Synthesizer:
 
                 for chunk in chunks:
                     synapse = VideoUpscalingProtocol(
-                        miner_payload=MinerPayload(
+                        miner_payload=UpscalingMinerPayload(
                             reference_video_url=chunk["url"],
                             task_type=chunk["resolution_type"]
                         ),

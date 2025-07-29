@@ -6,8 +6,8 @@ import time
 from datetime import datetime
 import sys
 
-from .utils.calculate_vmaf_adv import calculate_vmaf_advanced
-from .utils.merge_videos import merge_videos
+from utils.calculate_vmaf_adv import calculate_vmaf_advanced
+from utils.merge_videos import merge_videos
 
 def validation_and_merging(original_video_path, encoded_scenes_data_with_vmaf, config, logging_enabled=True):
     """

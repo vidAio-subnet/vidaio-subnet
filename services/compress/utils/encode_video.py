@@ -10,8 +10,8 @@ import time
 import sys
 import traceback
 import numpy as np
-from analyze_video_fast import analyze_video_quality_metrics
-from filter_recommendation import recommend_preprocessing_filters,should_apply_preprocessing, apply_preprocessing_filters
+from .analyze_video_fast import analyze_video_quality_metrics
+from .filter_recommendation import recommend_preprocessing_filters,should_apply_preprocessing, apply_preprocessing_filters
 # Adjust sys.path to allow imports from the 'utils' directory
 # This assumes check_hardware.py is in src/utilities/
 # and other modules like encode_video.py are in utils/
@@ -22,7 +22,7 @@ if UTILS_DIR not in sys.path:
 
 # Import configurations
 try:
-    from encoder_configs import ENCODER_SETTINGS, SCENE_SPECIFIC_PARAMS, MODEL_CQ_REFERENCE_CODEC, QUALITY_MAPPING_ANCHORS
+    from .encoder_configs import ENCODER_SETTINGS, SCENE_SPECIFIC_PARAMS, MODEL_CQ_REFERENCE_CODEC, QUALITY_MAPPING_ANCHORS
 except ImportError:
     print("Error: Could not import configurations from 'encoder_configs.py'. Make sure the file exists in the 'src' directory.")
     # Define empty fallbacks or exit if critical
@@ -550,7 +550,7 @@ if __name__ == '__main__':
     if utilities_path not in sys.path:
         sys.path.append(utilities_path)
     try:
-        from check_hardware import get_best_working_codec
+        from .check_hardware import get_best_working_codec
     except ImportError:
         print("Error: Could not import 'get_best_working_codec' from 'utilities.check_hardware'. Make sure the file exists and is in the correct path.")
         # Define a dummy function if import fails, so the script can still attempt to run with a default

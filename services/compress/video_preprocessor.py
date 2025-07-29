@@ -3,8 +3,8 @@ import subprocess
 import json
 import sys
 
-from .utils.video_utils import get_video_duration, get_video_codec
-from .utils.encode_video import encode_lossless_video
+from utils.video_utils import get_video_duration, get_video_codec
+from utils.encode_video import encode_lossless_video
 
 #TODO: Add more checks for max resolution, bitrate, etc. as needed
 #TODO: Add checks for user defined parameters and override defaults in config

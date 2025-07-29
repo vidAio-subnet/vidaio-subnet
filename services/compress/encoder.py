@@ -6,14 +6,14 @@ import subprocess
 import sys
 import traceback
 
-from .utils.processing_utils import (
+from utils.processing_utils import (
     should_skip_encoding,
     encode_scene_with_size_check,
     analyze_input_compression,
-    classify_scene_from_path 
+    # classify_scene_from_path 
 )
-from .utils.encode_video import encode_video
-from .utils.classify_scene import load_scene_classifier_model, CombinedModel
+from utils.encode_video import encode_video
+from utils.classify_scene import load_scene_classifier_model, CombinedModel
 
 def get_cq_from_lookup_table(scene_type, config):
     """
@@ -39,10 +39,10 @@ def load_encoding_resources(config, logging_enabled=True):
     """Load AI models and other resources needed for BASIC encoding."""
     
     model_paths = config.get('model_paths', {})
-    scene_model_path = model_paths.get('scene_classifier_model', "../models/scene_classifier_model.pth")
+    scene_model_path = model_paths.get('scene_classifier_model', "services/compress/models/scene_classifier_model.pth")
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
+    # print("💪💪💪💪💪")
     # Load scene classifier
     model_state_dict, available_metrics, class_mapping = load_scene_classifier_model(scene_model_path, device, logging_enabled)
     scene_classifier_model = CombinedModel(num_classes=len(class_mapping), metrics_dim=len(available_metrics))
@@ -154,8 +154,7 @@ def ai_encoding(scene_metadata, config, resources, target_vmaf=None, logging_ena
 
     scene_type = 'default'
     confidence_score = 0.0
-    try:
-        
+    try:        
         classification_result = classify_scene_from_path(
             scene_path=scene_path,
             temp_dir=temp_dir,

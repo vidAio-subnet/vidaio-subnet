@@ -14,8 +14,8 @@ if UTILS_DIR not in sys.path:
     sys.path.insert(0, UTILS_DIR)
 
 try:
-    from encode_video import encode_video, ENCODER_SETTINGS
-    from calculate_vmaf_adv import calculate_vmaf_advanced
+    from .encode_video import encode_video, ENCODER_SETTINGS
+    from .calculate_vmaf_adv import calculate_vmaf_advanced
 except ImportError as e:
     print(f"Error importing modules for comparison in check_hardware.py: {e}")
     print("Ensure encode_video.py and calculate_vmaf_adv.py are in the src directory.")

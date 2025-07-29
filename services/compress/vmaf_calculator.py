@@ -3,7 +3,7 @@ import time
 import json
 import sys
 
-from .utils.calculate_vmaf_adv import calculate_vmaf_advanced
+from utils.calculate_vmaf_adv import calculate_vmaf_advanced
 
 def calculate_scene_vmaf(scene_metadata, config, logging_enabled=True):
     """
