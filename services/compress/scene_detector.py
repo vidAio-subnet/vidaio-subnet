@@ -398,7 +398,7 @@ if __name__ == '__main__':
         'path': short_video,
         'codec': 'h264',
         'original_codec': 'h264',
-        'target_codec': 'av1_nvenc',  # ✅ NEW: Target codec for encoding
+        'target_codec': 'libsvtav1',  # ✅ NEW: Target codec for encoding
         'duration': 15.0,
         'was_reencoded': False,
         'encoding_time': 0,
@@ -437,7 +437,7 @@ if __name__ == '__main__':
         'path': 'test_lossless_converted.mkv',
         'codec': 'ffv1',
         'original_codec': 'rawvideo',
-        'target_codec': 'av1_nvenc',  # ✅ Target for final encoding
+        'target_codec': 'libsvtav1',  # ✅ Target for final encoding
         'duration': 120.0,
         'was_reencoded': True,
         'encoding_time': 5.2,

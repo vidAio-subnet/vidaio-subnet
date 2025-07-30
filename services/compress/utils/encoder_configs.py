@@ -6,6 +6,10 @@ ENCODER_SETTINGS = {
         "codec": "libsvtav1", "preset": "8", "crf": 30, "keyint": 50,
         # Add SVT-AV1 specific AQ if needed, e.g., --enable-variance-boost
     },
+    "libsvtav1": {
+        "codec": "libsvtav1", "preset": "8", "crf": 30, "keyint": 50,
+        # SVT-AV1 encoder settings
+    },
     "av1_nvenc": {
         "codec": "av1_nvenc", "preset": "p6", "cq": 30, "keyint": 50, 'pix_fmt': 'yuv420p' # Default AQ settings for NVENC AV1
     },
@@ -128,8 +132,8 @@ SCENE_SPECIFIC_PARAMS = {
 # --- START: New Configuration for Quality Parameter Mapping ---
 
 # Define which codec's CQ scale your VMAF prediction model was trained on.
-# Example: If your model predicts CQ values suitable for AV1_NVENC.
-MODEL_CQ_REFERENCE_CODEC = "av1_nvenc" # IMPORTANT: User must set this correctly
+# Example: If your model predicts CQ values suitable for libsvtav1.
+MODEL_CQ_REFERENCE_CODEC = "libsvtav1" # IMPORTANT: User must set this correctly
 
 # Define anchor points for mapping the model's reference CQ (from MODEL_CQ_REFERENCE_CODEC)
 # to other codecs' quality parameters.
@@ -140,23 +144,23 @@ MODEL_CQ_REFERENCE_CODEC = "av1_nvenc" # IMPORTANT: User must set this correctly
 # 'anchor_points': A list of [model_ref_cq_value, target_codec_param_value] pairs.
 #                  These points define the mapping relationship.
 QUALITY_MAPPING_ANCHORS = {
-    # Example: If MODEL_CQ_REFERENCE_CODEC is "AV1_NVENC"
-    "libaom-av1": { # Mapping AV1_NVENC CQ to libaom-av1 CRF
+    # Example: If MODEL_CQ_REFERENCE_CODEC is "libsvtav1"
+    "libaom-av1": { # Mapping libsvtav1 CQ to libaom-av1 CRF
         "model_ref_cq_range": [10, 63], # Expected input range from your AV1 model
         "target_param_type": "crf",
         "target_param_range": [10, 63], # Typical CRF range for libaom-av1
-        "anchor_points": [ # [model_av1_nvenc_cq, libaom_av1_crf]
+        "anchor_points": [ # [model_libsvtav1_cq, libaom_av1_crf]
             [20, 22], # Lower CQ (better quality) maps to lower CRF
             [30, 32], # Medium CQ maps to medium CRF
             [40, 42], # Higher CQ (lower quality) maps to higher CRF
             [50, 52]
         ]
     },
-    "H264": { # Mapping AV1_NVENC CQ to libx264 CRF
+    "H264": { # Mapping libsvtav1 CQ to libx264 CRF
         "model_ref_cq_range": [10, 63],
         "target_param_type": "crf",
         "target_param_range": [0, 51],  # Typical CRF range for libx264
-        "anchor_points": [ # [model_av1_nvenc_cq, libx264_crf]
+        "anchor_points": [ # [model_libsvtav1_cq, libx264_crf]
             [20, 18],
             [30, 23],
             [40, 28],
@@ -164,22 +168,22 @@ QUALITY_MAPPING_ANCHORS = {
         ]
     },
 
-    "HEVC_NVENC": { # Mapping AV1_NVENC CQ to HEVC_NVENC CQ
+    "HEVC_NVENC": { # Mapping libsvtav1 CQ to HEVC_NVENC CQ
         "model_ref_cq_range": [10, 63],
         "target_param_type": "cq",
         "target_param_range": [10, 51], # Typical CQ range for NVENC HEVC
-        "anchor_points": [ # [model_av1_nvenc_cq, hevc_nvenc_cq]
+        "anchor_points": [ # [model_libsvtav1_cq, hevc_nvenc_cq]
             [20, 19], # Might be slightly different scale or perception
             [30, 25],
             [40, 31],
             [50, 37]
         ]
     },
-    "libx265": { # Mapping AV1_NVENC CQ to libx265 CRF
+    "libx265": { # Mapping libsvtav1 CQ to libx265 CRF
         "model_ref_cq_range": [10, 63],
         "target_param_type": "crf",
         "target_param_range": [0, 51], # Typical CRF range for libx265
-        "anchor_points": [ # [model_av1_nvenc_cq, libx265_crf]
+        "anchor_points": [ # [model_libsvtav1_cq, libx265_crf]
             [20, 20],
             [30, 26],
             [40, 32],

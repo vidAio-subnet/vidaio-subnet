@@ -354,74 +354,106 @@ def download_trim_downscale_video(
 
     def generate_chunk_timestamps(total_duration, clip_duration):
         """
-        Generate chunk timestamps using sliding window approach to maximize chunks per video.
-        This reduces API requests by extracting many overlapping chunks from each downloaded video.
+        Generate chunk timestamps using randomized approach to maximize chunks per video.
+        This reduces API requests by extracting many overlapping chunks from each downloaded video
+        while using randomized start points to avoid predictable patterns.
         
         Strategy:
-        - 5s clips: Slide by 1s intervals (1-6s, 2-7s, 3-8s, etc.)
-        - 10s clips: Slide by 2s intervals (0-10s, 2-12s, 4-14s, etc.)  
-        - 20s clips: Slide by 3s intervals (0-20s, 3-23s, 6-26s, etc.)
+        - Uses random start points within safe zones to avoid predictable patterns
+        - Maintains reasonable overlap between chunks for continuity
+        - Adapts to different clip durations with appropriate randomization ranges
         """
         chunks = []
         
-        # Define slide intervals for each clip duration
-        slide_intervals = {
-            1: 0.5,   # For 1s clips, slide by 0.5s
-            2: 0.5,   # For 2s clips, slide by 0.5s  
-            3: 1,     # For 3s clips, slide by 1s
-            4: 1,     # For 4s clips, slide by 1s
-            5: 1,     # For 5s clips, slide by 1s
-            10: 2,    # For 10s clips, slide by 2s
-            20: 3     # For 20s clips, slide by 3s
+        # Define safe zones and overlap ranges for each clip duration
+        # Safe zones avoid very beginning/end of video where quality might be poor
+        safe_zone_configs = {
+            1: {"safe_start": 0.2, "safe_end_ratio": 0.8, "min_overlap": 0.3, "max_overlap": 0.7},
+            2: {"safe_start": 0.3, "safe_end_ratio": 0.85, "min_overlap": 0.5, "max_overlap": 1.0},
+            3: {"safe_start": 0.4, "safe_end_ratio": 0.9, "min_overlap": 0.8, "max_overlap": 1.5},
+            4: {"safe_start": 0.5, "safe_end_ratio": 0.9, "min_overlap": 1.0, "max_overlap": 2.0},
+            5: {"safe_start": 0.5, "safe_end_ratio": 0.9, "min_overlap": 1.0, "max_overlap": 2.5},
+            10: {"safe_start": 0.5, "safe_end_ratio": 0.9, "min_overlap": 2.0, "max_overlap": 4.0},
+            20: {"safe_start": 0.5, "safe_end_ratio": 0.9, "min_overlap": 3.0, "max_overlap": 6.0}
         }
         
-        slide_interval = slide_intervals.get(clip_duration, 1)
+        config = safe_zone_configs.get(clip_duration, {
+            "safe_start": 0.5, "safe_end_ratio": 0.9, "min_overlap": 1.0, "max_overlap": 2.0
+        })
         
-        # Calculate maximum number of chunks we can extract
-        max_chunks_possible = int((total_duration - clip_duration) / slide_interval) + 1
+        # Calculate safe zone boundaries
+        safe_start = config["safe_start"]
+        safe_end = total_duration * config["safe_end_ratio"]
+        min_overlap = config["min_overlap"]
+        max_overlap = config["max_overlap"]
         
         # Set reasonable limits to avoid over-extraction from one video
         max_chunks_per_video = {
-            1: min(20, max_chunks_possible),   # Max 20 chunks for 1s clips
-            2: min(15, max_chunks_possible),   # Max 15 chunks for 2s clips
-            3: min(12, max_chunks_possible),   # Max 12 chunks for 3s clips
-            4: min(10, max_chunks_possible),   # Max 10 chunks for 4s clips
-            5: min(8, max_chunks_possible),    # Max 8 chunks for 5s clips
-            10: min(6, max_chunks_possible),   # Max 6 chunks for 10s clips
-            20: min(4, max_chunks_possible)    # Max 4 chunks for 20s clips
+            1: 20,   # Max 20 chunks for 1s clips
+            2: 15,   # Max 15 chunks for 2s clips
+            3: 12,   # Max 12 chunks for 3s clips
+            4: 10,   # Max 10 chunks for 4s clips
+            5: 8,    # Max 8 chunks for 5s clips
+            10: 6,   # Max 6 chunks for 10s clips
+            20: 4    # Max 4 chunks for 20s clips
         }
         
-        max_chunks = max_chunks_per_video.get(clip_duration, max_chunks_possible)
+        max_chunks = max_chunks_per_video.get(clip_duration, 8)
         
         # Ensure we have enough video duration
         if total_duration < clip_duration:
             return [(0, 0, min(total_duration, clip_duration))]
         
-        # Generate sliding window chunks
-        current_start = 0
-        chunk_index = 0
+        # Ensure safe zone is valid
+        if safe_end - safe_start < clip_duration:
+            # If safe zone is too small, use the entire video
+            safe_start = 0
+            safe_end = total_duration
         
-        while (current_start + clip_duration <= total_duration and 
-               chunk_index < max_chunks):
+        # Generate randomized chunks
+        chunk_index = 0
+        last_end = safe_start
+        
+        while chunk_index < max_chunks:
+            # Calculate the maximum start time for this chunk
+            max_start = min(safe_end - clip_duration, last_end + max_overlap)
             
-            end_time = current_start + clip_duration
-            chunks.append((chunk_index, current_start, end_time))
+            # If we can't fit another chunk, break
+            if max_start < last_end - min_overlap:
+                break
             
-            current_start += slide_interval
+            # Generate random start time within valid range
+            min_start = max(safe_start, last_end - min_overlap)
+            if min_start >= max_start:
+                break
+                
+            start_time = random.uniform(min_start, max_start)
+            end_time = start_time + clip_duration
+            
+            # Ensure we don't exceed video duration
+            if end_time > total_duration:
+                end_time = total_duration
+                start_time = end_time - clip_duration
+                if start_time < 0:
+                    start_time = 0
+            
+            chunks.append((chunk_index, start_time, end_time))
+            
+            last_end = end_time
             chunk_index += 1
         
-        # Add one final chunk from the end if we have remaining duration
+        # Add one final chunk from the end if we have remaining duration and space
         if (chunk_index < max_chunks and 
             total_duration > clip_duration and 
-            current_start < total_duration - 2):  # At least 2s remaining
+            total_duration - clip_duration > last_end - min_overlap):
             
             final_start = total_duration - clip_duration
             # Only add if it doesn't overlap too much with the last chunk
-            if not chunks or final_start - chunks[-1][1] >= slide_interval:
+            if not chunks or final_start - chunks[-1][1] >= min_overlap:
                 chunks.append((chunk_index, final_start, total_duration))
         
-        safe_print(f"Generated {len(chunks)} chunks for {clip_duration}s duration from {total_duration:.1f}s video")
-        safe_print(f"Chunk extraction details: slide_interval={slide_interval}s, max_chunks={max_chunks}")
+        safe_print(f"Generated {len(chunks)} randomized chunks for {clip_duration}s duration from {total_duration:.1f}s video")
+        safe_print(f"Randomization details: safe_zone={safe_start:.1f}s-{safe_end:.1f}s, overlap_range={min_overlap:.1f}s-{max_overlap:.1f}s, max_chunks={max_chunks}")
         
         return chunks
 

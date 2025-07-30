@@ -10,7 +10,7 @@ from utils.processing_utils import (
     should_skip_encoding,
     encode_scene_with_size_check,
     analyze_input_compression,
-    # classify_scene_from_path 
+    classify_scene_from_path 
 )
 from utils.encode_video import encode_video
 from utils.classify_scene import load_scene_classifier_model, CombinedModel
@@ -137,13 +137,15 @@ def ai_encoding(scene_metadata, config, resources, target_vmaf=None, logging_ena
     current_codec = original_video_metadata.get('codec', original_codec)
     config_codec = config.get('video_processing', {}).get('codec', 'auto')
     
+    # Define codec upgrade map outside the conditional blocks
+    codec_upgrade_map = {'h264': 'libsvtav1', 'hevc': 'libsvtav1', 'vp9': 'libsvtav1', 'av1': 'libsvtav1'}
+    
     if target_codec_from_part1 and target_codec_from_part1 != 'auto':
         codec = target_codec_from_part1
     elif config_codec != 'auto':
         codec = config_codec
     else:
-        codec_upgrade_map = {'h264': 'av1_nvenc', 'hevc': 'av1_nvenc', 'vp9': 'av1_nvenc', 'av1': 'av1_nvenc'}
-        codec = codec_upgrade_map.get(current_codec.lower(), 'av1_nvenc')
+        codec = codec_upgrade_map.get(current_codec.lower(), 'libsvtav1')
 
     if logging_enabled:
         print(f"   🎥 Selected Codec: {codec}")
@@ -155,7 +157,7 @@ def ai_encoding(scene_metadata, config, resources, target_vmaf=None, logging_ena
     scene_type = 'default'
     confidence_score = 0.0
     try:        
-        classification_result = classify_scene_from_path(
+        scene_type, detailed_results = classify_scene_from_path(
             scene_path=scene_path,
             temp_dir=temp_dir,
             scene_classifier_model=resources['scene_classifier_model'],
@@ -164,8 +166,7 @@ def ai_encoding(scene_metadata, config, resources, target_vmaf=None, logging_ena
             class_mapping=resources['class_mapping'],
             logging_enabled=logging_enabled
         )
-        scene_type = classification_result.get('scene_type', 'default')
-        confidence_score = classification_result.get('confidence_score', 0.0)
+        confidence_score = detailed_results.get('confidence_score', 0.0)
 
         if logging_enabled:
             print(f"   🎭 Scene classified as: '{scene_type}' (Confidence: {confidence_score:.2f})")
@@ -293,7 +294,7 @@ if __name__ == '__main__':
             'original_video_metadata': {
                 'path': 'original_video.mp4',
                 'codec': 'h264',
-                'target_codec': 'av1_nvenc',
+                'target_codec': 'libsvtav1',
             }
         }
         

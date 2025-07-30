@@ -40,7 +40,7 @@ def pre_processing(video_path, target_quality='Medium',codec='auto', max_duratio
     
     # ✅ CODEC HANDLING: Resolve auto codec selection
     if codec.lower() == 'auto':
-        target_codec = 'av1_nvenc'  # Default to AV1 for best quality
+        target_codec = 'libsvtav1'  # Default to SVT-AV1 for best quality
         
     else:
         target_codec = codec
@@ -185,7 +185,7 @@ if __name__ == '__main__':
     # Test with different quality levels and codec options
     test_cases = [
         ('High', 'auto'),
-        ('Medium', 'av1_nvenc'),
+        ('Medium', 'libsvtav1'),
         ('Low', 'libx264'),
         ('Medium', 'auto')  # Test auto-detection
     ]
@@ -233,7 +233,7 @@ if __name__ == '__main__':
         video_path=lossless_video,
         target_quality='High',
         max_duration=7200,
-        codec='av1_nvenc'  # Test with specific codec
+        codec='libsvtav1'  # Test with specific codec
     )
     
     if result:
