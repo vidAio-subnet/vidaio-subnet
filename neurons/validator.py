@@ -435,6 +435,7 @@ class Validator(base.BaseValidator):
                 "reference_paths": reference_video_paths,
                 "video_ids": video_ids,
                 "uploaded_object_names": uploaded_object_names,
+                "vmaf_thresholds": [float(threshold) for threshold in vmaf_thresholds]
             },
             timeout=240
         )

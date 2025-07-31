@@ -56,6 +56,7 @@ class CompressionScoringRequest(BaseModel):
     uids: List[int]
     video_ids: List[str]
     uploaded_object_names: List[str]
+    vmaf_thresholds: List[float]
     fps: Optional[float] = None
     subsample: Optional[int] = 1
     verbose: Optional[bool] = False
@@ -388,7 +389,7 @@ def upscale_video(input_path, scale_factor=2):
 
 @app.post("/score_upscaling_synthetics")
 async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> UpscalingScoringResponse:
-    print("#################### 🤖 start scoring ####################")
+    print("#################### 🤖 start upscaling request scoring ####################")
 
     start_time = time.time()
     quality_scores = []
@@ -696,7 +697,7 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
 
 @app.post("/score_compression_synthetics")
 async def score_compression_synthetics(request: CompressionScoringRequest) -> CompressionScoringResponse:
-    print("#################### 🤖 start scoring ####################")
+    print("#################### 🤖 start compression request scoring ####################")
     start_time = time.time()
     quality_scores = []
     compression_scores = []
@@ -716,12 +717,13 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             detail="Number of UIDs must match number of distorted URLs"
         )
 
-    for idx, (ref_path, dist_url, uid, video_id, uploaded_object_name) in enumerate(zip(
+    for idx, (ref_path, dist_url, uid, video_id, uploaded_object_name, vmaf_threshold) in enumerate(zip(
         request.reference_paths, 
         request.distorted_urls, 
         request.uids,
         request.video_ids,
-        request.uploaded_object_names
+        request.uploaded_object_names,
+        request.vmaf_thresholds
     )):
         try:
             print(f"🧩 Processing pair {idx+1}/{len(request.distorted_urls)}: UID {uid} 🧩")
@@ -888,8 +890,8 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 print(f"Error calculating VMAF score: {e}")
                 continue
 
-            if vmaf_score / 100 < VMAF_THRESHOLD:
-                print(f"VMAF score is too low, giving zero score, current VMAF score: {vmaf_score}")
+            if vmaf_score / 100 < vmaf_threshold:
+                print(f"VMAF score is lower than threshold, giving zero score, current VMAF score: {vmaf_score}, vmaf threshold: {vmaf_threshold}")
                 quality_scores.append(0.0)
                 compression_scores.append(0.0)
                 final_scores.append(0.0)
@@ -904,8 +906,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             dist_cap.release()
 
             # Calculate final score combining quality and compression
-            # Weight: 70% quality, 30% compression
-            final_score = (quality_score * 0.7) + (compression_score * 0.3)
+            final_score = (quality_score * 0.5) + (compression_score * 0.5)
             print(f"🎯 Final score is {final_score}")
 
             quality_scores.append(quality_score)
