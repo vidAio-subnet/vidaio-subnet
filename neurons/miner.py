@@ -65,8 +65,8 @@ class Miner(BaseMiner):
         
         start_time = time.time()
         
-        vmaf_threshold: float = synapse.miner_payload.vmaf_threshold
         payload_url: str = synapse.miner_payload.reference_video_url
+        vmaf_threshold: float = synapse.miner_payload.vmaf_threshold
         validator_uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
         
         logger.info(f"🛜🛜🛜 Receiving CompressionRequest from validator: {synapse.dendrite.hotkey} with uid: {validator_uid} 🛜🛜🛜")

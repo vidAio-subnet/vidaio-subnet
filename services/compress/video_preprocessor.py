@@ -6,11 +6,6 @@ import sys
 from utils.video_utils import get_video_duration, get_video_codec
 from utils.encode_video import encode_lossless_video
 
-#TODO: Add more checks for max resolution, bitrate, etc. as needed
-#TODO: Add checks for user defined parameters and override defaults in config
-#TODO: Add more lossless codecs as needed and check if more containers are needed
-
-
 def pre_processing(video_path, target_quality='Medium',codec='auto', max_duration=60, output_dir='./output'):
     """
     Part 1: Initial video checks and lossless encoding if necessary.
