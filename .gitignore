@@ -11,6 +11,7 @@ note.txt
 *.mp3
 *.js
 *.xml 
+*.txt
 .DS_Store
 *.json
 .env

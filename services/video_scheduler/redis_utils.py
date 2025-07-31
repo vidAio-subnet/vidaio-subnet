@@ -79,15 +79,77 @@ def pop_organic_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
         
 #     return None
 
-def pop_5s_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
+# def pop_5s_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
+#     """
+#     Pop the oldest 5s chunk dictionary (FIFO).
+#     Returns a dictionary or None if queue is empty.
+    
+#     Args:
+#         r (redis.Redis): Redis connection
 
+#     Returns:
+#         Optional[Dict[str, str]]: The popped 5s chunk or None if empty.
+#     """
+#     data = r.lpop(REDIS_CONFIG.synthetic_5s_clip_queue_key)
+#     return json.loads(data) if data else None
+
+def pop_5s_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
+    """
+    Pop the oldest 5s chunk dictionary (FIFO), and push it back to the end of the queue
+    to maintain the queue size. Returns a dictionary or None if the queue is empty.
+    
+    Args:
+        r (redis.Redis): Redis connection
+
+    Returns:
+        Optional[Dict[str, str]]: The popped 5s chunk or None if the queue is empty.
+    """
+    # Pop the oldest item from the queue
     data = r.lpop(REDIS_CONFIG.synthetic_5s_clip_queue_key)
-    return json.loads(data) if data else None
+    
+    if data:
+        chunk = json.loads(data)
+        # Push the chunk back to maintain queue size
+        push_5s_chunks(r, [chunk])
+        return chunk
+        
+    return None
+
+# def pop_10s_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
+#     """
+#     Pop the oldest 10s chunk dictionary (FIFO).
+#     Returns a dictionary or None if queue is empty.
+    
+#     Args:
+#         r (redis.Redis): Redis connection
+
+#     Returns:
+#         Optional[Dict[str, str]]: The popped 10s chunk or None if empty.
+#     """
+#     data = r.lpop(REDIS_CONFIG.synthetic_10s_clip_queue_key)
+#     return json.loads(data) if data else None
 
 def pop_10s_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
+    """
+    Pop the oldest 10s chunk dictionary (FIFO), and push it back to the end of the queue
+    to maintain the queue size. Returns a dictionary or None if the queue is empty.
+    
+    Args:
+        r (redis.Redis): Redis connection
 
+    Returns:
+        Optional[Dict[str, str]]: The popped 10s chunk or None if the queue is empty.
+    """
+    # Pop the oldest item from the queue
     data = r.lpop(REDIS_CONFIG.synthetic_10s_clip_queue_key)
-    return json.loads(data) if data else None
+    
+    if data:
+        chunk = json.loads(data)
+        # Push the chunk back to maintain queue size
+        push_10s_chunks(r, [chunk])
+        return chunk
+        
+    return None
 
 def pop_20s_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
 
