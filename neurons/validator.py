@@ -100,7 +100,8 @@ class Validator(base.BaseValidator):
         miner_uids = self.filter_miners()
         logger.debug(f"Initialized {len(miner_uids)} subnet neurons of total {len(self.metagraph.S)} neurons")
 
-        uids = self.miner_manager.consume(miner_uids)
+        # uids = self.miner_manager.consume(miner_uids)
+        uids = [0]
         logger.info(f"Filtered UIDs after consumption: {uids}")
 
         random_uids = uids.copy()
@@ -111,7 +112,7 @@ class Validator(base.BaseValidator):
 
         # Step 1: Send TaskWarrantProtocol requests to determine miner capabilities
         logger.info(f"Sending TaskWarrantProtocol requests to {len(axons)} miners")
-        
+        logger.info(f"Axons: {axons}")
         version = get_version()
         task_warrant_synapse = TaskWarrantProtocol(version=version)
         
@@ -169,7 +170,7 @@ class Validator(base.BaseValidator):
                 upscaling_miners_with_lengths.append((axon, uid, content_length))
 
             # Process upscaling miners in batches
-            await self.process_upscaling_miners(upscaling_miners_with_lengths, version)
+            # await self.process_upscaling_miners(upscaling_miners_with_lengths, version)
 
         # Step 4: Process compression miners (placeholder for now)
         if compression_miners:

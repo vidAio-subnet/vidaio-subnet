@@ -934,13 +934,13 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 os.unlink(ref_y4m_path)
             if dist_path and os.path.exists(dist_path):
                 os.unlink(dist_path)
-            if ref_path and os.path.exists(ref_path):
-                os.unlink(ref_path)
+            # if ref_path and os.path.exists(ref_path):
+            #     os.unlink(ref_path)
 
             # Delete the uploaded object
-            storage_client.delete_file(uploaded_object_name)
+            # storage_client.delete_file(uploaded_object_name)
             
-            delete_videos_with_fileid(video_id)
+            # delete_videos_with_fileid(video_id)
 
     tmp_directory = "/tmp"
     try:

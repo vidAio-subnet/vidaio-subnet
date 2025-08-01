@@ -32,33 +32,56 @@ class TestCompressPayload(BaseModel):
 
 @app.post("/compress-video")
 async def compress_video(video: CompressPayload):
-    input_path = download_video(video.payload_url)
+    print(f"video url: {video.payload_url}")
+    print(f"vmaf threshold: {video.vmaf_threshold}")
+    input_path = await download_video(video.payload_url)
+    input_file = Path(input_path)
     vmaf_threshold = video.vmaf_threshold
 
     # Check if input file exists
-    if not input_path.is_file():
+    if not input_file.is_file():
         raise HTTPException(status_code=400, detail="Input video file does not exist.")
 
-    # Generate output path
-    output_path = input_path.with_name(input_path.stem + "_compressed.mp4")
+    # Create output directory if it doesn't exist
+    output_dir = Path(video.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Call video_compressor with the payload parameters
     try:
         compressed_video_path = video_compressor(
-            input_file=str(input_path),
+            input_file=str(input_file),  # Use input_file consistently
             target_quality=video.target_quality,
             max_duration=video.max_duration,
-            output_dir=video.output_dir
+            output_dir=str(output_dir)
         )
-        
-        if compressed_video_path and os.path.exists(compressed_video_path):
+        print(f"compressed_video_path: {compressed_video_path}")
+
+        if compressed_video_path and Path(compressed_video_path).exists():
             # Upload the compressed video to storage
             try:
+                # Generate object name from the compressed video filename
+                compressed_video_name = os.path.basename(compressed_video_path)
+                object_name: str = compressed_video_name
+                
                 # Upload the compressed video file
-                object_name = await storage_client.upload_file(str(compressed_video_path))
+                await storage_client.upload_file(object_name, compressed_video_path)
+                print(f"object_name: {object_name}")
+                print("Video uploaded successfully.")
+                
+                # Delete the local file since we've already uploaded it to MinIO
+                if os.path.exists(compressed_video_path):
+                    os.remove(compressed_video_path)
+                    print(f"{compressed_video_path} has been deleted.")
+                else:
+                    print(f"{compressed_video_path} does not exist.")
                 
                 # Get the presigned URL for sharing
-                sharing_link = await storage_client.get_presigned_url(object_name)
+                sharing_link: str | None = await storage_client.get_presigned_url(object_name)
+                print(f"sharing_link: {sharing_link}")
+                
+                if not sharing_link:
+                    print("Upload failed")
+                    return {"uploaded_video_url": None}
                 
                 return {
                     "uploaded_video_url": sharing_link,
@@ -79,23 +102,23 @@ async def test_compress_video(test_payload: TestCompressPayload):
     Test endpoint for video compression that only requires a local video path.
     Uses default parameters for testing purposes.
     """
-    video_path = test_payload.video_path
+    video_path = Path(test_payload.video_path)
     
     # Check if input file exists
-    if not os.path.exists(video_path):
+    if not video_path.is_file():
         raise HTTPException(status_code=400, detail=f"Video file does not exist: {video_path}")
     
     try:
         # Call the test function
-        compressed_video_path = test_video_compression(video_path)
+        compressed_video_path = test_video_compression(str(video_path))
         
-        if compressed_video_path and os.path.exists(compressed_video_path):
+        if compressed_video_path and Path(compressed_video_path).exists():
             return {
                 "status": "success",
                 "message": "Video compression test completed successfully",
-                "input_path": video_path,
+                "input_path": str(video_path),
                 "output_path": compressed_video_path,
-                "output_size_mb": round(os.path.getsize(compressed_video_path) / (1024 * 1024), 2)
+                "output_size_mb": round(Path(compressed_video_path).stat().st_size / (1024 * 1024), 2)
             }
         else:
             raise HTTPException(status_code=500, detail="Video compression test failed")
@@ -113,6 +136,10 @@ def video_compressor(input_file, target_quality='Medium', max_duration=3600, out
     # Get current directory
     current_dir = os.path.dirname(os.path.abspath(__file__))
     
+    # Create output directory if it doesn't exist
+    output_dir_path = Path(output_dir)
+    output_dir_path.mkdir(parents=True, exist_ok=True)
+    
     # Load configuration
     try:
         config_path = os.path.join(current_dir, 'config.json')
@@ -123,8 +150,8 @@ def video_compressor(input_file, target_quality='Medium', max_duration=3600, out
         print("⚠️ Config file not found, using default configuration")
         config = {
             'directories': {
-                'temp_dir': './videos/temp_scenes',
-                'output_dir': './output'
+                'temp_dir': str(Path('./videos/temp_scenes').absolute()),
+                'output_dir': str(output_dir_path)
             },
             'video_processing': {
                 'SHORT_VIDEO_THRESHOLD': 20,
@@ -152,10 +179,14 @@ def video_compressor(input_file, target_quality='Medium', max_duration=3600, out
         }
     
     # Update output directory from arguments
-    config['directories']['output_dir'] = output_dir
+    config['directories']['output_dir'] = str(output_dir_path)
+    
+    # Create temp directory if it doesn't exist
+    temp_dir = Path(config['directories']['temp_dir'])
+    temp_dir.mkdir(parents=True, exist_ok=True)
     
     print(f"\n🎬 === AI Video Compression Pipeline ===")
-    print(f"   📁 Input: {os.path.basename(input_file)}")
+    print(f"   📁 Input: {Path(input_file).name}")
     print(f"   🎯 Target Quality: {target_quality}")
     print(f"   ⏱️ Max Duration: {max_duration}s")
     print(f"   📁 Output Dir: {output_dir}")
@@ -169,7 +200,7 @@ def video_compressor(input_file, target_quality='Medium', max_duration=3600, out
         video_path=input_file,
         target_quality=target_quality,
         max_duration=max_duration,
-        output_dir=output_dir
+        output_dir=output_dir_path
     )
     
     part1_time = time.time() - part1_start_time
@@ -417,9 +448,11 @@ def video_compressor(input_file, target_quality='Medium', max_duration=3600, out
     print(f"      Total Pipeline Time: {total_pipeline_time:.1f}s")
     
     # Final file size comparison
-    if os.path.exists(input_file) and os.path.exists(final_video_path):
-        input_size = os.path.getsize(input_file) / (1024 * 1024)
-        output_size = os.path.getsize(final_video_path) / (1024 * 1024)
+    input_file_path = Path(input_file)
+    final_video_path_obj = Path(final_video_path)
+    if input_file_path.exists() and final_video_path_obj.exists():
+        input_size = input_file_path.stat().st_size / (1024 * 1024)
+        output_size = final_video_path_obj.stat().st_size / (1024 * 1024)
         final_compression = (1 - output_size / input_size) * 100
         
         print(f"\n   📊 Final Size Comparison:")
@@ -484,22 +517,24 @@ def test_video_compression(video_path: str):
     
     try:
         # Check if input file exists
-        if not os.path.exists(video_path):
+        input_path = Path(video_path)
+        if not input_path.is_file():
             print(f"❌ Input file does not exist: {video_path}")
             return None
             
         # Create test output directory if it doesn't exist
-        os.makedirs(test_params['output_dir'], exist_ok=True)
+        test_output_dir = Path(test_params['output_dir'])
+        test_output_dir.mkdir(parents=True, exist_ok=True)
         
         # Call the main video_compressor function with test parameters
         result = video_compressor(
-            input_file=video_path,
+            input_file=str(input_path),
             target_quality=test_params['target_quality'],
             max_duration=test_params['max_duration'],
-            output_dir=test_params['output_dir']
+            output_dir=str(test_output_dir)
         )
         
-        if result and os.path.exists(result):
+        if result and Path(result).exists():
             print(f"\n✅ Test completed successfully!")
             print(f"   📁 Compressed video: {result}")
             return result
@@ -513,15 +548,15 @@ def test_video_compression(video_path: str):
 
 
 if __name__ == "__main__":
-    # import uvicorn
+    import uvicorn
 
-    # logger.info("Starting video compressor server")
-    # logger.info(f"Video compressor server running on http://{CONFIG.video_compressor.host}:{CONFIG.video_compressor.port}")
+    logger.info("Starting video compressor server")
+    logger.info(f"Video compressor server running on http://{CONFIG.video_compressor.host}:{CONFIG.video_compressor.port}")
 
-    # uvicorn.run(app, host=CONFIG.video_compressor.host, port=CONFIG.video_compressor.port)
+    uvicorn.run(app, host=CONFIG.video_compressor.host, port=CONFIG.video_compressor.port)
 
-    result = test_video_compression('test1.mp4')
-    print(result)
+    # result = test_video_compression('test1.mp4')
+    # print(result)
 
 
     #python services/compress/server.py

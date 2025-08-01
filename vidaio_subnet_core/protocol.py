@@ -21,13 +21,13 @@ class ContentLength(IntEnum):
     # ONE_SIXTY = 160  
     # THREE_TWENTY = 320 
 
-class TaskType(Enum):
+class TaskType(IntEnum):
     """
     Enumeration of allowed task types that miners can handle.
     These represent the types of video processing tasks that miners can warrant.
     """
-    COMPRESSION = "compression"
-    UPSCALING = "upscaling"
+    COMPRESSION = 1
+    UPSCALING = 2
 
 class UpscalingMinerPayload(BaseModel):
     reference_video_url: str = Field(

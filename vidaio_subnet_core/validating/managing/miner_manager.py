@@ -343,9 +343,7 @@ class MinerManager:
         total_uids: List[int],
         hotkeys: List[str],
         vmaf_scores: List[float],
-        pieapp_scores: List[float],
-        scores: List[float],
-        length_scores: List[float],
+        quailty_scores: List[float],
         final_scores: List[float],
         content_lengths: List[float],
         content_type: str = "video"
@@ -362,9 +360,7 @@ class MinerManager:
             for i, uid in enumerate(total_uids):
                 hotkey = hotkeys[i]
                 vmaf_score = vmaf_scores[i]
-                pieapp_score = pieapp_scores[i]
-                s_q = scores[i]
-                s_l = length_scores[i]
+                s_q = quailty_scores[i]
                 s_f = final_scores[i]
                 content_length = content_lengths[i]
                 
@@ -453,9 +449,8 @@ class MinerManager:
                     uid, 
                     round_id,
                     vmaf_score,
-                    pieapp_score,
                     s_q, 
-                    s_l, 
+                    0,
                     s_f, 
                     content_length, 
                     content_type,
