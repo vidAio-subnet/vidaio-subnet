@@ -22,6 +22,10 @@ from vidaio_subnet_core import CONFIG
 from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
 from vidaio_subnet_core.utilities.storage_client import storage_client
 
+# Compression scoring constants
+COMPRESSION_RATE_WEIGHT = 0.8  # w_c
+COMPRESSION_VMAF_WEIGHT = 0.2  # w_vmaf
+
 # Set up logging
 logger = logging.getLogger(__name__)
 app = FastAPI()
@@ -91,8 +95,7 @@ class CompressionScoringResponse(BaseModel):
     Response model for compression scoring. Contains the list of calculated scores for each distorted video.
     """
     vmaf_scores: List[float]
-    quality_scores: List[float]
-    compression_scores: List[float]
+    compression_rates: List[float]
     final_scores: List[float]
     reasons: List[str]
 
@@ -699,8 +702,7 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
 async def score_compression_synthetics(request: CompressionScoringRequest) -> CompressionScoringResponse:
     print("#################### 🤖 start compression request scoring ####################")
     start_time = time.time()
-    quality_scores = []
-    compression_scores = []
+    compression_rates = []
     final_scores = []
     vmaf_scores = []
     reasons = []
@@ -750,8 +752,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 print(f"  Assigning score of 0.")
                 
                 vmaf_scores.append(0.0)
-                quality_scores.append(0.0)
-                compression_scores.append(0.0)
+                compression_rates.append(1.0)  # No compression achieved
                 final_scores.append(-100)
                 reasons.append(f"error opening reference video file: {ref_path} (exists: {file_exists}, size: {file_size})")
                 continue
@@ -767,8 +768,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             if ref_total_frames < 10:
                 print(f"Video must contain at least 10 frames. Assigning score of 0.")
                 vmaf_scores.append(0.0)
-                quality_scores.append(0.0)
-                compression_scores.append(0.0)
+                compression_rates.append(1.0)  # No compression achieved
                 final_scores.append(-100)
                 reasons.append("reference video has fewer than 10 frames")
                 ref_cap.release()
@@ -781,8 +781,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             if len(dist_url) < 10:
                 print(f"Wrong dist download URL: {dist_url}. Assigning score of 0.")
                 vmaf_scores.append(0.0)
-                quality_scores.append(0.0)
-                compression_scores.append(0.0)
+                compression_rates.append(1.0)  # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("Invalid download URL: the distorted video download URL must be at least 10 characters long.")
                 continue
@@ -793,8 +792,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 error_msg = f"Failed to download video from {dist_url}: {str(e)}"
                 print(f"{error_msg}. Assigning score of 0.")
                 vmaf_scores.append(0.0)
-                quality_scores.append(0.0)
-                compression_scores.append(0.0)
+                compression_rates.append(1.0)  # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("failed to download video file from url")
                 continue
@@ -809,8 +807,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             if not dist_cap.isOpened():
                 print(f"Error opening distorted video file from {dist_url}. Assigning score of 0.")
                 vmaf_scores.append(0.0)
-                quality_scores.append(0.0)
-                compression_scores.append(0.0)
+                compression_rates.append(1.0)  # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("error opening distorted video file")
                 dist_cap.release()
@@ -828,8 +825,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                     f"Video length mismatch for pair {idx+1}: ref({ref_total_frames}) != dist({dist_total_frames}). Assigning score of 0."
                 )
                 vmaf_scores.append(0.0)
-                quality_scores.append(0.0)
-                compression_scores.append(0.0)
+                compression_rates.append(1.0)  # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("video length mismatch")
                 dist_cap.release()
@@ -840,18 +836,6 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             # Get distorted video file size for compression rate calculation
             dist_file_size = os.path.getsize(dist_path)
             print(f"Distorted video file size: {dist_file_size} bytes")
-
-            # Calculate compression rate
-            if ref_file_size > 0:
-                compression_rate = dist_file_size / ref_file_size
-                print(f"Compression rate: {compression_rate:.4f} ({dist_file_size}/{ref_file_size})")
-            else:
-                compression_rate = 1.0
-                print("Reference file size is 0, setting compression rate to 1.0")
-
-            # Calculate compression score (lower is better for compression)
-            compression_score = max(0.0, 1.0 - compression_rate)
-            print(f"Compression score: {compression_score:.4f}")
 
             # Sample frames for VMAF calculation
             random_frames = sorted(random.sample(range(ref_total_frames), VMAF_SAMPLE_COUNT))
@@ -882,36 +866,50 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 print(f"🎾 VMAF score is {vmaf_score}")
             except Exception as e:
                 vmaf_scores.append(0.0)
-                quality_scores.append(0.0)
-                compression_scores.append(0.0)
+                compression_rates.append(1.0)  # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("failed to calculate VMAF score due to video dimension mismatch")
                 dist_cap.release()
                 print(f"Error calculating VMAF score: {e}")
                 continue
 
-            if vmaf_score / 100 < vmaf_threshold:
+            # Calculate compression score using the proper formula
+            # C = compressed_file_size / original_file_size
+            # S_c = w_c × (1 - C^1.5) + w_vmaf × (VMAF_score - VMAF_threshold) / (100 - VMAF_threshold)
+            
+            if ref_file_size > 0:
+                compression_rate = dist_file_size / ref_file_size
+                print(f"Compression rate: {compression_rate:.4f} ({dist_file_size}/{ref_file_size})")
+            else:
+                compression_rate = 1.0
+                print("Reference file size is 0, setting compression rate to 1.0")
+
+            # Check VMAF threshold first
+            if vmaf_score < vmaf_threshold:
                 print(f"VMAF score is lower than threshold, giving zero score, current VMAF score: {vmaf_score}, vmaf threshold: {vmaf_threshold}")
-                quality_scores.append(0.0)
-                compression_scores.append(0.0)
+                compression_rates.append(compression_rate)  # Keep the compression rate even if VMAF fails
                 final_scores.append(0.0)
                 reasons.append(f"VMAF score is too low, current VMAF score: {vmaf_score}")
                 dist_cap.release()
                 continue
 
-            # Calculate quality score from VMAF
-            quality_score = min(1.0, vmaf_score / 100.0)  # Normalize VMAF to 0-1 range
-            print(f"🏀 Quality score is {quality_score}")
+            # Calculate compression rate component: w_c × (1 - C^1.5)
+            compression_rate_component = COMPRESSION_RATE_WEIGHT * (1 - compression_rate ** 1.5)
+            print(f"Compression rate component: {compression_rate_component:.4f}")
 
-            dist_cap.release()
+            # Calculate VMAF quality component: w_vmaf × (VMAF_score - VMAF_threshold) / (100 - VMAF_threshold)
+            vmaf_quality_component = COMPRESSION_VMAF_WEIGHT * (vmaf_score - vmaf_threshold) / (100 - vmaf_threshold)
+            print(f"VMAF quality component: {vmaf_quality_component:.4f}")
 
-            # Calculate final score combining quality and compression
-            final_score = (quality_score * 0.5) + (compression_score * 0.5)
-            print(f"🎯 Final score is {final_score}")
+            # Calculate final compression score
+            compression_score = compression_rate_component + vmaf_quality_component
+            print(f"🎯 Compression score is {compression_score:.4f}")
 
-            quality_scores.append(quality_score)
-            compression_scores.append(compression_score)
-            final_scores.append(final_score)
+            # Calculate final score (for compression, this is the same as compression_score)
+            print(f"🎯 Final score is {compression_score:.4f}")
+
+            compression_rates.append(compression_rate)
+            final_scores.append(compression_score)
             reasons.append("success")
 
             step_time = time.time() - uid_start_time
@@ -921,8 +919,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             error_msg = f"Failed to process video from {dist_url}: {str(e)}"
             print(f"{error_msg}. Assigning score of 0.")
             vmaf_scores.append(0.0)
-            quality_scores.append(0.0)
-            compression_scores.append(0.0)
+            compression_rates.append(1.0)  # No compression achieved
             final_scores.append(0.0)
             reasons.append("failed to process video")
 
@@ -960,8 +957,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
     
     return CompressionScoringResponse(
         vmaf_scores=vmaf_scores,
-        quality_scores=quality_scores,
-        compression_scores=compression_scores,
+        compression_rates=compression_rates,
         final_scores=final_scores,
         reasons=reasons
     )

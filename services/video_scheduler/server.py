@@ -100,6 +100,7 @@ def api_get_synthetic_chunks(request_data: SyntheticChunkRequest):
     return {"chunks": chunks, "status": "success"}
 
 
+
 def retrieve_chunk_with_retry(redis_conn, content_length: int, max_retries: int = 3, retry_delay: int = 20):
    
     chunk_type_map = {
@@ -179,6 +180,7 @@ def api_scheduler_ready():
             "status": "error",
             "message": f"Error checking readiness: {str(e)}"
         }
+
 
 @app.get("/api/queue_sizes")
 def api_queue_sizes():

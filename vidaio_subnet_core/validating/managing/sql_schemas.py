@@ -38,6 +38,12 @@ class MinerMetadata(Base):
     success_rate = Column(Float, default=0.0)
     longest_content_processed = Column(Float, default=0.0)
     
+    # Compression-specific fields
+    compression_rate = Column(Float, default=0.0)
+    avg_compression_rate = Column(Float, default=0.0)
+    compression_penalty_vmaf_count = Column(Integer, default=0)
+    compression_penalty_vmaf_multiplier = Column(Float, default=1.0)
+    
     performance_history = relationship("MinerPerformanceHistory", 
                                       back_populates="miner",
                                       order_by="desc(MinerPerformanceHistory.timestamp)",
@@ -70,6 +76,10 @@ class MinerPerformanceHistory(Base):
     vmaf_score = Column(Float)
     pie_app_score = Column(Float)
     processing_time = Column(Float)
+    
+    # Compression-specific fields
+    compression_rate = Column(Float, default=0.0)
+    vmaf_threshold = Column(Float, default=0.0)
     
     applied_multiplier = Column(Float, default=1.0)
     

@@ -443,23 +443,27 @@ class Validator(base.BaseValidator):
 
         response_data = score_response.json()
 
-        quality_scores = response_data.get("quality_scores", [])
+        compression_rates = response_data.get("compression_rates", [])
         final_scores = response_data.get("final_scores", [])
         vmaf_scores = response_data.get("vmaf_scores", [])
         reasons = response_data.get("reasons", [])
         
-        logger.info(f"Updating miner manager with {len(quality_scores)} compression miner scores after synthetic requests processing")
+        logger.info(f"Updating miner manager with {len(compression_rates)} compression miner scores after synthetic requests processing")
 
         miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
         
-        # Use the same step_synthetics method for now, but with compression context
+        # Use the compression rates from the scoring response
+        if not compression_rates:
+            compression_rates = [0.5] * len(uids)  # Fallback to default if not provided
+        
+        # Use the updated step_synthetics_compression method with compression context
         accumulate_scores, applied_multipliers = self.miner_manager.step_synthetics_compression(
-            round_id, uids, miner_hotkeys, vmaf_scores, quality_scores, final_scores, [10] * len(uids)
+            round_id, uids, miner_hotkeys, vmaf_scores,
+            final_scores, [10] * len(uids), vmaf_thresholds, compression_rates
         )
 
         max_length = max(
             len(uids),
-            len(quality_scores),
             len(final_scores),
             len(vmaf_scores),
             len(reasons),
@@ -468,21 +472,21 @@ class Validator(base.BaseValidator):
         )
 
         vmaf_scores.extend([0.0] * (max_length - len(vmaf_scores)))
-        quality_scores.extend([0.0] * (max_length - len(quality_scores)))
         final_scores.extend([0.0] * (max_length - len(final_scores)))
         reasons.extend(["No reason provided"] * (max_length - len(reasons)))
         vmaf_thresholds.extend([90.0] * (max_length - len(vmaf_thresholds)))
+        compression_rates.extend([0.5] * (max_length - len(compression_rates)))
         applied_multipliers.extend([0.0] * (max_length - len(applied_multipliers)))
 
         logger.info(f"Compression scoring results for {len(uids)} miners")
         logger.info(f"Uids: {uids}")
 
-        for uid, vmaf_score, quality_score, final_score, reason, vmaf_threshold, applied_multiplier in zip(
-            uids, vmaf_scores, quality_scores, final_scores, reasons, vmaf_thresholds, applied_multipliers
+        for uid, vmaf_score, quality_score, final_score, reason, vmaf_threshold, compression_rate, applied_multiplier in zip(
+            uids, vmaf_scores, final_scores, reasons, vmaf_thresholds, compression_rates, applied_multipliers
         ):
             logger.info(
-                f"{uid} ** VMAF: {vmaf_score:.2f} ** Quality: {quality_score:.4f} "
-                f"** VMAF Threshold: {vmaf_threshold} ** Applied_multiplier {applied_multiplier} ** Final: {final_score:.4f} || {reason}"
+                f"{uid} ** VMAF: {vmaf_score:.2f} ** Compression: {compression_rate:.4f} "
+                f"** VMAF Threshold: {vmaf_threshold} ** Compression Rate: {compression_rate:.4f} ** Applied_multiplier {applied_multiplier} ** Final: {final_score:.4f} || {reason}"
             )
 
         miner_data = {
@@ -492,7 +496,7 @@ class Validator(base.BaseValidator):
             "miner_uids": uids,
             "miner_hotkeys": miner_hotkeys,
             "vmaf_scores": vmaf_scores,
-            "quality_scores": quality_scores,
+            "compression_rates": compression_rates,
             "final_scores": final_scores,
             "accumulate_scores": accumulate_scores,
             "applied_multipliers": applied_multipliers,

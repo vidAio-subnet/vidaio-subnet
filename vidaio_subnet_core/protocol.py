@@ -58,6 +58,7 @@ class CompressionMinerPayload(BaseModel):
         le=100.0,
     )
 
+
 class MinerResponse(BaseModel):
     optimized_video_url: str = Field(
         description="The URL of the processed video (compressed/upscaled)",

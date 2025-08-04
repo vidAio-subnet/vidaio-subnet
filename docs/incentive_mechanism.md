@@ -1,16 +1,22 @@
-# VIDAIO Subnet Validation & Incentive Mechanism
+ # VIDAIO Subnet Validation & Incentive Mechanism
 
 ## Table of Contents
 - [Overview](#overview)
-- [Validation Metrics](#validation-metrics)
+- [Task Types](#task-types)
+  - [Upscaling Tasks](#upscaling-tasks)
+  - [Compression Tasks](#compression-tasks)
+- [Quality Validation Metrics](#quality-validation-metrics)
   - [VMAF (Video Multi-Method Assessment Fusion)](#vmaf-video-multi-method-assessment-fusion)
   - [PIE-APP (Perceptual Image-Error Assessment)](#pie-app-perceptual-image-error-assessment-through-pairwise-preference)
-  - [Score Integration](#combining-vmaf-and-pie-app-scores)
-- [Scoring System](#scoring-system)
-  - [Content Length Scoring](#content-length-score-calculation)
-  - [Final Score Calculation](#final-score-calculation)
-  - [Penalty & Bonus System](#penalty--bonus-system)
-- [Implementation Guidelines](#implementation-notes)
+- [Upscaling System](#upscaling-system)
+  - [Upscaling Scoring](#upscaling-scoring)
+  - [Content Length Scoring](#content-length-scoring)
+  - [Upscaling Final Score](#upscaling-final-score)
+  - [Upscaling Penalty & Bonus System](#upscaling-penalty--bonus-system)
+- [Compression System](#compression-system)
+  - [Compression Scoring](#compression-scoring)
+  - [Compression Penalty & Bonus System](#compression-penalty--bonus-system)
+- [Implementation Guidelines](#implementation-guidelines)
 - [Technical Specifications](#technical-specifications)
 - [Mathematical Properties](#mathematical-properties)
 
@@ -18,18 +24,43 @@
 
 ## Overview
 
-The VIDAIO subnet validation mechanism ensures quality and reliability of miners' contributions through a comprehensive dual-metric assessment system. This mechanism evaluates video processing performance using **VMAF** and **PIE-APP** metrics, combined with an advanced scoring system that rewards consistency and penalizes poor performance.
+The VIDAIO subnet validation mechanism ensures quality and reliability of miners' contributions through comprehensive assessment systems for different video processing tasks. The mechanism evaluates video processing performance using industry-standard **VMAF** and **PIE-APP** metrics, combined with advanced scoring systems that reward consistency and penalize poor performance.
 
 **Key Features:**
-- 🎯 **Dual-metric validation** using industry-standard VMAF and PIE-APP
-- 📊 **Dynamic content length processing** (5s to 320s capability)
-- 🏆 **Performance-based incentive system** with exponential rewards
+- 🎯 **Multi-task support** for upscaling and compression operations
+- 📊 **Quality validation** using industry-standard VMAF and PIE-APP metrics
+- 🏆 **Performance-based incentive systems** with exponential rewards
 - 📈 **Historical performance tracking** with rolling 10-round windows
 - ⚖️ **Balanced penalty/bonus multipliers** encouraging sustained excellence
+- 📦 **Dynamic content processing** (5s to 320s capability)
 
 ---
 
-## Upscaling Quality Validation Metrics
+## Task Types
+
+### Upscaling Tasks
+
+Upscaling tasks require miners to enhance video quality by increasing resolution while maintaining or improving visual fidelity. These tasks focus on **quality improvement** as the primary objective.
+
+**Key Characteristics:**
+- **Primary Goal**: Quality enhancement and resolution improvement
+- **Quality Metrics**: PIE-APP for scoring, VMAF for threshold validation
+- **Content Length**: Dynamic processing durations (5s to 320s)
+- **Scoring Focus**: Quality improvement with content length consideration
+
+### Compression Tasks
+
+Compression tasks require miners to reduce video file sizes while maintaining quality above specified VMAF thresholds. These tasks focus on **efficiency optimization** balancing file size reduction with quality preservation.
+
+**Key Characteristics:**
+- **Primary Goal**: File size reduction with quality maintenance
+- **Quality Metrics**: VMAF for both scoring and threshold validation
+- **Compression Rate**: File size reduction efficiency measurement
+- **Scoring Focus**: Compression efficiency with quality threshold compliance
+
+---
+
+## Quality Validation Metrics
 
 ### VMAF (Video Multi-Method Assessment Fusion)
 
@@ -38,7 +69,7 @@ VMAF serves as the foundational video quality assessment metric, comparing frame
 #### Key Characteristics
 - **Purpose**: Frame-by-frame quality comparison
 - **Range**: 0-100 (higher values indicate better quality)
-- **Usage**: Threshold validation for upscaling verification
+- **Usage**: Threshold validation and quality scoring
 - **Industry Standard**: Widely adopted in professional video processing
 
 #### Mathematical Implementation
@@ -61,15 +92,15 @@ The harmonic mean approach provides several critical advantages:
 |-----------|-------------|---------|
 | **Sensitivity to Low Values** | Heavily penalizes poor-quality frames | Ensures consistent quality |
 | **Quality Consistency** | Prevents miners from neglecting frame quality | Maintains processing standards |
-| **Threshold Function** | Validates authentic upscaling processes | Prevents gaming attempts |
+| **Threshold Function** | Validates authentic processing processes | Prevents gaming attempts |
 
-> **Note**: VMAF scores are used exclusively for threshold validation to verify that processed videos are genuine upscaled versions of original content. We take 5 random frames for vmaf score calculation
+> **Note**: VMAF scores are calculated using 5 random frames for both upscaling and compression tasks.
 
 ---
 
 ### PIE-APP (Perceptual Image-Error Assessment through Pairwise Preference)
 
-PIE-APP provides deep learning-based perceptual similarity assessment between original and processed video frames, serving as the primary quality scoring mechanism.
+PIE-APP provides deep learning-based perceptual similarity assessment between original and processed video frames, serving as the primary quality scoring mechanism for upscaling tasks.
 
 #### Technical Specifications
 
@@ -91,14 +122,13 @@ PIE-APP_score = (Σ abs(d(F_i, F'_i))) / n
 - `F_i`: Frame `i` from original video
 - `F'_i`: Corresponding frame `i` from processed video  
 - `d(F_i, F'_i)`: Perceptual difference between frames
-- `n`: Number of processed frames
+- `n`: Number of processed frames (4 random frames)
 
 **Step 2: Score Normalization**
 ```
 1. Cap values: max(Average_PIE-APP, 2.0)
 2. Sigmoid normalization: normalized_score = 1/(1+exp(-Average_PIE-APP))
 3. Final transformation: Convert "lower is better" to "higher is better" (0-1 range)
-4. We take 4 random frames for comparison
 ```
 
 #### Visual Score Transformation
@@ -113,25 +143,36 @@ The PIE-APP scoring system uses sophisticated mathematical transformations:
 
 ---
 
-### Combining VMAF and PIE-APP Scores
+## Upscaling System
 
-The validation system integrates both metrics with distinct roles:
+### Upscaling Scoring
+
+#### Quality Score Calculation
+
+**VMAF Threshold Validation:**
+```
+If VMAF_score < VMAF_threshold:
+    S_Q = 0 (Zero score for quality violation)
+Else:
+    S_Q = PIE-APP_Final_Score
+```
+
+**Where:**
+- `S_Q`: Quality score for upscaling
+- `VMAF_score`: Achieved VMAF quality score
+- `VMAF_threshold`: Minimum required VMAF score
+- `PIE-APP_Final_Score`: Normalized PIE-APP score (0-1 range)
+
+#### Metric Integration
 
 | Metric | Range | Primary Function | Usage |
 |--------|-------|------------------|-------|
 | **VMAF** | 0-100 | Threshold validation | Upscaling verification |
 | **PIE-APP** | 0-1 (final) | Quality scoring | Performance evaluation |
 
-```
-Final Quality Score S_Q = PIE-APP Final Score
-(VMAF serves as threshold validation only)
-```
-
 ---
 
-## Combination between Quality score and Content Length score
-
-### Content Length Score Calculation
+### Content Length Scoring
 
 #### Dynamic Content Length Requests
 
@@ -149,9 +190,7 @@ Miners actively request content processing durations within 60-second evaluation
 | 160s | 🔄 Coming Soon | Future Release |
 | 320s | 🔄 Coming Soon | Future Release |
 
-
 > **Current Limitation**: Processing durations up to 20 seconds are currently supported.
-
 
 #### Length Score Mathematical Model
 
@@ -176,7 +215,6 @@ S_L = log(1 + content_length) / log(1 + 320)
 | 160 | 0.8804 | 88.04% | +16% | Expert Level |
 | 320 | 1.0000 | 100.00% | +14% | Maximum Score |
 
-
 #### Logarithmic Scaling Benefits
 
 | Benefit | Description | Impact |
@@ -193,11 +231,11 @@ S_L = log(1 + content_length) / log(1 + 320)
 
 ---
 
-### Final Score Calculation
+### Upscaling Final Score
 
 #### Score Component Architecture
 
-The comprehensive scoring system integrates two fundamental metrics:
+The comprehensive upscaling scoring system integrates two fundamental metrics:
 
 | Component | Symbol | Description | Weight |
 |-----------|--------|-------------|--------|
@@ -227,7 +265,7 @@ S_F = 0.1 × e^(6.979 × (S_pre - 0.5))
 ```
 
 **Parameters:**
-- `S_F`: Final score
+- `S_F`: Final upscaling score
 - `S_pre`: Preliminary combined score
 - `e`: Euler's number (≈2.718)
 
@@ -262,17 +300,17 @@ S_F = 0.1 × e^(6.979 × (S_pre - 0.5))
 - **Optimization Focus**: Exponential curve creates powerful excellence incentives
 - **High-Performance Strategy**: Small quality improvements at elevated levels yield disproportionate benefits
 
-#### Graph analysis
+#### Graph Analysis
 
 !<img src="./images/graph3.png" alt="Length Score Analysis" width="1200" height="1000">
 
 ---
 
-### Penalty & Bonus System
+### Upscaling Penalty & Bonus System
 
 #### Historical Performance Multiplier Architecture
 
-The advanced scoring system incorporates a **rolling 10-round historical performance window** to evaluate consistency patterns and apply dynamic multipliers based on sustained performance trends.
+The advanced upscaling scoring system incorporates a **rolling 10-round historical performance window** to evaluate consistency patterns and apply dynamic multipliers based on sustained performance trends.
 
 #### System Formula
 
@@ -356,7 +394,6 @@ penalty_q_multiplier = 1.0 - (penalty_q_count / 10) × 0.25
 
 !<img src="./images/graph4.png" alt="Length Score Analysis" width="1200" height="800">
 
-
 ---
 
 #### System Benefits & Strategic Impact
@@ -373,7 +410,203 @@ penalty_q_multiplier = 1.0 - (penalty_q_count / 10) × 0.25
 
 ---
 
-## Implementation Notes
+## Compression System
+
+### Compression Scoring
+
+#### Task Parameters
+
+Each compression task includes specific requirements:
+
+| Parameter | Description | Range | Impact |
+|-----------|-------------|-------|---------|
+| **VMAF Threshold** | Minimum acceptable quality score | 0-100 | Quality validation |
+| **Original File Size** | Baseline for compression calculation | Variable | Compression rate baseline |
+| **Target Optimization** | Balance between compression and quality | Dynamic | Performance strategy |
+
+#### Compression Rate Calculation
+
+**Formula:**
+```
+C = compressed_file_size / original_file_size
+```
+
+**Where:**
+- `C`: Compression rate (0 < C ≤ 1)
+- `compressed_file_size`: Size of processed video file
+- `original_file_size`: Size of original video file
+
+**Characteristics:**
+- **Lower C values** indicate better compression (smaller files)
+- **C = 1.0** means no compression achieved
+- **C < 1.0** indicates successful compression
+
+#### VMAF Quality Assessment
+
+**Implementation:**
+```
+VMAF_score = Harmonic_Mean(VMAF_frame_1, VMAF_frame_2, ..., VMAF_frame_n)
+```
+
+**Where:**
+- `VMAF_frame_i`: VMAF score for frame `i`
+- `n`: Number of sampled frames (5 random frames)
+- `Harmonic_Mean`: Emphasizes poor-quality frame impact
+
+#### Final Compression Score Calculation
+
+**Threshold Validation:**
+```
+If VMAF_score < VMAF_threshold:
+    S_f = 0 (Zero score for quality violation)
+Else:
+    S_f = w_c × (1 - C^1.5) + w_vmaf × (VMAF_score - VMAF_threshold) / (100 - VMAF_threshold)
+```
+
+**Parameters:**
+- `S_f`: Final compression score
+- `w_c`: Weight for compression rate (default: 0.6)
+- `w_vmaf`: Weight for VMAF score (default: 0.4)
+- `C`: Compression rate
+- `VMAF_score`: Achieved VMAF quality score
+- `VMAF_threshold`: Minimum required VMAF score
+
+#### Mathematical Properties
+
+**Compression Rate Component:**
+- **Formula**: `w_c × (1 - C^1.5)`
+- **Range**: [0, w_c] (0 when C = 1, w_c when C = 0)
+- **Curve**: Concave function emphasizing compression efficiency
+- **Exponent 1.5**: Provides balanced reward for compression achievements
+
+**VMAF Quality Component:**
+- **Formula**: `w_vmaf × (VMAF_score - VMAF_threshold) / (100 - VMAF_threshold)`
+- **Range**: [0, w_vmaf] (0 at threshold, w_vmaf at maximum quality)
+- **Normalization**: Scales quality improvement relative to achievable range
+- **Linear scaling**: Direct correlation between quality improvement and score
+
+#### Performance Analysis Examples
+
+| Scenario | C | VMAF_score | VMAF_threshold | S_f | Performance Tier |
+|----------|---|------------|----------------|-----|------------------|
+| **Excellent** | 0.3 | 85 | 70 | 0.42 + 0.20 = **0.62** | Outstanding |
+| **Good** | 0.5 | 80 | 70 | 0.30 + 0.13 = **0.43** | Strong |
+| **Average** | 0.7 | 75 | 70 | 0.18 + 0.07 = **0.25** | Acceptable |
+| **Poor Quality** | 0.4 | 65 | 70 | **0.00** | Failed |
+| **No Compression** | 1.0 | 90 | 70 | 0.00 + 0.27 = **0.27** | Inefficient |
+
+#### Strategic Guidelines
+
+| Miner Strategy | Focus Area | Target Metrics | Expected Outcome |
+|----------------|------------|---------------|------------------|
+| **Quality-First** | Maintain high VMAF scores | VMAF_score >> VMAF_threshold | Consistent moderate scores |
+| **Compression-First** | Maximize file size reduction | C << 1.0 | Variable scores based on quality |
+| **Balanced Approach** | Optimize both factors | Moderate C + Good VMAF | Optimal long-term performance |
+| **Threshold Gaming** | Minimal quality compliance | VMAF_score ≈ VMAF_threshold | Low scores, high risk |
+
+---
+
+### Compression Penalty & Bonus System
+
+#### Historical Performance Multiplier Architecture
+
+The compression scoring system incorporates a **rolling 10-round historical performance window** to evaluate consistency patterns and apply dynamic multipliers based on sustained performance trends.
+
+#### System Formula
+
+```
+Final Adjusted Compression Score = S_f × Performance Multiplier
+Performance Multiplier = Bonus Multiplier × S_f Penalty × VMAF Penalty
+```
+
+---
+
+#### Bonus System (Excellence Rewards)
+
+**Activation Criteria:** `S_f > 0.55` in compression mining round
+
+**Mathematical Model:**
+```python
+bonus_multiplier = 1.0 + (bonus_count / 10) × 0.15
+```
+
+**System Characteristics:**
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| **Maximum Bonus** | +15% | All 10 rounds achieve S_f > 0.55 |
+| **Scaling Method** | Linear | Based on consistency frequency |
+| **Primary Purpose** | Sustained excellence reward | Long-term performance incentive |
+
+**Example Calculation:** 7/10 rounds with S_f > 0.55 → 1.105× multiplier (+10.5% bonus)
+
+---
+
+#### S_f Penalty System (Performance Penalties)
+
+**Activation Criteria:** `S_f < 0.25` in compression mining round
+
+**Mathematical Model:**
+```python
+penalty_f_multiplier = 1.0 - (penalty_f_count / 10) × 0.20
+```
+
+**System Characteristics:**
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| **Maximum Penalty** | -20% | All 10 rounds achieve S_f < 0.25 |
+| **Scaling Method** | Linear | Based on poor performance frequency |
+| **Primary Purpose** | Performance consistency enforcement | Discourages sustained poor results |
+
+**Example Calculation:** 4/10 rounds with S_f < 0.25 → 0.92× multiplier (-8% penalty)
+
+---
+
+#### VMAF Penalty System (Quality Penalties)
+
+**Activation Criteria:** `VMAF_score < VMAF_threshold + 5` in compression mining round
+
+**Mathematical Model:**
+```python
+penalty_vmaf_multiplier = 1.0 - (penalty_vmaf_count / 10) × 0.30
+```
+
+**System Characteristics:**
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| **Maximum Penalty** | -30% | All 10 rounds achieve VMAF_score < VMAF_threshold + 5 |
+| **Scaling Method** | Linear | Based on quality failure frequency |
+| **Primary Purpose** | Quality standard enforcement | Strongest penalty (quality is critical) |
+
+**Example Calculation:** 3/10 rounds with VMAF_score < VMAF_threshold + 5 → 0.91× multiplier (-9% penalty)
+
+---
+
+#### Compression Performance Multiplier Case Studies
+
+| Miner Category | Avg S_f | Avg VMAF Margin | Bonus Rate | S_f Penalty | VMAF Penalty | **Final Multiplier** | **Net Effect** |
+|----------------|---------|-----------------|------------|-------------|---------------|---------------------|----------------|
+| **Elite Compressor** | 0.654 | +15 | 10/10 | 0/10 | 0/10 | **1.150×** | **+15.0%** |
+| **Good Compressor** | 0.453 | +8 | 0/10 | 0/10 | 0/10 | **1.000×** | **±0.0%** |
+| **Average Compressor** | 0.311 | +3 | 0/10 | 0/10 | 3/10 | **0.910×** | **-9.0%** |
+| **Poor Compressor** | 0.211 | -2 | 0/10 | 10/10 | 10/10 | **0.490×** | **-51.0%** |
+
+#### Compression Penalty Analysis
+
+**Key Differences from Upscaling:**
+- **Higher VMAF penalty** (-30% max vs -25%) due to critical quality requirements
+- **Lower bonus threshold** (S_f > 0.55 vs S_f > 0.77) reflecting compression difficulty
+- **Quality margin requirement** (VMAF_threshold + 5) ensuring safety buffer
+- **Zero-score immediate penalty** for threshold violations
+
+**Strategic Impact:**
+- **Quality-first approach** strongly incentivized through higher penalties
+- **Consistency rewards** for miners maintaining quality above threshold
+- **Immediate feedback** through zero-score for quality violations
+- **Balanced optimization** encouraged through dual-factor scoring
+
+---
+
+## Implementation Guidelines
 
 ### Performance Monitoring
 
@@ -385,7 +618,7 @@ penalty_q_multiplier = 1.0 - (penalty_q_count / 10) × 0.25
 
 ### Scoring Strategy Recommendations
 
-**Performance-Based Guidelines:**
+**Upscaling Performance-Based Guidelines:**
 
 | Miner Category | Primary Focus | Strategic Recommendations |
 |----------------|---------------|---------------------------|
@@ -393,6 +626,15 @@ penalty_q_multiplier = 1.0 - (penalty_q_count / 10) × 0.25
 | **Established Miners** | Quality Optimization | Prioritize quality improvements when S_pre > 0.6 to avoid S_Q penalties |
 | **Elite Miners** | Consistency Maintenance | Maintain consistency above S_F > 0.77 to secure maximum bonus multipliers |
 | **Recovery Phase** | Systematic Improvement | Focus on quality (S_Q > 0.5) first, then performance (S_F > 0.45) to restore multipliers |
+
+**Compression Performance-Based Guidelines:**
+
+| Miner Category | Primary Focus | Strategic Recommendations |
+|----------------|---------------|---------------------------|
+| **New Compressors** | Quality Compliance | Focus on maintaining VMAF_score > VMAF_threshold + 5 |
+| **Established Compressors** | Balanced Optimization | Optimize both compression rate and quality maintenance |
+| **Elite Compressors** | Consistency Excellence | Maintain S_f > 0.55 consistently for bonus multipliers |
+| **Recovery Phase** | Quality Restoration | Focus on VMAF compliance first, then compression optimization |
 
 ### Future Enhancement Roadmap
 
@@ -405,6 +647,7 @@ penalty_q_multiplier = 1.0 - (penalty_q_count / 10) × 0.25
 - [ ] **Adaptive Difficulty Scaling** - Network performance-based adjustments
 - [ ] **Advanced Penalty/Bonus Optimization** - Network-wide performance distribution analysis
 - [ ] **Seasonal Performance Multiplier Adjustments** - Time-based optimization cycles
+- [ ] **Cross-Task Performance Integration** - Unified scoring across upscaling and compression
 
 ---
 
@@ -420,23 +663,37 @@ penalty_q_multiplier = 1.0 - (penalty_q_count / 10) × 0.25
 | **Exponential Coefficient** | 6.979 | Fixed | Dynamically adjusted based on network data |
 | **Score Transformation Base** | 0.1 | Fixed | Baseline multiplier constant |
 
+### Compression System Parameters
+
+| Parameter | Current Value | Configurable Range | Implementation Notes |
+|-----------|---------------|-------------------|---------------------|
+| **Compression Rate Weight (w_c)** | 0.6 | 0.4 - 0.8 | Balances compression efficiency vs quality |
+| **VMAF Score Weight (w_vmaf)** | 0.4 | 0.2 - 0.6 | Balances quality maintenance vs compression |
+| **Compression Rate Exponent** | 1.5 | 1.2 - 2.0 | Controls compression reward curve steepness |
+| **VMAF Safety Margin** | +5 | +3 - +10 | Quality buffer above threshold |
+| **Zero-Score Threshold** | VMAF_score < VMAF_threshold | Fixed | Immediate penalty for quality violations |
+
 ### Performance Multiplier System Parameters
 
 | Parameter | Current Value | Configurable Range | System Impact |
 |-----------|---------------|-------------------|---------------|
 | **Performance History Window** | 10 rounds | 5-20 rounds | Configurable for different network conditions |
-| **Bonus Threshold** | S_F > 0.77 | 0.7-0.85 | Adjustable based on network performance |
-| **S_F Penalty Threshold** | S_F < 0.45 | 0.3-0.5 | Adjustable based on network performance |
-| **S_Q Penalty Threshold** | S_Q < 0.5 | 0.4-0.6 | Adjustable based on network performance |
+| **Upscaling Bonus Threshold** | S_F > 0.77 | 0.7-0.85 | Adjustable based on network performance |
+| **Upscaling S_F Penalty Threshold** | S_F < 0.45 | 0.3-0.5 | Adjustable based on network performance |
+| **Upscaling S_Q Penalty Threshold** | S_Q < 0.5 | 0.4-0.6 | Adjustable based on network performance |
+| **Compression Bonus Threshold** | S_f > 0.55 | 0.5-0.7 | Lower threshold reflecting compression difficulty |
+| **Compression S_f Penalty Threshold** | S_f < 0.25 | 0.2-0.4 | Penalty for poor compression performance |
+| **VMAF Penalty Threshold** | VMAF_score < VMAF_threshold + 5 | +3 to +10 | Quality safety margin enforcement |
 | **Maximum Bonus** | +15% | 10%-20% | Scalable reward system |
 | **Maximum S_F Penalty** | -20% | 15%-25% | Scalable penalty system |
 | **Maximum S_Q Penalty** | -25% | 20%-30% | Strongest penalty for quality issues |
+| **Maximum VMAF Penalty** | -30% | 25%-35% | Strongest penalty for quality violations |
 
 ---
 
 ## Mathematical Properties
 
-### Length Score Function Properties
+### Upscaling Length Score Function Properties
 
 **Mathematical Characteristics:**
 - **Domain**: [5, 320] seconds
@@ -445,7 +702,7 @@ penalty_q_multiplier = 1.0 - (penalty_q_count / 10) × 0.25
 - **Growth Rate**: Decreasing marginal returns
 - **Optimization Point**: Balanced between processing capability and diminishing returns
 
-### Final Score Function Properties
+### Upscaling Final Score Function Properties
 
 **Mathematical Characteristics:**
 - **Domain**: [0, 1] (S_pre values)
@@ -453,6 +710,25 @@ penalty_q_multiplier = 1.0 - (penalty_q_count / 10) × 0.25
 - **Function Type**: Exponential (convex)
 - **Critical Point**: S_pre = 0.5 (inflection point for reward/penalty)
 - **Scaling Behavior**: Exponential amplification of performance differences
+
+### Compression Score Function Properties
+
+**Mathematical Characteristics:**
+- **Domain**: [0, 1] (compression rate C values)
+- **Range**: [0, w_c] (compression component score)
+- **Function Type**: Concave (1 - C^1.5)
+- **Critical Point**: C = 1 (no compression = zero score)
+- **Optimization**: Lower C values yield higher scores with diminishing returns
+
+### Compression VMAF Component Properties
+
+**Mathematical Characteristics:**
+- **Domain**: [VMAF_threshold, 100] (achievable quality range)
+- **Range**: [0, w_vmaf] (quality component score)
+- **Function Type**: Linear normalization
+- **Zero Point**: VMAF_score = VMAF_threshold
+- **Maximum Point**: VMAF_score = 100
+- **Quality Buffer**: +5 margin for penalty system
 
 ### Performance Multiplier Properties
 
@@ -469,7 +745,12 @@ penalty_q_multiplier = 1.0 - (penalty_q_count / 10) × 0.25
 
 The VIDAIO subnet validation and incentive mechanism represents a comprehensive, mathematically-grounded approach to ensuring high-quality video processing while maintaining fair competition and encouraging continuous improvement. Through the integration of industry-standard metrics (VMAF and PIE-APP), dynamic scoring systems, and sophisticated penalty/bonus mechanisms, the system creates a robust environment that rewards excellence and consistency while providing clear pathways for improvement.
 
-These metrics together ensure that miners maintain high-quality video processing standards while meeting demands for fast and efficient processing, creating a sustainable and competitive ecosystem for video enhancement services.
+The system now supports both **upscaling** and **compression** tasks, each with specialized scoring mechanisms:
+- **Upscaling tasks** focus on quality improvement using PIE-APP scoring with VMAF threshold validation
+- **Compression tasks** balance file size reduction with quality maintenance using dual-factor scoring
+- **Unified penalty systems** ensure consistent quality standards across all task types
+
+These metrics together ensure that miners maintain high-quality video processing standards while meeting demands for fast and efficient processing, creating a sustainable and competitive ecosystem for video enhancement and optimization services.
 
 ---
 

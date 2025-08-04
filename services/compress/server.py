@@ -69,11 +69,11 @@ async def compress_video(video: CompressPayload):
                 print("Video uploaded successfully.")
                 
                 # Delete the local file since we've already uploaded it to MinIO
-                if os.path.exists(compressed_video_path):
-                    os.remove(compressed_video_path)
-                    print(f"{compressed_video_path} has been deleted.")
-                else:
-                    print(f"{compressed_video_path} does not exist.")
+                # if os.path.exists(compressed_video_path):
+                #     os.remove(compressed_video_path)
+                #     print(f"{compressed_video_path} has been deleted.")
+                # else:
+                #     print(f"{compressed_video_path} does not exist.")
                 
                 # Get the presigned URL for sharing
                 sharing_link: str | None = await storage_client.get_presigned_url(object_name)

@@ -5,9 +5,9 @@ class VideoSchedulerConfig(BaseModel):
     host: str = Field(default="localhost")
     port: int = Field(default=8000)
     max_synthetic_queue_size: int = Field(default=20)  # Increased from 50
-    refill_threshold: int = Field(default=15)  # Increased from 25
-    refill_target: int = Field(default=20)  # Increased from 30
-    min_video_len: int = Field(default=25)
+    refill_threshold: int = Field(default=10)  # Increased from 25
+    refill_target: int = Field(default=10)  # Increased from 30
+    min_video_len: int = Field(default=30)
     max_video_len: int = Field(default=50)
     pexels_max_size: int = Field(default=20)  # Increased from 110
     pexels_threshold: int = Field(default=15)  # Increased from 90

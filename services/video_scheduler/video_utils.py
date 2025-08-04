@@ -327,14 +327,14 @@ def download_trim_downscale_video(
         actual_duration = end_time_clip - start_time_clip
         
         trim_cmd = [
-            "taskset", "-c", "0,1,2,3,4,5,6,7,8,9,10,11",
+            "taskset", "-c", "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24",
             "ffmpeg", "-y", "-i", str(transformed_source_path), "-ss", str(start_time_clip), 
             "-t", str(actual_duration), "-c:v", "libx264", "-preset", "ultrafast",
             "-an", str(clipped_path), "-hide_banner", "-loglevel", "error"
         ]
         
         scale_cmd = [
-            "taskset", "-c", "0,1,2,3,4,5,6,7,8,9,10,11",
+            "taskset", "-c", "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24",
             "ffmpeg", "-y", "-i", str(clipped_path), "-vf", f"scale=-1:{downscale_height}", 
             "-c:v", "libx264", "-preset", "ultrafast", "-an",
             str(downscale_path), "-hide_banner", "-loglevel", "error"
