@@ -43,6 +43,11 @@ def push_20s_chunks(r: redis.Redis, data_list: List[Dict[str, str]]) -> None:
     r.rpush(REDIS_CONFIG.synthetic_20s_clip_queue_key, *[json.dumps(data) for data in data_list])
     print("Pushed all URLs correctly in the Redis queue")
 
+def push_compression_chunks(r: redis.Redis, data_list: List[Dict[str, str]]) -> None:
+
+    r.rpush(REDIS_CONFIG.synthetic_compression_queue_key, *[json.dumps(data) for data in data_list])
+    print("Pushed all compression chunks correctly in the Redis queue")
+
 def pop_organic_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
     """
     Pop the oldest organic chunk dictionary (FIFO).
@@ -156,6 +161,11 @@ def pop_20s_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
     data = r.lpop(REDIS_CONFIG.synthetic_20s_clip_queue_key)
     return json.loads(data) if data else None
 
+def pop_compression_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
+
+    data = r.lpop(REDIS_CONFIG.synthetic_compression_queue_key)
+    return json.loads(data) if data else None
+
 def get_organic_queue_size(r: redis.Redis) -> int:
     """
     Get the size of the organic queue.
@@ -179,6 +189,16 @@ def get_10s_queue_size(r: redis.Redis) -> int:
 def get_20s_queue_size(r: redis.Redis) -> int:
 
     return r.llen(REDIS_CONFIG.synthetic_20s_clip_queue_key)
+
+def get_compression_queue_size(r: redis.Redis) -> int:
+    """
+    Get the size of the compression queue.
+    
+    Args:
+        r (redis.Redis): Redis connection
+    """
+
+    return r.llen(REDIS_CONFIG.synthetic_compression_queue_key)
 
 def push_pexels_video_ids(r: redis.Redis, data_list: List[Dict[str, str]]) -> None:
     """

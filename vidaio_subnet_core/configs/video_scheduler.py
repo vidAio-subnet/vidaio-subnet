@@ -8,7 +8,7 @@ class VideoSchedulerConfig(BaseModel):
     refill_threshold: int = Field(default=10)  # Increased from 25
     refill_target: int = Field(default=10)  # Increased from 30
     min_video_len: int = Field(default=30)
-    max_video_len: int = Field(default=50)
+    max_video_len: int = Field(default=40)
     pexels_max_size: int = Field(default=20)  # Increased from 110
     pexels_threshold: int = Field(default=15)  # Increased from 90
     weight_hd_to_4k: float = Field(default=0.4)

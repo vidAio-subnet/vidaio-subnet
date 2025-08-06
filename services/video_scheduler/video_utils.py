@@ -188,7 +188,7 @@ def apply_video_transformations(video_path: str, output_path: str = None, transf
         "ffmpeg", "-y", "-i", str(video_path),
         "-vf", selected_transformation,
         "-c:v", "libx264", "-preset", "fast", "-crf", "20",  # Faster preset, slightly higher CRF for speed
-        "-an",
+        "-an", "-threads", "30",
         str(output_path),
         "-hide_banner", "-loglevel", "error"
     ]
@@ -223,15 +223,16 @@ def apply_video_transformations(video_path: str, output_path: str = None, transf
         if e.stderr:
             print(f"FFmpeg stderr: {e.stderr}")
         # If transformation fails, return the original path
-        return video_path
+        return None
     except Exception as e:
         print(f"Unexpected error applying video transformation: {e}")
-        return video_path
+        return None
 
-def download_trim_downscale_video(
+def download_transform_and_trim_downscale_video(
     clip_duration: int,
     vid: int,
     task_type: str,
+    use_downscale_video: bool = True,
     output_dir: str = "videos",
     transformations_per_video: int = 0,
     enable_transformations: bool = False
@@ -281,7 +282,7 @@ def download_trim_downscale_video(
 
     def download_video(video_url, output_path):
         """Download video from URL with progress bar"""
-        safe_print(f"\nDownloading video from Pexels...")
+        print(f"\nDownloading video from Pexels...")
         response = requests.get(video_url, stream=True)
         total_size = int(response.headers.get('content-length', 0))
         
@@ -296,7 +297,7 @@ def download_trim_downscale_video(
                 size = f.write(chunk)
                 pbar.update(size)
                 
-        safe_print(f"Video downloaded successfully to: {output_path}")
+        print(f"Video downloaded successfully to: {output_path}")
         return output_path
 
     def get_video_info(video_path):
@@ -310,7 +311,7 @@ def download_trim_downscale_video(
         width, height, duration = map(float, result.stdout.strip().split(','))
         return int(width), int(height), duration
 
-    def process_chunk_from_transformed_video(chunk_info, transformed_source_path, base_video_id, transform_idx=None):
+    def process_chunk_from_transformed_video(chunk_info, transformed_source_path, base_video_id, transform_idx=None, use_downscale_video=True):
         i, start_time_clip, end_time_clip, chunk_video_id = chunk_info
         
         if transform_idx is not None:
@@ -327,22 +328,25 @@ def download_trim_downscale_video(
         actual_duration = end_time_clip - start_time_clip
         
         trim_cmd = [
-            "taskset", "-c", "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24",
+            "taskset", "-c", "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20",
             "ffmpeg", "-y", "-i", str(transformed_source_path), "-ss", str(start_time_clip), 
             "-t", str(actual_duration), "-c:v", "libx264", "-preset", "ultrafast",
             "-an", str(clipped_path), "-hide_banner", "-loglevel", "error"
         ]
         
         scale_cmd = [
-            "taskset", "-c", "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24",
+            "taskset", "-c", "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20",
             "ffmpeg", "-y", "-i", str(clipped_path), "-vf", f"scale=-1:{downscale_height}", 
             "-c:v", "libx264", "-preset", "ultrafast", "-an",
             str(downscale_path), "-hide_banner", "-loglevel", "error"
         ]
         
         try:
+            print(f"Trimming chunk {i+1} to {actual_duration}s")
             subprocess.run(trim_cmd, check=True)
-            subprocess.run(scale_cmd, check=True)
+            if use_downscale_video:
+                print(f"Downscaling chunk {i+1} to {downscale_height}p")
+                subprocess.run(scale_cmd, check=True)
             
             chunk_elapsed_time = time.time() - chunk_start_time
             safe_print(f"Time taken to process chunk {i+1}: {chunk_elapsed_time:.2f} seconds")
@@ -362,9 +366,44 @@ def download_trim_downscale_video(
         - Uses random start points within safe zones to avoid predictable patterns
         - Maintains reasonable overlap between chunks for continuity
         - Adapts to different clip durations with appropriate randomization ranges
+        - For 10s clips from 30s+ videos, uses sliding window approach for maximum extraction
         """
         chunks = []
         
+        # For 10s clips from 30s+ videos, use sliding window approach for maximum extraction
+        if clip_duration == 10 and total_duration >= 30:
+            # Use sliding window with small overlap to get maximum chunks
+            slide_interval = 3.5  # Slide by 3.5s to get more chunks
+            max_chunks = 6
+            
+            # Start from the beginning with some margin
+            current_start = 1.0  # Start 1s into the video
+            
+            chunk_index = 0
+            while chunk_index < max_chunks and current_start + clip_duration <= total_duration:
+                end_time = current_start + clip_duration
+                
+                # Add some randomness to the start time
+                random_offset = random.uniform(-0.5, 0.5)
+                adjusted_start = max(0, current_start + random_offset)
+                adjusted_end = adjusted_start + clip_duration
+                
+                # Ensure we don't exceed video duration
+                if adjusted_end > total_duration:
+                    adjusted_end = total_duration
+                    adjusted_start = adjusted_end - clip_duration
+                
+                chunks.append((chunk_index, adjusted_start, adjusted_end))
+                
+                current_start += slide_interval
+                chunk_index += 1
+            
+            print(f"Generated {len(chunks)} sliding window chunks for {clip_duration}s duration from {total_duration:.1f}s video")
+            print(f"Using sliding window approach with {slide_interval}s intervals")
+            
+            return chunks
+        
+        # For other durations, use the original randomized approach
         # Define safe zones and overlap ranges for each clip duration
         # Safe zones avoid very beginning/end of video where quality might be poor
         safe_zone_configs = {
@@ -373,7 +412,7 @@ def download_trim_downscale_video(
             3: {"safe_start": 0.4, "safe_end_ratio": 0.9, "min_overlap": 0.8, "max_overlap": 1.5},
             4: {"safe_start": 0.5, "safe_end_ratio": 0.9, "min_overlap": 1.0, "max_overlap": 2.0},
             5: {"safe_start": 0.5, "safe_end_ratio": 0.9, "min_overlap": 1.0, "max_overlap": 2.5},
-            10: {"safe_start": 0.5, "safe_end_ratio": 0.9, "min_overlap": 2.0, "max_overlap": 4.0},
+            10: {"safe_start": 0.5, "safe_end_ratio": 0.9, "min_overlap": 0.5, "max_overlap": 1.5},  # Adjusted for better extraction
             20: {"safe_start": 0.5, "safe_end_ratio": 0.9, "min_overlap": 3.0, "max_overlap": 6.0}
         }
         
@@ -452,107 +491,10 @@ def download_trim_downscale_video(
             if not chunks or final_start - chunks[-1][1] >= min_overlap:
                 chunks.append((chunk_index, final_start, total_duration))
         
-        safe_print(f"Generated {len(chunks)} randomized chunks for {clip_duration}s duration from {total_duration:.1f}s video")
-        safe_print(f"Randomization details: safe_zone={safe_start:.1f}s-{safe_end:.1f}s, overlap_range={min_overlap:.1f}s-{max_overlap:.1f}s, max_chunks={max_chunks}")
+        print(f"Generated {len(chunks)} randomized chunks for {clip_duration}s duration from {total_duration:.1f}s video")
+        print(f"Randomization details: safe_zone={safe_start:.1f}s-{safe_end:.1f}s, overlap_range={min_overlap:.1f}s-{max_overlap:.1f}s, max_chunks={max_chunks}")
         
         return chunks
-
-    def process_video_20s(vid, task_type, output_dir, transformations_per_video, enable_transformations):
-        """
-        Process 20s clips with CORRECTED transformation workflow:
-        Each thread handles download, transform (if enabled), trim, and downscale for a separate video
-        """
-        try:
-            url = f"https://api.pexels.com/videos/videos/{vid}"
-            headers = {"Authorization": api_key}
-            
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()
-            
-            data = response.json()
-            if "video_files" not in data:
-                raise ValueError("No video found or API error")
-                
-            video_url = next(
-                (video["link"] for video in data["video_files"] 
-                if video["width"] == expected_width and video["height"] == expected_height), 
-                None
-            )
-            
-            if video_url is None:
-                safe_print("No video found with required resolution")
-                return None, None, None
-                
-            video_duration = data.get("duration", 30)  
-            
-            chunks = generate_chunk_timestamps(video_duration, 20)
-            
-            all_results = []
-            
-            def process_single_chunk_with_transform(chunk_info):
-                i, start_time, end_time = chunk_info
-                base_video_id = uuid.uuid4()
-                
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    temp_path = Path(temp_dir) / f"{vid}_original_{i}.mp4"
-                    download_video(video_url, temp_path)
-                    
-                    if enable_transformations and transformations_per_video > 0:
-                        chunk_results = []
-                        
-                        for transform_idx in range(transformations_per_video):
-                            transformed_path = Path(temp_dir) / f"{vid}_transform_{transform_idx}_{i}.mp4"
-                            
-                            transformed_result = apply_video_transformations(
-                                str(temp_path), 
-                                str(transformed_path), 
-                                preserve_original=True
-                            )
-                            
-                            if transformed_result and os.path.exists(transformed_result):
-                                result = process_chunk_from_transformed_video(
-                                    (i, start_time, end_time, base_video_id), 
-                                    transformed_result, 
-                                    base_video_id, 
-                                    transform_idx
-                                )
-                                
-                                if result:
-                                    chunk_results.append(result)
-                        
-                        return chunk_results
-                    else:
-                        result = process_chunk_from_transformed_video(
-                            (i, start_time, end_time, base_video_id), 
-                            temp_path, 
-                            base_video_id
-                        )
-                        
-                        return [result] if result else []
-            
-            with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                future_to_chunk = {executor.submit(process_single_chunk_with_transform, chunk): chunk for chunk in chunks}
-                
-                for future in concurrent.futures.as_completed(future_to_chunk):
-                    chunk_results = future.result()
-                    if chunk_results:
-                        all_results.extend(chunk_results)
-            
-            all_results.sort(key=lambda x: x[0])
-            
-            downscale_paths = [result[1] for result in all_results]
-            final_video_ids = [result[2] for result in all_results]
-            reference_trim_paths = [result[3] for result in all_results]
-            
-            safe_print(f"\nDone! Successfully processed {len(all_results)} chunks.")
-            safe_print(f"Downscaled videos: {len(downscale_paths)}")
-            safe_print(f"Reference trims: {len(reference_trim_paths)}")
-            
-            return downscale_paths, final_video_ids, reference_trim_paths
-            
-        except Exception as e:
-            safe_print(f"Error in 20s processing: {str(e)}")
-            return None, None, None
 
     def process_video_standard(vid, clip_duration, task_type, output_dir, transformations_per_video, enable_transformations):
         """
@@ -587,31 +529,32 @@ def download_trim_downscale_video(
             
             download_video(video_url, temp_path)
             elapsed_time = time.time() - start_time
-            safe_print(f"Time taken to download video: {elapsed_time:.2f} seconds")
+            print(f"Time taken to download video: {elapsed_time:.2f} seconds")
         
-            safe_print("\nChecking video resolution...")
+            print("\nChecking video resolution...")
             width, height, total_duration = get_video_info(temp_path)
             
             if width != expected_width or height != expected_height:
                 error_msg = (f"Video resolution mismatch. Expected {expected_width}x{expected_height}, "
                             f"but got {width}x{height}")
-                safe_print(error_msg)
+                print(error_msg)
                 raise ValueError(error_msg)
             
-            safe_print(f"\nVideo resolution verified: {width}x{height}")
-            safe_print(f"Video duration: {total_duration:.2f}s")
+            print(f"\nVideo resolution verified: {width}x{height}")
+            print(f"Video duration: {total_duration:.2f}s")
             
             chunks_info = generate_chunk_timestamps(total_duration, clip_duration)
-            safe_print(f"Extracting {len(chunks_info)} chunks of {clip_duration}s each")
+            print(f"Extracting {len(chunks_info)} chunks of {clip_duration}s each")
             
             base_video_ids = [uuid.uuid4() for _ in range(len(chunks_info))]
             
             if enable_transformations and transformations_per_video > 0:
-                safe_print(f"\n Creating {transformations_per_video} transformed versions of the original video...")
+                print(f"\n Creating {transformations_per_video} transformed versions of the original video...")
                 
                 transformed_video_paths = []
                 
-                for transform_idx in range(transformations_per_video):
+                transform_idx = 0
+                while len(transformed_video_paths) < transformations_per_video:
                     transformed_path = Path(output_dir) / f"{vid}_transform_{transform_idx}.mp4"
                     
                     transformed_result = apply_video_transformations(
@@ -622,22 +565,27 @@ def download_trim_downscale_video(
                     
                     if transformed_result and os.path.exists(transformed_result):
                         transformed_video_paths.append(transformed_result)
-                        safe_print(f"✅ Created transformed version {transform_idx + 1}: {transformed_result}")
+                        transform_idx += 1
+                        print(f"✅ Created transformed version {len(transformed_video_paths)}: {transformed_result}")
                     else:
-                        safe_print(f"❌ Failed to create transformed version {transform_idx + 1}")
+                        print(f"❌ Failed to create transformed version {transform_idx + 1}, retrying...")
+                    
                 
                 if not transformed_video_paths:
-                    safe_print("❌ No transformed versions created successfully, falling back to original")
+                    print("❌ No transformed versions created successfully, falling back to original")
                     transformed_video_paths = [str(temp_path)]
                     transformations_per_video = 1
                 
                 all_results = []
+
+                chunks_with_ids = [(i, start, end, base_video_ids[idx]) 
+                                    for idx, (i, start, end) in enumerate(chunks_info)]
+
+                for chunk in chunks_with_ids:
+                    print(f"Processing chunk: {chunk}")
                 
                 for transform_idx, transformed_path in enumerate(transformed_video_paths):
-                    safe_print(f"\n📹 Processing chunks from transformed version {transform_idx + 1}...")
-                    
-                    chunks_with_ids = [(i, start, end, base_video_ids[idx]) 
-                                      for idx, (i, start, end) in enumerate(chunks_info)]
+                    print(f"\n📹 Processing chunks from transformed version {transform_idx + 1}...")
                     
                     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                         future_to_chunk = {
@@ -658,12 +606,12 @@ def download_trim_downscale_video(
                     
                     if transform_idx > 0 and os.path.exists(transformed_path):
                         os.remove(transformed_path)
-                        safe_print(f"🧹 Cleaned up transformed video: {transformed_path}")
+                        print(f"🧹 Cleaned up transformed video: {transformed_path}")
                 
                 results = all_results
                 
             else:
-                safe_print("\n📹 Processing chunks from original video (no transformations)...")
+                print("\n📹 Processing chunks from original video (no transformations)...")
                 
                 chunks_with_ids = [(i, start, end, base_video_ids[idx]) 
                                   for idx, (i, start, end) in enumerate(chunks_info)]
@@ -672,7 +620,8 @@ def download_trim_downscale_video(
                 with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                     future_to_chunk = {
                         executor.submit(
-                            process_chunk_from_transformed_video, 
+                            process_chunk_from_transformed_video,
+                            use_downscale_video,
                             chunk, 
                             temp_path, 
                             base_video_ids[idx]
@@ -691,38 +640,36 @@ def download_trim_downscale_video(
             final_video_ids = [result[2] for result in results]
             reference_trim_paths = [result[3] for result in results]
             
-            safe_print("\nCleaning up original downloaded file...")
+            print("\nCleaning up original downloaded file...")
             os.remove(temp_path)
-            safe_print(f"Deleted: {temp_path}")
+            print(f"Deleted: {temp_path}")
 
-            safe_print(f"\nDone! Successfully processed {len(results)} chunks.")
-            safe_print(f"Downscaled videos: {len(downscale_paths)}")
-            safe_print(f"Reference trims: {len(reference_trim_paths)}")
+            print(f"\nDone! Successfully processed {len(results)} chunks.")
+            print(f"Downscaled videos: {len(downscale_paths)}")
+            print(f"Reference trims: {len(reference_trim_paths)}")
             
             return downscale_paths, final_video_ids, reference_trim_paths
             
         except requests.exceptions.RequestException as e:
-            safe_print(f"Error downloading video: {e}")
+            print(f"Error downloading video: {e}")
             return None, None, None
         except Exception as e:
-            safe_print(f"Error: {str(e)}")
+            print(f"Error: {str(e)}")
             if 'temp_path' in locals() and os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)
-                    safe_print(f"Cleaned up downloaded file after error: {temp_path}")
+                    print(f"Cleaned up downloaded file after error: {temp_path}")
                 except:
                     pass
             return None, None, None
 
     try:
-        if clip_duration == 20:
-            return process_video_20s(vid, task_type, output_dir, transformations_per_video, enable_transformations)
-        else:
-            return process_video_standard(vid, clip_duration, task_type, output_dir, transformations_per_video, enable_transformations)
+        return process_video_standard(vid, clip_duration, task_type, output_dir, transformations_per_video, enable_transformations)
             
     except Exception as e:
-        safe_print(f"Unexpected error: {str(e)}")
+        print(f"Unexpected error: {str(e)}")
         return None, None, None
+
 
 def get_trim_video_path(file_id: int, dir_path: str = "videos") -> str:
     """Returns the path of the clipped trim video based on the file ID."""

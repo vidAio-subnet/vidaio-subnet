@@ -132,7 +132,7 @@ class Synthesizer:
                 # Send the correct request with content_lengths (using default 5s for compression)
                 content_lengths = [10] * len(vmaf_thresholds)  # Default 10s for compression tasks
                 response = await self.session.post(
-                    "/api/get_synthetic_chunks",
+                    "/api/get_compression_chunks",
                     json={"content_lengths": content_lengths}
                 )
                 response.raise_for_status()
