@@ -180,6 +180,10 @@ class Validator(base.BaseValidator):
         epoch_processed_time = time.time() - epoch_start_time
         logger.info(f"Completed one epoch within {epoch_processed_time:.2f} seconds")
 
+        sleep_time = 300 - epoch_processed_time
+        logger.info(f"Waiting {sleep_time:.2f} seconds before next epoch")
+        await asyncio.sleep(sleep_time)
+
     async def process_upscaling_miners(self, upscaling_miners_with_lengths, version):
         """Process upscaling miners in batches similar to the original implementation."""
         batch_size = CONFIG.bandwidth.requests_per_synthetic_interval
@@ -234,11 +238,10 @@ class Validator(base.BaseValidator):
             asyncio.create_task(self.score_upscalings(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, content_lengths, round_id))
 
             batch_processed_time = time.time() - batch_start_time
-            sleep_time = 250 - batch_processed_time
             
-            logger.info(f"Completed upscaling batch within {batch_processed_time:.2f} seconds. Waiting {sleep_time:.2f} seconds before next batch")
+            logger.info(f"Completed upscaling batch within {batch_processed_time:.2f} seconds")
 
-            await asyncio.sleep(sleep_time)
+            await asyncio.sleep(2)
 
     async def process_compression_miners(self, compression_miners, version):
         """Process compression miners in batches similar to upscaling but with compression protocols."""
@@ -295,11 +298,10 @@ class Validator(base.BaseValidator):
             asyncio.create_task(self.score_compressions(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, vmaf_thresholds, round_id))
 
             batch_processed_time = time.time() - batch_start_time
-            sleep_time = 250 - batch_processed_time
             
-            logger.info(f"Completed compression batch within {batch_processed_time:.2f} seconds. Waiting {sleep_time:.2f} seconds before next batch")
+            logger.info(f"Completed compression batch within {batch_processed_time:.2f} seconds")
 
-            await asyncio.sleep(sleep_time)
+            await asyncio.sleep(2)
 
     async def start_organic_loop(self):
         try:
