@@ -754,6 +754,7 @@ def log_queue_status(redis_conn):
         "organic": get_organic_queue_size(redis_conn),
         "synthetic_5s": get_5s_queue_size(redis_conn),
         "synthetic_10s": get_10s_queue_size(redis_conn),
+        "compression_queue": get_compression_queue_size(redis_conn)
     }
     
     for queue_name, size in queue_sizes.items():

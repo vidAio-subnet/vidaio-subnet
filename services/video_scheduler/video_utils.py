@@ -344,9 +344,12 @@ def download_transform_and_trim_downscale_video(
         try:
             print(f"Trimming chunk {i+1} to {actual_duration}s")
             subprocess.run(trim_cmd, check=True)
+
             if use_downscale_video:
                 print(f"Downscaling chunk {i+1} to {downscale_height}p")
                 subprocess.run(scale_cmd, check=True)
+            else: 
+                downscale_path = None
             
             chunk_elapsed_time = time.time() - chunk_start_time
             safe_print(f"Time taken to process chunk {i+1}: {chunk_elapsed_time:.2f} seconds")
@@ -604,7 +607,7 @@ def download_transform_and_trim_downscale_video(
                             if result:
                                 all_results.append(result)
                     
-                    if transform_idx > 0 and os.path.exists(transformed_path):
+                    if os.path.exists(transformed_path):
                         os.remove(transformed_path)
                         print(f"🧹 Cleaned up transformed video: {transformed_path}")
                 
