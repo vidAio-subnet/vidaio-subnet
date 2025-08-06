@@ -274,7 +274,7 @@ class Validator(base.BaseValidator):
 
             logger.debug(f"Processing compression UIDs in batch: {uids}")
             forward_tasks = [
-                self.dendrite.forward(axons=[axon], synapse=synapse, timeout=60)
+                self.dendrite.forward(axons=[axon], synapse=synapse, timeout=120)
                 for axon, synapse in zip(axons, synapses)
             ]
 
@@ -325,6 +325,8 @@ class Validator(base.BaseValidator):
         distorted_urls = []
         for uid, response in zip(uids, responses):
             distorted_urls.append(response.miner_response.optimized_video_url)
+
+        logger.info("responses: ", responses)
 
         score_response = await self.score_client.post(
             "/score_upscaling_synthetics",
@@ -483,30 +485,30 @@ class Validator(base.BaseValidator):
         logger.info(f"Compression scoring results for {len(uids)} miners")
         logger.info(f"Uids: {uids}")
 
-        for uid, vmaf_score, quality_score, final_score, reason, vmaf_threshold, compression_rate, applied_multiplier in zip(
+        for uid, vmaf_score, final_score, reason, vmaf_threshold, compression_rate, applied_multiplier in zip(
             uids, vmaf_scores, final_scores, reasons, vmaf_thresholds, compression_rates, applied_multipliers
         ):
             logger.info(
-                f"{uid} ** VMAF: {vmaf_score:.2f} ** Compression: {compression_rate:.4f} "
+                f"{uid} ** VMAF: {vmaf_score:.2f} "
                 f"** VMAF Threshold: {vmaf_threshold} ** Compression Rate: {compression_rate:.4f} ** Applied_multiplier {applied_multiplier} ** Final: {final_score:.4f} || {reason}"
             )
 
-        miner_data = {
-            "validator_uid": self.my_subnet_uid,
-            "validator_hotkey": self.wallet.hotkey.ss58_address,
-            "request_type": "Compression",
-            "miner_uids": uids,
-            "miner_hotkeys": miner_hotkeys,
-            "vmaf_scores": vmaf_scores,
-            "compression_rates": compression_rates,
-            "final_scores": final_scores,
-            "accumulate_scores": accumulate_scores,
-            "applied_multipliers": applied_multipliers,
-            "status": reasons,
-            "task_urls": payload_urls,
-            "processed_urls": distorted_urls,
-            "timestamp": timestamp
-        }
+        # miner_data = {
+        #     "validator_uid": self.my_subnet_uid,
+        #     "validator_hotkey": self.wallet.hotkey.ss58_address,
+        #     "request_type": "Compression",
+        #     "miner_uids": uids,
+        #     "miner_hotkeys": miner_hotkeys,
+        #     "vmaf_scores": vmaf_scores,
+        #     "compression_rates": compression_rates,
+        #     "final_scores": final_scores,
+        #     "accumulate_scores": accumulate_scores,
+        #     "applied_multipliers": applied_multipliers,
+        #     "status": reasons,
+        #     "task_urls": payload_urls,
+        #     "processed_urls": distorted_urls,
+        #     "timestamp": timestamp
+        # }
         
         # success = send_data_to_dashboard(miner_data)
         # if success:

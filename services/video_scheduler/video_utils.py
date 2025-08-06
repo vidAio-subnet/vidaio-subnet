@@ -499,7 +499,7 @@ def download_transform_and_trim_downscale_video(
         
         return chunks
 
-    def process_video_standard(vid, clip_duration, task_type, output_dir, transformations_per_video, enable_transformations):
+    def process_video_standard(vid, clip_duration, task_type, output_dir, transformations_per_video, enable_transformations, use_downscale_video):
         """
         Process 5s or 10s clips with CORRECTED transformation workflow:
         1. Download video once
@@ -597,7 +597,8 @@ def download_transform_and_trim_downscale_video(
                                 chunk, 
                                 transformed_path, 
                                 base_video_ids[idx], 
-                                transform_idx
+                                transform_idx,
+                                use_downscale_video
                             ): chunk 
                             for idx, chunk in enumerate(chunks_with_ids)
                         }
@@ -667,7 +668,7 @@ def download_transform_and_trim_downscale_video(
             return None, None, None
 
     try:
-        return process_video_standard(vid, clip_duration, task_type, output_dir, transformations_per_video, enable_transformations)
+        return process_video_standard(vid, clip_duration, task_type, output_dir, transformations_per_video, enable_transformations, use_downscale_video)
             
     except Exception as e:
         print(f"Unexpected error: {str(e)}")

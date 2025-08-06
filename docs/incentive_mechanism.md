@@ -176,7 +176,7 @@ Else:
 
 #### Dynamic Content Length Requests
 
-Miners actively request content processing durations within 60-second evaluation windows, enabling optimized resource allocation and performance assessment.
+Miners actively request content processing durations within 35-second evaluation windows, enabling optimized resource allocation and performance assessment.
 
 #### Available Processing Durations
 
@@ -184,13 +184,13 @@ Miners actively request content processing durations within 60-second evaluation
 |----------|--------|--------------|
 | 5s | ✅ Default | Currently Available |
 | 10s | ✅ Available | Currently Available |
-| 20s | ✅ Available | Currently Available |
+| 20s | 🔄 Coming Soon | Future Release |
 | 40s | 🔄 Coming Soon | Future Release |
 | 80s | 🔄 Coming Soon | Future Release |
 | 160s | 🔄 Coming Soon | Future Release |
 | 320s | 🔄 Coming Soon | Future Release |
 
-> **Current Limitation**: Processing durations up to 20 seconds are currently supported.
+> **Current Limitation**: Processing durations up to 10 seconds are currently supported.
 
 #### Length Score Mathematical Model
 
@@ -323,7 +323,7 @@ Performance Multiplier = Bonus Multiplier × S_F Penalty × S_Q Penalty
 
 #### Bonus System (Excellence Rewards)
 
-**Activation Criteria:** `S_F > 0.77` in mining round
+**Activation Criteria:** `S_F > 0.32` in mining round
 
 **Mathematical Model:**
 ```python
@@ -333,17 +333,17 @@ bonus_multiplier = 1.0 + (bonus_count / 10) × 0.15
 **System Characteristics:**
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| **Maximum Bonus** | +15% | All 10 rounds achieve S_F > 0.77 |
+| **Maximum Bonus** | +15% | All 10 rounds achieve S_F > 0.32 |
 | **Scaling Method** | Linear | Based on consistency frequency |
 | **Primary Purpose** | Sustained excellence reward | Long-term performance incentive |
 
-**Example Calculation:** 7/10 rounds with S_F > 0.77 → 1.105× multiplier (+10.5% bonus)
+**Example Calculation:** 7/10 rounds with S_F > 0.32 → 1.105× multiplier (+10.5% bonus)
 
 ---
 
 #### S_F Penalty System (Performance Penalties)
 
-**Activation Criteria:** `S_F < 0.45` in mining round
+**Activation Criteria:** `S_F < 0.20` in mining round
 
 **Mathematical Model:**
 ```python
@@ -353,17 +353,17 @@ penalty_f_multiplier = 1.0 - (penalty_f_count / 10) × 0.20
 **System Characteristics:**
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| **Maximum Penalty** | -20% | All 10 rounds achieve S_F < 0.45 |
+| **Maximum Penalty** | -20% | All 10 rounds achieve S_F < 0.20 |
 | **Scaling Method** | Linear | Based on poor performance frequency |
 | **Primary Purpose** | Performance consistency enforcement | Discourages sustained poor results |
 
-**Example Calculation:** 4/10 rounds with S_F < 0.45 → 0.92× multiplier (-8% penalty)
+**Example Calculation:** 4/10 rounds with S_F < 0.20 → 0.92× multiplier (-8% penalty)
 
 ---
 
 #### S_Q Penalty System (Quality Penalties)
 
-**Activation Criteria:** `S_Q < 0.5` in mining round
+**Activation Criteria:** `S_Q < 0.25` in mining round
 
 **Mathematical Model:**
 ```python
@@ -373,11 +373,11 @@ penalty_q_multiplier = 1.0 - (penalty_q_count / 10) × 0.25
 **System Characteristics:**
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| **Maximum Penalty** | -25% | All 10 rounds achieve S_Q < 0.5 |
+| **Maximum Penalty** | -25% | All 10 rounds achieve S_Q < 0.25 |
 | **Scaling Method** | Linear | Based on quality failure frequency |
 | **Primary Purpose** | Quality standard enforcement | Strongest penalty (quality is critical) |
 
-**Example Calculation:** 3/10 rounds with S_Q < 0.5 → 0.925× multiplier (-7.5% penalty)
+**Example Calculation:** 3/10 rounds with S_Q < 0.25 → 0.925× multiplier (-7.5% penalty)
 
 ---
 
@@ -465,8 +465,8 @@ Else:
 
 **Parameters:**
 - `S_f`: Final compression score
-- `w_c`: Weight for compression rate (default: 0.6)
-- `w_vmaf`: Weight for VMAF score (default: 0.4)
+- `w_c`: Weight for compression rate (default: 0.8)
+- `w_vmaf`: Weight for VMAF score (default: 0.2)
 - `C`: Compression rate
 - `VMAF_score`: Achieved VMAF quality score
 - `VMAF_threshold`: Minimum required VMAF score
@@ -489,11 +489,11 @@ Else:
 
 | Scenario | C | VMAF_score | VMAF_threshold | S_f | Performance Tier |
 |----------|---|------------|----------------|-----|------------------|
-| **Excellent** | 0.3 | 85 | 70 | 0.42 + 0.20 = **0.62** | Outstanding |
-| **Good** | 0.5 | 80 | 70 | 0.30 + 0.13 = **0.43** | Strong |
-| **Average** | 0.7 | 75 | 70 | 0.18 + 0.07 = **0.25** | Acceptable |
-| **Poor Quality** | 0.4 | 65 | 70 | **0.00** | Failed |
-| **No Compression** | 1.0 | 90 | 70 | 0.00 + 0.27 = **0.27** | Inefficient |
+| **Excellent** | 0.3 | 85 | 70 | 0.669 + 0.100 = **0.769** | Outstanding |
+| **Good** | 0.5 | 80 | 70 | 0.517 + 0.067 = **0.584** | Strong |
+| **Average** | 0.7 | 75 | 70 | 0.331 + 0.033 = **0.364** | Acceptable |
+| **Poor Quality** | 0.4 | 65 | 70 | **0.000** | Failed |
+| **No Compression** | 1.0 | 90 | 70 | 0.000 + 0.133 = **0.133** | Inefficient |
 
 #### Strategic Guidelines
 
@@ -523,7 +523,7 @@ Performance Multiplier = Bonus Multiplier × S_f Penalty × VMAF Penalty
 
 #### Bonus System (Excellence Rewards)
 
-**Activation Criteria:** `S_f > 0.55` in compression mining round
+**Activation Criteria:** `S_f > 0.74` in compression mining round
 
 **Mathematical Model:**
 ```python
@@ -533,17 +533,17 @@ bonus_multiplier = 1.0 + (bonus_count / 10) × 0.15
 **System Characteristics:**
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| **Maximum Bonus** | +15% | All 10 rounds achieve S_f > 0.55 |
+| **Maximum Bonus** | +15% | All 10 rounds achieve S_f > 0.74 |
 | **Scaling Method** | Linear | Based on consistency frequency |
 | **Primary Purpose** | Sustained excellence reward | Long-term performance incentive |
 
-**Example Calculation:** 7/10 rounds with S_f > 0.55 → 1.105× multiplier (+10.5% bonus)
+**Example Calculation:** 7/10 rounds with S_f > 0.74 → 1.105× multiplier (+10.5% bonus)
 
 ---
 
 #### S_f Penalty System (Performance Penalties)
 
-**Activation Criteria:** `S_f < 0.25` in compression mining round
+**Activation Criteria:** `S_f < 0.4` in compression mining round
 
 **Mathematical Model:**
 ```python
@@ -553,50 +553,24 @@ penalty_f_multiplier = 1.0 - (penalty_f_count / 10) × 0.20
 **System Characteristics:**
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| **Maximum Penalty** | -20% | All 10 rounds achieve S_f < 0.25 |
+| **Maximum Penalty** | -20% | All 10 rounds achieve S_f < 0.4 |
 | **Scaling Method** | Linear | Based on poor performance frequency |
 | **Primary Purpose** | Performance consistency enforcement | Discourages sustained poor results |
 
-**Example Calculation:** 4/10 rounds with S_f < 0.25 → 0.92× multiplier (-8% penalty)
-
----
-
-#### VMAF Penalty System (Quality Penalties)
-
-**Activation Criteria:** `VMAF_score < VMAF_threshold + 5` in compression mining round
-
-**Mathematical Model:**
-```python
-penalty_vmaf_multiplier = 1.0 - (penalty_vmaf_count / 10) × 0.30
-```
-
-**System Characteristics:**
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| **Maximum Penalty** | -30% | All 10 rounds achieve VMAF_score < VMAF_threshold + 5 |
-| **Scaling Method** | Linear | Based on quality failure frequency |
-| **Primary Purpose** | Quality standard enforcement | Strongest penalty (quality is critical) |
-
-**Example Calculation:** 3/10 rounds with VMAF_score < VMAF_threshold + 5 → 0.91× multiplier (-9% penalty)
+**Example Calculation:** 4/10 rounds with S_f < 0.4 → 0.92× multiplier (-8% penalty)
 
 ---
 
 #### Compression Performance Multiplier Case Studies
 
-| Miner Category | Avg S_f | Avg VMAF Margin | Bonus Rate | S_f Penalty | VMAF Penalty | **Final Multiplier** | **Net Effect** |
+| Miner Category | Avg S_f | Avg VMAF Margin | Bonus Rate | S_f Penalty | **Final Multiplier** | **Net Effect** |
 |----------------|---------|-----------------|------------|-------------|---------------|---------------------|----------------|
-| **Elite Compressor** | 0.654 | +15 | 10/10 | 0/10 | 0/10 | **1.150×** | **+15.0%** |
-| **Good Compressor** | 0.453 | +8 | 0/10 | 0/10 | 0/10 | **1.000×** | **±0.0%** |
-| **Average Compressor** | 0.311 | +3 | 0/10 | 0/10 | 3/10 | **0.910×** | **-9.0%** |
-| **Poor Compressor** | 0.211 | -2 | 0/10 | 10/10 | 10/10 | **0.490×** | **-51.0%** |
+| **Elite Compressor** | 0.654 | +15 | 10/10 | 0/10 | **1.150×** | **+15.0%** |
+| **Good Compressor** | 0.453 | +8 | 0/10 | 0/10 | **1.000×** | **±0.0%** |
+| **Average Compressor** | 0.311 | +3 | 0/10 | 0/10 | **0.910×** | **-9.0%** |
+| **Poor Compressor** | 0.211 | -2 | 0/10 | 10/10 | **0.490×** | **-51.0%** |
 
 #### Compression Penalty Analysis
-
-**Key Differences from Upscaling:**
-- **Higher VMAF penalty** (-30% max vs -25%) due to critical quality requirements
-- **Lower bonus threshold** (S_f > 0.55 vs S_f > 0.77) reflecting compression difficulty
-- **Quality margin requirement** (VMAF_threshold + 5) ensuring safety buffer
-- **Zero-score immediate penalty** for threshold violations
 
 **Strategic Impact:**
 - **Quality-first approach** strongly incentivized through higher penalties
@@ -624,8 +598,8 @@ penalty_vmaf_multiplier = 1.0 - (penalty_vmaf_count / 10) × 0.30
 |----------------|---------------|---------------------------|
 | **New Miners** | Foundation Building | Focus on achieving consistent S_pre > 0.5 before optimizing for length |
 | **Established Miners** | Quality Optimization | Prioritize quality improvements when S_pre > 0.6 to avoid S_Q penalties |
-| **Elite Miners** | Consistency Maintenance | Maintain consistency above S_F > 0.77 to secure maximum bonus multipliers |
-| **Recovery Phase** | Systematic Improvement | Focus on quality (S_Q > 0.5) first, then performance (S_F > 0.45) to restore multipliers |
+| **Elite Miners** | Consistency Maintenance | Maintain consistency above S_F > 0.32 to secure maximum bonus multipliers |
+| **Recovery Phase** | Systematic Improvement | Focus on quality (S_Q > 0.25) first, then performance (S_F > 0.20) to restore multipliers |
 
 **Compression Performance-Based Guidelines:**
 
@@ -633,7 +607,7 @@ penalty_vmaf_multiplier = 1.0 - (penalty_vmaf_count / 10) × 0.30
 |----------------|---------------|---------------------------|
 | **New Compressors** | Quality Compliance | Focus on maintaining VMAF_score > VMAF_threshold + 5 |
 | **Established Compressors** | Balanced Optimization | Optimize both compression rate and quality maintenance |
-| **Elite Compressors** | Consistency Excellence | Maintain S_f > 0.55 consistently for bonus multipliers |
+| **Elite Compressors** | Consistency Excellence | Maintain S_f > 0.74 consistently for bonus multipliers |
 | **Recovery Phase** | Quality Restoration | Focus on VMAF compliance first, then compression optimization |
 
 ### Future Enhancement Roadmap
@@ -657,18 +631,16 @@ penalty_vmaf_multiplier = 1.0 - (penalty_vmaf_count / 10) × 0.30
 
 | Parameter | Current Value | Configurable Range | Implementation Notes |
 |-----------|---------------|-------------------|---------------------|
-| **Default Content Length** | 5s | 5s - 40s | Actively configurable by miners |
+| **Default Content Length** | 5s | 5s - 10s | Actively configurable by miners |
 | **Quality Weight (W1)** | 0.5 | 0.0 - 1.0 | Dynamically adjusted based on network data |
 | **Length Weight (W2)** | 0.5 | 0.0 - 1.0 | Dynamically adjusted based on network data |
-| **Exponential Coefficient** | 6.979 | Fixed | Dynamically adjusted based on network data |
-| **Score Transformation Base** | 0.1 | Fixed | Baseline multiplier constant |
 
 ### Compression System Parameters
 
 | Parameter | Current Value | Configurable Range | Implementation Notes |
 |-----------|---------------|-------------------|---------------------|
-| **Compression Rate Weight (w_c)** | 0.6 | 0.4 - 0.8 | Balances compression efficiency vs quality |
-| **VMAF Score Weight (w_vmaf)** | 0.4 | 0.2 - 0.6 | Balances quality maintenance vs compression |
+| **Compression Rate Weight (w_c)** | 0.8 | 0.6 - 0.9 | Balances compression efficiency vs quality |
+| **VMAF Score Weight (w_vmaf)** | 0.2 | 0.1 - 0.4 | Balances quality maintenance vs compression |
 | **Compression Rate Exponent** | 1.5 | 1.2 - 2.0 | Controls compression reward curve steepness |
 | **VMAF Safety Margin** | +5 | +3 - +10 | Quality buffer above threshold |
 | **Zero-Score Threshold** | VMAF_score < VMAF_threshold | Fixed | Immediate penalty for quality violations |
@@ -677,17 +649,16 @@ penalty_vmaf_multiplier = 1.0 - (penalty_vmaf_count / 10) × 0.30
 
 | Parameter | Current Value | Configurable Range | System Impact |
 |-----------|---------------|-------------------|---------------|
-| **Performance History Window** | 10 rounds | 5-20 rounds | Configurable for different network conditions |
-| **Upscaling Bonus Threshold** | S_F > 0.77 | 0.7-0.85 | Adjustable based on network performance |
-| **Upscaling S_F Penalty Threshold** | S_F < 0.45 | 0.3-0.5 | Adjustable based on network performance |
-| **Upscaling S_Q Penalty Threshold** | S_Q < 0.5 | 0.4-0.6 | Adjustable based on network performance |
-| **Compression Bonus Threshold** | S_f > 0.55 | 0.5-0.7 | Lower threshold reflecting compression difficulty |
-| **Compression S_f Penalty Threshold** | S_f < 0.25 | 0.2-0.4 | Penalty for poor compression performance |
+| **Performance History Window** | 10 rounds | 5-10 rounds | Configurable for different network conditions |
+| **Upscaling Bonus Threshold** | S_F > 0.32 | 0.3-0.4 | Adjustable based on network performance |
+| **Upscaling S_F Penalty Threshold** | S_F < 0.20 | 0.15-0.25 | Adjustable based on network performance |
+| **Upscaling S_Q Penalty Threshold** | S_Q < 0.25 | 0.2-0.3 | Adjustable based on network performance |
+| **Compression Bonus Threshold** | S_f > 0.74 | 0.7-0.8 | Lower threshold reflecting compression difficulty |
+| **Compression S_f Penalty Threshold** | S_f < 0.4 | 0.35-0.45 | Penalty for poor compression performance |
 | **VMAF Penalty Threshold** | VMAF_score < VMAF_threshold + 5 | +3 to +10 | Quality safety margin enforcement |
 | **Maximum Bonus** | +15% | 10%-20% | Scalable reward system |
 | **Maximum S_F Penalty** | -20% | 15%-25% | Scalable penalty system |
 | **Maximum S_Q Penalty** | -25% | 20%-30% | Strongest penalty for quality issues |
-| **Maximum VMAF Penalty** | -30% | 25%-35% | Strongest penalty for quality violations |
 
 ---
 

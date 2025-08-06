@@ -49,7 +49,7 @@ class MinerManager:
         else:
             self.initialize_serving_counter(self.metagraph.uids)
 
-        self.BONUS_THRESHOLD = 0.3
+        self.UPSCALING_BONUS_THRESHOLD = 0.32
         self.PENALTY_F_THRESHOLD = 0.07 
         self.PENALTY_Q_THRESHOLD = 0.5  
         
@@ -58,9 +58,9 @@ class MinerManager:
         self.PENALTY_Q_MAX = 0.25  
         
         # Compression-specific constants
-        self.COMPRESSION_BONUS_THRESHOLD = 0.55  # S_f > 0.55 for compression bonus
+        self.COMPRESSION_BONUS_THRESHOLD = 0.35  # S_f > 0.55 for compression bonus
         self.COMPRESSION_PENALTY_F_THRESHOLD = 0.25  # S_f < 0.25 for compression penalty
-        self.COMPRESSION_VMAF_MARGIN = 5.0  # VMAF_score < VMAF_threshold + 5 for VMAF penalty
+        self.COMPRESSION_VMAF_MARGIN = 0.0  # VMAF_score < VMAF_threshold + 5 for VMAF penalty
         
         self.COMPRESSION_BONUS_MAX = 0.15  # +15% max bonus
         self.COMPRESSION_PENALTY_F_MAX = 0.20  # -20% max penalty
@@ -248,6 +248,7 @@ class MinerManager:
                     miner.avg_s_l = 0.0
                     miner.avg_s_f = 0.0
                     miner.avg_content_length = 0.0
+                    miner.avg_compression_rate = 0.0
 
                     miner.bonus_count = 0
                     miner.penalty_f_count = 0
@@ -269,7 +270,7 @@ class MinerManager:
                     miner.processing_task_type = "upscaling"
                     task_changed = True
 
-                    miner.accumulate_score = 0
+                    miner.accumulate_score = 0.1
                     miner.bonus_multiplier = 1.0
                     miner.penalty_f_multiplier = 1.0
                     miner.penalty_q_multiplier = 1.0
@@ -279,6 +280,7 @@ class MinerManager:
                     miner.avg_s_l = 0.0
                     miner.avg_s_f = 0.0
                     miner.avg_content_length = 0.0
+                    miner.avg_compression_rate = 0.0
 
                     miner.bonus_count = 0
                     miner.penalty_f_count = 0
@@ -290,13 +292,12 @@ class MinerManager:
                     miner.total_rounds_completed = 0
                     miner.performance_tier = "New Miner"
 
-                    task_changed = True
                     is_new_miner = True
 
                     session.query(MinerPerformanceHistory).filter(
                         MinerPerformanceHistory.uid == uid
                     ).delete()
-                
+
                 success = s_f > 0.08
 
                 self._add_performance_record(
@@ -397,8 +398,6 @@ class MinerManager:
                         accumulate_score=0.0,
                         bonus_multiplier=1.0,
                         penalty_f_multiplier=1.0,
-                        penalty_q_multiplier=1.0,
-                        compression_penalty_vmaf_multiplier=1.0,
                         total_multiplier=1.0,
                         performance_tier="New Miner"
                     )
@@ -413,7 +412,6 @@ class MinerManager:
                     miner.bonus_multiplier = 1.0
                     miner.penalty_f_multiplier = 1.0
                     miner.penalty_q_multiplier = 1.0
-                    miner.compression_penalty_vmaf_multiplier = 1.0
                     miner.total_multiplier = 1.0
 
                     miner.avg_s_q = 0.0
@@ -425,7 +423,6 @@ class MinerManager:
                     miner.bonus_count = 0
                     miner.penalty_f_count = 0
                     miner.penalty_q_count = 0
-                    miner.compression_penalty_vmaf_count = 0
 
                     miner.total_rounds_completed = 0
                     miner.performance_tier = "New Miner"
@@ -447,7 +444,6 @@ class MinerManager:
                     miner.bonus_multiplier = 1.0
                     miner.penalty_f_multiplier = 1.0
                     miner.penalty_q_multiplier = 1.0
-                    miner.compression_penalty_vmaf_multiplier = 1.0
                     miner.total_multiplier = 1.0
 
                     miner.avg_s_q = 0.0
@@ -459,9 +455,9 @@ class MinerManager:
                     miner.bonus_count = 0
                     miner.penalty_f_count = 0
                     miner.penalty_q_count = 0
-                    miner.compression_penalty_vmaf_count = 0
 
                     miner.success_rate = 1
+                    miner.longest_content_processed = 0
                     miner.last_update_timestamp = datetime.now()
 
                     miner.total_rounds_completed = 0
@@ -478,9 +474,10 @@ class MinerManager:
                     vmaf_score,
                     0,
                     0,  # s_l not used in compression
+                    0,
                     s_f, 
                     content_length, 
-                    content_type,
+                    "video",
                     success,
                     processed_task_type="compression",
                     compression_rate=compression_rate,
@@ -596,7 +593,7 @@ class MinerManager:
         miner.avg_s_f = sum(r.s_f for r in recent_records) / len(recent_records)
         miner.avg_content_length = sum(r.content_length for r in recent_records) / len(recent_records)
         
-        miner.bonus_count = sum(1 for r in recent_records if r.s_f > self.BONUS_THRESHOLD)
+        miner.bonus_count = sum(1 for r in recent_records if r.s_f > self.UPSCALING_BONUS_THRESHOLD)
         miner.penalty_f_count = sum(1 for r in recent_records if r.s_f < self.PENALTY_F_THRESHOLD)
         miner.penalty_q_count = sum(1 for r in recent_records if r.s_q < self.PENALTY_Q_THRESHOLD)
         
@@ -628,7 +625,6 @@ class MinerManager:
         if not recent_records:
             return
         
-        miner.avg_s_q = sum(r.s_q for r in recent_records) / len(recent_records)
         miner.avg_s_f = sum(r.s_f for r in recent_records) / len(recent_records)
         miner.avg_content_length = sum(r.content_length for r in recent_records) / len(recent_records)
         miner.avg_compression_rate = sum(r.compression_rate for r in recent_records) / len(recent_records)
@@ -637,22 +633,14 @@ class MinerManager:
         miner.bonus_count = sum(1 for r in recent_records if r.s_f > self.COMPRESSION_BONUS_THRESHOLD)
         miner.penalty_f_count = sum(1 for r in recent_records if r.s_f < self.COMPRESSION_PENALTY_F_THRESHOLD)
         
-        # VMAF penalty for compression (quality margin penalty)
-        miner.compression_penalty_vmaf_count = sum(
-            1 for r in recent_records 
-            if r.vmaf_score < (r.vmaf_threshold + self.COMPRESSION_VMAF_MARGIN)
-        )
-        
         # Calculate multipliers
         miner.bonus_multiplier = 1.0 + (miner.bonus_count / 10) * self.COMPRESSION_BONUS_MAX
         miner.penalty_f_multiplier = 1.0 - (miner.penalty_f_count / 10) * self.COMPRESSION_PENALTY_F_MAX
-        miner.compression_penalty_vmaf_multiplier = 1.0 - (miner.compression_penalty_vmaf_count / 10) * self.COMPRESSION_PENALTY_VMAF_MAX
         
         # Total multiplier for compression
         miner.total_multiplier = (
             miner.bonus_multiplier * 
-            miner.penalty_f_multiplier * 
-            miner.compression_penalty_vmaf_multiplier
+            miner.penalty_f_multiplier
         )
         
         miner.performance_tier = self._calculate_performance_tier_compression(miner.avg_s_f)

@@ -20,17 +20,20 @@ class MinerMetadata(Base):
     bonus_multiplier = Column(Float, default=1.0)
     penalty_f_multiplier = Column(Float, default=1.0)
     penalty_q_multiplier = Column(Float, default=1.0)
+    
     total_multiplier = Column(Float, default=1.0)
     
     avg_s_q = Column(Float, default=0.0)
     avg_s_l = Column(Float, default=0.0)
     avg_s_f = Column(Float, default=0.0)
-    avg_content_length = Column(Float, default=0.0)
     
     bonus_count = Column(Integer, default=0)
-    penalty_f_count = Column(Integer, default=0)
     penalty_q_count = Column(Integer, default=0)
-    
+    penalty_f_count = Column(Integer, default=0)
+
+    avg_content_length = Column(Float, default=0.0)
+    avg_compression_rate = Column(Float, default=0.0)
+
     last_update_timestamp = Column(DateTime, default=datetime.now)
     total_rounds_completed = Column(Integer, default=0)
     performance_tier = Column(String(32), default='New Miner')
@@ -39,10 +42,6 @@ class MinerMetadata(Base):
     longest_content_processed = Column(Float, default=0.0)
     
     # Compression-specific fields
-    compression_rate = Column(Float, default=0.0)
-    avg_compression_rate = Column(Float, default=0.0)
-    compression_penalty_vmaf_count = Column(Integer, default=0)
-    compression_penalty_vmaf_multiplier = Column(Float, default=1.0)
     
     performance_history = relationship("MinerPerformanceHistory", 
                                       back_populates="miner",

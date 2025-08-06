@@ -130,10 +130,10 @@ class Synthesizer:
         for attempt in range(self.max_retries):
             try:
                 # Send the correct request with content_lengths (using default 5s for compression)
-                content_lengths = [10] * len(vmaf_thresholds)  # Default 10s for compression tasks
+                num_needed = len(vmaf_thresholds)  # Default 10s for compression tasks
                 response = await self.session.post(
                     "/api/get_compression_chunks",
-                    json={"content_lengths": content_lengths}
+                    json={"num_needed": num_needed}
                 )
                 response.raise_for_status()
                 data = response.json()

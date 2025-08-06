@@ -529,11 +529,6 @@ async def get_compression_requests_paths(num_needed: int, redis_conn: redis.Redi
                 await storage_client.upload_file(object_name, challenge_local_path)
                 sharing_link = await storage_client.get_presigned_url(object_name)
 
-                # Clean up the downscaled file immediately after upload (we don't need it locally)
-                if os.path.exists(challenge_local_path):
-                    os.unlink(challenge_local_path)
-                    logger.info(f"Cleaned up downscaled file after upload: {challenge_local_path}")
-
                 logger.info(f"Sharing_link for chunk {i+1}: {sharing_link}")
 
                 if not sharing_link:
