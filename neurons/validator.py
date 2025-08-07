@@ -19,6 +19,12 @@ from services.video_scheduler.video_utils import get_trim_video_path
 from services.video_scheduler.redis_utils import get_redis_connection, get_organic_queue_size, set_scheduler_ready
 import os
 
+VMAF_QUALITY_THRESHOLDS = [
+    90, #Low
+    93, #Medium
+    95, #High
+]
+
 class Validator(base.BaseValidator):
     def __init__(self):
         super().__init__()
@@ -274,8 +280,7 @@ class Validator(base.BaseValidator):
                 uids.append(miner[1])
                 axons.append(miner[0])
             
-            # Generate random integer VMAF thresholds for compression in the range 85 to 99 (inclusive)
-            vmaf_thresholds = [random.randint(85, 99) for _ in range(len(uids))]
+            vmaf_thresholds = [random.choice(VMAF_QUALITY_THRESHOLDS) for _ in range(len(uids))]
             
             round_id = str(uuid.uuid4())
             payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_compression_protocol(vmaf_thresholds, version, round_id)

@@ -38,6 +38,15 @@ async def compress_video(video: CompressPayload):
     input_file = Path(input_path)
     vmaf_threshold = video.vmaf_threshold
 
+    if vmaf_threshold == 90:
+        target_quality = 'Low'
+    elif vmaf_threshold == 93:
+        target_quality = 'Medium'
+    elif vmaf_threshold == 95:
+        target_quality = 'High'
+    else:
+        raise HTTPException(status_code=400, detail="Invalid VMAF threshold.")
+
     # Check if input file exists
     if not input_file.is_file():
         raise HTTPException(status_code=400, detail="Input video file does not exist.")
@@ -50,7 +59,7 @@ async def compress_video(video: CompressPayload):
     try:
         compressed_video_path = video_compressor(
             input_file=str(input_file),  # Use input_file consistently
-            target_quality=video.target_quality,
+            target_quality=target_quality,
             max_duration=video.max_duration,
             output_dir=str(output_dir)
         )
