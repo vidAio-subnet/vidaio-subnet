@@ -485,6 +485,12 @@ Else:
 - **Normalization**: Scales quality improvement relative to achievable range
 - **Linear scaling**: Direct correlation between quality improvement and score
 
+#### Graph Analysis
+
+!<img src="./images/graph5.png" alt="Scoring impact" width="1200" height="600">
+
+---
+
 #### Performance Analysis Examples
 
 | Scenario | C | VMAF_score | VMAF_threshold | S_f | Performance Tier |

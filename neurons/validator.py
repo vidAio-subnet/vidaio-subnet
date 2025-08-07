@@ -124,6 +124,7 @@ class Validator(base.BaseValidator):
         # Step 2: Group miners based on their task warrant responses
         upscaling_miners = []
         compression_miners = []
+        unknown_task_miners = []
         
         for i, response in enumerate(task_warrant_responses):
             uid = random_uids[i]
@@ -131,14 +132,24 @@ class Validator(base.BaseValidator):
             
             if response.warrant_task == TaskType.UPSCALING:
                 upscaling_miners.append((axon, uid))
-                logger.debug(f"UID {uid} warrants upscaling tasks")
             elif response.warrant_task == TaskType.COMPRESSION:
                 compression_miners.append((axon, uid))
-                logger.debug(f"UID {uid} warrants compression tasks")
             else:
-                logger.warning(f"UID {uid} has unknown task warrant: {response.warrant_task}")
+                logger.warning(f"UID {uid} has unknown task warrant: {response.warrant_task}, sending Upscaling Task")
+                upscaling_miners.append((axon, uid))
+                unknown_task_miners.append(uid)
+        
+        # Log grouped results in organized lists
+        upscaling_uids = [uid for _, uid in upscaling_miners]
+        compression_uids = [uid for _, uid in compression_miners]
         
         logger.info(f"🛜 Grouped miners: {len(upscaling_miners)} upscaling, {len(compression_miners)} compression 🛜")
+        if upscaling_uids:
+            logger.info(f"📈 Upscaling UIDs: {upscaling_uids}")
+        if compression_uids:
+            logger.info(f"📉 Compression UIDs: {compression_uids}")
+        if unknown_task_miners:
+            logger.info(f"❓ Unknown task UIDs (defaulted to upscaling): {unknown_task_miners}")
 
         # Step 3: Send LengthCheckProtocol requests to upscaling miners
         if upscaling_miners:
@@ -170,7 +181,7 @@ class Validator(base.BaseValidator):
                 upscaling_miners_with_lengths.append((axon, uid, content_length))
 
             # Process upscaling miners in batches
-            # await self.process_upscaling_miners(upscaling_miners_with_lengths, version)
+            await self.process_upscaling_miners(upscaling_miners_with_lengths, version)
 
         # Step 4: Process compression miners (placeholder for now)
         if compression_miners:
