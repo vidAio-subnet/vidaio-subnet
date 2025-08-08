@@ -972,7 +972,15 @@ class MinerManager:
         # Initialize result arrays
         uids = []
         scores = []
-        
+        compression_count = len(compression_miners)
+        upscaling_count = len(upscaling_miners)
+        alloc_comp, alloc_up = 0.6, 0.4
+
+        if compression_count == 0 and upscaling_count > 0:
+            alloc_comp, alloc_up = 0.0, 1.0
+        elif upscaling_count == 0 and compression_count > 0:
+            alloc_comp, alloc_up = 1.0, 0.0
+
         # Process compression miners (60% of total rewards)
         if compression_miners:
             compression_uids, compression_scores = zip(*compression_miners)
@@ -980,10 +988,10 @@ class MinerManager:
             
             # Normalize compression scores and apply 60% allocation
             if compression_scores.sum() > 0:
-                compression_weights = (compression_scores / compression_scores.sum()) * 0.6
+                compression_weights = (compression_scores / compression_scores.sum()) * alloc_comp
             else:
                 # If no scores, distribute 60% equally among compression miners
-                compression_weights = np.full(len(compression_scores), 0.6 / len(compression_scores))
+                compression_weights = np.full(len(compression_scores), alloc_comp / len(compression_scores))
             
             uids.extend(compression_uids)
             scores.extend(compression_weights)
@@ -995,10 +1003,10 @@ class MinerManager:
             
             # Normalize upscaling scores and apply 40% allocation
             if upscaling_scores.sum() > 0:
-                upscaling_weights = (upscaling_scores / upscaling_scores.sum()) * 0.4
+                upscaling_weights = (upscaling_scores / upscaling_scores.sum()) * alloc_up
             else:
                 # If no scores, distribute 40% equally among upscaling miners
-                upscaling_weights = np.full(len(upscaling_scores), 0.4 / len(upscaling_scores))
+                upscaling_weights = np.full(len(upscaling_scores), alloc_up / len(upscaling_scores))
             
             uids.extend(upscaling_uids)
             scores.extend(upscaling_weights)
