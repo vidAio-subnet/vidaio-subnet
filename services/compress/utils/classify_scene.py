@@ -4,24 +4,14 @@ import torch
 import torch.nn as nn
 import numpy as np
 import pandas as pd
-import pickle
-import time
-import tempfile
-import json
-import sys
-import subprocess
-import shutil
-from datetime import datetime
 from torchvision import models, transforms
 from PIL import Image
-import re
 from torchvision.models import (
     MobileNet_V3_Small_Weights,
     EfficientNet_V2_S_Weights,
     ResNet18_Weights,
     SqueezeNet1_1_Weights
 )
-
 
 # Class mapping for scene classification (same as in train_scene_class_model.py)
 CLASS_MAPPING = {
@@ -48,10 +38,6 @@ VIDEO_METRICS = [
     'metrics_avg_motion_variance',
     'metrics_avg_grain_noise'
 ]
-# -----------------------------
-
-
-
 
 # Combined model class definition (same as in train_scene_class_model.py)
 class CombinedModel(nn.Module):
@@ -165,8 +151,6 @@ def load_scene_classifier_model(model_path, device='cpu', logging_enabled=True):
 
     return checkpoint['model_state_dict'], available_metrics, class_mapping
 
-
-
 def extract_frames_from_scene(video_path, start_time, end_time, num_frames=3, output_dir=None):
     """
     Extract multiple frames in parallel using FFmpeg
@@ -254,7 +238,6 @@ def extract_frames_from_scene(video_path, start_time, end_time, num_frames=3, ou
                 frame_paths.append(result)
 
     return sorted(frame_paths)  # Sort to maintain frame order
-
 
 def classify_scene_with_model(frame_paths, video_features, scene_classifier, metrics_scaler, available_metrics, device='cpu', logging_enabled=True):
     """
@@ -355,7 +338,6 @@ def classify_scene_with_model(frame_paths, video_features, scene_classifier, met
             'prob_unclear': 1.0,
             'frame_predictions': []
         }
-    
     
     # Calculate weighted average probabilities across all frames
     avg_probabilities = np.mean(all_probabilities, axis=0)

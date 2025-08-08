@@ -1,8 +1,4 @@
 import os
-import subprocess
-import json
-import sys
-
 from utils.video_utils import get_video_duration, get_video_codec
 from utils.encode_video import encode_lossless_video
 
@@ -162,80 +158,3 @@ def pre_processing(video_path, target_quality='Medium',codec='auto', max_duratio
                 'container': os.path.splitext(video_path)[1][1:]  # Extension without dot
             }
         }
-
-
-if __name__ == '__main__':
-    # ✅ EXAMPLE USAGE: Test with different quality levels and codecs
-    
-    # Create dummy video for testing
-    dummy_video = "test_video.mp4"
-    if not os.path.exists(dummy_video):
-        print("🎬 Creating dummy video for testing...")
-        subprocess.run([
-            'ffmpeg', '-f', 'lavfi', '-i', 'testsrc=duration=5:size=1280x720:rate=30', 
-            '-c:v', 'libx264', '-preset', 'fast', '-y', dummy_video
-        ], capture_output=True)
-        print(f"✅ Created test video: {dummy_video}")
-    
-    # Test with different quality levels and codec options
-    test_cases = [
-        ('High', 'auto'),
-        ('Medium', 'libsvtav1'),
-        ('Low', 'libx264'),
-        ('Medium', 'auto')  # Test auto-detection
-    ]
-    
-    for quality, test_codec in test_cases:
-        print(f"\n🧪 Testing with quality: {quality}, codec: {test_codec}")
-        print("=" * 60)
-        
-        result = pre_processing(
-            video_path=dummy_video,
-            target_quality=quality,
-            max_duration=7200,  # 2 hours
-            codec=test_codec
-        )
-        
-        if result:
-            print(f"✅ Part 1 finished successfully!")
-            print(f"   📁 Processed video: {result['path']}")
-            print(f"   🎥 Current codec: {result['codec']} (original: {result['original_codec']})")
-            print(f"   🎯 Target codec: {result['target_codec']}")
-            print(f"   🔄 Was re-encoded: {result['was_reencoded']}")
-            print(f"   ⏱️ Duration: {result['duration']}s")
-            print(f"   🎯 Target VMAF: {result['target_vmaf']} ({result['target_quality']})")
-        
-            if result['processing_info']['lossless_conversion']:
-                print(f"   🔄 Lossless conversion: {result['processing_info']['original_format']} → {result['processing_info']['standardized_format']}")
-        else:
-            print(f"❌ Part 1 failed for quality: {quality}, codec: {test_codec}")
-    
-    # ✅ TEST LOSSLESS VIDEO WITH CODEC PARAMETER
-    print(f"\n🧪 Testing lossless video with codec parameter")
-    print("=" * 60)
-    
-    # Create a lossless test video
-    lossless_video = "test_lossless.y4m"
-    if not os.path.exists(lossless_video):
-        print("🎬 Creating lossless test video...")
-        subprocess.run([
-            'ffmpeg', '-f', 'lavfi', '-i', 'testsrc=duration=3:size=640x480:rate=30', 
-            '-pix_fmt', 'yuv420p', '-y', lossless_video
-        ], capture_output=True)
-        print(f"✅ Created lossless test video: {lossless_video}")
-    
-    result = pre_processing(
-        video_path=lossless_video,
-        target_quality='High',
-        max_duration=7200,
-        codec='libsvtav1'  # Test with specific codec
-    )
-    
-    if result:
-        print(f"✅ Lossless video processed successfully!")
-        print(f"   🔄 Lossless conversion: {result['processing_info']['lossless_conversion']}")
-        print(f"   📁 Output: {result['path']}")
-        print(f"   🎯 Target codec for next stages: {result['target_codec']}")
-        print(f"   ⏱️ Encoding time: {result['encoding_time']:.1f}s")
-    
-    print(f"\n🎉 All tests completed!")

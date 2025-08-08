@@ -6,13 +6,9 @@ whether full PySceneDetect processing is needed or if a video can
 be processed as a single scene.
 """
 
-import os
 import cv2
 import numpy as np
-import subprocess
-import json
-from typing import Tuple, Optional
-
+from typing import Tuple
 
 def fast_scene_detection_check(video_path: str, duration: float, 
                              sample_frames: int = 10, threshold: float = 0.3,
@@ -91,7 +87,6 @@ def fast_scene_detection_check(video_path: str, duration: float,
         if logging_enabled:
             print(f"      ❌ Fast scene detection failed: {e}")
         return False, 1
-
 
 def motion_based_scene_check(video_path: str, duration: float,
                            sample_duration: float = 2.0, threshold: float = 0.4,
@@ -203,7 +198,6 @@ def motion_based_scene_check(video_path: str, duration: float,
             print(f"      ❌ Motion-based scene detection failed: {e}")
         return False, 1
 
-
 def adaptive_scene_detection_check(video_path: str, duration: float, 
                                  logging_enabled: bool = True) -> Tuple[bool, int, float]:
     """
@@ -273,46 +267,3 @@ def adaptive_scene_detection_check(video_path: str, duration: float,
         print(f"         Analysis time: {analysis_time:.2f}s")
     
     return has_multiple_scenes, estimated_scenes, analysis_time
-
-
-def get_video_duration_fast(video_path: str) -> Optional[float]:
-    """
-    Get video duration using ffprobe (faster than OpenCV).
-    
-    Args:
-        video_path (str): Path to video file
-        
-    Returns:
-        float: Duration in seconds, or None if failed
-    """
-    try:
-        cmd = [
-            'ffprobe', '-v', 'quiet', '-print_format', 'json',
-            '-show_format', video_path
-        ]
-        
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-        
-        if result.returncode == 0:
-            data = json.loads(result.stdout)
-            duration = float(data['format']['duration'])
-            return duration
-        
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, KeyError, ValueError):
-        pass
-    
-    # Fallback to OpenCV
-    try:
-        cap = cv2.VideoCapture(video_path)
-        if cap.isOpened():
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-            if fps > 0:
-                duration = frame_count / fps
-                cap.release()
-                return duration
-        cap.release()
-    except:
-        pass
-    
-    return None

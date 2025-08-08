@@ -1,15 +1,11 @@
 import os
-import json
 import torch
 import time
 import subprocess
-import sys
 import traceback
 
 from utils.processing_utils import (
-    should_skip_encoding,
     encode_scene_with_size_check,
-    analyze_input_compression,
     classify_scene_from_path 
 )
 from utils.encode_video import encode_video
@@ -42,7 +38,6 @@ def load_encoding_resources(config, logging_enabled=True):
     scene_model_path = model_paths.get('scene_classifier_model', "services/compress/models/scene_classifier_model.pth")
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    # print("💪💪💪💪💪")
     # Load scene classifier
     model_state_dict, available_metrics, class_mapping = load_scene_classifier_model(scene_model_path, device, logging_enabled)
     scene_classifier_model = CombinedModel(num_classes=len(class_mapping), metrics_dim=len(available_metrics))
@@ -270,58 +265,3 @@ def ai_encoding(scene_metadata, config, resources, target_vmaf=None, logging_ena
             print(f"   ❌ Encoding failed for scene {scene_number}.")
         scene_data['error_reason'] = 'Encoding process failed or produced an empty file'
         return None, scene_data
-
-if __name__ == '__main__':
-    print("🧪 --- Part 3 AI Encoding (Basic - Lookup Table) Testing ---")
-    
-    try:
-        with open('config.json', 'r') as f:
-            config = json.load(f)
-        print("✅ Configuration loaded successfully")
-    except FileNotFoundError:
-        print("⚠️ Config file not found, using default configuration")
-        config = {}
-
-    test_scene_path = './videos/ducks_take_off_1080p50_full.mp4'
-    
-    if os.path.exists(test_scene_path):
-        test_scene_metadata = {
-            'path': test_scene_path,
-            'scene_number': 1,
-            'start_time': 0.0,
-            'end_time': 10.0,
-            'duration': 10.0,
-            'original_video_metadata': {
-                'path': 'original_video.mp4',
-                'codec': 'h264',
-                'target_codec': 'libsvtav1',
-            }
-        }
-        
-        print(f"📊 Testing with basic scene metadata:")
-        print(f"   Scene: {os.path.basename(test_scene_path)}")
-        
-        try:
-            resources = load_encoding_resources(config, logging_enabled=True)
-            encoded_path, scene_data = part3_ai_encoding(
-                scene_metadata=test_scene_metadata,
-                config=config,
-                resources=resources,
-                logging_enabled=True
-            )
-            
-            if encoded_path and scene_data.get('encoding_success', False):
-                print(f"✅ Part 3 basic test completed successfully!")
-                print(f"   📁 Encoded: {os.path.basename(encoded_path)}")
-                print(f"   🎭 Scene type: {scene_data.get('scene_type', 'unknown')}")
-                print(f"   🎚️ Final CQ: {scene_data.get('final_adjusted_cq', 'N/A')}")
-            else:
-                print(f"❌ Part 3 basic test failed: {scene_data.get('error_reason', 'Unknown error')}")
-        except Exception as e:
-            print(f"❌ Part 3 basic test failed with exception: {e}")
-            traceback.print_exc()
-    else:
-        print(f"❌ Test scene not found: {test_scene_path}")
-        print("   Ensure a test video exists at the specified path.")
-    
-    print(f"\n🎉 Part 3 (basic) testing completed!")

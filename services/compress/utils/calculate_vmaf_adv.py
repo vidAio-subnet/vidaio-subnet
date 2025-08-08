@@ -6,11 +6,6 @@ import json
 import os
 from ffmpeg_quality_metrics import FfmpegQualityMetrics
     
-# These global filenames are not strictly needed if paths are always passed in,
-# but can serve as documentation for expected filenames if paths are constructed elsewhere.
-# DEFAULT_VMAF_MODEL_FILENAME = "vmaf_v0.6.1.json"
-# VMAFNEG_MODEL_FILENAME = "vmaf_v0.6.1neg.json"
-
 def _extract_clip_optimized(input_file, output_file, start_time, duration, logging_enabled=False):
     """Extract clip with keyframe-aware seeking for better quality."""
     try:
@@ -52,7 +47,6 @@ def _extract_clip_optimized(input_file, output_file, start_time, duration, loggi
         if logging_enabled:
             print(f"   ❌ Clip extraction error: {e}")
         return False
-
 
 def extract_vmaf_clips_with_keyframe_detection(input_file, encoded_file, num_clips=5, clip_duration=3, logging_enabled=True):
     """Enhanced clip extraction with proper keyframe alignment."""
@@ -644,118 +638,6 @@ def calculate_vmaf_advanced(input_file, encoded_file,
         except Exception as e:
             print(f"Error removing temp directory: {e}")
 
-
-def calculate_parallel_vmaf(reference_scenes, encoded_files, 
-                            use_downscaling=False, scale_factor=0.5,
-                            use_vmafneg=False,
-                            use_sampling=True, num_clips=3, clip_duration=2,
-                            default_vmaf_model_path_config: str = None, 
-                            vmafneg_model_path_config: str = None,
-                            use_frame_rate_scaling=False,   
-                            target_fps=15.0,                      
-                            frame_rate_scaling_method='uniform',   
-                            logger=None,logging_enabled=True):
-    """Process VMAF calculations in parallel for multiple scenes
-    
-    Args:
-        reference_scenes: List of reference scene file names
-        encoded_files: List of encoded file paths
-        use_downscaling: Boolean for downscaling
-        scale_factor: Float for scale factor if downscaling
-        use_vmafneg: Whether to use VMAFNEG model
-        default_vmaf_model_path_config: Full path to the default VMAF model.
-        vmafneg_model_path_config: Full path to the VMAFNEG model.
-        logger: Optional logger instance
-        
-    Returns:
-        List of VMAF scores, or None if all fail.
-    """
-    def log_message_parallel(message, level="info"):
-        if logger:
-            if level == "error": logger.error(message)
-            elif level == "warning": logger.warning(message)
-            elif level == "debug" and hasattr(logger, 'debug'): logger.debug(message)
-            else: logger.info(message)
-        else: print(message)
-
-    log_message_parallel("\n== PARALLEL VMAF PROCESSING ==")
-    start_time = time.time()
-    results_details = [] 
-    
-    scene_count = min(len(reference_scenes), len(encoded_files))
-    if len(reference_scenes) != len(encoded_files):
-        log_message_parallel(f"Warning: Mismatch in reference scenes ({len(reference_scenes)}) and encoded files ({len(encoded_files)}). Processing {scene_count} pairs.", "warning")
-
-    if scene_count == 0:
-        log_message_parallel("No scenes to process for VMAF.")
-        return []
-
-    # Using ProcessPoolExecutor can be good for CPU-bound VMAF, but ensure
-    # logger objects are picklable or handle logging carefully if they aren't.
-    # For simplicity, if logger causes issues with ProcessPoolExecutor,
-    # consider ThreadPoolExecutor or passing basic log config.
-    with concurrent.futures.ProcessPoolExecutor() as executor: # Or ThreadPoolExecutor
-        futures_map = {} 
-        for i in range(scene_count):
-            reference_path = reference_scenes[i]
-            encoded_path = encoded_files[i]
-            
-            future = executor.submit(
-                calculate_vmaf_advanced, 
-                reference_path, 
-                encoded_path, 
-                use_sampling=use_sampling,
-                num_clips=num_clips,       
-                clip_duration=clip_duration,   
-                use_downscaling=use_downscaling, 
-                scale_factor=scale_factor,
-                use_vmafneg=use_vmafneg,
-                default_vmaf_model_path_config=default_vmaf_model_path_config, 
-                vmafneg_model_path_config=vmafneg_model_path_config,
-                use_frame_rate_scaling=use_frame_rate_scaling,      
-                target_fps=target_fps,                             
-                frame_rate_scaling_method=frame_rate_scaling_method,
-                logger=logger,
-                logging_enabled=logging_enabled
-            )
-            futures_map[future] = i 
-        if logging_enabled:
-            print(f"🔍 VMAF CALCULATION DEBUG:")
-            print(f"   📊 Frame rate scaling enabled: {use_frame_rate_scaling}")
-            print(f"   📊 Target FPS: {target_fps}")
-            print(f"   📊 Scaling method: {frame_rate_scaling_method}")
-            print(f"   📊 Downscaling enabled: {use_downscaling}")
-            print(f"   📊 Scale factor: {scale_factor}")
-
-        for future in concurrent.futures.as_completed(futures_map):
-            original_index = futures_map[future]
-            scene_num_display = original_index + 1 
-            try:
-                vmaf_score = future.result() 
-                status_message = f"Scene {scene_num_display} VMAF: {vmaf_score}"
-                log_message_parallel(status_message)
-                results_details.append({
-                    'scene_index': original_index,
-                    'vmaf': vmaf_score,
-                    # Add more details if needed for debugging from results_details
-                })
-            except Exception as e:
-                error_message = f"Error processing VMAF for scene {scene_num_display}: {e}"
-                log_message_parallel(error_message, "error")
-                results_details.append({
-                    'scene_index': original_index,
-                    'vmaf': None, # Indicate failure
-                })
-    
-    total_time = time.time() - start_time
-    log_message_parallel(f"Total parallel VMAF processing time: {total_time:.2f}s")
-
-    results_details.sort(key=lambda r: r['scene_index'])
-    final_vmaf_scores = [r['vmaf'] for r in results_details]
-    
-    return final_vmaf_scores
-
-
 def apply_frame_rate_scaling(input_file, encoded_file, target_fps, scaling_method, temp_dir, logging_enabled=True):
     """Apply frame rate scaling while preserving reference quality."""
     try:
@@ -874,4 +756,3 @@ def apply_frame_rate_scaling(input_file, encoded_file, target_fps, scaling_metho
         if logging_enabled:
             print(f"Frame rate scaling error: {e}")
         return None, None
-

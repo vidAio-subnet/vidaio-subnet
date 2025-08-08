@@ -1,12 +1,8 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import subprocess
 import os
 from pathlib import Path
-from loguru import logger
-import sys
 import json
-import argparse
 import time
 from datetime import datetime
 
@@ -15,7 +11,6 @@ from scene_detector import scene_detection
 from encoder import ai_encoding, load_encoding_resources  
 from vmaf_calculator import scene_vmaf_calculation  
 from validator_merger import validation_and_merging 
-from vidaio_subnet_core.global_config import CONFIG
 from vidaio_subnet_core.utilities import storage_client, download_video
 
 app = FastAPI()
@@ -78,11 +73,11 @@ async def compress_video(video: CompressPayload):
                 print("Video uploaded successfully.")
                 
                 # Delete the local file since we've already uploaded it to MinIO
-                # if os.path.exists(compressed_video_path):
-                #     os.remove(compressed_video_path)
-                #     print(f"{compressed_video_path} has been deleted.")
-                # else:
-                #     print(f"{compressed_video_path} does not exist.")
+                if os.path.exists(compressed_video_path):
+                    os.remove(compressed_video_path)
+                    print(f"{compressed_video_path} has been deleted.")
+                else:
+                    print(f"{compressed_video_path} does not exist.")
                 
                 # Get the presigned URL for sharing
                 sharing_link: str | None = await storage_client.get_presigned_url(object_name)
@@ -134,7 +129,6 @@ async def test_compress_video(test_payload: TestCompressPayload):
             
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Video compression test error: {str(e)}")
-
 
 def video_compressor(input_file, target_quality='Medium', max_duration=3600, output_dir='./output'):
     
@@ -377,34 +371,13 @@ def video_compressor(input_file, target_quality='Medium', max_duration=3600, out
     
     print(f"✅ Part 3 completed with {successful_encodings} successful encodings")
 
-
-    # ✅ PART 4: Scene VMAF Calculation (NEW)
-    print(f"\n📊 === Part 4: Scene VMAF Calculation ===")
-    part4_start_time = time.time()
-    
-    # Calculate VMAF for individual scenes
-    try:
-        encoded_scenes_data_with_vmaf = scene_vmaf_calculation(
-            encoded_scenes_data=encoded_scenes_data,
-            config=config,
-            logging_enabled=True
-        )
-        
-        part4_time = time.time() - part4_start_time
-        print(f"✅ Part 4 completed in {part4_time:.1f}s")
-        
-    except Exception as e:
-        print(f"❌ Part 4 failed with exception: {e}")
-        return False
-
-    # ✅ PART 5: Validation and Merging (RENAMED)
-    print(f"\n🔗 === Part 5: Validation and Merging ===")
+    # ✅ PART 4: Validation and Merging (RENAMED)
     part5_start_time = time.time()
     
     try:
         final_video_path, final_vmaf, comprehensive_report = validation_and_merging(
             original_video_path=part1_result['path'],
-            encoded_scenes_data_with_vmaf=encoded_scenes_data_with_vmaf,  # Now includes VMAF
+            encoded_scenes_data=encoded_scenes_data,  # Now includes VMAF
             config=config,
             logging_enabled=True
         )
@@ -412,7 +385,7 @@ def video_compressor(input_file, target_quality='Medium', max_duration=3600, out
         part5_time = time.time() - part5_start_time
         
         if final_video_path and os.path.exists(final_video_path):
-            print(f"✅ Part 5 completed successfully in {part5_time:.1f}s!")
+            print(f"✅ Part 4 completed successfully in {part5_time:.1f}s!")
             print(f"   📁 Final video: {os.path.basename(final_video_path)}")
             
             if final_vmaf:
@@ -428,11 +401,11 @@ def video_compressor(input_file, target_quality='Medium', max_duration=3600, out
                 print(f"   🗜️ Overall compression: {final_compression:+.1f}%")
                 print(f"   📊 Final file size: {final_size:.1f} MB")
         else:
-            print("❌ Part 5 failed. Could not create final video.")
+            print("❌ Part 4 failed. Could not create final video.")
             return False
             
     except Exception as e:
-        print(f"❌ Part 5 failed with exception: {e}")
+        print(f"❌ Part 4 failed with exception: {e}")
         return False
 
     # ✅ PIPELINE COMPLETION SUMMARY
@@ -452,8 +425,7 @@ def video_compressor(input_file, target_quality='Medium', max_duration=3600, out
     print(f"      Part 1 (Pre-processing): {part1_time:.1f}s")
     print(f"      Part 2 (Scene Detection): {part2_time:.1f}s")
     print(f"      Part 3 (AI Encoding): {part3_time:.1f}s")
-    print(f"      Part 4 (Scene VMAF): {part4_time:.1f}s")       
-    print(f"      Part 5 (Validation & Merging): {part5_time:.1f}s")  
+    print(f"      Part 4 (Validation & Merging): {part5_time:.1f}s")  
     print(f"      Total Pipeline Time: {total_pipeline_time:.1f}s")
     
     # Final file size comparison
@@ -500,7 +472,6 @@ def video_compressor(input_file, target_quality='Medium', max_duration=3600, out
     print(f"   🚀 Ready for playback: {final_video_path}")
     
     return final_video_path
-
 
 def test_video_compression(video_path: str):
     """
@@ -555,17 +526,16 @@ def test_video_compression(video_path: str):
         print(f"\n❌ Test failed with exception: {e}")
         return None
 
-
 if __name__ == "__main__":
     import uvicorn
 
-    logger.info("Starting video compressor server")
-    logger.info(f"Video compressor server running on http://{CONFIG.video_compressor.host}:{CONFIG.video_compressor.port}")
+    # logger.info("Starting video compressor server")
+    # logger.info(f"Video compressor server running on http://{CONFIG.video_compressor.host}:{CONFIG.video_compressor.port}")
 
-    uvicorn.run(app, host=CONFIG.video_compressor.host, port=CONFIG.video_compressor.port)
+    # uvicorn.run(app, host=CONFIG.video_compressor.host, port=CONFIG.video_compressor.port)
 
-    # result = test_video_compression('test1.mp4')
-    # print(result)
+    result = test_video_compression('test1.mp4')
+    print(result)
 
 
     #python services/compress/server.py

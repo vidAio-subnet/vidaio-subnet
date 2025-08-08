@@ -1,13 +1,8 @@
-import cv2
-import numpy as np
-import time
 import os
-import subprocess
 import json
-import re
-import tempfile
-from scipy import ndimage
-from skimage import measure, filters
+import numpy as np
+import cv2
+import subprocess
 
 def analyze_video_fast(video_path, max_frames=150,logging_enabled=True,include_quality_metrics=False):
     """
@@ -56,7 +51,6 @@ def analyze_video_fast(video_path, max_frames=150,logging_enabled=True,include_q
         if logging_enabled:
             print(f"❌ Video analysis failed: {e}")
         return None
-
 
 def extract_basic_video_properties(video_path, logging_enabled=True):
     """Extract basic video properties using ffprobe."""
@@ -148,7 +142,6 @@ def extract_basic_video_properties(video_path, logging_enabled=True):
         if logging_enabled:
             print(f"❌ Basic video property extraction failed: {e}")
         return None
-
 
 def extract_comprehensive_video_metrics(video_path, max_frames=150, logging_enabled=True, use_middle_section=True):
     """
@@ -308,7 +301,6 @@ def extract_comprehensive_video_metrics(video_path, max_frames=150, logging_enab
             'metrics_avg_grain_noise': 5.0         # Within expected range
         }
 
-
 def compute_edge_density(gray_frame, threshold1=100, threshold2=200):
     """Compute edge density using Canny edge detection."""
     edges = cv2.Canny(gray_frame, threshold1, threshold2)
@@ -316,14 +308,12 @@ def compute_edge_density(gray_frame, threshold1=100, threshold2=200):
     total_pixels = edges.size
     return edge_pixels / total_pixels
 
-
 def compute_texture_complexity(gray_frame):
     """Compute texture complexity using histogram entropy."""
     hist = cv2.calcHist([gray_frame], [0], None, [256], [0, 256]).ravel()
     hist_norm = hist / hist.sum()  # normalize histogram
     entropy = -np.sum([p * np.log2(p) for p in hist_norm if p > 0])
     return entropy
-
 
 def compute_color_complexity(frame):
     """Compute color complexity as average entropy across color channels."""
@@ -340,7 +330,6 @@ def compute_color_complexity(frame):
         entropies.append(entropy)
     return np.mean(entropies)
 
-
 def compute_spatial_information(gray_frame):
     """Compute spatial information using Sobel gradients."""
     sobelx = cv2.Sobel(gray_frame, cv2.CV_64F, 1, 0, ksize=3)
@@ -348,12 +337,10 @@ def compute_spatial_information(gray_frame):
     gradient_magnitude = np.sqrt(sobelx**2 + sobely**2)
     return np.std(gradient_magnitude)
 
-
 def compute_temporal_information(prev_gray, curr_gray):
     """Compute temporal information as standard deviation of frame difference."""
     diff = cv2.absdiff(prev_gray, curr_gray)
     return np.std(diff)
-
 
 def compute_motion_metric(prev_gray, curr_gray):
     """Compute motion metric as normalized frame difference."""
@@ -628,22 +615,3 @@ def _analyze_temporal_consistency(frames):
         consistency_scores.append(consistency)
     
     return np.mean(consistency_scores)
-
-
-
-
-
-
-if __name__ == "__main__":
-    video_path = './videos/ducks_take_off_1080p50_full.mp4'
-    
-    print("Testing comprehensive video analysis...")
-    metrics = analyze_video_fast(video_path, max_frames=200,logging_enabled=True)
-    print("\nComprehensive metrics:")
-    if metrics:        
-        for key, value in metrics.items():
-            if isinstance(value, (int, float)):
-                print(f"{key}: {value:.4f}")
-            else:
-                print(f"{key}: {value}")
-

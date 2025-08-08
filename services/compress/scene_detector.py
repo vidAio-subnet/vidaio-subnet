@@ -1,8 +1,6 @@
 import os
 import json
 import subprocess
-import sys
-
 from utils.fast_scene_detect import adaptive_scene_detection_check
 from utils.split_video_into_scenes import split_video_into_scenes
 
@@ -119,7 +117,6 @@ def scene_detection(video_metadata):
                 'duration': duration,
                 'original_video_metadata': video_metadata  # ✅ Pass complete metadata including target_codec
             }]
-
 
 def time_based_splitting(video_path, temp_dir, config, duration, original_metadata, logging_enabled=True):
     """
@@ -314,7 +311,6 @@ def time_based_splitting(video_path, temp_dir, config, duration, original_metada
             'original_video_metadata': original_metadata
         }]
 
-
 def create_scene_metadata_from_files(scene_files, original_metadata, config):
     """
     Create metadata for scenes created by PySceneDetect.
@@ -373,94 +369,3 @@ def create_scene_metadata_from_files(scene_files, original_metadata, config):
         scene_metadata_list.append(scene_metadata)
     
     return scene_metadata_list
-
-
-if __name__ == '__main__':
-    # ✅ ENHANCED TESTING: Test Part 2 functionality with codec information
-    
-    print("🧪 --- Part 2 Scene Detection Testing with Codec Info ---")
-    
-    # ✅ TEST CASE 1: Short video (single scene) with codec info
-    print(f"\n🧪 Test Case 1: Short Video with Codec Metadata")
-    print("=" * 60)
-    
-    short_video = "test_short_video.mp4"
-    if not os.path.exists(short_video):
-        print("🎬 Creating short test video...")
-        subprocess.run([
-            'ffmpeg', '-f', 'lavfi', '-i', 'testsrc=duration=15:size=1280x720:rate=30', 
-            '-c:v', 'libx264', '-preset', 'fast', '-y', short_video
-        ], capture_output=True)
-        print(f"✅ Created short test video: {short_video}")
-    
-    # ✅ UPDATED: Simulate Part 1 metadata with new codec fields
-    short_video_metadata = {
-        'path': short_video,
-        'codec': 'h264',
-        'original_codec': 'h264',
-        'target_codec': 'libsvtav1',  # ✅ NEW: Target codec for encoding
-        'duration': 15.0,
-        'was_reencoded': False,
-        'encoding_time': 0,
-        'target_vmaf': 93.0,
-        'target_quality': 'Medium',
-        'processing_info': {
-            'lossless_conversion': False,
-            'original_format': 'h264',
-            'standardized_format': 'h264',
-            'container': 'mp4'
-        }
-    }
-    
-    print(f"📊 Input metadata with codec flow:")
-    print(f"   Duration: {short_video_metadata['duration']}s")
-    print(f"   Codec flow: {short_video_metadata['original_codec']} → {short_video_metadata['codec']} → {short_video_metadata['target_codec']}")
-    print(f"   Target: {short_video_metadata['target_quality']} (VMAF: {short_video_metadata['target_vmaf']})")
-    
-    scenes_short = part2_scene_detection(short_video_metadata)
-    
-    if scenes_short:
-        print(f"✅ Short video test completed - {len(scenes_short)} scenes detected")
-        for scene in scenes_short:
-            print(f"   Scene {scene['scene_number']}: {scene['start_time']:.1f}s - {scene['end_time']:.1f}s")
-            print(f"   Path: {os.path.basename(scene['path'])}")
-            print(f"   Metadata preserved: target_codec = {scene['original_video_metadata'].get('target_codec', 'missing')}")
-    else:
-        print("❌ Short video test failed")
-    
-    # ✅ TEST CASE 2: Lossless video with codec conversion
-    print(f"\n🧪 Test Case 2: Lossless Video with Codec Conversion")
-    print("=" * 60)
-    
-    # Simulate lossless video metadata
-    lossless_video_metadata = {
-        'path': 'test_lossless_converted.mkv',
-        'codec': 'ffv1',
-        'original_codec': 'rawvideo',
-        'target_codec': 'libsvtav1',  # ✅ Target for final encoding
-        'duration': 120.0,
-        'was_reencoded': True,
-        'encoding_time': 5.2,
-        'target_vmaf': 95.0,
-        'target_quality': 'High',
-        'processing_info': {
-            'lossless_conversion': True,
-            'original_format': 'rawvideo',
-            'standardized_format': 'ffv1',
-            'container': 'mkv'
-        }
-    }
-    
-    print(f"📊 Lossless video metadata:")
-    print(f"   Duration: {lossless_video_metadata['duration']}s")
-    print(f"   Codec flow: {lossless_video_metadata['original_codec']} → {lossless_video_metadata['codec']} → {lossless_video_metadata['target_codec']}")
-    print(f"   Lossless conversion: {lossless_video_metadata['processing_info']['lossless_conversion']}")
-    
-    # Note: This would fail in actual execution since the file doesn't exist,
-    # but demonstrates the metadata flow
-    print(f"   ✅ Metadata structure validated for lossless video workflow")
-    
-    print(f"\n🎉 Part 2 codec integration tests completed!")
-    print(f"   ✅ Codec information properly preserved in scene metadata")
-    print(f"   ✅ Target codec available for Part 3 encoding decisions")
-    print(f"   ✅ Container format selection based on source codec")

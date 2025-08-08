@@ -1,13 +1,9 @@
-from scenedetect import AdaptiveDetector, SceneManager, open_video # Import SceneManager and VideoStream
-import datetime
-import time # Make sure time is imported
+from scenedetect import AdaptiveDetector, SceneManager, open_video
+import time
 import os
-import shutil # Import shutil for directory removal
-# import ffmpeg # Keep ffmpeg-python for potential future use, but splitting uses subprocess now
 import subprocess
-import tempfile # For temporary list file
-import traceback # Import traceback for better error logging
-import gc # Import garbage collector interface
+import traceback 
+import gc 
 
 def has_audio(video_path):
     """
@@ -20,7 +16,6 @@ def has_audio(video_path):
         '-of', 'default=noprint_wrappers=1:nokey=1',
         video_path
     ]
-    # Use shell=True on Windows if ffprobe isn't directly in PATH for the environment
     is_windows = os.name == 'nt'
     try:
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True, shell=is_windows)
@@ -33,7 +28,6 @@ def has_audio(video_path):
         if "Stream specifier 'a' matches no streams" not in e.stderr:
              print(f"Error running ffprobe: {e.stderr}")
         return False
-
 
 def create_temp_downscaled_video(input_path, downscale_factor, temp_suffix="_downscaled.mkv"):
     """Creates a temporary downscaled video using FFmpeg."""
@@ -66,7 +60,6 @@ def create_temp_downscaled_video(input_path, downscale_factor, temp_suffix="_dow
         if hasattr(e, 'stderr'):
             print(f"FFmpeg stderr: {e.stderr}")
         return None
-
 
 def split_video_into_scenes(video_path, temp_dir='./videos/temp_scenes', detection_downscale=1):
     """
@@ -111,22 +104,15 @@ def split_video_into_scenes(video_path, temp_dir='./videos/temp_scenes', detecti
         scene_manager.add_detector(AdaptiveDetector())
         scene_manager.detect_scenes(video=video_manager, show_progress=True)
         scene_list_frames = scene_manager.get_scene_list()
-        # --- End SceneManager usage ---
 
-        # --- Timing for Scene Detection ---
         end_detection_time = time.time()
         detection_duration = end_detection_time - start_detection_time
         print(f"Scene detection completed in {detection_duration:.2f} seconds.")
-        # --- End Timing ---
 
-        # Convert FrameTimecode list to seconds
         scene_list_seconds = [(start.get_seconds(), end.get_seconds()) for start, end in scene_list_frames]
 
         if not scene_list_seconds:
             print("No scenes detected.")
-            # Still need to clean up temp file if it exists
-            # Note: video_manager might still hold the lock here if detection was very short
-            # We rely on the finally block for robust cleanup
             return [], detection_duration
 
         print(f"Detected {len(scene_list_seconds)} scenes.")
@@ -227,107 +213,3 @@ def split_video_into_scenes(video_path, temp_dir='./videos/temp_scenes', detecti
         print(f"Unexpected error during FFmpeg splitting: {e}")
         traceback.print_exc()
         return None, detection_duration
-
-
-# --- Main execution block for comparison ---
-if __name__ == "__main__":
-    # --- Configuration ---
-    # Adjust this path to your actual input video
-    video_path = "./videos/input_videos/combined_videos/input_1.y4m"
-    # Base directory for temporary files
-    base_temp_dir = './videos/temp_scenes_compare'
-    # Downscale factor to test (e.g., 2 or 4)
-    downscale_factor_test = 2
-    # --- End Configuration ---
-
-    if not os.path.exists(video_path):
-        print(f"Error: Input video not found at {video_path}")
-    else:
-        print("="*50)
-        print("Starting Scene Splitting Comparison")
-        print("="*50)
-
-        total_times = {}
-        detection_times = {}
-
-        # --- Run 1: No Downscaling ---
-        print("\n>>> Running with NO Downscaling (detection_downscale=1)")
-        temp_dir_no_downscale = os.path.join(base_temp_dir, "no_downscale")
-        start_time_total_1 = time.time()
-        generated_files_1, detection_time_1 = split_video_into_scenes(
-            video_path,
-            temp_dir=temp_dir_no_downscale,
-            detection_downscale=1
-        )
-        end_time_total_1 = time.time()
-        total_time_1 = end_time_total_1 - start_time_total_1
-        total_times['no_downscale'] = total_time_1
-        detection_times['no_downscale'] = detection_time_1
-
-        if generated_files_1 is not None:
-            print(f"\nSplitting (No Downscale) finished.")
-            print(f"  Total time: {total_time_1:.2f} seconds")
-            print(f"  Detection time: {detection_time_1:.2f} seconds")
-            print(f"  FFmpeg/Other time: {total_time_1 - detection_time_1:.2f} seconds")
-            print(f"  Generated {len(generated_files_1)} files in {temp_dir_no_downscale}")
-            # Optional: Clean up immediately
-            # print(f"  Cleaning up {temp_dir_no_downscale}...")
-            # shutil.rmtree(temp_dir_no_downscale)
-        else:
-            print("\nSplitting (No Downscale) failed.")
-            print(f"  Total time elapsed before failure: {total_time_1:.2f} seconds")
-            print(f"  Detection time elapsed before failure: {detection_time_1:.2f} seconds")
-
-
-        # --- Run 2: With Downscaling ---
-        print(f"\n>>> Running WITH Downscaling (detection_downscale={downscale_factor_test})")
-        temp_dir_with_downscale = os.path.join(base_temp_dir, f"downscale_{downscale_factor_test}")
-        start_time_total_2 = time.time()
-        generated_files_2, detection_time_2 = split_video_into_scenes(
-            video_path,
-            temp_dir=temp_dir_with_downscale,
-            detection_downscale=downscale_factor_test
-        )
-        end_time_total_2 = time.time()
-        total_time_2 = end_time_total_2 - start_time_total_2
-        total_times['with_downscale'] = total_time_2
-        detection_times['with_downscale'] = detection_time_2
-
-        if generated_files_2 is not None:
-            print(f"\nSplitting (With Downscale={downscale_factor_test}) finished.")
-            print(f"  Total time: {total_time_2:.2f} seconds")
-            print(f"  Detection time: {detection_time_2:.2f} seconds")
-            print(f"  FFmpeg/Other time: {total_time_2 - detection_time_2:.2f} seconds")
-            print(f"  Generated {len(generated_files_2)} files in {temp_dir_with_downscale}")
-            # Optional: Clean up immediately
-            # print(f"  Cleaning up {temp_dir_with_downscale}...")
-            # shutil.rmtree(temp_dir_with_downscale)
-        else:
-            print(f"\nSplitting (With Downscale={downscale_factor_test}) failed.")
-            print(f"  Total time elapsed before failure: {total_time_2:.2f} seconds")
-            print(f"  Detection time elapsed before failure: {detection_time_2:.2f} seconds")
-
-
-        # --- Summary ---
-        print("\n" + "="*50)
-        print("Comparison Summary:")
-        print("="*50)
-        if 'no_downscale' in total_times:
-             print(f"No Downscale:")
-             print(f"  Total Time = {total_times['no_downscale']:.2f}s")
-             print(f"  Detection Time = {detection_times['no_downscale']:.2f}s")
-        if 'with_downscale' in total_times:
-             print(f"With Downscale ({downscale_factor_test}x):")
-             print(f"  Total Time = {total_times['with_downscale']:.2f}s")
-             print(f"  Detection Time = {detection_times['with_downscale']:.2f}s")
-
-             if 'no_downscale' in total_times and detection_times['no_downscale'] > 0:
-                 speedup = detection_times['no_downscale'] / detection_times['with_downscale']
-                 print(f"\n  Detection Speedup: {speedup:.2f}x")
-             if 'no_downscale' in total_times and total_times['no_downscale'] > 0:
-                 total_speedup = total_times['no_downscale'] / total_times['with_downscale']
-                 print(f"  Total Speedup: {total_speedup:.2f}x")
-
-        print("\nNote: You may want to manually delete the temporary directories:")
-        print(f"- {temp_dir_no_downscale}")
-        print(f"- {temp_dir_with_downscale}")

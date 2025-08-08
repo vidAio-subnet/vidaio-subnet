@@ -1,14 +1,6 @@
-
-
-from scenedetect import detect, AdaptiveDetector, split_video_ffmpeg, save_images
-import datetime
-import time
 import os
-import ffmpeg
-import json
 import subprocess
 import tempfile
-
 
 def has_audio(video_path):
     """
@@ -23,8 +15,6 @@ def has_audio(video_path):
     ]
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     return bool(result.stdout.strip())
-
-
 
 def merge_videos(scene_videos, output_video, logging_enabled=True):
     """
