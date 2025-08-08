@@ -1,3 +1,4 @@
+from logging import basicConfig
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import os
@@ -490,7 +491,7 @@ def test_video_compression(video_path: str):
     
     # Default test parameters
     test_params = {
-        'target_quality': 'Medium',
+        'target_quality': 'Low',
         'max_duration': 3600,
         'output_dir': './test_output'
     }
