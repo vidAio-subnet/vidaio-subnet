@@ -106,8 +106,8 @@ class Validator(base.BaseValidator):
         miner_uids = self.filter_miners()
         logger.debug(f"Initialized {len(miner_uids)} subnet neurons of total {len(self.metagraph.S)} neurons")
 
-        # uids = self.miner_manager.consume(miner_uids)
-        uids = [0]
+        uids = self.miner_manager.consume(miner_uids)
+        # uids = [0]
         logger.info(f"Filtered UIDs after consumption: {uids}")
 
         random_uids = uids.copy()
@@ -411,6 +411,7 @@ class Validator(base.BaseValidator):
             "validator_uid": self.my_subnet_uid,
             "validator_hotkey": self.wallet.hotkey.ss58_address,
             "request_type": "Synthetic",
+            "task_type": "Upscaling",
             "miner_uids": uids,
             "miner_hotkeys": miner_hotkeys,
             "vmaf_scores": vmaf_scores,
@@ -509,28 +510,30 @@ class Validator(base.BaseValidator):
                 f"** VMAF Threshold: {vmaf_threshold} ** Compression Rate: {compression_rate:.4f} ** Applied_multiplier {applied_multiplier} ** Final: {final_score:.4f} || {reason}"
             )
 
-        # miner_data = {
-        #     "validator_uid": self.my_subnet_uid,
-        #     "validator_hotkey": self.wallet.hotkey.ss58_address,
-        #     "request_type": "Compression",
-        #     "miner_uids": uids,
-        #     "miner_hotkeys": miner_hotkeys,
-        #     "vmaf_scores": vmaf_scores,
-        #     "compression_rates": compression_rates,
-        #     "final_scores": final_scores,
-        #     "accumulate_scores": accumulate_scores,
-        #     "applied_multipliers": applied_multipliers,
-        #     "status": reasons,
-        #     "task_urls": payload_urls,
-        #     "processed_urls": distorted_urls,
-        #     "timestamp": timestamp
-        # }
+        miner_data = {
+            "validator_uid": self.my_subnet_uid,
+            "validator_hotkey": self.wallet.hotkey.ss58_address,
+            "request_type": "Synthetic",
+            "task_type": "Compression",
+            "miner_uids": uids,
+            "miner_hotkeys": miner_hotkeys,
+            "vmaf_scores": vmaf_scores,
+            "vmaf_thresholds": vmaf_thresholds,
+            "compression_rates": compression_rates,
+            "final_scores": final_scores,
+            "accumulate_scores": accumulate_scores,
+            "applied_multipliers": applied_multipliers,
+            "status": reasons,
+            "task_urls": payload_urls,
+            "processed_urls": distorted_urls,
+            "timestamp": timestamp
+        }
         
-        # success = send_data_to_dashboard(miner_data)
-        # if success:
-        #     logger.info("Compression data successfully sent to dashboard")
-        # else:
-        #     logger.info("Failed to send compression data to dashboard")
+        success = send_data_to_dashboard(miner_data)
+        if success:
+            logger.info("Compression data successfully sent to dashboard")
+        else:
+            logger.info("Failed to send compression data to dashboard")
 
     async def score_organics(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: list[str], task_types: list[str], timestamp: str):
 
