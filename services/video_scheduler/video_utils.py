@@ -12,6 +12,7 @@ import tempfile
 import threading
 from dotenv import load_dotenv
 import random
+import glob
 
 load_dotenv()
 
@@ -170,6 +171,13 @@ def apply_video_transformations(video_path: str, output_path: str = None, transf
         video_path_obj = Path(video_path)
         output_path = str(video_path_obj.parent / f"{video_path_obj.stem}_transformed{video_path_obj.suffix}")
 
+    if os.path.exists(output_path):
+        try:
+            os.remove(output_path)
+            print(f"Cleaned up existing output file before transformation: {output_path}")
+        except OSError as e:
+            print(f"Warning: Could not remove existing output file {output_path}: {e}")
+
     # Slight rotation, commented for now
     # rotation_angle_deg = random.uniform(-5, 5)  # -5 to 5 degrees
     # transformations.append(f"rotate={2*math.pi*rotation_angle_deg/360}")
@@ -206,6 +214,12 @@ def apply_video_transformations(video_path: str, output_path: str = None, transf
         # Verify the output file was created and is not empty
         if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
             print(f"Warning: Output file is empty or doesn't exist: {output_path}")
+            if os.path.exists(output_path):
+                try:
+                    os.remove(output_path)
+                    print(f"Removed empty/invalid output file: {output_path}")
+                except OSError as e:
+                    print(f"Warning: Could not remove invalid output file {output_path}: {e}")
             return video_path
         
         # Remove original file to save space only if transformation was successful and preserve_original is False
@@ -222,10 +236,26 @@ def apply_video_transformations(video_path: str, output_path: str = None, transf
         print(f"FFmpeg error applying video transformation: {e}")
         if e.stderr:
             print(f"FFmpeg stderr: {e.stderr}")
-        # If transformation fails, return the original path
+        
+        if os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+                print(f"Cleaned up failed transformation output: {output_path}")
+            except OSError as cleanup_error:
+                print(f"Warning: Could not clean up failed output {output_path}: {cleanup_error}")
+        
         return None
+        
     except Exception as e:
         print(f"Unexpected error applying video transformation: {e}")
+        
+        if os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+                print(f"Cleaned up output file after unexpected error: {output_path}")
+            except OSError as cleanup_error:
+                print(f"Warning: Could not clean up output after error {output_path}: {cleanup_error}")
+        
         return None
 
 def download_transform_and_trim_downscale_video(
@@ -322,6 +352,14 @@ def download_transform_and_trim_downscale_video(
         clipped_path = Path(output_dir) / f"{final_video_id}_trim.mp4"
         downscale_path = Path(output_dir) / f"{final_video_id}_downscale.mp4"
         
+        for cleanup_path in [clipped_path, downscale_path]:
+            if os.path.exists(cleanup_path):
+                try:
+                    os.remove(cleanup_path)
+                    safe_print(f"Cleaned up existing chunk file: {cleanup_path}")
+                except OSError as e:
+                    safe_print(f"Warning: Could not remove existing chunk file {cleanup_path}: {e}")
+        
         chunk_start_time = time.time()
         safe_print(f"Processing chunk {i+1} from transformed video: {start_time_clip:.1f}s to {end_time_clip:.1f}s")
         
@@ -345,9 +383,22 @@ def download_transform_and_trim_downscale_video(
             print(f"Trimming chunk {i+1} to {actual_duration}s")
             subprocess.run(trim_cmd, check=True)
 
+            if not os.path.exists(clipped_path) or os.path.getsize(clipped_path) == 0:
+                safe_print(f"Warning: Trim output is empty or invalid: {clipped_path}")
+                if os.path.exists(clipped_path):
+                    os.remove(clipped_path)
+                return None
+
             if use_downscale_video:
                 print(f"Downscaling chunk {i+1} to {downscale_height}p")
                 subprocess.run(scale_cmd, check=True)
+                
+                if not os.path.exists(downscale_path) or os.path.getsize(downscale_path) == 0:
+                    safe_print(f"Warning: Downscale output is empty or invalid: {downscale_path}")
+                    for cleanup_path in [clipped_path, downscale_path]:
+                        if os.path.exists(cleanup_path):
+                            os.remove(cleanup_path)
+                    return None
             else: 
                 downscale_path = None
             
@@ -355,8 +406,36 @@ def download_transform_and_trim_downscale_video(
             safe_print(f"Time taken to process chunk {i+1}: {chunk_elapsed_time:.2f} seconds")
             
             return (i, str(downscale_path), final_video_id, str(clipped_path))
+            
         except subprocess.SubprocessError as e:
             safe_print(f"Error processing chunk {i+1}: {e}")
+            
+            cleanup_files = []
+            if os.path.exists(clipped_path):
+                cleanup_files.append(clipped_path)
+            if os.path.exists(downscale_path):
+                cleanup_files.append(downscale_path)
+            
+            for cleanup_file in cleanup_files:
+                try:
+                    os.remove(cleanup_file)
+                    safe_print(f"Cleaned up failed chunk processing file: {cleanup_file}")
+                except OSError as cleanup_error:
+                    safe_print(f"Warning: Could not clean up chunk file {cleanup_file}: {cleanup_error}")
+            
+            return None
+            
+        except Exception as e:
+            safe_print(f"Unexpected error processing chunk {i+1}: {e}")
+            
+            for cleanup_path in [clipped_path, downscale_path]:
+                if os.path.exists(cleanup_path):
+                    try:
+                        os.remove(cleanup_path)
+                        safe_print(f"Cleaned up file after unexpected error: {cleanup_path}")
+                    except OSError as cleanup_error:
+                        safe_print(f"Warning: Could not clean up file {cleanup_path}: {cleanup_error}")
+            
             return None
 
     def generate_chunk_timestamps(total_duration, clip_duration):
@@ -555,10 +634,18 @@ def download_transform_and_trim_downscale_video(
                 print(f"\n Creating {transformations_per_video} transformed versions of the original video...")
                 
                 transformed_video_paths = []
+                failed_attempts = 0
+                max_failed_attempts = transformations_per_video * 2  # Allow some retries but prevent infinite loops
                 
                 transform_idx = 0
-                while len(transformed_video_paths) < transformations_per_video:
+                while len(transformed_video_paths) < transformations_per_video and failed_attempts < max_failed_attempts:
                     transformed_path = Path(output_dir) / f"{vid}_transform_{transform_idx}.mp4"
+                    if os.path.exists(transformed_path):
+                        try:
+                            os.remove(transformed_path)
+                            print(f"Cleaned up existing transformation file: {transformed_path}")
+                        except OSError as e:
+                            print(f"Warning: Could not clean up existing file {transformed_path}: {e}")
                     
                     transformed_result = apply_video_transformations(
                         str(temp_path), 
@@ -571,10 +658,20 @@ def download_transform_and_trim_downscale_video(
                         transform_idx += 1
                         print(f"✅ Created transformed version {len(transformed_video_paths)}: {transformed_result}")
                     else:
-                        print(f"❌ Failed to create transformed version {transform_idx + 1}, retrying...")
-                    
+                        failed_attempts += 1
+                        print(f"❌ Failed to create transformed version {transform_idx + 1} (attempt {failed_attempts}/{max_failed_attempts})")
+                        if os.path.exists(transformed_path):
+                            try:
+                                os.remove(transformed_path)
+                                print(f"Cleaned up failed transformation file: {transformed_path}")
+                            except OSError as e:
+                                print(f"Warning: Could not clean up failed file {transformed_path}: {e}")
                 
-                if not transformed_video_paths:
+                if failed_attempts >= max_failed_attempts:
+                    print(f"⚠️ Exceeded maximum failed attempts ({max_failed_attempts}), falling back to original")
+                    transformed_video_paths = [str(temp_path)]
+                    transformations_per_video = 1
+                elif not transformed_video_paths:
                     print("❌ No transformed versions created successfully, falling back to original")
                     transformed_video_paths = [str(temp_path)]
                     transformations_per_video = 1
@@ -698,6 +795,68 @@ def delete_videos_with_fileid(file_id: int, dir_path: str = "videos") -> None:
         except Exception as e:
             print(f"Error deleting {file_path}: {e}")
 
+def cleanup_orphaned_files(output_dir: str = "videos", max_age_hours: int = 720) -> None:
+    """
+    Cleanup function to remove orphaned files that may have been left behind by failed operations.
+    This acts as a safety net to prevent storage issues from accumulating files.
+    
+    Args:
+        output_dir (str): Directory to clean up
+        max_age_hours (int): Maximum age in hours for files to keep
+    """
+    if not os.path.exists(output_dir):
+        print(f"Output directory does not exist: {output_dir}")
+        return
+        
+    print(f"\nCleaning up orphaned files in {output_dir} older than {max_age_hours} hours...")
+    
+    patterns = [
+        "*_transform_*.mp4",
+        "*_trim.mp4",       
+        "*_downscale.mp4",  
+        "*_original.mp4",   
+        "*_ytransform_*.mp4"
+    ]
+    
+    now = time.time()
+    max_age_seconds = max_age_hours * 3600
+    
+    total_cleaned = 0
+    total_size_cleaned = 0
+    
+    for pattern in patterns:
+        pattern_path = os.path.join(output_dir, pattern)
+        try:
+            for file_path in glob.glob(pattern_path):
+                try:
+                    # Check file age
+                    file_age = now - os.path.getmtime(file_path)
+                    if file_age > max_age_seconds:
+                        # Get file size before deleting
+                        try:
+                            file_size = os.path.getsize(file_path)
+                        except OSError:
+                            file_size = 0
+                            
+                        try:
+                            os.remove(file_path)
+                            total_cleaned += 1
+                            total_size_cleaned += file_size
+                            print(f"Cleaned up orphaned file: {file_path} (Age: {file_age/3600:.1f} hours, Size: {file_size/1024/1024:.1f} MB)")
+                        except OSError as e:
+                            print(f"Warning: Could not remove orphaned file {file_path}: {e}")
+                            
+                except OSError as e:
+                    print(f"Warning: Error checking file {file_path}: {e}")
+                    
+        except glob.error as e:
+            print(f"Warning: Error processing pattern {pattern}: {e}")
+            
+    if total_cleaned > 0:
+        print(f"\nCleanup complete! Removed {total_cleaned} orphaned files (Total: {total_size_cleaned/1024/1024:.1f} MB)")
+    else:
+        print("\nNo orphaned files found to clean up")
+
 def download_trim_downscale_youtube_video(
     clip_duration: int,
     youtube_video_id: str,
@@ -778,6 +937,14 @@ def download_trim_downscale_youtube_video(
         clipped_path = Path(output_dir) / f"{video_id}_trim.mp4"
         downscale_path = Path(output_dir) / f"{video_id}_downscale.mp4"
         
+        for cleanup_path in [clipped_path, downscale_path]:
+            if os.path.exists(cleanup_path):
+                try:
+                    os.remove(cleanup_path)
+                    safe_print(f"Cleaned up existing chunk file: {cleanup_path}")
+                except OSError as e:
+                    safe_print(f"Warning: Could not remove existing chunk file {cleanup_path}: {e}")
+        
         chunk_start_time = time.time()
         safe_print(f"Processing YouTube chunk {i+1}: {start_time_clip:.1f}s to {end_time_clip:.1f}s")
         
@@ -803,8 +970,23 @@ def download_trim_downscale_youtube_video(
             safe_print(f"Time taken to process YouTube chunk {i+1}: {chunk_elapsed_time:.2f} seconds")
             
             return (i, str(downscale_path), video_id, str(clipped_path))
+            
         except subprocess.SubprocessError as e:
             safe_print(f"Error processing YouTube chunk {i+1}: {e}")
+            
+            cleanup_files = []
+            if os.path.exists(clipped_path):
+                cleanup_files.append(clipped_path)
+            if os.path.exists(downscale_path):
+                cleanup_files.append(downscale_path)
+            
+            for cleanup_file in cleanup_files:
+                try:
+                    os.remove(cleanup_file)
+                    safe_print(f"Cleaned up failed chunk processing file: {cleanup_file}")
+                except OSError as cleanup_error:
+                    safe_print(f"Warning: Could not clean up chunk file {cleanup_file}: {cleanup_error}")
+            
             return None
 
     def generate_chunk_timestamps(total_duration, clip_duration):
@@ -986,7 +1168,7 @@ if __name__ == "__main__":
     CLIP_DURATION = 2
     vid = 2257054
     
-    result = download_trim_downscale_video(
+    result = download_transform_and_trim_downscale_video(
         clip_duration=CLIP_DURATION, 
         vid=vid, 
         task_type="HD24K",

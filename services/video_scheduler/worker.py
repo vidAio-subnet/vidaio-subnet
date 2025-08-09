@@ -38,6 +38,11 @@ from video_utils import download_transform_and_trim_downscale_video
 from services.google_drive.google_drive_manager import GoogleDriveManager
 from vidaio_subnet_core import CONFIG
 from vidaio_subnet_core.utilities.storage_client import storage_client
+from video_utils import (
+    download_transform_and_trim_downscale_video,
+    download_trim_downscale_youtube_video,
+    cleanup_orphaned_files  
+)
 
 load_dotenv()
 
@@ -131,7 +136,7 @@ async def get_synthetic_urls(hotkey: str, num_needed: int) -> Optional[List[str]
         logger.error(f"Unexpected error fetching synthetic URLs: {str(e)}", exc_info=True)
     return None
 
-def clean_old_files(directory: str, age_limit_in_hours: int, check_interval_in_seconds: int = 100):
+async def clean_old_files(directory: str, age_limit_in_hours: int):
     """
     Continuously checks the given directory and deletes files older than the specified age (in hours).
 
@@ -557,7 +562,7 @@ async def get_compression_requests_paths(num_needed: int, redis_conn: redis.Redi
     
     return uploaded_video_chunks
 
-async def main():
+async def main_loop():
     """
     Main service function that manages video processing workflow and queue maintenance.
     
@@ -677,8 +682,22 @@ async def main():
     except Exception as e:
         logger.error(f"Critical error in main service loop: {str(e)}")
         logger.exception("Exception details:")
-        raise
+    finally:
+        logger.info("Main service loop exited. Cleaning up resources if necessary.")
 
+async def manage_cleanup_loop(cleanup_interval: int = 24):
+    """
+    Manage the cleanup loop.
+    """
+    while True:
+        await asyncio.sleep(cleanup_interval * 3600)
+        logger.info("Cleaning up old files...")
+        await clean_old_files("videos", 720)
+        
+async def main():
+    cleanup_task = asyncio.create_task(manage_cleanup_loop())
+    main_task = asyncio.create_task(main_loop())
+    await asyncio.gather(cleanup_task, main_task)
 
 async def initialize_environment(redis_conn):
     """Initialize the processing environment by clearing queues and cached data."""

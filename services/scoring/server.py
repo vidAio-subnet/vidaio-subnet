@@ -665,13 +665,17 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 os.unlink(ref_y4m_path)
             if dist_path and os.path.exists(dist_path):
                 os.unlink(dist_path)
-            if ref_path and os.path.exists(ref_path):
-                os.unlink(ref_path)
+            # if ref_path and os.path.exists(ref_path):
+            #     os.unlink(ref_path)
 
             # Delete the uploaded object
             storage_client.delete_file(uploaded_object_name)
-            
-            delete_videos_with_fileid(video_id)
+
+            # delete_videos_with_fileid(video_id)
+
+    for ref_path in request.reference_paths:
+        if os.path.exists(ref_path):
+            os.unlink(ref_path)
 
     tmp_directory = "/tmp"
     try:

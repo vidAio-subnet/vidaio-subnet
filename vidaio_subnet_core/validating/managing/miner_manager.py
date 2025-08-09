@@ -32,7 +32,7 @@ class MinerManager:
         )
         
         # Clean up old database files before connecting to new database
-        self._cleanup_old_database_files()
+        # self._cleanup_old_database_files()
         
         # Download database from URL if needed
         db_url = self._download_database_from_url()
