@@ -32,12 +32,29 @@ class Synthesizer:
             httpx.HTTPStatusError: If the request to the video scheduler fails
             RuntimeError: If max retries exceeded without valid response
         """
+        # Count occurrences of each content length and calculate required chunks
+        from collections import Counter
+        content_counts = Counter(content_lengths)
+        
+        # Get miners per task from configuration
+        miners_per_task = CONFIG.bandwidth.miners_per_task
+        
+        # Calculate required chunks (one chunk per miners_per_task miners of same length)
+        required_chunks = []
+        for length, count in content_counts.items():
+            chunks_needed = (count + miners_per_task - 1) // miners_per_task  # Ceiling division to ensure enough chunks
+            required_chunks.extend([length] * chunks_needed)
+        
+        logger.info(f"Original content_lengths: {content_lengths}")
+        logger.info(f"Using {miners_per_task} miners per task")
+        logger.info(f"Optimized chunk request: {required_chunks} (reduced from {len(content_lengths)} to {len(required_chunks)} chunks)")
+        
         for attempt in range(self.max_retries):
             try:
-                # Send the correct request with content_lengths
+                # Send the optimized request with required_chunks
                 response = await self.session.post(
                     "/api/get_synthetic_chunks",
-                    json={"content_lengths": content_lengths}
+                    json={"content_lengths": required_chunks}
                 )
                 response.raise_for_status()
                 data = response.json()
@@ -64,32 +81,77 @@ class Synthesizer:
                     await asyncio.sleep(self.retry_delay)
                     continue
 
+                # Group chunks by content length for efficient protocol generation
+                chunks_by_length = {}
+                chunk_assignment_index = 0
+                
                 for chunk in valid_chunks:
                     # Validate chunk data
                     required_fields = ["video_id", "uploaded_object_name", "sharing_link", "task_type"]
                     if not all(field in chunk for field in required_fields):
                         logger.warning(f"Missing required fields in chunk data: {chunk}")
                         continue
-
-                    payload_urls.append(chunk["sharing_link"])
-                    video_ids.append(chunk["video_id"])
-                    uploaded_object_names.append(chunk["uploaded_object_name"])
                     
-                    synapse = VideoUpscalingProtocol(
-                        miner_payload=UpscalingMinerPayload(
-                            reference_video_url=chunk["sharing_link"],
-                            task_type=chunk["task_type"]
-                        ),
-                        version=version,
-                        round_id=round_id
-                    )
-                    synapses.append(synapse)
+                    # Assign chunks to lengths based on required_chunks order
+                    if chunk_assignment_index < len(required_chunks):
+                        chunk_length = required_chunks[chunk_assignment_index]
+                        chunk_assignment_index += 1
+                    else:
+                        logger.warning(f"More chunks received than expected, skipping chunk")
+                        continue
+                    
+                    if chunk_length not in chunks_by_length:
+                        chunks_by_length[chunk_length] = []
+                    chunks_by_length[chunk_length].append(chunk)
+
+                # Generate protocols in the exact order of original content_lengths
+                length_usage_count = {length: 0 for length in content_counts.keys()}
+                chunk_usage_count = {length: 0 for length in content_counts.keys()}
+                
+                for length in content_lengths:
+                    available_chunks = chunks_by_length.get(length, [])
+                    
+                    if not available_chunks:
+                        logger.warning(f"No chunks available for length {length}s")
+                        continue
+                    
+                    # Determine which chunk to use (one chunk per miners_per_task miners)
+                    chunk_index = chunk_usage_count[length] // miners_per_task
+                    
+                    if chunk_index >= len(available_chunks):
+                        # If we run out of chunks, cycle back to first chunk
+                        chunk_index = 0
+                        logger.warning(f"Cycling back to first chunk for length {length}s")
+                    
+                    chunk = available_chunks[chunk_index]
+                    
+                    try:
+                        payload_urls.append(chunk["sharing_link"])
+                        video_ids.append(chunk["video_id"])
+                        uploaded_object_names.append(chunk["uploaded_object_name"])
+                        
+                        synapse = VideoUpscalingProtocol(
+                            miner_payload=UpscalingMinerPayload(
+                                reference_video_url=chunk["sharing_link"],
+                                task_type=chunk["task_type"]
+                            ),
+                            version=version,
+                            round_id=round_id
+                        )
+                        synapses.append(synapse)
+                        
+                        chunk_usage_count[length] += 1
+                        
+                    except Exception as e:
+                        logger.error(f"Error creating protocol for length {length}: {e}")
+                        continue
 
                 if not synapses:
                     logger.warning(f"Attempt {attempt + 1}/{self.max_retries}: No valid protocols could be created, retrying...")
                     await asyncio.sleep(self.retry_delay)
                     continue
-                    
+                
+                logger.info(f"Successfully created {len(synapses)} protocols from {len(valid_chunks)} chunks")
                 # Return the results if we have valid data
                 return payload_urls, video_ids, uploaded_object_names, synapses
                 
@@ -127,10 +189,20 @@ class Synthesizer:
             httpx.HTTPStatusError: If the request to the video scheduler fails
             RuntimeError: If max retries exceeded without valid response
         """
+        # Get miners per task from configuration
+        miners_per_task = CONFIG.bandwidth.miners_per_task
+        
+        # Calculate required chunks (one chunk per miners_per_task protocols)
+        num_protocols = len(vmaf_thresholds)
+        num_needed = (num_protocols + miners_per_task - 1) // miners_per_task  # Ceiling division
+        
+        logger.info(f"Original vmaf_thresholds: {vmaf_thresholds}")
+        logger.info(f"Using {miners_per_task} miners per task")
+        logger.info(f"Optimized chunk request: {num_needed} chunks (reduced from {num_protocols} protocols)")
+        
         for attempt in range(self.max_retries):
             try:
-                # Send the correct request with content_lengths (using default 5s for compression)
-                num_needed = len(vmaf_thresholds)  # Default 10s for compression tasks
+                # Send the optimized request with calculated num_needed
                 response = await self.session.post(
                     "/api/get_compression_chunks",
                     json={"num_needed": num_needed}
@@ -160,35 +232,49 @@ class Synthesizer:
                     await asyncio.sleep(self.retry_delay)
                     continue
 
-                for i, chunk in enumerate(valid_chunks):
+                # Generate protocols in order, reusing chunks based on miners_per_task
+                for i, vmaf_threshold in enumerate(vmaf_thresholds):
+                    # Determine which chunk to use (one chunk per miners_per_task protocols)
+                    chunk_index = i // miners_per_task
+                    
+                    if chunk_index >= len(valid_chunks):
+                        # If we run out of chunks, cycle back to first chunk
+                        chunk_index = 0
+                        logger.warning(f"Cycling back to first chunk for protocol {i}")
+                    
+                    chunk = valid_chunks[chunk_index]
+                    
                     # Validate chunk data
                     required_fields = ["video_id", "uploaded_object_name", "sharing_link"]
                     if not all(field in chunk for field in required_fields):
                         logger.warning(f"Missing required fields in compression chunk data: {chunk}")
                         continue
 
-                    payload_urls.append(chunk["sharing_link"])
-                    video_ids.append(chunk["video_id"])
-                    uploaded_object_names.append(chunk["uploaded_object_name"])
-                    
-                    # Use the corresponding VMAF threshold, or default to 90.0
-                    vmaf_threshold = vmaf_thresholds[i] if i < len(vmaf_thresholds) else 90.0
-                    
-                    synapse = VideoCompressionProtocol(
-                        miner_payload=CompressionMinerPayload(
-                            reference_video_url=chunk["sharing_link"],
-                            vmaf_threshold=vmaf_threshold
-                        ),
-                        version=version,
-                        round_id=round_id
-                    )
-                    synapses.append(synapse)
+                    try:
+                        payload_urls.append(chunk["sharing_link"])
+                        video_ids.append(chunk["video_id"])
+                        uploaded_object_names.append(chunk["uploaded_object_name"])
+                        
+                        synapse = VideoCompressionProtocol(
+                            miner_payload=CompressionMinerPayload(
+                                reference_video_url=chunk["sharing_link"],
+                                vmaf_threshold=vmaf_threshold
+                            ),
+                            version=version,
+                            round_id=round_id
+                        )
+                        synapses.append(synapse)
+                        
+                    except Exception as e:
+                        logger.error(f"Error creating compression protocol {i}: {e}")
+                        continue
 
                 if not synapses:
                     logger.warning(f"Attempt {attempt + 1}/{self.max_retries}: No valid compression protocols could be created, retrying...")
                     await asyncio.sleep(self.retry_delay)
                     continue
-                    
+                
+                logger.info(f"Successfully created {len(synapses)} compression protocols from {len(valid_chunks)} chunks")
                 # Return the results if we have valid data
                 return payload_urls, video_ids, uploaded_object_names, synapses
                 
