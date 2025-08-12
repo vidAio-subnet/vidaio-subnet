@@ -11,13 +11,11 @@ from redis_utils import (
     get_redis_connection,
     push_5s_chunks,
     push_10s_chunks,
-    push_20s_chunks,
     push_youtube_video_ids,
     get_youtube_queue_size,
     pop_youtube_video_id,
     get_5s_queue_size,
     get_10s_queue_size,
-    get_20s_queue_size,
 )
 from video_utils import download_trim_downscale_youtube_video, apply_video_transformations
 from youtube_scraper import populate_database, get_1080p_videos, get_2160p_videos, get_4320p_videos
@@ -339,8 +337,7 @@ class YouTubeWorker:
             # Check which queues need YouTube content
             queue_sizes = {
                 5: get_5s_queue_size(self.redis_conn),
-                10: get_10s_queue_size(self.redis_conn),
-                20: get_20s_queue_size(self.redis_conn)
+                10: get_10s_queue_size(self.redis_conn)
             }
             
             # Define contribution thresholds (contribute when queue is getting low)
@@ -380,8 +377,6 @@ class YouTubeWorker:
                             push_5s_chunks(self.redis_conn, youtube_chunks)
                         elif duration == 10:
                             push_10s_chunks(self.redis_conn, youtube_chunks)
-                        elif duration == 20:
-                            push_20s_chunks(self.redis_conn, youtube_chunks)
                         
                         logger.info(f"✅ Successfully contributed {len(youtube_chunks)} YouTube chunks to {duration}s queue")
                     else:

@@ -279,7 +279,7 @@ def get_pexels_random_vids(
                     if (min_len <= video["duration"] <= max_len and 
                         video["width"] == width and 
                         video["height"] == height and
-                        video["duration"] >= 30):  # Prefer videos >= 30s for better chunk yield
+                        video["duration"] >= 15):
                         
                         valid_video_ids.append(video["id"])
                         logger.info(f"[INFO] Added video ID {video['id']} ({video['width']}x{video['height']}, {video['duration']}s)")
@@ -614,6 +614,7 @@ async def main_loop():
                 any_replenished = False
                 
                 for duration in [5, 10]:
+
                     replenished = await replenish_synthetic_queue(
                         redis_conn,
                         duration,
@@ -823,8 +824,6 @@ def get_queue_size_by_duration(redis_conn, duration):
         return get_5s_queue_size(redis_conn)
     elif duration == 10:
         return get_10s_queue_size(redis_conn)
-    elif duration == 20:
-        return get_20s_queue_size(redis_conn)
     else:
         raise ValueError(f"Unsupported duration: {duration}")
 
@@ -835,8 +834,6 @@ def push_chunks_by_duration(redis_conn, chunk_data, duration):
         push_5s_chunks(redis_conn, chunk_data)
     elif duration == 10:
         push_10s_chunks(redis_conn, chunk_data)
-    elif duration == 20:
-        push_20s_chunks(redis_conn, chunk_data)
     else:
         raise ValueError(f"Unsupported duration: {duration}")
 
