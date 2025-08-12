@@ -20,8 +20,8 @@ from services.video_scheduler.redis_utils import get_redis_connection, get_organ
 import os
 
 VMAF_QUALITY_THRESHOLDS = [
-    90, #Low
-    93, #Medium
+    85, #Low
+    90, #Medium
     95, #High
 ]
 
@@ -107,7 +107,7 @@ class Validator(base.BaseValidator):
         logger.debug(f"Initialized {len(miner_uids)} subnet neurons of total {len(self.metagraph.S)} neurons")
 
         uids = self.miner_manager.consume(miner_uids)
-        uids = [0]
+
         logger.info(f"Filtered UIDs after consumption: {uids}")
 
         random_uids = uids.copy()
@@ -161,6 +161,7 @@ class Validator(base.BaseValidator):
         if upscaling_miners:
             logger.info(f"Sending LengthCheckProtocol requests to {len(upscaling_miners)} upscaling miners")
             
+            upscaling_start_time = time.time()
             upscaling_axons = [miner[0] for miner in upscaling_miners]
             length_check_synapse = LengthCheckProtocol(version=version)
             
@@ -189,17 +190,27 @@ class Validator(base.BaseValidator):
             # Process upscaling miners in batches
             await self.process_upscaling_miners(upscaling_miners_with_lengths, version)
 
+            upscaling_processed_time = time.time() - upscaling_start_time
+            sleep_time = 300 - upscaling_processed_time
+            logger.info(f"Sleeping for {sleep_time:.2f} seconds before next upscaling batch")
+            await asyncio.sleep(sleep_time)
+
         # Step 4: Process compression miners (placeholder for now)
         if compression_miners:
             logger.info(f"Processing {len(compression_miners)} compression miners")
+
+            compression_start_time = time.time()
             await self.process_compression_miners(compression_miners, version)
+
+            compression_processed_time = time.time() - compression_start_time
+            sleep_time = 300 - compression_processed_time
+            logger.info(f"Sleeping for {sleep_time:.2f} seconds before next compression batch")
+            await asyncio.sleep(sleep_time)
         
         epoch_processed_time = time.time() - epoch_start_time
         logger.info(f"Completed one epoch within {epoch_processed_time:.2f} seconds")
 
-        sleep_time = 60 - epoch_processed_time
-        logger.info(f"Waiting {sleep_time:.2f} seconds before next epoch")
-        await asyncio.sleep(sleep_time)
+        await asyncio.sleep(2)
 
     async def process_upscaling_miners(self, upscaling_miners_with_lengths, version):
         """Process upscaling miners in batches similar to the original implementation."""
@@ -231,7 +242,7 @@ class Validator(base.BaseValidator):
 
             logger.debug(f"Processing upscaling UIDs in batch: {uids}")
             forward_tasks = [
-                self.dendrite.forward(axons=[axon], synapse=synapse, timeout=40)
+                self.dendrite.forward(axons=[axon], synapse=synapse, timeout=35)
                 for axon, synapse in zip(axons, synapses)
             ]
 

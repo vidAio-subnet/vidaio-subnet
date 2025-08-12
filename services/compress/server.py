@@ -303,7 +303,7 @@ def test_video_compression(video_path: str) -> Optional[str]:
     
     # Default test parameters
     test_params = {
-        'target_quality': 'Low',
+        'target_quality': 'Medium',
         'max_duration': 3600,
         'output_dir': './test_output'
     }
@@ -314,7 +314,6 @@ def test_video_compression(video_path: str) -> Optional[str]:
         if not input_path.is_file():
             print(f"❌ Input file does not exist: {video_path}")
             return None
-            
         # Create test output directory
         test_output_dir = Path(test_params['output_dir'])
         test_output_dir.mkdir(parents=True, exist_ok=True)
@@ -787,12 +786,12 @@ def _display_pipeline_summary(input_file: str, final_video_path: str, part1_resu
 if __name__ == "__main__":
     import uvicorn
 
-    # logger.info("Starting video compressor server")
-    # logger.info(f"Video compressor server running on http://{CONFIG.video_compressor.host}:{CONFIG.video_compressor.port}")
+    logger.info("Starting video compressor server")
+    logger.info(f"Video compressor server running on http://{CONFIG.video_compressor.host}:{CONFIG.video_compressor.port}")
 
-    # uvicorn.run(app, host=CONFIG.video_compressor.host, port=CONFIG.video_compressor.port)
+    uvicorn.run(app, host=CONFIG.video_compressor.host, port=CONFIG.video_compressor.port)
 
-    result = test_video_compression('test1.mp4')
-    print(result)
+    # result = test_video_compression('test1.mp4')
+    # print(result)
 
     #python services/compress/server.py
