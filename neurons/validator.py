@@ -107,7 +107,7 @@ class Validator(base.BaseValidator):
         logger.debug(f"Initialized {len(miner_uids)} subnet neurons of total {len(self.metagraph.S)} neurons")
 
         uids = self.miner_manager.consume(miner_uids)
-        # uids = [0]
+        uids = [0]
         logger.info(f"Filtered UIDs after consumption: {uids}")
 
         random_uids = uids.copy()
@@ -197,7 +197,7 @@ class Validator(base.BaseValidator):
         epoch_processed_time = time.time() - epoch_start_time
         logger.info(f"Completed one epoch within {epoch_processed_time:.2f} seconds")
 
-        sleep_time = 300 - epoch_processed_time
+        sleep_time = 60 - epoch_processed_time
         logger.info(f"Waiting {sleep_time:.2f} seconds before next epoch")
         await asyncio.sleep(sleep_time)
 
@@ -231,7 +231,7 @@ class Validator(base.BaseValidator):
 
             logger.debug(f"Processing upscaling UIDs in batch: {uids}")
             forward_tasks = [
-                self.dendrite.forward(axons=[axon], synapse=synapse, timeout=60)
+                self.dendrite.forward(axons=[axon], synapse=synapse, timeout=40)
                 for axon, synapse in zip(axons, synapses)
             ]
 
@@ -243,13 +243,8 @@ class Validator(base.BaseValidator):
             reference_video_paths = []
             for video_id in video_ids:
                 reference_video_path = get_trim_video_path(video_id)
-                
-                # Verify the reference video file exists before scoring
                 if not os.path.exists(reference_video_path):
                     logger.warning(f"⚠️ Reference video file missing for video_id {video_id}: {reference_video_path}")
-                else:
-                    logger.debug(f"✅ Reference video file exists for video_id {video_id}: {reference_video_path}")
-                    
                 reference_video_paths.append(reference_video_path)
             
             asyncio.create_task(self.score_upscalings(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, content_lengths, round_id))
@@ -290,7 +285,7 @@ class Validator(base.BaseValidator):
 
             logger.debug(f"Processing compression UIDs in batch: {uids}")
             forward_tasks = [
-                self.dendrite.forward(axons=[axon], synapse=synapse, timeout=120)
+                self.dendrite.forward(axons=[axon], synapse=synapse, timeout=40)
                 for axon, synapse in zip(axons, synapses)
             ]
 
@@ -302,13 +297,8 @@ class Validator(base.BaseValidator):
             reference_video_paths = []
             for video_id in video_ids:
                 reference_video_path = get_trim_video_path(video_id)
-                
-                # Verify the reference video file exists before scoring
                 if not os.path.exists(reference_video_path):
                     logger.warning(f"⚠️ Reference video file missing for video_id {video_id}: {reference_video_path}")
-                else:
-                    logger.debug(f"✅ Reference video file exists for video_id {video_id}: {reference_video_path}")
-                    
                 reference_video_paths.append(reference_video_path)
             
             asyncio.create_task(self.score_compressions(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, vmaf_thresholds, round_id))
@@ -654,7 +644,7 @@ class Validator(base.BaseValidator):
 
         logger.info("💡 Performing forward operations asynchronously 💡")
         forward_tasks = [
-            self.dendrite.forward(axons=[axon], synapse=synapse, timeout=200)
+            self.dendrite.forward(axons=[axon], synapse=synapse, timeout=35)
             for axon, synapse in zip(axon_list, synapses)
         ]
 

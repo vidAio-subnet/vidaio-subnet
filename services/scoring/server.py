@@ -881,12 +881,12 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             # C = compressed_file_size / original_file_size
             # S_c = w_c × (1 - C^1.5) + w_vmaf × (VMAF_score - VMAF_threshold) / (100 - VMAF_threshold)
             
-            if ref_file_size > 0:
+            if ref_file_size > 0 and dist_file_size < ref_file_size:
                 compression_rate = dist_file_size / ref_file_size
                 print(f"Compression rate: {compression_rate:.4f} ({dist_file_size}/{ref_file_size})")
             else:
                 compression_rate = 1.0
-                print("Reference file size is 0, setting compression rate to 1.0")
+                print("Reference file size is 0 or distorted file size is greater than reference file size, setting compression rate to 1.0")
 
             # Check VMAF threshold first
             if vmaf_score < vmaf_threshold:
@@ -935,8 +935,8 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 os.unlink(ref_y4m_path)
             if dist_path and os.path.exists(dist_path):
                 os.unlink(dist_path)
-            # if ref_path and os.path.exists(ref_path):
-            #     os.unlink(ref_path)
+            if ref_path and os.path.exists(ref_path):
+                os.unlink(ref_path)
 
             # Delete the uploaded object
             # storage_client.delete_file(uploaded_object_name)

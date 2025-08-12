@@ -6,6 +6,7 @@ from pathlib import Path
 import json
 import time
 from datetime import datetime
+from loguru import logger
 
 from video_preprocessor import pre_processing
 from scene_detector import scene_detection
@@ -13,6 +14,7 @@ from encoder import ai_encoding, load_encoding_resources
 from vmaf_calculator import scene_vmaf_calculation  
 from validator_merger import validation_and_merging 
 from vidaio_subnet_core.utilities import storage_client, download_video
+from vidaio_subnet_core import CONFIG
 
 app = FastAPI()
 
@@ -530,13 +532,13 @@ def test_video_compression(video_path: str):
 if __name__ == "__main__":
     import uvicorn
 
-    # logger.info("Starting video compressor server")
-    # logger.info(f"Video compressor server running on http://{CONFIG.video_compressor.host}:{CONFIG.video_compressor.port}")
+    logger.info("Starting video compressor server")
+    logger.info(f"Video compressor server running on http://{CONFIG.video_compressor.host}:{CONFIG.video_compressor.port}")
 
-    # uvicorn.run(app, host=CONFIG.video_compressor.host, port=CONFIG.video_compressor.port)
+    uvicorn.run(app, host=CONFIG.video_compressor.host, port=CONFIG.video_compressor.port)
 
-    result = test_video_compression('test1.mp4')
-    print(result)
+    # result = test_video_compression('test1.mp4')
+    # print(result)
 
 
     #python services/compress/server.py

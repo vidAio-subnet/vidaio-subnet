@@ -445,12 +445,8 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis,
                 })
                 remaining_count -= 1
                 
-                # Check if we've generated enough chunks
-
-                    
             except Exception as e:
                 logger.error(f"Error processing chunk {i+1} ({challenge_local_path}): {str(e)}")
-                # Clean up files on error
                 try:
                     if os.path.exists(challenge_local_path):
                         os.unlink(challenge_local_path)
