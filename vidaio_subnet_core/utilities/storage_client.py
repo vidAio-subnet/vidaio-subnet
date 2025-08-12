@@ -652,10 +652,10 @@ def get_storage_client():
 
 storage_client = get_storage_client()
 
-# async def main():
-#     await storage_client.upload_file("normal_03.mp4", "")
-#     presigned_url = await storage_client.get_presigned_url("normal_03.mp4")
-#     print(presigned_url)
-# 
-# if __name__ == "__main__":
-#     asyncio.run(main())
+async def main():
+    await storage_client.upload_file("normal_03.mp4", "test1.mp4")
+    presigned_url = await storage_client.get_presigned_url("normal_03.mp4")
+    print(presigned_url)
+
+if __name__ == "__main__":
+    asyncio.run(main())

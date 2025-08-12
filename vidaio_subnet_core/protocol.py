@@ -21,7 +21,15 @@ class ContentLength(IntEnum):
     # ONE_SIXTY = 160  
     # THREE_TWENTY = 320 
 
-class MinerPayload(BaseModel):
+class TaskType(IntEnum):
+    """
+    Enumeration of allowed task types that miners can handle.
+    These represent the types of video processing tasks that miners can warrant.
+    """
+    COMPRESSION = 1
+    UPSCALING = 2
+
+class UpscalingMinerPayload(BaseModel):
     reference_video_url: str = Field(
         description="The URL of the reference video to be optimized",
         default="",
@@ -35,6 +43,19 @@ class MinerPayload(BaseModel):
     task_type: str = Field(
         description="The type of task: HD24K, SD2HD, SD24K, 4K28K",
         default="HD24K",
+    )
+
+class CompressionMinerPayload(BaseModel):
+    reference_video_url: str = Field(
+        description="The URL of the reference video to be compressed",
+        default="",
+        min_length=1,
+    )
+    vmaf_threshold: float = Field(
+        description="The VMAF threshold for quality control during compression",
+        default=90.0,
+        ge=0.0,
+        le=100.0,
     )
 
 
@@ -70,9 +91,12 @@ class ScoringResponse(BaseModel):
 class VideoCompressionProtocol(Synapse):
     """Protocol for video compression operations."""
     
-    miner_payload: MinerPayload = Field(
-        description="The payload for the miner. Cannot be modified after initialization.",
-        default_factory=MinerPayload,
+    version: Optional[Version] = None
+    round_id: Optional[str] = None
+    
+    miner_payload: CompressionMinerPayload = Field(
+        description="The payload for the compression miner. Cannot be modified after initialization.",
+        default_factory=CompressionMinerPayload,
         frozen=True,
     )
     miner_response: MinerResponse = Field(
@@ -96,9 +120,9 @@ class VideoUpscalingProtocol(Synapse):
 
     round_id: Optional[str] = None
     
-    miner_payload: MinerPayload = Field(
-        description="The payload for the miner. Cannot be modified after initialization.",
-        default_factory=MinerPayload,
+    miner_payload: UpscalingMinerPayload = Field(
+        description="The payload for the upscaling miner. Cannot be modified after initialization.",
+        default_factory=UpscalingMinerPayload,
         frozen=True,
     )
     miner_response: MinerResponse = Field(
@@ -133,4 +157,25 @@ class LengthCheckProtocol(Synapse):
     max_content_length: ContentLength = Field(
         description="Maximum content length miner can process (5, 10, or 20)",
         default=ContentLength.FIVE
+    )
+
+
+class TaskWarrantProtocol(Synapse):
+    """
+    Protocol for verifying and warranting task types that miners can handle.
+    
+    This protocol ensures that miners can specify which types of video processing
+    tasks they are capable of handling. This helps in task distribution and
+    ensures miners only receive tasks they can process.
+    
+    Attributes:
+        version (Optional[Version]): The version of the protocol implementation.
+        warrant_task (TaskType): The type of task the miner can handle,
+            must be one of the predefined values (COMPRESSION or UPSCALING).
+    """
+    
+    version: Optional[Version] = None
+    warrant_task: TaskType = Field(
+        description="Type of task miner can handle: COMPRESSION or UPSCALING",
+        default=TaskType.UPSCALING
     )

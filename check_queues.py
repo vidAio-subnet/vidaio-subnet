@@ -14,7 +14,7 @@ from redis_utils import (
     get_organic_queue_size,
     get_5s_queue_size,
     get_10s_queue_size,
-    get_20s_queue_size,
+    get_compress_queue_size,
     get_pexels_queue_size,
     get_youtube_queue_size,
     is_scheduler_ready
@@ -39,7 +39,7 @@ def main():
         print("🎬 SYNTHETIC QUEUES:")
         print(f"   5s chunks:  {get_5s_queue_size(redis_conn):>4}")
         print(f"   10s chunks: {get_10s_queue_size(redis_conn):>4}")
-        print(f"   20s chunks: {get_20s_queue_size(redis_conn):>4}")
+        print(f"   Compressed chunks: {get_compress_queue_size(redis_conn):>4}")
         print()
         
         # Source queues
@@ -54,7 +54,7 @@ def main():
         print()
         
         # Total counts
-        total_synthetic = get_5s_queue_size(redis_conn) + get_10s_queue_size(redis_conn) + get_20s_queue_size(redis_conn)
+        total_synthetic = get_5s_queue_size(redis_conn) + get_10s_queue_size(redis_conn) + get_compress_queue_size(redis_conn)
         total_source = get_pexels_queue_size(redis_conn) + get_youtube_queue_size(redis_conn)
         
         print("📈 TOTALS:")

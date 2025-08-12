@@ -17,6 +17,7 @@ from redis_utils import (
     pop_10s_chunk,
     pop_20s_chunk,
     is_scheduler_ready,
+    pop_compression_chunk,
 )
 
 app = FastAPI()
@@ -35,6 +36,9 @@ class InsertResultRequest(BaseModel):
 
 class ResultRequest(BaseModel):
     original_video_url: str
+
+class CompressionChunkRequest(BaseModel):
+    num_needed: int
 
 class SyntheticChunkRequest(BaseModel):
     content_lengths: Optional[List[int]] = []
@@ -99,6 +103,29 @@ def api_get_synthetic_chunks(request_data: SyntheticChunkRequest):
     print(f"Successfully retrieved {len(valid_chunks)} chunks")
     return {"chunks": chunks, "status": "success"}
 
+@app.post("/api/get_compression_chunks")
+def api_get_compression_chunks(request_data: CompressionChunkRequest):
+    """
+    Retrieve compression chunks from the Redis queue.
+    """
+    redis_conn = get_redis_connection()
+    chunks = []
+
+    for i in range(request_data.num_needed):
+        chunk = pop_compression_chunk(redis_conn)
+        chunks.append(chunk)
+    
+    valid_chunks = [chunk for chunk in chunks if chunk is not None]
+    
+    if not valid_chunks:
+        print("No valid chunks available after retries")
+        return JSONResponse(
+            status_code=404,
+            content={"message": "No chunks available", "status": "error"}
+        )
+    
+    print(f"Successfully retrieved {len(valid_chunks)} chunks")
+    return {"chunks": valid_chunks, "status": "success"}
 
 def retrieve_chunk_with_retry(redis_conn, content_length: int, max_retries: int = 3, retry_delay: int = 20):
    
@@ -179,6 +206,7 @@ def api_scheduler_ready():
             "status": "error",
             "message": f"Error checking readiness: {str(e)}"
         }
+
 
 @app.get("/api/queue_sizes")
 def api_queue_sizes():
