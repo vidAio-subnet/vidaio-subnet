@@ -19,7 +19,6 @@ def analyze_video_fast(video_path, max_frames=150,logging_enabled=True,include_q
         return None
     
     features = {}
-    # If no required features specified, use all available features
     try:
         # Step 1: Get basic video properties using ffprobe
         basic_features = extract_basic_video_properties(video_path, logging_enabled)
@@ -55,7 +54,6 @@ def analyze_video_fast(video_path, max_frames=150,logging_enabled=True,include_q
 def extract_basic_video_properties(video_path, logging_enabled=True):
     """Extract basic video properties using ffprobe."""
     try:
-        # Use ffprobe to get comprehensive video information
         ffprobe_cmd = [
             'ffprobe', '-v', 'quiet', '-print_format', 'json',
             '-show_format', '-show_streams', video_path
@@ -70,7 +68,6 @@ def extract_basic_video_properties(video_path, logging_enabled=True):
         
         probe_data = json.loads(result.stdout)
         
-        # Extract video stream information
         video_stream = None
         for stream in probe_data.get('streams', []):
             if stream.get('codec_type') == 'video':
@@ -84,11 +81,9 @@ def extract_basic_video_properties(video_path, logging_enabled=True):
         
         features = {}
         
-        # Extract basic video properties
         features['metrics_resolution_width'] = int(video_stream.get('width', 0))
         features['metrics_resolution_height'] = int(video_stream.get('height', 0))
         
-        # Parse frame rate (handle fractional rates like 29.97)
         frame_rate_str = video_stream.get('r_frame_rate', '0/1')
         if '/' in frame_rate_str:
             num, den = frame_rate_str.split('/')
@@ -96,23 +91,18 @@ def extract_basic_video_properties(video_path, logging_enabled=True):
         else:
             features['metrics_frame_rate'] = float(frame_rate_str)
         
-        # Extract bit depth
         features['metrics_bit_depth'] = int(video_stream.get('bits_per_raw_sample', 8))
         
-        # Extract codec information
         features['input_codec'] = video_stream.get('codec_name', 'unknown')
         
-        # Calculate bitrate from format or stream
         format_info = probe_data.get('format', {})
         bitrate_bps = 0
         
-        # Try stream bitrate first, then format bitrate
         if video_stream.get('bit_rate'):
             bitrate_bps = int(video_stream['bit_rate'])
         elif format_info.get('bit_rate'):
             bitrate_bps = int(format_info['bit_rate'])
         else:
-            # Calculate from file size and duration
             file_size_bytes = int(format_info.get('size', 0))
             duration_seconds = float(format_info.get('duration', 0))
             if file_size_bytes > 0 and duration_seconds > 0:
@@ -120,10 +110,8 @@ def extract_basic_video_properties(video_path, logging_enabled=True):
         
         features['input_bitrate_kbps'] = bitrate_bps / 1000 if bitrate_bps > 0 else 0
         
-        # Calculate resolution string for compatibility
         features['metrics_resolution'] = f"({features['metrics_resolution_width']}, {features['metrics_resolution_height']})"
         
-        # Calculate bits per pixel
         if (features['metrics_resolution_width'] > 0 and 
             features['metrics_resolution_height'] > 0 and 
             features['metrics_frame_rate'] > 0 and 
@@ -166,32 +154,25 @@ def extract_comprehensive_video_metrics(video_path, max_frames=150, logging_enab
                 print(f"❌ Cannot open video: {video_path}")
             return features
         
-        # Get video properties
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         fps = cap.get(cv2.CAP_PROP_FPS)
         
-         # Determine sampling range
         if use_middle_section and total_frames > max_frames * 2:
-            # Use middle 60% of video for sampling
             start_frame = int(total_frames * 0.2)  # Skip first 20%
             end_frame = int(total_frames * 0.8)    # Skip last 20%
             effective_total = end_frame - start_frame
         else:
-            # For short videos, use entire range but avoid very start
             start_frame = min(int(fps * 1.0), total_frames // 10)  # Skip first second or 10%
             end_frame = total_frames
             effective_total = end_frame - start_frame
         
-        # Calculate frame sampling interval within the selected range
         if effective_total > max_frames:
             frame_interval = effective_total // max_frames
         else:
             frame_interval = 1
         
-        # Seek to start position
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
-        # Storage for metrics
         edge_density_values = []
         texture_values = []
         color_complexity_values = []
@@ -214,41 +195,31 @@ def extract_comprehensive_video_metrics(video_path, max_frames=150, logging_enab
             if not ret:
                 break
             
-            # Skip frames based on sampling interval
             if frame_count % frame_interval != 0:
                 frame_count += 1
                 current_frame_pos += 1
                 continue
             
-            # Convert to grayscale for analysis
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             
-            # 1. Edge Density
             edge_density = compute_edge_density(gray)
             edge_density_values.append(edge_density)
             
-            # 2. Texture Complexity (entropy-based)
             texture_complexity = compute_texture_complexity(gray)
             texture_values.append(texture_complexity)
             
-            # 3. Color Complexity
             color_complexity = compute_color_complexity(frame)
             color_complexity_values.append(color_complexity)
             
-            # 4. Spatial Information
             spatial_info = compute_spatial_information(gray)
             spatial_info_values.append(spatial_info)
             
-            # 5. Grain/Noise Level
             grain_noise = compute_grain_noise_level(gray)
             grain_noise_values.append(grain_noise)
             
-            # 6. Motion and Temporal Information (requires previous frame)
             if prev_frame is not None:
-                # Calculate motion metric
                 motion = compute_motion_metric(prev_frame, gray)
                 motion_values.append(motion)
-                # Temporal Information
                 temporal_info = compute_temporal_information(prev_frame, gray)
                 temporal_info_values.append(temporal_info)
             
@@ -259,7 +230,6 @@ def extract_comprehensive_video_metrics(video_path, max_frames=150, logging_enab
         
         cap.release()
         
-        # Calculate average metrics
         if edge_density_values:
             features['metrics_avg_edge_density'] = np.mean(edge_density_values)
         
@@ -291,14 +261,13 @@ def extract_comprehensive_video_metrics(video_path, max_frames=150, logging_enab
         if logging_enabled:
             print(f"⚠️ Comprehensive video analysis failed: {e}")
         
-        # Return reasonable default values that are within expected ranges
         return {
             'metrics_avg_motion': 0.1,
-            'metrics_avg_edge_density': 0.05,      # Within expected range
-            'metrics_avg_texture': 4.0,            # Within expected range
-            'metrics_avg_color_complexity': 3.0,   # Within expected range
-            'metrics_avg_motion_variance': 1.0,    # Within expected range
-            'metrics_avg_grain_noise': 5.0         # Within expected range
+            'metrics_avg_edge_density': 0.05,      
+            'metrics_avg_texture': 4.0,            
+            'metrics_avg_color_complexity': 3.0,   
+            'metrics_avg_motion_variance': 1.0,    
+            'metrics_avg_grain_noise': 5.0         
         }
 
 def compute_edge_density(gray_frame, threshold1=100, threshold2=200):
@@ -418,16 +387,13 @@ def _analyze_noise_level(frames):
     for frame in frames:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
-        # Use Laplacian variance to detect noise
         laplacian = cv2.Laplacian(gray, cv2.CV_64F)
         noise_var = laplacian.var()
         
-        # Analyze high-frequency content
         f_transform = np.fft.fft2(gray)
         f_shift = np.fft.fftshift(f_transform)
         magnitude = np.abs(f_shift)
         
-        # High frequency energy indicates noise
         h, w = magnitude.shape
         center_h, center_w = h // 2, w // 2
         high_freq_mask = np.zeros_like(magnitude)
@@ -445,15 +411,12 @@ def _analyze_sharpness(frames):
     for frame in frames:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
-        # Laplacian variance method
         laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
         
-        # Tenengrad method
         sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
         sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
         tenengrad = np.mean(sobelx**2 + sobely**2)
         
-        # Combine metrics (normalize to 0-1 range)
         combined_sharpness = (laplacian_var / 2000 + tenengrad / 50000) / 2
         sharpness_scores.append(min(combined_sharpness, 1.0))
     
@@ -466,21 +429,17 @@ def _analyze_contrast(frames):
     for frame in frames:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
-        # RMS contrast
         rms_contrast = np.std(gray) / np.mean(gray) if np.mean(gray) > 0 else 0
         
-        # Histogram-based contrast
         hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
         hist_norm = hist / hist.sum()
         
-        # Calculate spread of histogram
         pixels_in_range = []
         for i in range(0, 256, 32):
             pixels_in_range.append(np.sum(hist_norm[i:i+32]))
         
         hist_spread = np.std(pixels_in_range)
         
-        # Combine metrics
         combined_contrast = (rms_contrast / 100 + hist_spread * 3) / 2
         contrast_scores.append(min(combined_contrast, 1.0))
     
@@ -520,11 +479,10 @@ def _analyze_motion_blur(frames):
         gray1 = cv2.cvtColor(frames[i], cv2.COLOR_BGR2GRAY)
         gray2 = cv2.cvtColor(frames[i + 1], cv2.COLOR_BGR2GRAY)
         
-        # Edge detection
         edges1 = cv2.Canny(gray1, 50, 150)
         edges2 = cv2.Canny(gray2, 50, 150)
         
-        # Compare edge sharpness
+
         edge_diff = np.sum(np.abs(edges1.astype(float) - edges2.astype(float)))
         frame_size = gray1.shape[0] * gray1.shape[1]
         blur_score = edge_diff / frame_size / 255.0
@@ -540,7 +498,6 @@ def _analyze_compression_artifacts(frames):
     for frame in frames:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
-        # Detect 8x8 block patterns (JPEG/H.264 artifacts)
         block_diffs = []
         h, w = gray.shape
         
@@ -548,7 +505,6 @@ def _analyze_compression_artifacts(frames):
             for x in range(0, w - 8, 8):
                 block = gray[y:y+8, x:x+8]
                 
-                # Check for artificial edges at block boundaries
                 if x + 8 < w:
                     right_block = gray[y:y+8, x+8:x+16] if x+16 <= w else None
                     if right_block is not None:
@@ -568,15 +524,12 @@ def _analyze_text_content(frames):
     for frame in frames:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
-        # Edge detection for text
         edges = cv2.Canny(gray, 100, 200)
         edge_density = np.sum(edges > 0) / (edges.shape[0] * edges.shape[1])
         
-        # High contrast regions
         _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         contrast_regions = np.sum(binary > 0) / (binary.shape[0] * binary.shape[1])
         
-        # Combine metrics
         text_score = (edge_density * 2 + abs(contrast_regions - 0.5) * 2)
         text_scores.append(min(text_score, 1.0))
     
@@ -606,11 +559,9 @@ def _analyze_temporal_consistency(frames):
         curr_gray = cv2.cvtColor(frames[i], cv2.COLOR_BGR2GRAY)
         next_gray = cv2.cvtColor(frames[i+1], cv2.COLOR_BGR2GRAY)
         
-        # Calculate frame differences
         diff1 = np.mean(np.abs(curr_gray.astype(float) - prev_gray.astype(float)))
         diff2 = np.mean(np.abs(next_gray.astype(float) - curr_gray.astype(float)))
         
-        # Consistency is inversely related to difference variation
         consistency = 1.0 - min(abs(diff1 - diff2) / 255.0, 1.0)
         consistency_scores.append(consistency)
     

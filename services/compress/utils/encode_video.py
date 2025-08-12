@@ -7,10 +7,7 @@ import re
 import time
 import traceback
 import numpy as np
-
 from .encoder_configs import ENCODER_SETTINGS, SCENE_SPECIFIC_PARAMS, MODEL_CQ_REFERENCE_CODEC, QUALITY_MAPPING_ANCHORS
-
-
 
 def get_contrast_optimized_params(scene_type, contrast_value, codec):
     """
@@ -24,10 +21,8 @@ def get_contrast_optimized_params(scene_type, contrast_value, codec):
     Returns:
         dict: Additional encoding parameters optimized for contrast
     """
-    # Start with empty params dictionary
     params = {}
     
-    # Classify contrast into categories for easier parameter selection
     if contrast_value > 0.7:
         contrast_category = "high"
     elif contrast_value < 0.3:
@@ -496,16 +491,16 @@ def encode_lossless_video(input_path, output_path, logging_enabled=True):
     cmd = [
         'ffmpeg',
         '-i', input_path,
-        '-c:v', 'ffv1',           # FFV1 codec
-        '-level', '3',            # FFV1 level 3
-        '-coder', '1',            # Range coder for better compression
-        '-context', '1',          # Large context
-        '-g', '1',                # GOP size 1 for lossless
-        '-slices', '4',           # 4 slices for parallel processing
-        '-slicecrc', '1',         # Enable slice CRC
-        '-pix_fmt', 'yuv420p',    # Pixel format
-        '-c:a', 'copy',           # Copy audio without re-encoding
-        '-y',                     # Overwrite output file
+        '-c:v', 'ffv1',         
+        '-level', '3',          
+        '-coder', '1',          
+        '-context', '1',        
+        '-g', '1',              
+        '-slices', '4',         
+        '-slicecrc', '1',       
+        '-pix_fmt', 'yuv420p',  
+        '-c:a', 'copy',         
+        '-y',                   
         output_path
     ]
     
@@ -542,8 +537,6 @@ def encode_lossless_video(input_path, output_path, logging_enabled=True):
         if logging_enabled:
             print(f"❌ Unexpected error during lossless encoding: {e}")
         return None, None
-
-
 
 def check_audio_stream(input_path):
     """Check if the input video has an audio stream."""

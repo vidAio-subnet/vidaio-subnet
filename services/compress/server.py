@@ -74,9 +74,9 @@ async def compress_video(video: CompressPayload):
     vmaf_threshold = video.vmaf_threshold
 
     # Map VMAF threshold to target quality
-    if vmaf_threshold == 90:
+    if vmaf_threshold == 85:
         target_quality = 'Low'
-    elif vmaf_threshold == 93:
+    elif vmaf_threshold == 90:
         target_quality = 'Medium'
     elif vmaf_threshold == 95:
         target_quality = 'High'
@@ -478,10 +478,10 @@ def _display_scene_detection_results(scenes_metadata: list, part2_time: float):
 
 def _execute_ai_encoding(scenes_metadata: list, config: dict, target_quality: str) -> Optional[dict]:
     """Execute Part 3: AI Encoding."""
-    print(f"\n🧠 === Part 3: AI Encoding (Basic Miner) ===")
+    print(f"\n🧠 === Part 3: AI Encoding ===")
     part3_start_time = time.time()
     
-    print(f"   🔧 Loading basic AI models and resources...")
+    print(f"   🔧 Loading AI models and resources...")
     print(f"   📋 Using quality-based CQ lookup tables for {target_quality} quality")
     print(f"   🎯 Target Quality Level: {target_quality}")
     
@@ -500,7 +500,7 @@ def _execute_ai_encoding(scenes_metadata: list, config: dict, target_quality: st
     
     try:
         resources = load_encoding_resources(config, logging_enabled=True)
-        print(f"   ✅ Basic AI resources loaded successfully")
+        print(f"   ✅ AI resources loaded successfully")
         print(f"   🧠 Mode: Scene classification + CQ lookup table")
     except Exception as e:
         print(f"   ❌ Failed to load GGG AI resources: {e}")
@@ -513,7 +513,7 @@ def _execute_ai_encoding(scenes_metadata: list, config: dict, target_quality: st
     total_input_size = 0
     total_output_size = 0
     
-    print(f"\n   📊 Processing {len(scenes_metadata)} scenes with basic AI approach...")
+    print(f"\n   📊 Processing {len(scenes_metadata)} scenes with AI approach...")
     
     for i, scene_metadata in enumerate(scenes_metadata):
         scene_result = _process_single_scene(
@@ -563,7 +563,7 @@ def _process_single_scene(scene_metadata: dict, scene_index: int, total_scenes: 
     
     indicative_vmaf = scene_metadata['original_video_metadata'].get('target_vmaf')
     print(f"      🎯 Target Quality: {target_quality}" + (f" (VMAF≈{indicative_vmaf})" if indicative_vmaf else ""))
-    print(f"      🧠 Method: Basic scene classification + CQ lookup")
+    print(f"      🧠 Method: scene classification + CQ lookup")
     
     scene_start_time = time.time()
     
@@ -646,7 +646,7 @@ def _process_single_scene(scene_metadata: dict, scene_index: int, total_scenes: 
 def _display_ai_encoding_summary(successful_encodings: int, failed_encodings: int, total_scenes: int,
                                 part3_time: float, target_quality: str, total_input_size: float, total_output_size: float):
     """Display Part 3 summary."""
-    print(f"\n   📊 Part 3 Basic Processing Summary:")
+    print(f"\n   📊 Part 3 Processing Summary:")
     print(f"      ✅ Successful encodings: {successful_encodings}")
     print(f"      ❌ Failed encodings: {failed_encodings}")
     print(f"      📈 Success rate: {successful_encodings/total_scenes*100:.1f}%")

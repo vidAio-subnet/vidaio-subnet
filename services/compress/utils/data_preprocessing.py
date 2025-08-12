@@ -9,12 +9,7 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.pipeline import Pipeline
 from sklearn.utils.validation import NotFittedError, check_is_fitted # Import for checking fit status
 
-
-# Make sure we can import from parent directory if needed
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-
-# Import original components to maintain compatibility
 
 class ColumnDropper(BaseEstimator, TransformerMixin):
     def __init__(self, columns_to_drop):
@@ -34,13 +29,10 @@ class ColumnDropper(BaseEstimator, TransformerMixin):
     def get_feature_names_out(self, input_features=None):
         """Return feature names after dropping columns."""
         if input_features is None:
-            # Handle cases where input_features might not be passed (less common now)
-            # You might need a fallback or raise an error depending on sklearn version
              raise ValueError("input_features is required for get_feature_names_out")
 
         dropped_cols_set = set(self.columns_to_drop)
         return [col for col in input_features if col not in dropped_cols_set]
-    
     
 class VMAFScaler(BaseEstimator, TransformerMixin):
     def __init__(self, target_column='vmaf', clip_values=True,verbose=True):
@@ -53,11 +45,10 @@ class VMAFScaler(BaseEstimator, TransformerMixin):
     def fit(self, X, y=None):
         self.n_features_in_ = X.shape[1]
         if self.target_column in X.columns:
-            # Convert to numeric if needed
             X_target = pd.to_numeric(X[self.target_column], errors='coerce')
             self.min_val = X_target.min()
             self.max_val = X_target.max()
-            if self.verbose: # Wrap print
+            if self.verbose:
                 print(f"VMAF scale - discovered range: min={self.min_val:.2f}, max={self.max_val:.2f}")
         return self
         
@@ -66,7 +57,7 @@ class VMAFScaler(BaseEstimator, TransformerMixin):
         if self.target_column in X_copy.columns and self.min_val is not None and self.max_val is not None:
             X_copy[self.target_column] = pd.to_numeric(X_copy[self.target_column], errors='coerce')
 
-            if self.verbose: # Wrap print
+            if self.verbose: 
                 print(f"Original {self.target_column} values (first 3): {X_copy[self.target_column].head(3).tolist()}")
 
             range_diff = self.max_val - self.min_val
@@ -77,10 +68,10 @@ class VMAFScaler(BaseEstimator, TransformerMixin):
                     X_copy[self.target_column] = X_copy[self.target_column].clip(0, 1)
             else:
                 X_copy[self.target_column] = 0.5
-                if self.verbose: # Wrap print (keep warning?)
+                if self.verbose:
                     print("Warning: VMAF min and max too close, using default value")
 
-            if self.verbose: # Wrap print
+            if self.verbose:
                 print(f"Scaled {self.target_column} values (first 3): {X_copy[self.target_column].head(3).tolist()}")
                 final_min = X_copy[self.target_column].min()
                 final_max = X_copy[self.target_column].max()
@@ -89,8 +80,6 @@ class VMAFScaler(BaseEstimator, TransformerMixin):
                     print(f"ERROR: All {self.target_column} values collapsed to {final_min}!")
         return X_copy
         
-     
-    
     def inverse_transform(self, X):
         """Convert scaled VMAF back to original scale"""
         X_copy = X.copy()
@@ -102,7 +91,6 @@ class VMAFScaler(BaseEstimator, TransformerMixin):
         """Return feature names, which are unchanged by this transformer."""
         if input_features is None:
              raise ValueError("input_features is required for get_feature_names_out")
-        # These transformers modify values but don't change the set of columns names
         return list(input_features)
     
 class TargetExtractor(BaseEstimator, TransformerMixin):
@@ -129,8 +117,6 @@ class TargetExtractor(BaseEstimator, TransformerMixin):
              raise ValueError("input_features is required for get_feature_names_out")
         return list(input_features)
     
-
-# 1. Dedicated CQ Scaler for better handling of Constant Quality values
 class CQScaler(BaseEstimator, TransformerMixin):
     """
     Specialized scaler for CQ (Constant Quality) values that adapts to different codecs.
@@ -165,7 +151,6 @@ class CQScaler(BaseEstimator, TransformerMixin):
             'vp8': (0, 63)
         }
         
-        # Will be set during fit
         self.min_cq = None
         self.max_cq = None
         self.fitted_min = None
@@ -181,31 +166,31 @@ class CQScaler(BaseEstimator, TransformerMixin):
 
             if self.codec == 'auto':
                 self.detected_codec = self._detect_codec(self.fitted_min, self.fitted_max)
-                if self.verbose: print(f"Auto-detected codec: {self.detected_codec}") # Wrap print
+                if self.verbose: print(f"Auto-detected codec: {self.detected_codec}")
             else:
                 self.detected_codec = self.codec
 
             if self.custom_min_cq is not None and self.custom_max_cq is not None:
                 self.min_cq = self.custom_min_cq
                 self.max_cq = self.custom_max_cq
-                if self.verbose: print(f"Using custom CQ range: [{self.min_cq}, {self.max_cq}]") # Wrap print
+                if self.verbose: print(f"Using custom CQ range: [{self.min_cq}, {self.max_cq}]")
             else:
                 codec_key = self.detected_codec.lower() if self.detected_codec else 'av1'
                 if codec_key in self.codec_ranges:
                     self.min_cq, self.max_cq = self.codec_ranges[codec_key]
                 else:
                     self.min_cq, self.max_cq = self.codec_ranges['av1']
-                    if self.verbose: print(f"Unknown codec '{codec_key}', falling back to AV1 range: [{self.min_cq}, {self.max_cq}]") # Wrap print
+                    if self.verbose: print(f"Unknown codec '{codec_key}', falling back to AV1 range: [{self.min_cq}, {self.max_cq}]")
 
-            if self.verbose: # Wrap print
+            if self.verbose:
                 print(f"CQ scaling - discovered range: min={self.fitted_min}, max={self.fitted_max}")
                 print(f"CQ scaling - using range: min={self.min_cq}, max={self.max_cq} (codec: {self.detected_codec})")
 
             if self.fitted_min < self.min_cq:
-                if self.verbose: print(f"Warning: CQ values below minimum expected ({self.min_cq}) found in data. Using {self.fitted_min} as minimum.") # Wrap print
+                if self.verbose: print(f"Warning: CQ values below minimum expected ({self.min_cq}) found in data. Using {self.fitted_min} as minimum.")
                 self.min_cq = self.fitted_min
             if self.fitted_max > self.max_cq:
-                if self.verbose: print(f"Warning: CQ values above maximum expected ({self.max_cq}) found in data. Using {self.fitted_max} as maximum.") # Wrap print
+                if self.verbose: print(f"Warning: CQ values above maximum expected ({self.max_cq}) found in data. Using {self.fitted_max} as maximum.")
                 self.max_cq = self.fitted_max
         return self
     
@@ -256,12 +241,9 @@ class CQScaler(BaseEstimator, TransformerMixin):
         X_copy = X.copy()
         
         if self.cq_column in X_copy.columns:
-            # Apply inverse scaling formula
             X_copy[self.cq_column] = X_copy[self.cq_column] * (self.max_cq - self.min_cq) + self.min_cq
-            
-            # Round to nearest integer since CQ values are typically integers
             X_copy[self.cq_column] = np.round(X_copy[self.cq_column]).astype(int)
-        
+
         return X_copy
     
     def get_cq_range(self):
@@ -272,10 +254,9 @@ class CQScaler(BaseEstimator, TransformerMixin):
         """Return feature names, which are unchanged by this transformer."""
         if input_features is None:
              raise ValueError("input_features is required for get_feature_names_out")
-        # These transformers modify values but don't change the set of columns names
+       
         return list(input_features)
 
-# 2.  Resolution Transformer with better format handling
 class ResolutionTransformer(BaseEstimator, TransformerMixin):
     """
     Enhanced transformer for video resolution that extracts total pixel count
@@ -401,13 +382,10 @@ class ResolutionTransformer(BaseEstimator, TransformerMixin):
                  print(f"Warning: Unexpected resolution type: {type(res_input)}, value: '{res_input}'")
             return 0 # Return 0 if not a string or handled tuple
 
-        # It's a string, assign to res_str for existing logic
         res_str = res_input
 
-        # Strip leading/trailing whitespace and quotes (' or ") before parsing
         res_str = res_str.strip(" '\"")
 
-        # Try to match patterns like (1280, 720)
         match = re.search(r'^\(?(\d+),\s*(\d+)\)?$', res_str) # Adjusted regex slightly for robustness
         if match:
             width = int(match.group(1))
@@ -491,8 +469,6 @@ class ResolutionTransformer(BaseEstimator, TransformerMixin):
         # These transformers modify values but don't change the set of columns names
         return list(input_features)
 
-
-# 3.  Feature Scaler with better handling of missing values and edge cases
 class FeatureScaler(BaseEstimator, TransformerMixin):
     """
     Enhanced version of FeatureScaler with better handling of edge cases and logging.
@@ -620,7 +596,6 @@ class FeatureScaler(BaseEstimator, TransformerMixin):
         # These transformers modify values but don't change the set of columns names
         return list(input_features)
 
-# 4.  Frame Rate Transformer
 class FrameRateTransformer(BaseEstimator, TransformerMixin):
     """
     Specialized transformer for frame rate values.

@@ -53,7 +53,6 @@ def get_video_codec(video_path):
 def get_keyframes(video_path: str, max_keyframes: int = 50):
     """Get keyframe positions in seconds."""
     try:
-        # Use ffprobe to get keyframe timestamps
         cmd = [
             'ffprobe', '-v', 'error',
             '-select_streams', 'v:0',
@@ -68,16 +67,14 @@ def get_keyframes(video_path: str, max_keyframes: int = 50):
             print(f"⚠️ Failed to get keyframes: ffprobe returned {result.returncode}")
             return []
         
-        # Parse output to find keyframe timestamps
         keyframes = []
         for line in result.stdout.splitlines():
-            if "K_" in line or ",K" in line:  # Keyframe flag
+            if "K_" in line or ",K" in line:
                 parts = line.split(',')
                 if len(parts) >= 1 and parts[0].replace('.', '', 1).isdigit():
                     timestamp = float(parts[0])
                     keyframes.append(timestamp)
                     
-                    # Limit to max_keyframes to prevent excessive processing
                     if len(keyframes) >= max_keyframes:
                         break
         

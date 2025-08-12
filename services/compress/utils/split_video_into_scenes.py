@@ -22,9 +22,8 @@ def has_audio(video_path):
         return bool(result.stdout.strip())
     except FileNotFoundError:
         print("Error: ffprobe command not found. Make sure FFmpeg is installed and in your PATH.")
-        return False # Assume no audio if ffprobe fails
+        return False
     except subprocess.CalledProcessError as e:
-        # Don't print error if it's just no audio stream found
         if "Stream specifier 'a' matches no streams" not in e.stderr:
              print(f"Error running ffprobe: {e.stderr}")
         return False
@@ -35,17 +34,16 @@ def create_temp_downscaled_video(input_path, downscale_factor, temp_suffix="_dow
         return None # No downscaling needed
 
     temp_output_path = os.path.splitext(input_path)[0] + temp_suffix
-    # Use vf scale filter: -1 maintains aspect ratio for width
     scale_filter = f"scale=-1:ih/{downscale_factor}"
 
     cmd = [
         'ffmpeg',
         '-i', input_path,
         '-vf', scale_filter,
-        '-c:v', 'libx264', # Use a fast codec for the temp file
+        '-c:v', 'libx264',
         '-preset', 'ultrafast',
-        '-crf', '23', # Decent quality, fast encode
-        '-an', # No audio needed for detection
+        '-crf', '23',
+        '-an',
         temp_output_path
     ]
     print(f"Creating temporary downscaled video (factor {downscale_factor}): {temp_output_path}")
@@ -73,7 +71,7 @@ def split_video_into_scenes(video_path, temp_dir='./videos/temp_scenes', detecti
     print("-" * 35)
 
     temp_downscaled_video = None
-    video_to_detect = video_path # Default to original video
+    video_to_detect = video_path
 
     # --- Create temporary downscaled video if needed ---
     if detection_downscale is not None and detection_downscale > 1:

@@ -34,7 +34,6 @@ def validation_and_merging(original_video_path, encoded_scenes_data, config, log
         print(f"   📁 Output directory: {output_dir}")
         print(f"   📁 Temp directory: {temp_dir}")
     
-    # ✅ ENHANCED: Create output directory with error handling
     try:
         os.makedirs(output_dir, exist_ok=True)
         if logging_enabled:
@@ -64,7 +63,6 @@ def validation_and_merging(original_video_path, encoded_scenes_data, config, log
         if scene_data.get('encoding_success', False) and scene_data.get('encoded_path'):
             encoded_path = scene_data.get('encoded_path')
             
-            # ✅ ENHANCED: Better file validation with timeout protection
             try:
                 if os.path.exists(encoded_path):
                     file_size = os.path.getsize(encoded_path)
@@ -160,7 +158,6 @@ def validation_and_merging(original_video_path, encoded_scenes_data, config, log
             scene_size = os.path.getsize(scene_path) / 1024 / 1024 if os.path.exists(scene_path) else 0
             print(f"         Scene {scene_data.get('scene_number')}: {os.path.basename(scene_path)} ({scene_size:.1f} MB)")
     
-    # ✅ ENHANCED: Video merging with timeout and better error handling
     if logging_enabled:
         print(f"      🎬 Executing video merge...")
     
@@ -187,7 +184,7 @@ def validation_and_merging(original_video_path, encoded_scenes_data, config, log
                 print(f"   ❌ Video merging failed!")
             return None, None, None
         
-        # ✅ ENHANCED: Verify merged file
+        # ✅ D: Verify merged file
         if not os.path.exists(final_output_path):
             if logging_enabled:
                 print(f"   ❌ Merged file was not created!")
@@ -240,43 +237,6 @@ def validation_and_merging(original_video_path, encoded_scenes_data, config, log
     final_vmaf = None
     final_vmaf_time = 0
     
-    # calculate_full_video_vmaf = False
-
-    # if calculate_full_video_vmaf:
-    #     if logging_enabled:
-    #         print(f"   📊 Starting final VMAF calculation...")
-        
-    #     try:
-    #         final_vmaf_start_time = time.time()
-            
-    #         # Import VMAF calculation function
-    #         from calculate_vmaf_adv import calculate_vmaf_advanced
-            
-    #         final_vmaf = calculate_vmaf_advanced(
-    #             input_file=original_video_path,
-    #             encoded_file=final_output_path,
-    #             use_downscaling=vmaf_config.get('vmaf_use_downscaling', True),
-    #             scale_factor=vmaf_config.get('vmaf_downscaling_scale_factor', 0.5),
-    #             use_vmafneg=config.get('vmaf_models', {}).get('use_neg_by_default', False),
-    #             default_vmaf_model_path_config=config.get('vmaf_models', {}).get('default_model_path'),
-    #             vmafneg_model_path_config=config.get('vmaf_models', {}).get('neg_model_path'),
-    #             use_frame_rate_scaling=vmaf_config.get('vmaf_use_frame_rate_scaling', False),
-    #             target_fps=vmaf_config.get('vmaf_target_fps', 15.0),
-    #             frame_rate_scaling_method=vmaf_config.get('vmaf_frame_rate_scaling_method', 'uniform'),
-    #             logger=None,
-    #             logging_enabled=logging_enabled
-    #         )
-    #         final_vmaf_time = time.time() - final_vmaf_start_time
-            
-    #         if logging_enabled:
-    #             print(f"   ✅ Final VMAF calculation completed in {final_vmaf_time:.1f}s")
-    #             print(f"   🎯 Final VMAF score: {final_vmaf:.2f}")
-        
-    #     except Exception as e:
-    #         if logging_enabled:
-    #             print(f"   ❌ Final VMAF calculation failed: {e}")
-    #         final_vmaf = None
-    # else:
     if logging_enabled:
         print(f"   ⏭️ Skipping full video VMAF calculation (disabled in config)")
     
@@ -514,7 +474,6 @@ def validation_and_merging(original_video_path, encoded_scenes_data, config, log
         
         'individual_scenes_summary': [],
         
-        # ✅ ENHANCED: Add comprehensive training data directly extracted from scenes
         'comprehensive_training_data': comprehensive_training_data
     }
         

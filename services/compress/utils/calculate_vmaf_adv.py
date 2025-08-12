@@ -1,9 +1,9 @@
+import os
 import time
-import concurrent.futures
+import json
 import tempfile
 import subprocess
-import json
-import os
+import concurrent.futures
 from ffmpeg_quality_metrics import FfmpegQualityMetrics
     
 def _extract_clip_optimized(input_file, output_file, start_time, duration, logging_enabled=False):
@@ -14,7 +14,6 @@ def _extract_clip_optimized(input_file, output_file, start_time, duration, loggi
         is_raw_format = input_ext in raw_formats
         
         if is_raw_format:
-            # Raw formats must be encoded
             cmd = [
                 'ffmpeg', '-y', '-ss', str(start_time), '-i', input_file,
                 '-t', str(duration),
@@ -22,14 +21,13 @@ def _extract_clip_optimized(input_file, output_file, start_time, duration, loggi
                 '-pix_fmt', 'yuv420p', '-an', output_file
             ]
         else:
-            # ✅ FIX: Use keyframe seeking for better quality
             cmd = [
                 'ffmpeg', '-y', 
-                '-ss', str(max(0, start_time - 1)),  # Seek to keyframe before
+                '-ss', str(max(0, start_time - 1)),  
                 '-i', input_file,
-                '-ss', '1',  # Fine seek after input
+                '-ss', '1',  
                 '-t', str(duration),
-                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '10',  # High quality encode
+                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '10',  
                 '-pix_fmt', 'yuv420p', '-an', output_file
             ]
         
@@ -51,7 +49,6 @@ def _extract_clip_optimized(input_file, output_file, start_time, duration, loggi
 def extract_vmaf_clips_with_keyframe_detection(input_file, encoded_file, num_clips=5, clip_duration=3, logging_enabled=True):
     """Enhanced clip extraction with proper keyframe alignment."""
     
-    # Get video duration
     try:
         cmd = [
             'ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
@@ -71,7 +68,6 @@ def extract_vmaf_clips_with_keyframe_detection(input_file, encoded_file, num_cli
             print(f"   ❌ Could not determine video duration: {e}")
         return None
     
-    # ✅ ENHANCED: Get keyframe positions first
     try:
         cmd = [
             'ffprobe', '-v', 'quiet', '-select_streams', 'v:0',
@@ -95,51 +91,41 @@ def extract_vmaf_clips_with_keyframe_detection(input_file, encoded_file, num_cli
             print(f"   ⚠️ Keyframe detection failed: {e}, using standard timing")
         keyframes = []
     
-    # ✅ ENHANCED: Choose clip positions aligned with keyframes
     clip_positions = []
     
-    # Better distribution: avoid very beginning and end
     target_positions = []
     for i in range(num_clips):
-        # Distribute clips from 15% to 85% of video
         position = 0.15 + (i * (0.85 - 0.15) / (num_clips - 1)) if num_clips > 1 else 0.5
         target_positions.append(duration * position)
     
     for target_pos in target_positions:
         if keyframes:
-            # Find nearest keyframe
             nearest_keyframe = min(keyframes, key=lambda x: abs(x - target_pos))
-            # Ensure we have enough video left for the clip
             if nearest_keyframe + clip_duration <= duration:
                 clip_positions.append(nearest_keyframe)
             else:
-                # Fallback to earlier keyframe
                 valid_keyframes = [kf for kf in keyframes if kf + clip_duration <= duration]
                 if valid_keyframes:
                     clip_positions.append(max(valid_keyframes))
                 else:
                     clip_positions.append(max(0, duration - clip_duration))
         else:
-            # No keyframes detected, use standard positioning
             clip_positions.append(max(0, min(target_pos, duration - clip_duration)))
     
     if logging_enabled:
         print(f"   📍 Clip positions: {[f'{pos:.2f}s' for pos in clip_positions]}")
     
-    # Extract clips and calculate VMAF for each
     vmaf_scores = []
     
     for i, start_time in enumerate(clip_positions):
         if logging_enabled:
             print(f"   🎬 Extracting clip {i+1} at {start_time:.2f}s...")
         
-        # Create temporary files for this clip
         temp_dir = tempfile.mkdtemp()
         ref_clip = os.path.join(temp_dir, f"ref_clip_{i+1}.mp4")
         enc_clip = os.path.join(temp_dir, f"enc_clip_{i+1}.mp4")
         
         try:
-            # Extract reference clip with keyframe alignment
             ref_cmd = [
                 'ffmpeg', '-y', '-ss', str(start_time), '-i', input_file,
                 '-t', str(clip_duration), '-c:v', 'libx264', '-preset', 'ultrafast',
@@ -147,19 +133,16 @@ def extract_vmaf_clips_with_keyframe_detection(input_file, encoded_file, num_cli
                 '-pix_fmt', 'yuv420p', '-avoid_negative_ts', 'make_zero', ref_clip
             ]
             
-            # Extract encoded clip with same alignment
             enc_cmd = [
                 'ffmpeg', '-y', '-ss', str(start_time), '-i', encoded_file,
                 '-t', str(clip_duration), '-c:v', 'libx264', '-preset', 'ultrafast',
                 '-crf', '15', '-pix_fmt', 'yuv420p', '-avoid_negative_ts', 'make_zero', enc_clip
             ]
             
-            # Execute extractions
             ref_result = subprocess.run(ref_cmd, capture_output=True, text=True, timeout=60)
             enc_result = subprocess.run(enc_cmd, capture_output=True, text=True, timeout=60)
             
             if ref_result.returncode == 0 and enc_result.returncode == 0:
-                # Calculate VMAF for this clip using ffmpeg-quality-metrics
                 from ffmpeg_quality_metrics import FfmpegQualityMetrics
                 
                 ffqm = FfmpegQualityMetrics(ref_clip, enc_clip)
@@ -195,21 +178,18 @@ def extract_vmaf_clips_with_keyframe_detection(input_file, encoded_file, num_cli
                 pass
     
     if vmaf_scores:
-        # ✅ ENHANCED: Detect and handle outliers
         if len(vmaf_scores) >= 3:
             sorted_scores = sorted(vmaf_scores)
             median_score = sorted_scores[len(sorted_scores)//2]
             min_score = sorted_scores[0]
             max_score = sorted_scores[-1]
             
-            # Check for outliers (more than 15 points difference from median)
             outliers = [s for s in vmaf_scores if abs(s - median_score) > 15]
             
             if outliers and logging_enabled:
                 print(f"   ⚠️ Detected outlier scores: {outliers}")
                 print(f"   📊 Score distribution: min={min_score:.1f}, median={median_score:.1f}, max={max_score:.1f}")
                 
-                # Option 1: Remove outliers
                 filtered_scores = [s for s in vmaf_scores if abs(s - median_score) <= 15]
                 if len(filtered_scores) >= 2:
                     final_vmaf = sum(filtered_scores) / len(filtered_scores)
@@ -303,11 +283,9 @@ def calculate_vmaf_advanced(input_file, encoded_file,
     
     log_message(f"Effective VMAF model for this calculation: {model_type_for_log}", "debug")
 
-    # Create a directory for our temporary files
     temp_dir = tempfile.mkdtemp()
     temp_files = []
-    
-    # Helper function to extract VMAF score from metrics
+
     def extract_vmaf_score(metrics):
         """Extract VMAF score from metrics dictionary"""
         try:
@@ -380,7 +358,6 @@ def calculate_vmaf_advanced(input_file, encoded_file,
                         '-pix_fmt', 'yuv420p', scaled_ref
                     ]
                 
-                # ✅ Smart codec selection for encoded video
                 if is_encoded_raw:
                     # Raw format - must encode
                     enc_cmd = [
@@ -443,7 +420,6 @@ def calculate_vmaf_advanced(input_file, encoded_file,
 
         # ---------- Handle clip sampling if enabled ----------
         if use_sampling:
-            # ✅ ENHANCED: Use improved keyframe-aligned sampling
             vmaf_score = extract_vmaf_clips_with_keyframe_detection(
                 input_file=input_file,
                 encoded_file=encoded_file,

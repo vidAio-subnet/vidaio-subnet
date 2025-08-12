@@ -1,11 +1,11 @@
 import os
 import cv2
 import torch
-import torch.nn as nn
 import numpy as np
 import pandas as pd
-from torchvision import models, transforms
+import torch.nn as nn
 from PIL import Image
+from torchvision import models, transforms
 from torchvision.models import (
     MobileNet_V3_Small_Weights,
     EfficientNet_V2_S_Weights,
@@ -13,7 +13,6 @@ from torchvision.models import (
     SqueezeNet1_1_Weights
 )
 
-# Class mapping for scene classification (same as in train_scene_class_model.py)
 CLASS_MAPPING = {
     'Screen Content / Text': 0,
     'Animation / Cartoon / Rendered Graphics': 1,
@@ -22,12 +21,7 @@ CLASS_MAPPING = {
     'other': 4,
     'unclear': 5
 }
-
-# Inverse class mapping for turning numbers back into readable labels
 INV_CLASS_MAPPING = {v: k for k, v in CLASS_MAPPING.items()}
-
-
-# List of video metrics to use for scene classification
 VIDEO_METRICS = [
     'metrics_avg_motion',
     'metrics_avg_edge_density',
@@ -39,7 +33,6 @@ VIDEO_METRICS = [
     'metrics_avg_grain_noise'
 ]
 
-# Combined model class definition (same as in train_scene_class_model.py)
 class CombinedModel(nn.Module):
     def __init__(self, num_classes, model_type='mobilenet_v3_small', use_pretrained=True, metrics_dim=10):
         super(CombinedModel, self).__init__()
@@ -280,20 +273,13 @@ def classify_scene_with_model(frame_paths, video_features, scene_classifier, met
     scaled_metrics = metrics_array # Default to unscaled if scaler fails
     # Scale metrics if scaler is available
     if metrics_scaler:
-        # Create a temporary DataFrame matching the structure expected by the scaler's transform
-        # Ensure columns match 'available_metrics' used during fitting
         metrics_df = pd.DataFrame(metrics_array, columns=available_metrics)
         try:
-            # Transform using the loaded scaler object
-            # It expects a DataFrame and returns a DataFrame
             scaled_metrics_df = metrics_scaler.transform(metrics_df)
-            # Convert the relevant scaled columns back to a numpy array
             scaled_metrics = scaled_metrics_df[available_metrics].values
         except Exception as e:
              print(f"Error applying metrics scaler: {e}. Using unscaled metrics.")
-             # Fallback: use unscaled data (already assigned to scaled_metrics)
     else:
-        # If no scaler, just use the raw values
         if logging_enabled: print("Warning: No metrics scaler provided. Using unscaled metrics.")
 
     metrics_tensor = torch.FloatTensor(scaled_metrics).to(device)

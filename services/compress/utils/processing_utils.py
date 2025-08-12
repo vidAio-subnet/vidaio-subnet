@@ -1,8 +1,8 @@
 import os
 import time
-import subprocess
 import json
 import shutil
+import subprocess
 from .encode_video import encode_video
 from .classify_scene import classify_scene_with_model, extract_frames_from_scene
 from .analyze_video_fast import analyze_video_fast
@@ -75,14 +75,11 @@ def should_skip_encoding(input_path, estimated_cq, target_vmaf, logging_enabled=
     bits_per_pixel = input_analysis.get('bits_per_pixel', 0)
     codec = input_analysis.get('codec', '').lower()
     
-    # FIXED: More conservative thresholds - only skip for extremely compressed content
-    if bits_per_pixel and bits_per_pixel < 0.02 and target_vmaf < 90:  # CHANGED: More conservative threshold
+    if bits_per_pixel and bits_per_pixel < 0.02 and target_vmaf < 90:  
         if logging_enabled:
             print(f"⚠️ Input very well compressed (bits/pixel: {bits_per_pixel:.4f}). Encoding anyway with conservative CQ.")
-        # CHANGED: Don't skip, just add more conservative CQ adjustment
-        return False, min(estimated_cq + 8, 51)  # Add significant CQ increase but don't skip
+        return False, min(estimated_cq + 8, 51)
     
-    # For very high target VMAF, never skip encoding
     if target_vmaf >= 90:
         if logging_enabled:
             print(f"🎯 High target VMAF ({target_vmaf}) - encoding anyway with adjusted CQ")
@@ -90,16 +87,14 @@ def should_skip_encoding(input_path, estimated_cq, target_vmaf, logging_enabled=
     
     adjusted_cq = calculate_bitrate_aware_cq(estimated_cq, input_analysis, target_vmaf, "unknown")
     
-    # Add safety margin for high bitrate content
-    if input_bitrate > 10000:  # Very high bitrate content
+    if input_bitrate > 10000:  
         adjusted_cq = min(adjusted_cq + 4, 51)
         if logging_enabled:
             print(f"Very high bitrate input ({input_bitrate:.0f} kbps) - adding safety margin. CQ: {adjusted_cq}")
     
-    return False, adjusted_cq  # CHANGED: Never skip encoding, always process
+    return False, adjusted_cq 
 
 def encode_scene_with_size_check(scene_path, output_path, codec, adjusted_cq, content_type, contrast_value, max_retries=2, logging_enabled=True):
-    """Enhanced encoding with size checking and CQ adjustment."""
     
     original_size = os.path.getsize(scene_path)
     input_analysis = analyze_input_compression(scene_path)
@@ -117,7 +112,6 @@ def encode_scene_with_size_check(scene_path, output_path, codec, adjusted_cq, co
             print(f"Adjusted CQ from {adjusted_cq} to {final_cq} based on input analysis")
         adjusted_cq = final_cq
     
-    # ENHANCED: More reasonable size ratio threshold for high-bitrate content
     input_bitrate = input_analysis.get('bitrate_kbps', 0) if input_analysis else 0
     if input_bitrate > 4000:
         max_size_ratio = 1.15  # Allow 15% increase for high-bitrate content
@@ -167,163 +161,6 @@ def encode_scene_with_size_check(scene_path, output_path, codec, adjusted_cq, co
     
     return None, 0.0
 
-# def classify_scene_from_path(scene_path, temp_dir, scene_classifier_model, available_metrics, 
-#                            device='cpu', class_mapping=None, logging_enabled=True, 
-#                            num_frames=3, metrics_scaler=None):
-#     """
-#     Classify a scene directly from video path - wrapper around classify_scene_with_model
-    
-#     Args:
-#         scene_path: Path to the video file
-#         temp_dir: Temporary directory for frame extraction
-#         scene_classifier_model: Trained scene classifier model
-#         available_metrics: List of available metrics for the model
-#         device: Device to run inference on ('cpu' or 'cuda')
-#         class_mapping: Class mapping dictionary (optional)
-#         logging_enabled: Whether to enable logging
-#         num_frames: Number of frames to extract for classification
-#         metrics_scaler: Metrics scaler (optional)
-        
-#     Returns:
-#         tuple: (classification_label, detailed_results)
-#         Same format as classify_scene_with_model
-#     """
-#     try:
-#         # Step 1: Extract frames from the video
-#         if logging_enabled:
-#             print(f"Extracting {num_frames} frames from {scene_path}")
-        
-#         # Create temp directory for this specific classification
-#         import tempfile
-#         frame_temp_dir = os.path.join(temp_dir, f"frames_{int(time.time())}")
-#         os.makedirs(frame_temp_dir, exist_ok=True)
-        
-#         # For full video, extract frames from beginning to end
-#         # We need to get video duration first
-#         try:
-#             import subprocess
-#             # Get video duration using ffprobe
-#             cmd = [
-#                 'ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
-#                 '-of', 'default=noprint_wrappers=1:nokey=1', scene_path
-#             ]
-#             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-#             duration = float(result.stdout.strip())
-            
-#             # Extract frames from start to end
-#             frame_paths = extract_frames_from_scene(
-#                 video_path=scene_path,
-#                 start_time=0.0,
-#                 end_time=duration,
-#                 num_frames=num_frames,
-#                 output_dir=frame_temp_dir
-#             )
-#         except Exception as e:
-#             if logging_enabled:
-#                 print(f"Warning: Could not get video duration, using fallback frame extraction: {e}")
-#             # Fallback: extract frames without specific timing
-#             frame_paths = []
-#             for i in range(num_frames):
-#                 output_frame = os.path.join(frame_temp_dir, f"frame_{i}.jpg")
-#                 cmd = [
-#                     'ffmpeg', '-y', '-i', scene_path,
-#                     '-vf', f'select=eq(n\\,{i * 10})',  # Extract every 10th frame
-#                     '-frames:v', '1', '-q:v', '2',
-#                     '-hide_banner', '-loglevel', 'error',
-#                     output_frame
-#                 ]
-#                 try:
-#                     subprocess.run(cmd, check=True, capture_output=True)
-#                     if os.path.exists(output_frame) and os.path.getsize(output_frame) > 0:
-#                         frame_paths.append(output_frame)
-#                 except:
-#                     continue
-        
-#         if not frame_paths:
-#             if logging_enabled:
-#                 print("Warning: No frames could be extracted from video")
-#             return "unclear", {
-#                 'confidence_score': 0.0,
-#                 'prob_screen_content': 0.0,
-#                 'prob_animation': 0.0,
-#                 'prob_faces': 0.0,
-#                 'prob_gaming': 0.0,
-#                 'prob_other': 0.0,
-#                 'prob_unclear': 1.0,
-#                 'frame_predictions': [],
-#                 'error': 'Frame extraction failed'
-#             }
-        
-#         # Step 2: Extract video features
-#         if logging_enabled:
-#             print(f"Extracting video features from {scene_path}")
-        
-#         try:
-#             # Try to import and use analyze_video_fast
-#             from analyze_video_fast import analyze_video_fast
-#             video_features = analyze_video_fast(scene_path, logging_enabled=False)
-            
-#             if not video_features or 'error' in video_features:
-#                 # Create default video features if extraction fails
-#                 if logging_enabled:
-#                     print("Warning: Video feature extraction failed, using defaults")
-#                 video_features = {}
-#                 for metric in available_metrics:
-#                     video_features[metric] = 0.5  # Default neutral values
-#         except ImportError:
-#             if logging_enabled:
-#                 print("Warning: analyze_video_fast not available, using default features")
-#             # Create default video features
-#             video_features = {}
-#             for metric in available_metrics:
-#                 video_features[metric] = 0.5  # Default neutral values
-        
-#         # Step 3: Classify using existing function
-#         classification_label, detailed_results = classify_scene_with_model(
-#             frame_paths=frame_paths,
-#             video_features=video_features,
-#             scene_classifier=scene_classifier_model,
-#             metrics_scaler=metrics_scaler,
-#             available_metrics=available_metrics,
-#             device=device,
-#             logging_enabled=logging_enabled
-#         )
-        
-#         try:
-#             shutil.rmtree(frame_temp_dir)
-#         except Exception as e:
-#             if logging_enabled:
-#                 print(f"Warning: Could not cleanup temp frames: {e}")
-#         print("--------------------------------")
-#         print(f"Classification label: {classification_label}")
-#         print(f"Detailed results: {detailed_results}")
-#         return classification_label, detailed_results
-        
-#     except Exception as e:
-#         if logging_enabled:
-#             print(f"Error in classify_scene_from_path: {e}")
-        
-#         # Cleanup on error
-#         try:
-#             if 'frame_temp_dir' in locals():
-#                 shutil.rmtree(frame_temp_dir)
-#         except:
-#             pass
-        
-#         return "unclear", {
-#             'confidence_score': 0.0,
-#             'prob_screen_content': 0.0,
-#             'prob_animation': 0.0,
-#             'prob_faces': 0.0,
-#             'prob_gaming': 0.0,
-#             'prob_other': 0.0,
-#             'prob_unclear': 1.0,
-#             'frame_predictions': [],
-#             'error': str(e)
-#         }
-
-
-
 def classify_scene_from_path(scene_path, temp_dir, scene_classifier_model, available_metrics, 
                            device='cpu', class_mapping=None, logging_enabled=True, 
                            num_frames=3, metrics_scaler=None):
@@ -331,7 +168,6 @@ def classify_scene_from_path(scene_path, temp_dir, scene_classifier_model, avail
     Classify a scene directly from video path - wrapper that uses enhanced functions
     
     This function is a simplified wrapper that leverages the robust implementations
-    from AI_utils_enhanced.py to avoid code duplication.
     
     Args:
         scene_path: Path to the video file
