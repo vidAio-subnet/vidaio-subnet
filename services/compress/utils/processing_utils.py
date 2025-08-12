@@ -5,6 +5,7 @@ import json
 import shutil
 from .encode_video import encode_video
 from .classify_scene import classify_scene_with_model, extract_frames_from_scene
+from .analyze_video_fast import analyze_video_fast
 
 def get_video_bitrate(video_path):
     """Get the bitrate of a video file in kbps."""
@@ -403,7 +404,7 @@ def classify_scene_from_path(scene_path, temp_dir, scene_classifier_model, avail
             print(f"Extracting video features from {scene_path}")
         
         try:
-            from video_analysis import analyze_video_fast
+            
             video_features = analyze_video_fast(scene_path, logging_enabled=False)
             
             if not video_features or 'error' in video_features:

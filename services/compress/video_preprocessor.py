@@ -31,7 +31,7 @@ def pre_processing(video_path, target_quality='Medium',codec='auto', max_duratio
     
     # ✅ CODEC HANDLING: Resolve auto codec selection
     if codec.lower() == 'auto':
-        target_codec = 'libsvtav1'  # Default to SVT-AV1 for best quality
+        target_codec = 'av1_nvenc'  # Default to AV1 for best quality
         
     else:
         target_codec = codec
@@ -40,8 +40,8 @@ def pre_processing(video_path, target_quality='Medium',codec='auto', max_duratio
     # ✅ QUALITY MAPPING: Convert target quality to VMAF score
     quality_vmaf_mapping = {
         'High': 95.0,
-        'Medium': 93.0,
-        'Low': 90.0
+        'Medium': 90.0,  # Updated from 93.0 to 90.0
+        'Low': 85.0      # Updated from 90.0 to 85.0
     }
     
     # Validate and convert target quality
@@ -158,3 +158,5 @@ def pre_processing(video_path, target_quality='Medium',codec='auto', max_duratio
                 'container': os.path.splitext(video_path)[1][1:]  # Extension without dot
             }
         }
+
+

@@ -1,4 +1,5 @@
 import os
+import sys
 import torch
 import time
 import subprocess
@@ -140,7 +141,7 @@ def get_cq_from_lookup_table(scene_type, config, target_vmaf=None, target_qualit
 #         "class_mapping": class_mapping
 #     }
 
-def get_scalers_from_pipeline(pipeline_path='src/models/preprocessing_pipeline.pkl', 
+def get_scalers_from_pipeline(pipeline_path='services/compress/models/preprocessing_pipeline.pkl', 
                              verbose=True, logging_enabled=True):
     """
     Load preprocessing pipeline and extract individual components with verbosity control.
@@ -174,15 +175,19 @@ def get_scalers_from_pipeline(pipeline_path='src/models/preprocessing_pipeline.p
             Returns (None, None, None, None, None) if loading fails
     """
     
-    # Import custom preprocessing classes needed for unpickling
+    # The preprocessing classes are now imported through utils module
+    # This ensures they're available when pickle tries to load the pipeline
     try:
-        from utils.data_preprocessing import (
-            ColumnDropper, VMAFScaler, TargetExtractor, CQScaler,
-            ResolutionTransformer, FeatureScaler, FrameRateTransformer
-        )
+        # Verify that the classes are accessible (this will fail if there's an import issue)
+        from utils import ColumnDropper, VMAFScaler, TargetExtractor, CQScaler, ResolutionTransformer, FeatureScaler, FrameRateTransformer
+        
+        if logging_enabled:
+            print(f"✅ Preprocessing classes are available through utils module")
+            
     except ImportError as e:
         if logging_enabled:
-            print(f"❌ ERROR: Could not import preprocessing classes: {e}")
+            print(f"❌ ERROR: Could not access preprocessing classes: {e}")
+            print(f"   💡 Check that utils/__init__.py properly imports data_preprocessing classes")
         return None, None, None, None, None
     
     # Control verbose output with master logging flag
@@ -200,7 +205,7 @@ def get_scalers_from_pipeline(pipeline_path='src/models/preprocessing_pipeline.p
     if not os.path.exists(pipeline_path):
         if actual_verbose:
             print(f"❌ ERROR: Pipeline file not found at '{pipeline_path}'")
-            print(f"   💡 Suggestion: Ensure preprocessing pipeline exists in src/models/ directory")
+            print(f"   💡 Suggestion: Ensure preprocessing pipeline exists in /models/ directory")
         return None, None, None, None, None
     
     try:
@@ -208,8 +213,88 @@ def get_scalers_from_pipeline(pipeline_path='src/models/preprocessing_pipeline.p
         if actual_verbose:
             print(f"📖 Loading preprocessing pipeline from: {pipeline_path}")
             
-        with open(pipeline_path, 'rb') as f:
-            pipeline_obj = pickle.load(f)
+        # Load the pickled preprocessing pipeline with custom unpickler to handle module namespace issues
+        class CustomUnpickler(pickle.Unpickler):
+            def find_class(self, module, name):
+                # if actual_verbose:
+                #     print(f"   🔍 Unpickler looking for: {module}.{name}")
+                
+                # Handle the case where classes were defined in __main__ context
+                if module == '__main__':
+                    if actual_verbose:
+                        print(f"   🔧 Handling __main__ context for class: {name}")
+                    # Try to get the class from utils module
+                    try:
+                        from utils import ColumnDropper, VMAFScaler, TargetExtractor, CQScaler, ResolutionTransformer, FeatureScaler, FrameRateTransformer
+                        class_map = {
+                            'ColumnDropper': ColumnDropper,
+                            'VMAFScaler': VMAFScaler,
+                            'TargetExtractor': TargetExtractor,
+                            'CQScaler': CQScaler,
+                            'ResolutionTransformer': ResolutionTransformer,
+                            'FeatureScaler': FeatureScaler,
+                            'FrameRateTransformer': FrameRateTransformer
+                        }
+                        if name in class_map:
+                            if actual_verbose:
+                                print(f"   ✅ Found {name} in utils module")
+                            return class_map[name]
+                        else:
+                            if actual_verbose:
+                                print(f"   ❌ Class {name} not found in utils module")
+                    except ImportError as e:
+                        if actual_verbose:
+                            print(f"   ❌ Failed to import from utils: {e}")
+                
+                # Handle utils.data_preprocessing module context
+                elif module == 'utils.data_preprocessing':
+                    if actual_verbose:
+                        print(f"   🔧 Handling utils.data_preprocessing context for class: {name}")
+                    try:
+                        from utils import ColumnDropper, VMAFScaler, TargetExtractor, CQScaler, ResolutionTransformer, FeatureScaler, FrameRateTransformer
+                        class_map = {
+                            'ColumnDropper': ColumnDropper,
+                            'VMAFScaler': VMAFScaler,
+                            'TargetExtractor': TargetExtractor,
+                            'CQScaler': CQScaler,
+                            'ResolutionTransformer': ResolutionTransformer,
+                            'FeatureScaler': FeatureScaler,
+                            'FrameRateTransformer': FrameRateTransformer
+                        }
+                        if name in class_map:
+                            if actual_verbose:
+                                print(f"   ✅ Found {name} in utils module")
+                            return class_map[name]
+                        else:
+                            if actual_verbose:
+                                print(f"   ❌ Class {name} not found in utils module")
+                    except ImportError as e:
+                        if actual_verbose:
+                            print(f"   ❌ Failed to import from utils: {e}")
+                
+                # For other modules, use the default behavior
+                if actual_verbose:
+                    print(f"   🔧 Using default unpickler for {module}.{name}")
+                return super().find_class(module, name)
+        
+        # Try to load with custom unpickler
+        try:
+            with open(pipeline_path, 'rb') as f:
+                unpickler = CustomUnpickler(f)
+                pipeline_obj = unpickler.load()
+            if actual_verbose:
+                print(f"   ✅ Pipeline loaded with custom unpickler")
+        except Exception as e:
+            if actual_verbose:
+                print(f"   ❌ Custom unpickler failed: {e}")
+                print(f"   🔧 Attempting to load with standard pickle...")
+            
+            # Fallback to standard pickle loading
+            with open(pipeline_path, 'rb') as f:
+                pipeline_obj = pickle.load(f)
+            
+            if actual_verbose:
+                print(f"   ✅ Pipeline loaded with standard pickle")
             
         if actual_verbose:
             print(f"✅ Pipeline loaded successfully")
@@ -428,8 +513,8 @@ def load_encoding_resources(config, logging_enabled=True):
     """
     # Get model file paths from config
     model_paths = config.get('model_paths', {})
-    scene_model_path = model_paths.get('scene_classifier_model', "../models/scene_classifier_model.pth")
-    preprocessing_pipeline_path = model_paths.get('preprocessing_pipeline', "src/models/preprocessing_pipeline.pkl")
+    scene_model_path = model_paths.get('scene_classifier_model', "services/compress/models/scene_classifier_model.pth")
+    preprocessing_pipeline_path = model_paths.get('preprocessing_pipeline', "services/compress/models/preprocessing_pipeline.pkl")
     
     # Choose GPU if available, otherwise use CPU
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -761,6 +846,11 @@ def ai_encoding(scene_metadata, config, resources, target_vmaf=None, target_qual
             except Exception:
                 scene_duration = 1.0
 
+    # Check for very short scenes that might cause stuttering
+    is_very_short_scene = scene_duration < 1.0
+    if is_very_short_scene and logging_enabled:
+        print(f"   ⚠️ Very short scene detected ({scene_duration:.1f}s) - using special handling")
+
     # Get original video information for codec selection
     original_video_metadata = scene_metadata.get('original_video_metadata', {})
     
@@ -790,6 +880,9 @@ def ai_encoding(scene_metadata, config, resources, target_vmaf=None, target_qual
         target_quality_level = original_video_metadata.get('target_quality') or config.get('video_processing', {}).get('target_quality')
     target_vmaf = safe_float(target_vmaf or original_video_metadata.get('target_vmaf') or 
                            config.get('video_processing', {}).get('target_vmaf', 0.0), 0.0)
+
+
+    print("original video metadata", original_video_metadata)
 
     # Choose encoding codec (prioritize config over auto-detection)
     original_codec = original_video_metadata.get('original_codec', 'unknown')
@@ -931,10 +1024,17 @@ def ai_encoding(scene_metadata, config, resources, target_vmaf=None, target_qual
     }
 
     # ENCODING
-    output_scene_path = os.path.join(
-        temp_dir,
-        f"encoded_scene_{scene_number:03d}_{start_time:.0f}s-{end_time:.0f}s_{codec.lower()}.mp4"
-    )
+    # Use more precise filename for very short scenes
+    if scene_duration < 1.0:
+        output_scene_path = os.path.join(
+            temp_dir,
+            f"encoded_scene_{scene_number:03d}_{start_time:.1f}s-{end_time:.1f}s_{codec.lower()}.mp4"
+        )
+    else:
+        output_scene_path = os.path.join(
+            temp_dir,
+            f"encoded_scene_{scene_number:03d}_{start_time:.0f}s-{end_time:.0f}s_{codec.lower()}.mp4"
+        )
     os.makedirs(temp_dir, exist_ok=True)
 
     size_increase_protection = config.get('video_processing', {}).get('size_increase_protection', True)

@@ -165,8 +165,6 @@ def validation_and_merging(original_video_path, encoded_scenes_data, config, log
         print(f"      🎬 Executing video merge...")
     
     try:
-        
-        
         def timeout_handler(signum, frame):
             raise TimeoutError("Video merging timeout")
         

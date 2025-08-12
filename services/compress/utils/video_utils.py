@@ -49,3 +49,40 @@ def get_video_codec(video_path):
     except Exception as e:
         print(f"An unexpected error occurred while getting video codec: {e}")
         return None
+
+def get_keyframes(video_path: str, max_keyframes: int = 50):
+    """Get keyframe positions in seconds."""
+    try:
+        # Use ffprobe to get keyframe timestamps
+        cmd = [
+            'ffprobe', '-v', 'error',
+            '-select_streams', 'v:0',
+            '-show_entries', 'packet=pts_time,flags',
+            '-of', 'csv=print_section=0',
+            video_path
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            print(f"⚠️ Failed to get keyframes: ffprobe returned {result.returncode}")
+            return []
+        
+        # Parse output to find keyframe timestamps
+        keyframes = []
+        for line in result.stdout.splitlines():
+            if "K_" in line or ",K" in line:  # Keyframe flag
+                parts = line.split(',')
+                if len(parts) >= 1 and parts[0].replace('.', '', 1).isdigit():
+                    timestamp = float(parts[0])
+                    keyframes.append(timestamp)
+                    
+                    # Limit to max_keyframes to prevent excessive processing
+                    if len(keyframes) >= max_keyframes:
+                        break
+        
+        return keyframes
+        
+    except Exception as e:
+        print(f"❌ Error getting keyframes: {str(e)}")
+        return []

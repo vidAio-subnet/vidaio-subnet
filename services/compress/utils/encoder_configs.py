@@ -1,72 +1,56 @@
 
+# Configurable parameters for all encoders
+# Base settings, including default AQ where applicable
 ENCODER_SETTINGS = {
-    "AV1_Optimized": {
+    
+    "libsvtav1": {  # Changed from "AV1_Optimized"
         "codec": "libsvtav1", "preset": "8", "crf": 30, "keyint": 50,
-        # Add SVT-AV1 specific AQ if needed, e.g., --enable-variance-boost
-    },
-    "libsvtav1": {
-        "codec": "libsvtav1", "preset": "8", "crf": 30, "keyint": 50,
-        # SVT-AV1 encoder settings
+        # SVT-AV1 specific settings
     },
     "av1_nvenc": {
-        "codec": "av1_nvenc", "preset": "p6", "cq": 30, "keyint": 50, 'pix_fmt': 'yuv420p' # Default AQ settings for NVENC AV1
+        "codec": "av1_nvenc", "preset": "p6", "cq": 30, "keyint": 50, 'pix_fmt': 'yuv420p'
     },
-    "av1_rust": {
-        "codec": "librav1e", "preset": "4", "crf": 35, "keyint": 50,
-        # rav1e has AQ settings too, check its documentation
+    "libvpx_vp9": {  # Changed from "vp9"
+        "codec": "libvpx-vp9", "deadline": "good", "cpu-used": 2, "crf": 32, "keyint": 50,
+        "aq-mode": 1, "arnr-maxframes": 7, "arnr-strength": 4, "auto-alt-ref": 1,
+        "tune": "psnr", "row-mt": 1
     },
-    "av1_fallback": {
-        "codec": "libaom-av1", "preset": "medium", "crf": 30, "b:v": "0", "cpu-used": 4, "keyint": 50,
-        "aq-mode": 1 # Default AQ mode for libaom
-    },
-    "h264": {
+    "libx264": {  # Changed from "h264"
         "codec": "libx264", "preset": "medium", "crf": 23, "keyint": 50,
-        "aq-mode": 1, "aq-strength": 1.0 # Default AQ for x264
+        "aq-mode": 1, "aq-strength": 1.0
     },
-    "h266_vvc": {
-        "codec": "libvvenc", "preset": "p4", "crf": 28, "keyint": 50,
-        # Check libvvenc documentation for AQ parameters
+    "libvvenc": {  # Changed from "h266_vvc"
+        "codec": "libvvenc", "preset": "medium", "crf": 28, "keyint": 50,
+        # VVC/H.266 encoder
     },
-    "hevc": {
+    "libx265": {  # Changed from "hevc"
         "codec": "libx265", "preset": "medium", "crf": 28, "keyint": 50,
-        "aq-mode": 2, "aq-strength": 1.0 # Default AQ for x265
+        "aq-mode": 2, "aq-strength": 1.0
     },
     "hevc_nvenc": {
         "codec": "hevc_nvenc", "preset": "p4", "rc": "constqp", "cq": 22, "keyint": 50,
-        "spatial-aq": 1, "temporal-aq": 0 # Default AQ settings for NVENC HEVC
+        "spatial-aq": 1, "temporal-aq": 0
     },
     "h264_nvenc": {
         "codec": "h264_nvenc", "preset": "p4", "rc": "constqp", "cq": 22, "keyint": 50,
-        "spatial-aq": 1, "temporal-aq": 0 # Default AQ settings for NVENC H264
-    },
-    "h264_videotoolbox": {
-        "codec": "h264_videotoolbox", 
-        "profile:v": "main", 
-        "crf": 23, 
-        "keyint": 50,
-        'pix_fmt': 'yuv420p' # Often required for hardware encoders
-    },
-    "hevc_videotoolbox": {
-        "codec": "hevc_videotoolbox",
-        "profile:v": "main", 
-        "crf": 28, 
-        "keyint": 50,
-        'pix_fmt': 'yuv420p'
+        "spatial-aq": 1, "temporal-aq": 0
     },
     "ffv1": {
         "codec": "ffv1",
-        "level": 3,           
-        "coder": 1,           
-        "context": 1,         
-        "g": 1,               
-        "slices": 4,          
-        "slicecrc": 1,        
-        "pix_fmt": "yuv420p", 
+        "level": 3,
+        "coder": 1,
+        "context": 1,
+        "g": 1,
+        "slices": 4,
+        "slicecrc": 1,
+        "pix_fmt": "yuv420p",
     },
 }
 
+# Scene-Specific Parameter Overrides (including AQ and keyint)
+# These are examples and need tuning based on content and codec specifics.
 SCENE_SPECIFIC_PARAMS = {
-    'AV1_NVENC': {
+    'av1_nvenc': {  # Changed from 'AV1_NVENC'
         'Screen Content / Text': {'preset': 'p7', 'spatial-aq': 1, 'temporal-aq': 0, 'keyint': 250},
         'Faces / People': {'preset': 'p6', 'spatial-aq': 1, 'temporal-aq': 1, 'keyint': 100},
         'Animation / Cartoon / Rendered Graphics': {'preset': 'p5', 'spatial-aq': 1, 'temporal-aq': 0, 'keyint': 150},
@@ -74,7 +58,7 @@ SCENE_SPECIFIC_PARAMS = {
         'other': {'keyint': 100},
         'unclear': {'keyint': 100},
     },
-    'HEVC_NVENC': {
+    'hevc_nvenc': {  # Changed from 'HEVC_NVENC'
         'Screen Content / Text': {'preset': 'p7', 'spatial-aq': 1, 'temporal-aq': 0, 'keyint': 250},
         'Faces / People': {'preset': 'p6', 'spatial-aq': 1, 'temporal-aq': 1, 'keyint': 100},
         'Animation / Cartoon / Rendered Graphics': {'preset': 'p5', 'spatial-aq': 1, 'temporal-aq': 0, 'keyint': 150},
@@ -82,21 +66,13 @@ SCENE_SPECIFIC_PARAMS = {
         'other': {'keyint': 100},
         'unclear': {'keyint': 100},
     },
-    'H264_NVENC': {
+    'h264_nvenc': {  # Changed from 'H264_NVENC'
         'Screen Content / Text': {'preset': 'p7', 'spatial-aq': 1, 'temporal-aq': 0, 'keyint': 250},
         'Faces / People': {'preset': 'p6', 'spatial-aq': 1, 'temporal-aq': 1, 'keyint': 100},
         'Animation / Cartoon / Rendered Graphics': {'preset': 'p5', 'spatial-aq': 1, 'temporal-aq': 0, 'keyint': 150},
         'Gaming Content': {'preset': 'p5', 'spatial-aq': 1, 'temporal-aq': 0, 'keyint': 75},
         'other': {'keyint': 100},
         'unclear': {'keyint': 100},
-    },
-    'libaom-av1': {
-        'Screen Content / Text': {'cpu-used': 3, 'tune': 'ssim', 'aq-mode': 2, 'keyint': 250},
-        'Animation / Cartoon / Rendered Graphics': {'cpu-used': 5, 'tune': 'animation', 'aq-mode': 1, 'keyint': 150},
-        'Faces / People': {'cpu-used': 4, 'tune': 'psnr', 'aq-mode': 1, 'keyint': 100},
-        'Gaming Content': {'cpu-used': 6, 'tune': 'fastdecode', 'aq-mode': 1, 'keyint': 75},
-        'other': {'cpu-used': 4, 'tune': 'film', 'aq-mode': 1, 'keyint': 100},
-        'unclear': {'cpu-used': 4, 'tune': 'film', 'aq-mode': 1, 'keyint': 100},
     },
     'libx264': {
         'Screen Content / Text': {'preset': 'slow', 'tune': 'film', 'aq-mode': 1, 'aq-strength': 1.2, 'keyint': 250},
@@ -106,86 +82,163 @@ SCENE_SPECIFIC_PARAMS = {
         'other': {'preset': 'medium', 'tune': 'film', 'aq-mode': 1, 'aq-strength': 1.0, 'keyint': 100},
         'unclear': {'preset': 'medium', 'tune': 'film', 'aq-mode': 1, 'aq-strength': 1.0, 'keyint': 100},
     },
-     'libx265': {
+    'libx265': {
         'Screen Content / Text': {'preset': 'medium', 'tune': 'grain', 'aq-mode': 2, 'aq-strength': 1.1, 'keyint': 250},
         'Animation / Cartoon / Rendered Graphics': {'preset': 'medium', 'tune': 'animation', 'aq-mode': 2, 'aq-strength': 1.0, 'keyint': 150},
-        'Faces / People': {'preset': 'medium', 'tune': 'none', 'aq-mode': 2, 'aq-strength': 0.9, 'keyint': 100},
+        'Faces / People': {'preset': 'medium', 'aq-mode': 2, 'aq-strength': 0.9, 'keyint': 100},
         'Gaming Content': {'preset': 'fast', 'tune': 'fastdecode', 'aq-mode': 2, 'aq-strength': 1.0, 'keyint': 75},
-        'other': {'preset': 'medium', 'tune': 'none', 'aq-mode': 2, 'aq-strength': 1.0, 'keyint': 100},
-        'unclear': {'preset': 'medium', 'tune': 'none', 'aq-mode': 2, 'aq-strength': 1.0, 'keyint': 100},
+        'other': {'preset': 'medium', 'aq-mode': 2, 'aq-strength': 1.0, 'keyint': 100},
+        'unclear': {'preset': 'medium', 'aq-mode': 2, 'aq-strength': 1.0, 'keyint': 100},
+    },
+    'libvpx_vp9': {
+        'Screen Content / Text': {'deadline': 'best', 'cpu-used': 1, 'aq-mode': 2, 'keyint': 250},
+        'Faces / People': {'deadline': 'good', 'cpu-used': 2, 'aq-mode': 1, 'keyint': 100},
+        'Animation / Cartoon / Rendered Graphics': {'deadline': 'good', 'cpu-used': 3, 'aq-mode': 1, 'keyint': 150},
+        'Gaming Content': {'deadline': 'realtime', 'cpu-used': 5, 'aq-mode': 1, 'keyint': 75},
+        'other': {'deadline': 'good', 'cpu-used': 2, 'aq-mode': 1, 'keyint': 100},
+        'unclear': {'deadline': 'good', 'cpu-used': 2, 'aq-mode': 1, 'keyint': 100},
+    },
+    'libsvtav1': {
+        'Screen Content / Text': {'preset': '6', 'tune': 0, 'keyint': 250},  # tune 0 = subjective quality
+        'Faces / People': {'preset': '8', 'tune': 1, 'keyint': 100},        # tune 1 = objective quality
+        'Animation / Cartoon / Rendered Graphics': {'preset': '7', 'tune': 0, 'keyint': 150},
+        'Gaming Content': {'preset': '9', 'tune': 2, 'keyint': 75},         # tune 2 = fast decode
+        'other': {'preset': '8', 'tune': 1, 'keyint': 100},
+        'unclear': {'preset': '8', 'tune': 1, 'keyint': 100},
+    },
+    'libvvenc': {
+        'Screen Content / Text': {'preset': 'slow', 'keyint': 250},
+        'Faces / People': {'preset': 'medium', 'keyint': 100},
+        'Animation / Cartoon / Rendered Graphics': {'preset': 'medium', 'keyint': 150},
+        'Gaming Content': {'preset': 'fast', 'keyint': 75},
+        'other': {'preset': 'medium', 'keyint': 100},
+        'unclear': {'preset': 'medium', 'keyint': 100},
     },
 }
 
-MODEL_CQ_REFERENCE_CODEC = "libsvtav1" 
 
+
+# --- START: New Configuration for Quality Parameter Mapping ---
+
+# Define which codec's CQ scale your VMAF prediction model was trained on.
+# Example: If your model predicts CQ values suitable for AV1_NVENC.
+MODEL_CQ_REFERENCE_CODEC = "av1_nvenc" # IMPORTANT: User must set this correctly
+
+# Define anchor points for mapping the model's reference CQ (from MODEL_CQ_REFERENCE_CODEC)
+# to other codecs' quality parameters.
+# This requires empirical tuning and knowledge of codec quality scales.
+# 'model_ref_cq_range': The typical input CQ range from your VMAF model.
+# 'target_param_type': 'cq' or 'crf' for the target codec.
+# 'target_param_range': The typical/effective output range for the target codec's parameter.
+# 'anchor_points': A list of [model_ref_cq_value, target_codec_param_value] pairs.
+#                  These points define the mapping relationship.
 QUALITY_MAPPING_ANCHORS = {
-    "libaom-av1": { 
-        "model_ref_cq_range": [10, 63], 
+    #   Changed "libaom-av1" to match ENCODER_SETTINGS
+    #   Changed "H264" to "libx264" to match ENCODER_SETTINGS
+    "libx264": { # Mapping av1_nvenc CQ to libx264 CRF
+        "model_ref_cq_range": [10, 63],
         "target_param_type": "crf",
-        "target_param_range": [10, 63], 
-        "anchor_points": [ 
-            [20, 22],
+        "target_param_range": [0, 51],  # Typical CRF range for libx264
+        "anchor_points": [ # [model_av1_nvenc_cq, libx264_crf]
+            [20, 16], #   H.264 is less efficient, needs lower CRF
+            [30, 21], #   More realistic mapping
+            [40, 26], #   Conservative mapping for quality
+            [50, 31]  #   Upper range adjustment
+        ]
+    },
+    #   Changed "HEVC_NVENC" to "hevc_nvenc" to match ENCODER_SETTINGS
+    "hevc_nvenc": { # Mapping av1_nvenc CQ to hevc_nvenc CQ
+        "model_ref_cq_range": [10, 63],
+        "target_param_type": "cq",
+        "target_param_range": [10, 51], # Typical CQ range for NVENC HEVC
+        "anchor_points": [ # [model_av1_nvenc_cq, hevc_nvenc_cq]
+            [20, 18], #  HEVC NVENC slightly different scale
+            [30, 23], #  More conservative mapping
+            [40, 28], #  Quality preservation
+            [50, 33]  #  Upper range adjustment
+        ]
+    },
+    "libx265": { # Mapping av1_nvenc CQ to libx265 CRF
+        "model_ref_cq_range": [10, 63],
+        "target_param_type": "crf",
+        "target_param_range": [0, 51], # Typical CRF range for libx265
+        "anchor_points": [ # [model_av1_nvenc_cq, libx265_crf]
+            [20, 18], #  x265 is more efficient than H.264
+            [30, 23], #  Similar to H.264 but slightly better
+            [40, 28], #  Conservative quality mapping
+            [50, 33]  #  Upper range adjustment
+        ]
+    },
+    #   Missing codec mappings
+    "h264_nvenc": { # Mapping av1_nvenc CQ to h264_nvenc CQ
+        "model_ref_cq_range": [10, 63],
+        "target_param_type": "cq",
+        "target_param_range": [10, 51], # Typical CQ range for NVENC H.264
+        "anchor_points": [ # [model_av1_nvenc_cq, h264_nvenc_cq]
+            [20, 17], # NVENC H.264 needs lower CQ for similar quality
+            [30, 22],
+            [40, 27],
+            [50, 32]
+        ]
+    },
+    "libvpx_vp9": { # Mapping av1_nvenc CQ to libvpx-vp9 CRF
+        "model_ref_cq_range": [10, 63],
+        "target_param_type": "crf",
+        "target_param_range": [0, 63], # VP9 CRF range
+        "anchor_points": [ # [model_av1_nvenc_cq, vp9_crf]
+            [20, 22], # VP9 similar efficiency to AV1
             [30, 32],
             [40, 42],
             [50, 52]
         ]
     },
-    "H264": { 
+    "libsvtav1": { # Mapping av1_nvenc CQ to libsvtav1 CRF
         "model_ref_cq_range": [10, 63],
         "target_param_type": "crf",
-        "target_param_range": [0, 51], 
-        "anchor_points": [ 
-            [20, 18],
-            [30, 23],
-            [40, 28],
-            [50, 33]
+        "target_param_range": [0, 63], # SVT-AV1 CRF range
+        "anchor_points": [ # [model_av1_nvenc_cq, svt_av1_crf]
+            [20, 21], # SVT-AV1 slightly different from NVENC
+            [30, 31],
+            [40, 41],
+            [50, 51]
         ]
     },
-
-    "HEVC_NVENC": { 
-        "model_ref_cq_range": [10, 63],
-        "target_param_type": "cq",
-        "target_param_range": [10, 51], 
-        "anchor_points": [ 
-            [20, 19], 
-            [30, 25],
-            [40, 31],
-            [50, 37]
-        ]
-    },
-    "libx265": { 
+    "libvvenc": { # Mapping av1_nvenc CQ to libvvenc CRF
         "model_ref_cq_range": [10, 63],
         "target_param_type": "crf",
-        "target_param_range": [0, 51], 
-        "anchor_points": [ 
-            [20, 20],
-            [30, 26],
-            [40, 32],
-            [50, 38]
+        "target_param_range": [0, 51], # H.266/VVC CRF range
+        "anchor_points": [ # [model_av1_nvenc_cq, vvc_crf]
+            [20, 20], # VVC should be more efficient than AV1
+            [30, 25], # Better compression than AV1
+            [40, 30],
+            [50, 35]
         ]
     },
+    # If a codec is the same as MODEL_CQ_REFERENCE_CODEC, it will use the CQ directly.
 }
 
+# =============================================================================
+# CODEC-SPECIFIC CQ LIMITS AND QUALITY MAPPINGS
+# =============================================================================
+
+# Define maximum recommended CQ values for different codecs to maintain reasonable quality
 CODEC_CQ_LIMITS = {
+    # AV1 Codecs
     'av1_nvenc': {
-        'max_cq': 45,          
-        'recommended_max': 40,  
-        'quality_range': (20, 40), 
+        'max_cq': 45,           # Maximum CQ for reasonable quality
+        'recommended_max': 40,   # Conservative maximum for good quality
+        'quality_range': (20, 40),  # Typical quality range
         'description': 'NVIDIA AV1 encoder'
     },
-    'libsvtav1': {
+    'libsvtav1': {  #   Standardized name
         'max_cq': 50,
         'recommended_max': 45,
         'quality_range': (25, 45),
         'description': 'SVT-AV1 encoder'
     },
-    'libaom-av1': {
-        'max_cq': 50,
-        'recommended_max': 45,
-        'quality_range': (25, 45),
-        'description': 'AOM AV1 encoder'
-    },
     
+    
+    # H.264 Codecs
     'h264_nvenc': {
         'max_cq': 32,
         'recommended_max': 28,
@@ -199,6 +252,7 @@ CODEC_CQ_LIMITS = {
         'description': 'x264 H.264 encoder'
     },
     
+    # H.265/HEVC Codecs
     'hevc_nvenc': {
         'max_cq': 35,
         'recommended_max': 30,
@@ -212,13 +266,31 @@ CODEC_CQ_LIMITS = {
         'description': 'x265 HEVC encoder'
     },
     
-    'libvpx-vp9': {
+    # VP9 Codec
+    'libvpx_vp9': {  #   Changed from 'libvpx-vp9'
         'max_cq': 45,
         'recommended_max': 40,
         'quality_range': (25, 40),
         'description': 'VP9 encoder'
     },
     
+    #   H.266/VVC Codec
+    'libvvenc': {
+        'max_cq': 45,
+        'recommended_max': 40,
+        'quality_range': (20, 40),
+        'description': 'VVenC H.266 encoder'
+    },
+    
+    #   Lossless codec
+    'ffv1': {
+        'max_cq': 0,     # Lossless doesn't use quality parameters
+        'recommended_max': 0,
+        'quality_range': (0, 0),
+        'description': 'FFV1 lossless encoder'
+    },
+    
+    # Default fallback for unknown codecs
     'default': {
         'max_cq': 40,
         'recommended_max': 35,

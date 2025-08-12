@@ -156,8 +156,8 @@ def video_compressor(input_file, target_quality='Medium', max_duration=3600, out
         print("⚠️ Config file not found, using default configuration")
         config = {
             'directories': {
-                'temp_dir': str(Path('./videos/temp_scenes').absolute()),
-                'output_dir': str(output_dir_path)
+                'temp_dir': './videos/temp_scenes',
+                'output_dir': './output'
             },
             'video_processing': {
                 'SHORT_VIDEO_THRESHOLD': 20,
@@ -166,7 +166,31 @@ def video_compressor(input_file, target_quality='Medium', max_duration=3600, out
                 'size_increase_protection': True,
                 'conservative_cq_adjustment': 2,
                 'max_output_size_ratio': 1.15,
-                'max_encoding_retries': 2
+                'max_encoding_retries': 2,
+                # ✅ BASIC MINER: Quality-based CQ lookup tables
+                'basic_cq_lookup_by_quality': {
+                    'High': {     # Target VMAF: 95
+                        'animation': 22,
+                        'low-action': 20,
+                        'medium-action': 18,
+                        'high-action': 16,
+                        'default': 19
+                    },
+                    'Medium': {   # Target VMAF: 93
+                        'animation': 25,
+                        'low-action': 23,
+                        'medium-action': 21,
+                        'high-action': 19,
+                        'default': 22
+                    },
+                    'Low': {      # Target VMAF: 90
+                        'animation': 28,
+                        'low-action': 26,
+                        'medium-action': 24,
+                        'high-action': 22,
+                        'default': 25
+                    }
+                },
             },
             'scene_detection': {
                 'enable_time_based_fallback': True,
@@ -181,12 +205,17 @@ def video_compressor(input_file, target_quality='Medium', max_duration=3600, out
             'output_settings': {
                 'save_individual_scene_reports': True,
                 'save_comprehensive_report': True
+            },
+            'model_paths': {
+                'scene_classifier_model': 'services/compress/models/scene_classifier_model.pth'
             }
         }
     
-    # Update output directory from arguments
     config['directories']['output_dir'] = str(output_dir_path)
-    
+    if 'video_processing' not in config:
+        config['video_processing'] = {}
+    config['video_processing']['target_quality'] = target_quality
+
     # Create temp directory if it doesn't exist
     temp_dir = Path(config['directories']['temp_dir'])
     temp_dir.mkdir(parents=True, exist_ok=True)
@@ -208,6 +237,8 @@ def video_compressor(input_file, target_quality='Medium', max_duration=3600, out
         max_duration=max_duration,
         output_dir=output_dir_path
     )
+
+    print("part1_result", part1_result)
     
     part1_time = time.time() - part1_start_time
     
@@ -231,6 +262,8 @@ def video_compressor(input_file, target_quality='Medium', max_duration=3600, out
     part2_start_time = time.time()
     
     scenes_metadata = scene_detection(part1_result)
+
+    print("scenes_metadata", scenes_metadata)
     
     part2_time = time.time() - part2_start_time
     
@@ -255,17 +288,34 @@ def video_compressor(input_file, target_quality='Medium', max_duration=3600, out
     if total_scene_size > 0:
         print(f"   📊 Total scene files: {total_scene_size:.1f} MB")
 
-    # ✅ PART 3: AI Encoding (Multiple Scene Processing)
-    print(f"\n🤖 === Part 3: AI Encoding ===")
+    # ✅ PART 3: AI Encoding (BASIC MINER - Multiple Scene Processing)
+    print(f"\n🧠 === Part 3: AI Encoding (Basic Miner) ===")
     part3_start_time = time.time()
+    
+    print(f"   🔧 Loading basic AI models and resources...")
+    print(f"   📋 Using quality-based CQ lookup tables for {target_quality} quality")
+    print(f"   🎯 Target Quality Level: {target_quality}")
+    
+    # Display CQ ranges for selected quality level
+    quality_info = {
+        'High': {'vmaf': 95, 'cq_range': '16-22'},
+        'Medium': {'vmaf': 93, 'cq_range': '19-25'},
+        'Low': {'vmaf': 90, 'cq_range': '22-28'}
+    }
+    
+    if target_quality in quality_info:
+        info = quality_info[target_quality]
+        print(f"   🎚️ CQ Range for {target_quality}: {info['cq_range']} (Target VMAF: {info['vmaf']})")
+    
     
     print(f"   🔧 Loading AI models and resources...")
     
     try:
         resources = load_encoding_resources(config, logging_enabled=True)
-        print(f"   ✅ AI resources loaded successfully")
+        print(f"   ✅ Basic AI resources loaded successfully")
+        print(f"   🧠 Mode: Scene classification + CQ lookup table")
     except Exception as e:
-        print(f"   ❌ Failed to load AI resources: {e}")
+        print(f"   ❌ Failed to load GGG AI resources: {e}")
         return False
     
     # Process each scene individually
@@ -275,7 +325,7 @@ def video_compressor(input_file, target_quality='Medium', max_duration=3600, out
     total_input_size = 0
     total_output_size = 0
     
-    print(f"\n   📊 Processing {len(scenes_metadata)} scenes individually...")
+    print(f"\n   📊 Processing {len(scenes_metadata)} scenes with basic AI approach...")
     
     for i, scene_metadata in enumerate(scenes_metadata):
         scene_number = scene_metadata['scene_number']
@@ -284,17 +334,21 @@ def video_compressor(input_file, target_quality='Medium', max_duration=3600, out
         
         print(f"\n   🎬 Scene {scene_number}/{len(scenes_metadata)}: {os.path.basename(scene_path)}")
         print(f"      ⏱️ Duration: {scene_duration:.1f}s")
-        print(f"      🎯 Target VMAF: {scene_metadata['original_video_metadata']['target_vmaf']}")
+        # Show both selected quality level and any indicative target VMAF (if present)
+        indicative_vmaf = scene_metadata['original_video_metadata'].get('target_vmaf')
+        print(f"      🎯 Target Quality: {target_quality}" + (f" (VMAF≈{indicative_vmaf})" if indicative_vmaf else ""))
+        print(f"      🧠 Method: Basic scene classification + CQ lookup")
         
         scene_start_time = time.time()
         
         try:
-            # ✅ SINGLE SCENE PROCESSING: Call Part 3 for individual scene
+            # ✅ BASIC MINER: Call Part 3 for individual scene using basic approach
             encoded_path, scene_data = ai_encoding(
                 scene_metadata=scene_metadata,
                 config=config,
                 resources=resources,
-                target_vmaf=None,  # Let it use the target from original video metadata
+                target_vmaf=None,  # VMAF not used in basic mode; we pass quality level instead
+                target_quality_level=target_quality,
                 logging_enabled=True
             )
             
@@ -313,7 +367,9 @@ def video_compressor(input_file, target_quality='Medium', max_duration=3600, out
                 print(f"         📁 Output: {os.path.basename(encoded_path)}")
                 print(f"         📊 Size: {input_size_mb:.1f} MB → {size_mb:.1f} MB ({compression:+.1f}% compression)")
                 print(f"         🎭 Scene type: {scene_data.get('scene_type', 'unknown')}")
-                print(f"         🎚️ CQ used: {scene_data.get('final_adjusted_cq', 'unknown')}")
+                print(f"         � Quality: {scene_data.get('target_quality_level', target_quality)}")
+                print(f"         �🎚️ CQ used: {scene_data.get('base_cq_for_quality', 'N/A')} → {scene_data.get('final_adjusted_cq', 'unknown')} (after adjustment)")
+                print(f"         📋 Method: Quality-based lookup table CQ selection")
                 print(f"         ⏱️ Processing: {scene_processing_time:.1f}s")
                 
                 # Update scene metadata with encoded path for Part 4
@@ -357,11 +413,13 @@ def video_compressor(input_file, target_quality='Medium', max_duration=3600, out
     part3_time = time.time() - part3_start_time
     
     # ✅ PART 3 SUMMARY
-    print(f"\n   📊 Part 3 Processing Summary:")
+    print(f"\n   📊 Part 3 Basic Processing Summary:")
     print(f"      ✅ Successful encodings: {successful_encodings}")
     print(f"      ❌ Failed encodings: {failed_encodings}")
     print(f"      📈 Success rate: {successful_encodings/len(scenes_metadata)*100:.1f}%")
     print(f"      ⏱️ Total processing time: {part3_time:.1f}s")
+    print(f"      🎯 Quality Level: {target_quality}")
+    print(f"      🧠 AI Method: Scene classification + quality-based CQ lookup")
     
     if successful_encodings == 0:
         print("❌ Part 3 failed completely. No scenes were encoded. Pipeline terminated.")
@@ -532,13 +590,13 @@ def test_video_compression(video_path: str):
 if __name__ == "__main__":
     import uvicorn
 
-    logger.info("Starting video compressor server")
-    logger.info(f"Video compressor server running on http://{CONFIG.video_compressor.host}:{CONFIG.video_compressor.port}")
+    # logger.info("Starting video compressor server")
+    # logger.info(f"Video compressor server running on http://{CONFIG.video_compressor.host}:{CONFIG.video_compressor.port}")
 
-    uvicorn.run(app, host=CONFIG.video_compressor.host, port=CONFIG.video_compressor.port)
+    # uvicorn.run(app, host=CONFIG.video_compressor.host, port=CONFIG.video_compressor.port)
 
-    # result = test_video_compression('test1.mp4')
-    # print(result)
+    result = test_video_compression('test1.mp4')
+    print(result)
 
 
     #python services/compress/server.py
