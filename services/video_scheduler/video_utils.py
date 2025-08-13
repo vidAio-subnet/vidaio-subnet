@@ -1,18 +1,21 @@
-import math
-import requests
 import os
+import math
+import glob
 import time
-from tqdm import tqdm
-from pathlib import Path
 import uuid
-from typing import List, Tuple, Optional
-import concurrent.futures
-import subprocess
+import redis
+import random
+import requests
 import tempfile
 import threading
+import subprocess
+from tqdm import tqdm
+from pathlib import Path
+import concurrent.futures
 from dotenv import load_dotenv
-import random
-import glob
+from typing import List, Tuple, Optional
+from redis_utils import pop_pexels_video_id
+from vidaio_subnet_core import CONFIG
 
 load_dotenv()
 
@@ -260,9 +263,8 @@ def apply_video_transformations(video_path: str, output_path: str = None, transf
 
 def download_transform_and_trim_downscale_video(
     clip_duration: int,
-    vid: int,
-    task_type: str,
     use_downscale_video: bool = True,
+    redis_conn: redis.Redis = None,
     output_dir: str = "videos",
     transformations_per_video: int = 0,
     enable_transformations: bool = False
@@ -285,6 +287,8 @@ def download_transform_and_trim_downscale_video(
         and paths to reference trim files, or None on failure.
     """
 
+    print("download_transform_and_trim_downscale_video")
+
     DOWNSCALE_HEIGHTS = {
         "HD24K": 1080,
         "4K28K": 2160,
@@ -299,9 +303,6 @@ def download_transform_and_trim_downscale_video(
     def safe_print(message):
         with print_lock:
             print(message)
-
-    downscale_height = DOWNSCALE_HEIGHTS.get(task_type, 540)
-    expected_width, expected_height = EXPECTED_RESOLUTIONS.get(task_type, (3840, 2160))
 
     os.makedirs(output_dir, exist_ok=True)
     load_dotenv()
@@ -341,7 +342,7 @@ def download_transform_and_trim_downscale_video(
         width, height, duration = map(float, result.stdout.strip().split(','))
         return int(width), int(height), duration
 
-    def process_chunk_from_transformed_video(chunk_info, transformed_source_path, base_video_id, transform_idx=None, use_downscale_video=True):
+    def process_chunk_from_transformed_video(chunk_info, transformed_source_path, base_video_id, downscale_height, transform_idx=None, use_downscale_video=True):
         i, start_time_clip, end_time_clip, chunk_video_id = chunk_info
         
         if transform_idx is not None:
@@ -580,7 +581,7 @@ def download_transform_and_trim_downscale_video(
         
         return chunks
 
-    def process_video_standard(vid, clip_duration, task_type, output_dir, transformations_per_video, enable_transformations, use_downscale_video):
+    def process_video_standard(clip_duration, output_dir, transformations_per_video, enable_transformations, use_downscale_video, redis_conn):
         """
         Process 5s or 10s clips with transformation workflow:
         1. Download video once
@@ -588,44 +589,70 @@ def download_transform_and_trim_downscale_video(
         3. Process chunks from each transformed version in parallel
         """
         try:
-            start_time = time.time()
-            
-            url = f"https://api.pexels.com/videos/videos/{vid}"
-            headers = {"Authorization": api_key}
-            
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()  
-            
-            data = response.json()
-            if "video_files" not in data:
-                raise ValueError("No video found or API error")
+
+            downscale_height = None
+            total_duration = None
+            task_type = None
+            temp_path = None
+            max_retry = 3
+
+            while True:
+
+                if max_retry < 0:
+                    break
+
+                print("poping pexels video id")
+                video_id_data = pop_pexels_video_id(redis_conn)
+
+                if video_id_data == None:
+                    pass
+
+                vid = video_id_data["vid"]
+                task_type = video_id_data["task_type"]
                 
-            video_url = next(
-                (video["link"] for video in data["video_files"] 
-                if video["width"] == expected_width and video["height"] == expected_height), 
-                None
-            )
+                downscale_height = DOWNSCALE_HEIGHTS.get(task_type, 540)
+                expected_width, expected_height = EXPECTED_RESOLUTIONS.get(task_type, (3840, 2160))
+                start_time = time.time()
+                
+                url = f"https://api.pexels.com/videos/videos/{vid}"
+                headers = {"Authorization": api_key}
+                
+                response = requests.get(url, headers=headers)
+                response.raise_for_status()  
+                
+                data = response.json()
+                if "video_files" not in data:
+                    raise ValueError("No video found or API error")
+                    
+                video_url = next(
+                    (video["link"] for video in data["video_files"] 
+                    if video["width"] == expected_width and video["height"] == expected_height), 
+                    None
+                )
+                
+                if video_url is None:
+                    return None, None, None
+                
+                temp_path = Path(output_dir) / f"{vid}_original.mp4"
+                
+                download_video(video_url, temp_path)
+                elapsed_time = time.time() - start_time
+                print(f"Time taken to download video: {elapsed_time:.2f} seconds")
             
-            if video_url is None:
-                return None, None, None
-            
-            temp_path = Path(output_dir) / f"{vid}_original.mp4"
-            
-            download_video(video_url, temp_path)
-            elapsed_time = time.time() - start_time
-            print(f"Time taken to download video: {elapsed_time:.2f} seconds")
-        
-            print("\nChecking video resolution...")
-            width, height, total_duration = get_video_info(temp_path)
-            
-            if width != expected_width or height != expected_height:
-                error_msg = (f"Video resolution mismatch. Expected {expected_width}x{expected_height}, "
-                            f"but got {width}x{height}")
-                print(error_msg)
-                raise ValueError(error_msg)
-            
-            print(f"\nVideo resolution verified: {width}x{height}")
-            print(f"Video duration: {total_duration:.2f}s")
+                print("\nChecking video resolution...")
+                width, height, total_duration = get_video_info(temp_path)
+                
+                if width != expected_width or height != expected_height or total_duration < CONFIG.video_scheduler.min_video_len:
+                    error_msg = (f"Video resolution mismatch. Expected {expected_width}x{expected_height}, "
+                                f"but got {width}x{height} or video duration is less than {CONFIG.video_scheduler.min_video_len}s")
+                    print(error_msg)
+                    os.remove(temp_path)
+                    max_retry -= 1
+                    continue
+                else:
+                    print(f"\nVideo resolution verified: {width}x{height}")
+                    print(f"Video duration: {total_duration:.2f}s")
+                    break
             
             chunks_info = generate_chunk_timestamps(total_duration, clip_duration)
             print(f"Extracting {len(chunks_info)} chunks of {clip_duration}s each")
@@ -696,6 +723,7 @@ def download_transform_and_trim_downscale_video(
                                 chunk, 
                                 transformed_path, 
                                 base_video_ids[idx], 
+                                downscale_height,
                                 transform_idx,
                                 use_downscale_video
                             ): chunk 
@@ -724,10 +752,11 @@ def download_transform_and_trim_downscale_video(
                     future_to_chunk = {
                         executor.submit(
                             process_chunk_from_transformed_video,
-                            use_downscale_video,
                             chunk, 
                             temp_path, 
-                            base_video_ids[idx]
+                            base_video_ids[idx],
+                            downscale_height,
+                            use_downscale_video
                         ): chunk 
                         for idx, chunk in enumerate(chunks_with_ids)
                     }
@@ -751,11 +780,11 @@ def download_transform_and_trim_downscale_video(
             print(f"Downscaled videos: {len(downscale_paths)}")
             print(f"Reference trims: {len(reference_trim_paths)}")
             
-            return downscale_paths, final_video_ids, reference_trim_paths
+            return downscale_paths, final_video_ids, reference_trim_paths, task_type
             
         except requests.exceptions.RequestException as e:
             print(f"Error downloading video: {e}")
-            return None, None, None
+            return None, None, None, None
         except Exception as e:
             print(f"Error: {str(e)}")
             if 'temp_path' in locals() and os.path.exists(temp_path):
@@ -764,15 +793,14 @@ def download_transform_and_trim_downscale_video(
                     print(f"Cleaned up downloaded file after error: {temp_path}")
                 except:
                     pass
-            return None, None, None
+            return None, None, None, None
 
     try:
-        return process_video_standard(vid, clip_duration, task_type, output_dir, transformations_per_video, enable_transformations, use_downscale_video)
+        return process_video_standard(clip_duration, output_dir, transformations_per_video, enable_transformations, use_downscale_video, redis_conn)
 
-            
     except Exception as e:
         print(f"Unexpected error: {str(e)}")
-        return None, None, None
+        return None, None, None, None
 
 
 def get_trim_video_path(file_id: int, dir_path: str = "videos") -> str:

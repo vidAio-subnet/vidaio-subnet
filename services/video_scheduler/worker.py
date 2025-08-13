@@ -354,18 +354,6 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis,
             
             await manage_pexels_queue(redis_conn, queue_thresholds, video_constraints, task_thresholds)
         
-        video_id_data = pop_pexels_video_id(redis_conn)
-        
-        logger.info("downloading video data: ")
-        logger.info(video_id_data)
-
-        if video_id_data == None:
-            time.sleep(10)
-            continue
-
-        video_id = video_id_data["vid"]
-        task_type = video_id_data["task_type"]
-
         clip_duration_probabilities = {
             1: 0.35, 
             2: 0.05,
@@ -391,12 +379,11 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis,
         transformations_per_chunk = int(os.getenv("TRANSFORMATIONS_PER_CHUNK", "3"))
         
         
-        challenge_local_paths, video_ids, reference_trim_paths = download_transform_and_trim_downscale_video(
+        challenge_local_paths, video_ids, reference_trim_paths, task_type = download_transform_and_trim_downscale_video(
             clip_duration=clip_duration,
-            vid=video_id,
-            task_type=task_type,
             transformations_per_video=transformations_per_chunk,
             enable_transformations=enable_color_transform,
+            redis_conn=redis_conn
         )
 
         if challenge_local_paths is None:
@@ -483,15 +470,6 @@ async def get_compression_requests_paths(num_needed: int, redis_conn: redis.Redi
 
     while remaining_count > 0:
 
-        video_id_data = pop_pexels_video_id(redis_conn)
-
-        if video_id_data == None:
-            time.sleep(10)
-            continue
-
-        video_id = video_id_data["vid"]
-        task_type = video_id_data["task_type"]  
-
         clip_duration = 10
 
         # Check if color space transformation is enabled (default: True)
@@ -500,14 +478,12 @@ async def get_compression_requests_paths(num_needed: int, redis_conn: redis.Redi
         # Number of transformations to apply per chunk (default: 3)
         transformations_per_chunk = int(os.getenv("TRANSFORMATIONS_PER_CHUNK", "3"))
         
-        
-        _, video_ids, challenge_local_paths = download_transform_and_trim_downscale_video(
+        _, video_ids, challenge_local_paths, _ = download_transform_and_trim_downscale_video(
             clip_duration=clip_duration,
-            vid=video_id,
-            task_type=task_type,
             use_downscale_video=False,
             transformations_per_video=transformations_per_chunk,
             enable_transformations=enable_color_transform,
+            redis_conn=redis_conn
         )
 
         if challenge_local_paths is None:
@@ -778,7 +754,7 @@ async def replenish_synthetic_queue(redis_conn, duration, threshold, target):
     """Replenish a specific synthetic chunk queue if below target."""
     queue_size = get_queue_size_by_duration(redis_conn, duration)
     
-    if queue_size < target:  # Changed from threshold to target
+    if queue_size < threshold:
         needed = target - queue_size
         logger.info(f"Replenishing {duration}s chunk queue with {needed} items (current: {queue_size}, target: {target})")
         
