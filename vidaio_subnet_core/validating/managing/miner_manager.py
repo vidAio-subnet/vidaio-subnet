@@ -133,6 +133,9 @@ class MinerManager:
         logger.info(f"📥 Downloading database from URL: {config_url}")
         logger.info(f"📁 Local database path: {local_db_path}")
         
+        if os.path.exists("video_subnet_validator.db"):
+            os.remove("video_subnet_validator.db")
+
         try:
             # Download the database file
             response = requests.get(config_url, timeout=60)
