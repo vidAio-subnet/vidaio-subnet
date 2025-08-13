@@ -452,7 +452,7 @@ def download_transform_and_trim_downscale_video(
         - For 10s clips from 30s+ videos, uses sliding window approach for maximum extraction
         """
         chunks = []
-        
+
         # For 10s clips from 30s+ videos, use sliding window approach for maximum extraction
         if clip_duration == 10 and total_duration >= 30:
             # Use sliding window with small overlap to get maximum chunks
@@ -497,6 +497,7 @@ def download_transform_and_trim_downscale_video(
             5: {"safe_start": 0.5, "safe_end_ratio": 0.9, "min_overlap": 1.0, "max_overlap": 2.5},
             10: {"safe_start": 0.5, "safe_end_ratio": 0.9, "min_overlap": 0.5, "max_overlap": 1.5},  # Adjusted for better extraction
             20: {"safe_start": 0.5, "safe_end_ratio": 0.9, "min_overlap": 3.0, "max_overlap": 6.0}
+
         }
         
         config = safe_zone_configs.get(clip_duration, {
@@ -518,6 +519,7 @@ def download_transform_and_trim_downscale_video(
             5: 8,    # Max 8 chunks for 5s clips
             10: 6,   # Max 6 chunks for 10s clips
             20: 4    # Max 4 chunks for 20s clips
+
         }
         
         max_chunks = max_chunks_per_video.get(clip_duration, 8)
@@ -581,7 +583,7 @@ def download_transform_and_trim_downscale_video(
 
     def process_video_standard(clip_duration, output_dir, transformations_per_video, enable_transformations, use_downscale_video, redis_conn):
         """
-        Process 5s or 10s clips with CORRECTED transformation workflow:
+        Process 5s or 10s clips with transformation workflow:
         1. Download video once
         2. Apply transformations to original video (if enabled)
         3. Process chunks from each transformed version in parallel
@@ -795,6 +797,7 @@ def download_transform_and_trim_downscale_video(
 
     try:
         return process_video_standard(clip_duration, output_dir, transformations_per_video, enable_transformations, use_downscale_video, redis_conn)
+
     except Exception as e:
         print(f"Unexpected error: {str(e)}")
         return None, None, None, None
@@ -1027,8 +1030,7 @@ def download_trim_downscale_youtube_video(
         # Define slide intervals for each clip duration
         slide_intervals = {
             5: 2,     # For 5s clips, slide by 2s
-            10: 4,    # For 10s clips, slide by 4s  
-            20: 6     # For 20s clips, slide by 6s
+            10: 4,    # For 10s clips, slide by 4s
         }
         
         slide_interval = slide_intervals.get(clip_duration, 2)
@@ -1040,7 +1042,6 @@ def download_trim_downscale_youtube_video(
         max_chunks_per_video = {
             5: min(30, max_chunks_possible),   # Max 30 chunks for 5s clips
             10: min(20, max_chunks_possible),  # Max 20 chunks for 10s clips
-            20: min(15, max_chunks_possible)   # Max 15 chunks for 20s clips
         }
         
         max_chunks = max_chunks_per_video.get(clip_duration, max_chunks_possible)
