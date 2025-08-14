@@ -215,13 +215,22 @@ You can run the video upscaling endpoint using **PM2** to manage the process:
 pm2 start "python services/upscaling/server.py" --name video-upscaler
 ```
 
-
 ### Notes:
 - The `video-upscaler` process will handle video upscaling requests.
 - Use the following PM2 commands to manage the process:
   - **View Logs**: `pm2 logs video-upscaler`
   - **Restart**: `pm2 restart video-upscaler`
   - **Stop**: `pm2 stop video-upscaler`
+
+---
+
+## Running the Video Compression Endpoint
+
+You can also run the video Compression endpoint using **PM2** to manage the process:
+
+```bash
+pm2 start "python services/compress/server.py" --name video-compressor
+```
 
 ---
 

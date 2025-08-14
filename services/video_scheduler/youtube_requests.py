@@ -195,6 +195,13 @@ def download_video(
     """Download video from YouTube"""
     print(f"Downloading video {video_url} to {output_path}")
 
+    if os.path.exists(output_path):
+        try:
+            os.remove(output_path)
+            print(f"Cleaned up existing file before download: {output_path}")
+        except OSError as e:
+            print(f"Warning: Could not clean up existing file {output_path}: {e}")
+
     if cookie_file is None:
         print(f"Getting YouTube cookies from {FETCH_URL}")
         cookie_file = fetch_cookies()
@@ -214,10 +221,26 @@ def download_video(
         "fixup": "never",
     }
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([video_url])
-
-    return output_path
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([video_url])
+            
+        if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+            print(f"Warning: Download produced empty or invalid file: {output_path}")
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            raise Exception("Download failed or file is empty")
+            
+        return output_path
+        
+    except Exception as e:
+        if os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+                print(f"Cleaned up failed download file: {output_path}")
+            except OSError as cleanup_error:
+                print(f"Warning: Could not clean up failed download {output_path}: {cleanup_error}")
+        raise e  # Re-raise the original exception
 
 
 def fetch_video_metadata(
@@ -344,10 +367,20 @@ class YouTubeHandler:
             time.sleep(0.1) # wait for cookies to stop refreshing
         
         attempt = 0
+        output_path = None
         while attempt < self.max_retries:
             try:
                 if attempt:
                     print(f"Starting download attempt {attempt}")
+                
+                if 'output_path' in kw:
+                    output_path = kw['output_path']
+                    if os.path.exists(output_path):
+                        try:
+                            os.remove(output_path)
+                            print(f"Cleaned up existing file before retry: {output_path}")
+                        except OSError as e:
+                            print(f"Warning: Could not clean up existing file {output_path}: {e}")
                 
                 result = download_video(self.vid_to_url(vid), *args, cookie_file=self.cookie_file, **kw)
                 return result
@@ -355,6 +388,13 @@ class YouTubeHandler:
             except Exception as e:
                 error_str = str(e)
                 print(f"Download attempt {attempt + 1} failed: {error_str}")
+                
+                if output_path and os.path.exists(output_path):
+                    try:
+                        os.remove(output_path)
+                        print(f"Cleaned up failed download attempt: {output_path}")
+                    except OSError as cleanup_error:
+                        print(f"Warning: Could not clean up failed attempt {output_path}: {cleanup_error}")
                 
                 # If it's a bot detection error, try refreshing cookies
                 if "Sign in to confirm you're not a bot" in error_str or "blocked" in error_str.lower():

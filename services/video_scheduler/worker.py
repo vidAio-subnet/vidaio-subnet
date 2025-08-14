@@ -19,8 +19,12 @@ from redis_utils import (
     get_organic_queue_size,
     get_5s_queue_size,
     get_10s_queue_size,
+    get_20s_queue_size,
+    get_compression_queue_size,
     push_5s_chunks,
     push_10s_chunks,
+    push_20s_chunks,
+    push_compression_chunks,
     push_pexels_video_ids,
     get_pexels_queue_size,
     pop_pexels_video_id,
@@ -30,10 +34,15 @@ from redis_utils import (
     get_youtube_queue_size,
     pop_youtube_video_id,
 )
-from video_utils import download_trim_downscale_video, apply_video_transformations
+from video_utils import download_transform_and_trim_downscale_video
 from services.google_drive.google_drive_manager import GoogleDriveManager
 from vidaio_subnet_core import CONFIG
 from vidaio_subnet_core.utilities.storage_client import storage_client
+from video_utils import (
+    download_transform_and_trim_downscale_video,
+    download_trim_downscale_youtube_video,
+    cleanup_orphaned_files  
+)
 
 load_dotenv()
 
@@ -47,6 +56,7 @@ def clear_queues(redis_conn) -> None:
     redis_conn.delete(CONFIG.redis.synthetic_5s_clip_queue_key)
     redis_conn.delete(CONFIG.redis.synthetic_10s_clip_queue_key)
     redis_conn.delete(CONFIG.redis.synthetic_20s_clip_queue_key)
+    redis_conn.delete(CONFIG.redis.synthetic_compression_queue_key)
     redis_conn.delete(CONFIG.redis.pexels_video_ids_key)
     redis_conn.delete(CONFIG.redis.youtube_video_ids_key)
 
@@ -126,7 +136,7 @@ async def get_synthetic_urls(hotkey: str, num_needed: int) -> Optional[List[str]
         logger.error(f"Unexpected error fetching synthetic URLs: {str(e)}", exc_info=True)
     return None
 
-def clean_old_files(directory: str, age_limit_in_hours: int, check_interval_in_seconds: int = 100):
+async def clean_old_files(directory: str, age_limit_in_hours: int):
     """
     Continuously checks the given directory and deletes files older than the specified age (in hours).
 
@@ -199,7 +209,6 @@ def get_pexels_random_vids(
     
     start_time = time.time()
     headers = {"Authorization": api_key}
-    logger.info(f"Headers: {headers}")
 
     with open(yaml_file_path, "r") as file:
         yaml_data = yaml.safe_load(file)
@@ -218,15 +227,15 @@ def get_pexels_random_vids(
     }
     
     # Calculate how many videos we actually need (much fewer than before)
-    estimated_videos_needed = max(1, num_needed // avg_chunks_per_video.get("5s", 6))  # Default to 5s estimate
+    # estimated_videos_needed = max(1, num_needed // avg_chunks_per_video.get("5s", 6))  # Default to 5s estimate
     
     # Add some buffer for videos that might not yield expected chunks
-    videos_to_fetch = min(estimated_videos_needed * 2, num_needed)
+    videos_to_fetch = int(num_needed * 1.3)
     
     max_results = max_results or videos_to_fetch
 
     if task_type == "4K28K":
-        max_results = estimated_videos_needed  # Keep minimal for 4K28K due to size
+        max_results = num_needed  # Keep minimal for 4K28K due to size
 
     valid_video_ids = []
     
@@ -345,18 +354,6 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis,
             
             await manage_pexels_queue(redis_conn, queue_thresholds, video_constraints, task_thresholds)
         
-        video_id_data = pop_pexels_video_id(redis_conn)
-        
-        logger.info("downloading video data: ")
-        logger.info(video_id_data)
-
-        if video_id_data == None:
-            time.sleep(10)
-            continue
-
-        video_id = video_id_data["vid"]
-        task_type = video_id_data["task_type"]
-
         clip_duration_probabilities = {
             1: 0.35, 
             2: 0.05,
@@ -382,12 +379,11 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis,
         transformations_per_chunk = int(os.getenv("TRANSFORMATIONS_PER_CHUNK", "3"))
         
         
-        challenge_local_paths, video_ids, reference_trim_paths = download_trim_downscale_video(
+        challenge_local_paths, video_ids, reference_trim_paths, task_type = download_transform_and_trim_downscale_video(
             clip_duration=clip_duration,
-            vid=video_id,
-            task_type=task_type,
             transformations_per_video=transformations_per_chunk,
             enable_transformations=enable_color_transform,
+            redis_conn=redis_conn
         )
 
         if challenge_local_paths is None:
@@ -436,13 +432,8 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis,
                 })
                 remaining_count -= 1
                 
-                # Check if we've generated enough chunks
-                if remaining_count <= 0:
-                    break
-                    
             except Exception as e:
                 logger.error(f"Error processing chunk {i+1} ({challenge_local_path}): {str(e)}")
-                # Clean up files on error
                 try:
                     if os.path.exists(challenge_local_path):
                         os.unlink(challenge_local_path)
@@ -453,10 +444,97 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis,
                 continue
 
         logger.info(f"Completed processing {len(uploaded_video_chunks)} video chunks from this video")
+
+        if remaining_count <= 0:
+            break
     
     return uploaded_video_chunks
 
-async def main():
+async def get_compression_requests_paths(num_needed: int, redis_conn: redis.Redis) -> List[Dict[str, str]]:
+    """
+    Generate synthetic sharing URLs by uploading compressed videos.
+    
+    OPTIMIZATION: This function now uses a sliding window chunking approach to extract
+    multiple overlapping chunks from each downloaded video, significantly reducing
+    the number of API requests to Pexels while maintaining chunk variety.
+
+    Args:
+        num_needed (int): Number of video IDs required.
+        redis_conn (redis.Redis): Redis connection object.
+
+    Returns:
+        list: A list of dictionaries containing the video ID, uploaded object name, sharing link, and task type.
+    """
+    uploaded_video_chunks = []
+    remaining_count = num_needed
+
+    while remaining_count > 0:
+
+        clip_duration = 10
+
+        # Check if color space transformation is enabled (default: True)
+        enable_color_transform = os.getenv("ENABLE_COLOR_TRANSFORM", "true").lower() == "true"
+        
+        # Number of transformations to apply per chunk (default: 3)
+        transformations_per_chunk = int(os.getenv("TRANSFORMATIONS_PER_CHUNK", "3"))
+        
+        _, video_ids, challenge_local_paths, _ = download_transform_and_trim_downscale_video(
+            clip_duration=clip_duration,
+            use_downscale_video=False,
+            transformations_per_video=transformations_per_chunk,
+            enable_transformations=enable_color_transform,
+            redis_conn=redis_conn
+        )
+
+        if challenge_local_paths is None:
+            logger.info("Failed to download and process video. Retrying...")
+            continue
+
+        logger.info(f"Successfully processed video with {len(challenge_local_paths)} chunks")
+        logger.info(f"Trim(referenc) paths: {len(challenge_local_paths)}")
+
+        # Upload downscaled videos and create sharing links
+        # The reference trim files are kept locally for scoring
+        for i, (challenge_local_path, video_chunk_id) in enumerate(zip(challenge_local_paths, video_ids)):
+            try:
+                logger.info(f"Processing chunk {i+1}/{len(challenge_local_paths)}: {challenge_local_path}")
+                
+                # Upload the downscaled video (this is what miners will receive)
+                uploaded_file_id = str(video_chunk_id)
+                object_name = f"{uploaded_file_id}.mp4"
+            
+                await storage_client.upload_file(object_name, challenge_local_path)
+                sharing_link = await storage_client.get_presigned_url(object_name)
+
+                logger.info(f"Sharing_link for chunk {i+1}: {sharing_link}")
+
+                if not sharing_link:
+                    logger.info(f"Upload failed for chunk {i+1}. Skipping...")
+                    # Clean up reference file if upload failed
+                    continue
+                    
+                logger.info(f"Successfully uploaded chunk {i+1}")
+                logger.info(f"Reference trim file kept for scoring: {challenge_local_path}")
+
+                uploaded_video_chunks.append({
+                    "video_id": uploaded_file_id,
+                    "uploaded_object_name": object_name,
+                    "sharing_link": sharing_link,
+                })
+                remaining_count -= 1
+                    
+            except Exception as e:
+                logger.error(f"Error processing chunk {i+1} ({challenge_local_path}): {str(e)}")
+                continue
+
+        logger.info(f"Completed processing {len(uploaded_video_chunks)} video chunks from this video")
+
+        if remaining_count <= 0:
+            break
+    
+    return uploaded_video_chunks
+
+async def main_loop():
     """
     Main service function that manages video processing workflow and queue maintenance.
     
@@ -511,7 +589,8 @@ async def main():
                 # Track if any queue needed replenishment
                 any_replenished = False
                 
-                for duration in [5, 10]:  # Only process 5s and 10s chunks
+                for duration in [5, 10]:
+
                     replenished = await replenish_synthetic_queue(
                         redis_conn,
                         duration,
@@ -521,6 +600,12 @@ async def main():
                     if replenished:
                         any_replenished = True
                 
+                await replenish_synthetic_compression_queue(
+                    redis_conn,
+                    queue_thresholds["refill"],
+                    queue_thresholds["target"]
+                )
+
                 # Check if all queues are above threshold and update readiness
                 all_queues_ready = (
                     get_5s_queue_size(redis_conn) >= queue_thresholds["refill"] and
@@ -570,15 +655,29 @@ async def main():
     except Exception as e:
         logger.error(f"Critical error in main service loop: {str(e)}")
         logger.exception("Exception details:")
-        raise
+    finally:
+        logger.info("Main service loop exited. Cleaning up resources if necessary.")
 
+async def manage_cleanup_loop(cleanup_interval: int = 24):
+    """
+    Manage the cleanup loop.
+    """
+    while True:
+        await asyncio.sleep(cleanup_interval * 3600)
+        logger.info("Cleaning up old files...")
+        await clean_old_files("videos", 720)
+        
+async def main():
+    cleanup_task = asyncio.create_task(manage_cleanup_loop())
+    main_task = asyncio.create_task(main_loop())
+    await asyncio.gather(cleanup_task, main_task)
 
 async def initialize_environment(redis_conn):
     """Initialize the processing environment by clearing queues and cached data."""
     logger.info("Clearing queues and cached content...")
     clear_queues(redis_conn)
     purge_cached_videos()
-    await storage_client.delete_all_items()
+    # await storage_client.delete_all_items()
     logger.info("Environment initialized successfully")
 
 
@@ -601,10 +700,7 @@ async def manage_pexels_queue(redis_conn, thresholds, video_constraints, task_th
         # Since we now extract more chunks per video, we need fewer videos
         # Estimate based on expected chunk yield per video
         avg_chunks_per_video = 6  # Conservative estimate for mixed duration chunks
-        estimated_videos_needed = max(2, (thresholds["pexels_max"] - pexels_queue_size) // avg_chunks_per_video)
-        
-        # Add small buffer but keep it reasonable
-        needed = min(estimated_videos_needed + 2, thresholds["pexels_max"] - pexels_queue_size)
+        needed = max(2, (thresholds["pexels_max"] - pexels_queue_size))
         
         task_type = select_task_type(task_thresholds)
         logger.info(f"Optimized replenishment: Need to fill {thresholds['pexels_max'] - pexels_queue_size} queue slots")
@@ -645,6 +741,7 @@ def log_queue_status(redis_conn):
         "organic": get_organic_queue_size(redis_conn),
         "synthetic_5s": get_5s_queue_size(redis_conn),
         "synthetic_10s": get_10s_queue_size(redis_conn),
+        "compression_queue": get_compression_queue_size(redis_conn)
     }
     
     for queue_name, size in queue_sizes.items():
@@ -657,7 +754,7 @@ async def replenish_synthetic_queue(redis_conn, duration, threshold, target):
     """Replenish a specific synthetic chunk queue if below target."""
     queue_size = get_queue_size_by_duration(redis_conn, duration)
     
-    if queue_size < target:  # Changed from threshold to target
+    if queue_size < threshold:
         needed = target - queue_size
         logger.info(f"Replenishing {duration}s chunk queue with {needed} items (current: {queue_size}, target: {target})")
         
@@ -678,6 +775,25 @@ async def replenish_synthetic_queue(redis_conn, duration, threshold, target):
     return False  # No replenishment needed
 
 
+async def replenish_synthetic_compression_queue(redis_conn, threshold, target):
+    """Replenish the synthetic compression queue if below target."""
+    queue_size = get_compression_queue_size(redis_conn)
+    if queue_size < target:
+        needed = target - queue_size
+        logger.info(f"Replenishing compression queue with {needed} items (current: {queue_size}, target: {target})")
+        
+        try:
+            chunk_data = await get_compression_requests_paths(
+                num_needed=needed,
+                redis_conn=redis_conn,
+            )
+
+            push_compression_chunks(redis_conn, chunk_data)
+            logger.info(f"Successfully added {len(chunk_data)} chunks to compression queue")
+        except Exception as e:
+            logger.error(f"Failed to replenish compression queue: {str(e)}")
+    
+
 def get_queue_size_by_duration(redis_conn, duration):
     """Get queue size based on duration."""
     if duration == 5:
@@ -696,7 +812,6 @@ def push_chunks_by_duration(redis_conn, chunk_data, duration):
         push_10s_chunks(redis_conn, chunk_data)
     else:
         raise ValueError(f"Unsupported duration: {duration}")
-
 
 if __name__ == "__main__":
     asyncio.run(main())
