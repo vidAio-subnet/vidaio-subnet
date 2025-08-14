@@ -14,7 +14,7 @@ from pathlib import Path
 import concurrent.futures
 from dotenv import load_dotenv
 from typing import List, Tuple, Optional
-from redis_utils import pop_pexels_video_id
+from services.video_scheduler.redis_utils import pop_pexels_video_id
 from vidaio_subnet_core import CONFIG
 
 load_dotenv()

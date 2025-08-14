@@ -118,7 +118,7 @@ class Validator(base.BaseValidator):
 
         # Step 1: Send TaskWarrantProtocol requests to determine miner capabilities
         logger.info(f"Sending TaskWarrantProtocol requests to {len(axons)} miners")
-        logger.info(f"Axons: {axons}")
+
         version = get_version()
         task_warrant_synapse = TaskWarrantProtocol(version=version)
         
