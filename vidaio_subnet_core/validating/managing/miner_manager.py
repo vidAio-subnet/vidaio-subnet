@@ -367,7 +367,7 @@ class MinerManager:
         vmaf_scores: List[float],
         final_scores: List[float],
         content_lengths: List[float],
-        vmaf_thresholds: List[float],
+        vmaf_threshold: float,
         compression_rates: List[float],
         content_type: str = "video"
     ) -> None:
@@ -385,7 +385,6 @@ class MinerManager:
                 vmaf_score = vmaf_scores[i]
                 s_f = final_scores[i]
                 content_length = content_lengths[i]
-                vmaf_threshold = vmaf_thresholds[i]
                 compression_rate = compression_rates[i]
                 
                 miner = session.query(MinerMetadata).filter(MinerMetadata.uid == uid).first()

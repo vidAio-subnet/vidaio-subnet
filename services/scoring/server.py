@@ -60,7 +60,7 @@ class CompressionScoringRequest(BaseModel):
     uids: List[int]
     video_ids: List[str]
     uploaded_object_names: List[str]
-    vmaf_thresholds: List[float]
+    vmaf_threshold: float
     fps: Optional[float] = None
     subsample: Optional[int] = 1
     verbose: Optional[bool] = False
@@ -723,13 +723,13 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             detail="Number of UIDs must match number of distorted URLs"
         )
 
-    for idx, (ref_path, dist_url, uid, video_id, uploaded_object_name, vmaf_threshold) in enumerate(zip(
+    vmaf_threshold = request.vmaf_threshold
+    for idx, (ref_path, dist_url, uid, video_id, uploaded_object_name) in enumerate(zip(
         request.reference_paths, 
         request.distorted_urls, 
         request.uids,
         request.video_ids,
         request.uploaded_object_names,
-        request.vmaf_thresholds
     )):
         try:
             print(f"🧩 Processing pair {idx+1}/{len(request.distorted_urls)}: UID {uid} 🧩")
@@ -965,7 +965,6 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
         final_scores=final_scores,
         reasons=reasons
     )
-            
 
 @app.post("/score_organics")
 async def score_organics(request: OrganicsScoringRequest) -> OrganicsScoringResponse:

@@ -290,10 +290,13 @@ class Validator(base.BaseValidator):
                 uids.append(miner[1])
                 axons.append(miner[0])
             
-            vmaf_thresholds = [random.choice(VMAF_QUALITY_THRESHOLDS) for _ in range(len(uids))]
+            vmaf_threshold = random.choice(VMAF_QUALITY_THRESHOLDS)
             
             round_id = str(uuid.uuid4())
-            payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_compression_protocol(vmaf_thresholds, version, round_id)
+
+            num_miners = len(uids)
+
+            payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_compression_protocol(vmaf_threshold, num_miners, version, round_id)
             logger.debug(f"Built compression challenge protocol")
 
             timestamp = datetime.now(timezone.utc).isoformat()
@@ -316,7 +319,7 @@ class Validator(base.BaseValidator):
                     logger.warning(f"⚠️ Reference video file missing for video_id {video_id}: {reference_video_path}")
                 reference_video_paths.append(reference_video_path)
             
-            asyncio.create_task(self.score_compressions(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, vmaf_thresholds, round_id))
+            asyncio.create_task(self.score_compressions(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, vmaf_threshold, round_id))
 
             batch_processed_time = time.time() - batch_start_time
             sleep_time = 300 - batch_processed_time
@@ -450,7 +453,7 @@ class Validator(base.BaseValidator):
         timestamp: str, 
         video_ids: list[str], 
         uploaded_object_names: list[str], 
-        vmaf_thresholds: list[float], 
+        vmaf_threshold: float, 
         round_id: str
     ):
         distorted_urls = []
@@ -465,7 +468,7 @@ class Validator(base.BaseValidator):
                 "reference_paths": reference_video_paths,
                 "video_ids": video_ids,
                 "uploaded_object_names": uploaded_object_names,
-                "vmaf_thresholds": [float(threshold) for threshold in vmaf_thresholds]
+                "vmaf_threshold": vmaf_threshold
             },
             timeout=240
         )
@@ -488,7 +491,7 @@ class Validator(base.BaseValidator):
         # Use the updated step_synthetics_compression method with compression context
         accumulate_scores, applied_multipliers = self.miner_manager.step_synthetics_compression(
             round_id, uids, miner_hotkeys, vmaf_scores,
-            final_scores, [10] * len(uids), vmaf_thresholds, compression_rates
+            final_scores, [10] * len(uids), vmaf_threshold, compression_rates
         )
 
         max_length = max(
@@ -503,15 +506,14 @@ class Validator(base.BaseValidator):
         vmaf_scores.extend([0.0] * (max_length - len(vmaf_scores)))
         final_scores.extend([0.0] * (max_length - len(final_scores)))
         reasons.extend(["No reason provided"] * (max_length - len(reasons)))
-        vmaf_thresholds.extend([90.0] * (max_length - len(vmaf_thresholds)))
         compression_rates.extend([0.5] * (max_length - len(compression_rates)))
         applied_multipliers.extend([0.0] * (max_length - len(applied_multipliers)))
 
         logger.info(f"Compression scoring results for {len(uids)} miners")
         logger.info(f"Uids: {uids}")
 
-        for uid, vmaf_score, final_score, reason, vmaf_threshold, compression_rate, applied_multiplier in zip(
-            uids, vmaf_scores, final_scores, reasons, vmaf_thresholds, compression_rates, applied_multipliers
+        for uid, vmaf_score, final_score, reason, compression_rate, applied_multiplier in zip(
+            uids, vmaf_scores, final_scores, reasons, compression_rates, applied_multipliers
         ):
             logger.info(
                 f"{uid} ** VMAF: {vmaf_score:.2f} "
@@ -526,7 +528,7 @@ class Validator(base.BaseValidator):
             "miner_uids": uids,
             "miner_hotkeys": miner_hotkeys,
             "vmaf_scores": vmaf_scores,
-            "vmaf_thresholds": vmaf_thresholds,
+            "vmaf_threshold": vmaf_threshold,
             "compression_rates": compression_rates,
             "final_scores": final_scores,
             "accumulate_scores": accumulate_scores,
@@ -537,11 +539,11 @@ class Validator(base.BaseValidator):
             "timestamp": timestamp
         }
         
-        success = send_data_to_dashboard(miner_data)
-        if success:
-            logger.info("Compression data successfully sent to dashboard")
-        else:
-            logger.info("Failed to send compression data to dashboard")
+        # success = send_data_to_dashboard(miner_data)
+        # if success:
+        #     logger.info("Compression data successfully sent to dashboard")
+        # else:
+        #     logger.info("Failed to send compression data to dashboard")
 
     async def score_organics(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: list[str], task_types: list[str], timestamp: str):
 
