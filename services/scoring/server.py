@@ -1,26 +1,26 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import Optional, List
-import cv2
-import numpy as np
-from firerequests import FireRequests
-import tempfile
 import os
+import cv2
 import glob
-import random
-import asyncio
-from moviepy.editor import VideoFileClip
-import aiohttp
-import logging
 import time
 import math
+import random
+import asyncio
+import aiohttp
+import logging
+import tempfile
 import subprocess
-from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video
-from lpips_metric import calculate_lpips
-from pieapp_metric import calculate_pieapp_score
+import numpy as np
+from pydantic import BaseModel
+from typing import Optional, List
+from firerequests import FireRequests
 from vidaio_subnet_core import CONFIG
-from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
+from lpips_metric import calculate_lpips
+from moviepy.editor import VideoFileClip
+from fastapi import FastAPI, HTTPException
+from pieapp_metric import calculate_pieapp_score
+from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video
 from vidaio_subnet_core.utilities.storage_client import storage_client
+from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
 
 # Compression scoring constants
 COMPRESSION_RATE_WEIGHT = 0.8  # w_c
@@ -671,8 +671,6 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             # Delete the uploaded object
             storage_client.delete_file(uploaded_object_name)
 
-            # delete_videos_with_fileid(video_id)
-
     for ref_path in request.reference_paths:
         if os.path.exists(ref_path):
             os.unlink(ref_path)
@@ -935,13 +933,15 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 os.unlink(ref_y4m_path)
             if dist_path and os.path.exists(dist_path):
                 os.unlink(dist_path)
-            if ref_path and os.path.exists(ref_path):
-                os.unlink(ref_path)
+            # if ref_path and os.path.exists(ref_path):
+            #     os.unlink(ref_path)
 
             # Delete the uploaded object
-            # storage_client.delete_file(uploaded_object_name)
+            storage_client.delete_file(uploaded_object_name)
             
-            # delete_videos_with_fileid(video_id)
+    for ref_path in request.reference_paths:
+        if os.path.exists(ref_path):
+            os.unlink(ref_path)
 
     tmp_directory = "/tmp"
     try:

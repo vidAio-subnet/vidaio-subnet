@@ -1,4 +1,5 @@
 import os
+import cv2
 import math
 import glob
 import time
@@ -9,6 +10,7 @@ import requests
 import tempfile
 import threading
 import subprocess
+import numpy as np
 from tqdm import tqdm
 from pathlib import Path
 import concurrent.futures
@@ -114,6 +116,168 @@ VIDEO_TRANSFORMATIONS = [
     "colorbalance=rs=0.04:bs=-0.02,noise=alls=1.5:allf=t,colortemperature=temperature=5700:mix=0.2",
     "curves=r='0/0 0.5/0.505 1/1':g='0/0 0.5/0.495 1/1',unsharp=4:4:0.25:4:4:0.25,hue=h=-5:s=1.02",
 ]
+
+def rand_between(a, b):
+    return random.uniform(a, b)
+
+def rand_color():
+    c = np.array([random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)], dtype=np.float32)
+    d = np.array([random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)], dtype=np.float32)
+    if np.linalg.norm(c - d) < 90:  # push apart if too close
+        d = np.clip(c + np.sign(d - c) * 100, 0, 255)
+    return c, d
+
+def make_linear_gradient(h, w, c0, c1):
+    theta = rand_between(0, 2 * np.pi)
+    ux, uy = np.cos(theta), np.sin(theta)
+
+    # coordinate grids
+    y = np.linspace(0, h - 1, h, dtype=np.float32)
+    x = np.linspace(0, w - 1, w, dtype=np.float32)
+    X, Y = np.meshgrid(x, y)
+
+    # random offset so the gradient "start" is anywhere
+    # scale offset by span along the gradient to actually shift visibly
+    span = abs(ux) * (w - 1) + abs(uy) * (h - 1)
+    offset = rand_between(-0.5, 0.5) * span
+
+    proj = X * ux + Y * uy + offset
+    # normalize to 0..1 within this rect
+    pmin, pmax = proj.min(), proj.max()
+    t = (proj - pmin) / max(1e-6, (pmax - pmin))
+    t = t[..., None]  # (h,w,1)
+
+    grad = (1.0 - t) * c0 + t * c1  # broadcast to 3 channels
+    return np.clip(grad, 0, 255).astype(np.uint8)
+
+def _make_multiple_of_8(n: int) -> int:
+    return int(np.ceil(n / 8.0) * 8)
+
+def preprocess_video(inp, outp, min_crop=0.05, max_crop=0.1,
+                     min_banner=0.08, max_banner=0.15,
+                     min_scale=0.9, max_scale=1.1,
+                     codec="mp4v", preset_note=True, seed=None):
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+
+    cap = cv2.VideoCapture(inp)
+    if not cap.isOpened():
+        raise RuntimeError(f"Cannot open input video: {inp}")
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps <= 1e-3:  # fallback
+        fps = 30.0
+    in_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    in_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    # --- Random small crop (each side independently, bounded) ---
+    max_cx = int(in_w * rand_between(min_crop, max_crop))
+    max_cy = int(in_h * rand_between(min_crop, max_crop))
+    l = random.randint(0, max(0, max_cx))
+    r = random.randint(0, max(0, max_cx))
+    t_ = random.randint(0, max(0, max_cy))
+    b = random.randint(0, max(0, max_cy))
+
+    crop_x0 = l
+    crop_y0 = t_
+    crop_x1 = max(crop_x0 + 2, in_w - r)  # ensure >=2 px
+    crop_y1 = max(crop_y0 + 2, in_h - b)
+
+    base_w = crop_x1 - crop_x0
+    base_h = crop_y1 - crop_y0
+
+    # --- Slight rescale after crop ---
+    scale = rand_between(min_scale, max_scale)
+    scaled_w = max(2, int(round(base_w * scale)))
+    scaled_h = max(2, int(round(base_h * scale)))
+
+    # Force to multiple of 8
+    scaled_w = _make_multiple_of_8(scaled_w)
+    scaled_h = _make_multiple_of_8(scaled_h)
+
+    # --- Random banners: one vertical side + one horizontal side ---
+    v_side = random.choice(["left", "right"])
+    h_side = random.choice(["top", "bottom"])
+    v_ratio = rand_between(min_banner, max_banner)
+    h_ratio = rand_between(min_banner, max_banner)
+    v_w = max(1, int(round(scaled_w * v_ratio)))
+    h_h = max(1, int(round(scaled_h * h_ratio)))
+
+    # Force to multiple of 8
+    v_w = _make_multiple_of_8(v_w)
+    h_h = _make_multiple_of_8(h_h)
+
+    out_w = scaled_w + v_w
+    out_h = scaled_h + h_h
+
+    # Force to multiple of 8 (defensive)
+    out_w = _make_multiple_of_8(out_w)
+    out_h = _make_multiple_of_8(out_h)
+
+    # Pre-generate gradient banners with random color & direction
+    c0_v, c1_v = rand_color()
+    c0_h, c1_h = rand_color()
+    vert_banner = make_linear_gradient(out_h, v_w, c0_v, c1_v)   # full height, v_w width
+    horiz_banner = make_linear_gradient(h_h, out_w, c0_h, c1_h)  # h_h height, full width
+
+    # --- Writer ---
+    fourcc = cv2.VideoWriter_fourcc(*codec)
+    os.makedirs(os.path.dirname(outp) or ".", exist_ok=True)
+    writer = cv2.VideoWriter(outp, fourcc, fps, (out_w, out_h))
+    if not writer.isOpened():
+        raise RuntimeError("Failed to open VideoWriter. Try different --codec (e.g., avc1, H264, XVID)")
+
+    # Log the transform so you can reproduce/debug
+    print({
+        "input": (in_w, in_h, fps),
+        "crop_rect": (crop_x0, crop_y0, crop_x1, crop_y1),
+        "scale": round(scale, 4),
+        "scaled": (scaled_w, scaled_h),
+        "vertical_banner": {"side": v_side, "width_px": v_w, "colors": (c0_v.tolist(), c1_v.tolist())},
+        "horizontal_banner": {"side": h_side, "height_px": h_h, "colors": (c0_h.tolist(), c1_h.tolist())},
+        "output": (out_w, out_h),
+        "seed": seed
+    })
+
+    # Processing loop
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # crop
+        frame = frame[crop_y0:crop_y1, crop_x0:crop_x1]
+
+        # rescale
+        frame = cv2.resize(frame, (scaled_w, scaled_h), interpolation=cv2.INTER_AREA)
+
+        # start with black canvas
+        canvas = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+
+        # place vertical banner
+        if v_side == "left":
+            canvas[:, :v_w] = vert_banner
+            x0 = v_w
+        else:
+            canvas[:, -v_w:] = vert_banner
+            x0 = 0
+
+        # place horizontal banner (must account for vertical banner already placed)
+        if h_side == "top":
+            canvas[:h_h, :] = horiz_banner
+            y0 = h_h
+        else:
+            canvas[-h_h:, :] = horiz_banner
+            y0 = 0
+
+        # place frame
+        canvas[y0:y0 + scaled_h, x0:x0 + scaled_w] = frame
+
+        writer.write(canvas)
+
+    cap.release()
+    writer.release()
 
 def get_total_transformations() -> int:
     """
@@ -610,7 +774,7 @@ def download_transform_and_trim_downscale_video(
                 vid = video_id_data["vid"]
                 task_type = video_id_data["task_type"]
                 
-                downscale_height = DOWNSCALE_HEIGHTS.get(task_type, 540)
+                # downscale_height = DOWNSCALE_HEIGHTS.get(task_type, 540)
                 expected_width, expected_height = EXPECTED_RESOLUTIONS.get(task_type, (3840, 2160))
                 start_time = time.time()
                 
@@ -644,7 +808,7 @@ def download_transform_and_trim_downscale_video(
                 
                 if width != expected_width or height != expected_height or total_duration < CONFIG.video_scheduler.min_video_len:
                     error_msg = (f"Video resolution mismatch. Expected {expected_width}x{expected_height}, "
-                                f"but got {width}x{height} or video duration is less than {CONFIG.video_scheduler.min_video_len}s")
+                                f"but got {width}x{height} or video duration is less than {CONFIG.video_scheduler.min_video_len}s: video len: {total_duration}")
                     print(error_msg)
                     os.remove(temp_path)
                     max_retry -= 1
@@ -659,6 +823,17 @@ def download_transform_and_trim_downscale_video(
             
             base_video_ids = [uuid.uuid4() for _ in range(len(chunks_info))]
             
+            preprocessed_video_path = Path(output_dir) / f"{vid}_preprocessed.mp4"
+
+
+            preprocess_video(temp_path, preprocessed_video_path)
+
+            if os.path.exists(preprocessed_video_path) and os.path.getsize(preprocessed_video_path) > 0:
+                print("Successfully preprocessed video 😀")
+            else: 
+                print("Failed to preprocess video 😢")
+                preprocessed_video_path = temp_path
+
             if enable_transformations and transformations_per_video > 0:
                 print(f"\n Creating {transformations_per_video} transformed versions of the original video...")
                 
@@ -677,7 +852,7 @@ def download_transform_and_trim_downscale_video(
                             print(f"Warning: Could not clean up existing file {transformed_path}: {e}")
                     
                     transformed_result = apply_video_transformations(
-                        str(temp_path), 
+                        str(preprocessed_video_path), 
                         str(transformed_path), 
                         preserve_original=True
                     )
@@ -698,13 +873,15 @@ def download_transform_and_trim_downscale_video(
                 
                 if failed_attempts >= max_failed_attempts:
                     print(f"⚠️ Exceeded maximum failed attempts ({max_failed_attempts}), falling back to original")
-                    transformed_video_paths = [str(temp_path)]
+                    transformed_video_paths = [str(preprocessed_video_path)]
                     transformations_per_video = 1
                 elif not transformed_video_paths:
                     print("❌ No transformed versions created successfully, falling back to original")
-                    transformed_video_paths = [str(temp_path)]
+                    transformed_video_paths = [str(preprocessed_video_path)]
                     transformations_per_video = 1
-                
+
+                print(f"transformed_video_paths: {transformed_video_paths}")
+
                 all_results = []
 
                 chunks_with_ids = [(i, start, end, base_video_ids[idx]) 
@@ -713,6 +890,17 @@ def download_transform_and_trim_downscale_video(
                 for chunk in chunks_with_ids:
                     print(f"Processing chunk: {chunk}")
                 
+                downscaler = 2
+
+                if task_type == "SD24K":
+                    downscaler = 4
+                
+                print(f"task_type: {task_type}, downscaler: {downscaler}")
+
+                _, v_height, _ = get_video_info(preprocessed_video_path)
+
+                downscale_height = v_height/downscaler
+
                 for transform_idx, transformed_path in enumerate(transformed_video_paths):
                     print(f"\n📹 Processing chunks from transformed version {transform_idx + 1}...")
                     
@@ -773,8 +961,12 @@ def download_transform_and_trim_downscale_video(
             reference_trim_paths = [result[3] for result in results]
             
             print("\nCleaning up original downloaded file...")
-            os.remove(temp_path)
-            print(f"Deleted: {temp_path}")
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+                print(f"Deleted original video: {temp_path}")
+            if os.path.exists(preprocessed_video_path):
+                os.remove(preprocessed_video_path)
+                print(f"Deleted preprocessed video: {preprocessed_video_path}")
 
             print(f"\nDone! Successfully processed {len(results)} chunks.")
             print(f"Downscaled videos: {len(downscale_paths)}")
