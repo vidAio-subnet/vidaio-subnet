@@ -279,6 +279,8 @@ def preprocess_video(inp, outp, min_crop=0.05, max_crop=0.1,
     cap.release()
     writer.release()
 
+    return True
+
 def get_total_transformations() -> int:
     """
     Get the total number of available video transformations.
@@ -826,13 +828,13 @@ def download_transform_and_trim_downscale_video(
             preprocessed_video_path = Path(output_dir) / f"{vid}_preprocessed.mp4"
 
 
-            preprocess_video(temp_path, preprocessed_video_path)
+            # preprocess_video(temp_path, preprocessed_video_path)
 
-            if os.path.exists(preprocessed_video_path) and os.path.getsize(preprocessed_video_path) > 0:
-                print("Successfully preprocessed video 😀")
-            else: 
-                print("Failed to preprocess video 😢")
-                preprocessed_video_path = temp_path
+            # if os.path.exists(preprocessed_video_path) and os.path.getsize(preprocessed_video_path) > 0:
+            #     print("Successfully preprocessed video 😀")
+            # else: 
+            #     print("Failed to preprocess video 😢")
+            #     preprocessed_video_path = temp_path
 
             if enable_transformations and transformations_per_video > 0:
                 print(f"\n Creating {transformations_per_video} transformed versions of the original video...")
@@ -842,6 +844,8 @@ def download_transform_and_trim_downscale_video(
                 max_failed_attempts = transformations_per_video * 2  # Allow some retries but prevent infinite loops
                 
                 transform_idx = 0
+
+                transformation_start_time = time.time()
                 while len(transformed_video_paths) < transformations_per_video and failed_attempts < max_failed_attempts:
                     transformed_path = Path(output_dir) / f"{vid}_transform_{transform_idx}.mp4"
                     if os.path.exists(transformed_path):
@@ -851,16 +855,18 @@ def download_transform_and_trim_downscale_video(
                         except OSError as e:
                             print(f"Warning: Could not clean up existing file {transformed_path}: {e}")
                     
-                    transformed_result = apply_video_transformations(
-                        str(preprocessed_video_path), 
-                        str(transformed_path), 
-                        preserve_original=True
-                    )
-                    
-                    if transformed_result and os.path.exists(transformed_result):
-                        transformed_video_paths.append(transformed_result)
+                    # transformed_result = apply_video_transformations(
+                    #     str(preprocessed_video_path), 
+                    #     str(transformed_path), 
+                    #     preserve_original=True
+                    # )
+
+                    transformed_result = preprocess_video(temp_path, transformed_path)
+
+                    if transformed_result and os.path.exists(transformed_path):
+                        transformed_video_paths.append(transformed_path)
                         transform_idx += 1
-                        print(f"✅ Created transformed version {len(transformed_video_paths)}: {transformed_result}")
+                        print(f"✅ Created transformed version {len(transformed_video_paths)}: {transformed_path}")
                     else:
                         failed_attempts += 1
                         print(f"❌ Failed to create transformed version {transform_idx + 1} (attempt {failed_attempts}/{max_failed_attempts})")
@@ -870,14 +876,17 @@ def download_transform_and_trim_downscale_video(
                                 print(f"Cleaned up failed transformation file: {transformed_path}")
                             except OSError as e:
                                 print(f"Warning: Could not clean up failed file {transformed_path}: {e}")
-                
+
+                transformation_end_time = time.time()
+                print(f"Time taken to create transformed versions: {transformation_end_time - transformation_start_time:.2f} seconds")
+
                 if failed_attempts >= max_failed_attempts:
                     print(f"⚠️ Exceeded maximum failed attempts ({max_failed_attempts}), falling back to original")
-                    transformed_video_paths = [str(preprocessed_video_path)]
+                    transformed_video_paths = [str(temp_path)]
                     transformations_per_video = 1
                 elif not transformed_video_paths:
                     print("❌ No transformed versions created successfully, falling back to original")
-                    transformed_video_paths = [str(preprocessed_video_path)]
+                    transformed_video_paths = [str(temp_path)]
                     transformations_per_video = 1
 
                 print(f"transformed_video_paths: {transformed_video_paths}")
@@ -897,13 +906,17 @@ def download_transform_and_trim_downscale_video(
                 
                 print(f"task_type: {task_type}, downscaler: {downscaler}")
 
-                _, v_height, _ = get_video_info(preprocessed_video_path)
+                # _, v_height, _ = get_video_info(preprocessed_video_path)
+                # downscale_height = v_height/downscaler
 
-                downscale_height = v_height/downscaler
 
                 for transform_idx, transformed_path in enumerate(transformed_video_paths):
                     print(f"\n📹 Processing chunks from transformed version {transform_idx + 1}...")
                     
+                    _, v_height, _ = get_video_info(transformed_path)
+
+                    downscale_height = v_height/downscaler
+
                     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                         future_to_chunk = {
                             executor.submit(

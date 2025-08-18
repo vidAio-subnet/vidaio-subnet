@@ -750,6 +750,8 @@ class MinerManager:
         finally:
             session.close()
 
+
+
     def get_all_miners_summary(self) -> List[Dict[str, Any]]:
         """
         Get summary of all miners for monitoring and analysis

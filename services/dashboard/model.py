@@ -1,23 +1,20 @@
 from dataclasses import dataclass
-from dataclasses import dataclass
 from typing import List, Dict, Any
+from abc import ABC, abstractmethod
+from dataclasses import field
 
 @dataclass
-class MinerData:
+class BaseMinerData(ABC):
     validator_uid: int
     validator_hotkey: str
     request_type: str
     miner_uids: List[int]
     miner_hotkeys: List[str]
     vmaf_scores: List[float]
-    pieapp_scores: List[float]
     final_scores: List[float]
     accumulate_scores: List[float]
-    task_urls: List[str]
-    processed_urls: List[str]
     status: List[str]
     timestamp: str
-    p_time: List[float]
     
     def __post_init__(self):
         """Validate that list fields have consistent lengths"""
@@ -25,63 +22,92 @@ class MinerData:
             self.miner_uids, 
             self.miner_hotkeys,
             self.vmaf_scores,
-            self.pieapp_scores,
             self.final_scores,
             self.accumulate_scores,
             self.status,
-            self.task_urls,
-            self.processed_urls,
-            self.p_time
         ]
         
-        # Check if all lists have the same length
         lengths = [len(field) for field in list_fields]
         if len(set(lengths)) > 1:
             raise ValueError("All list fields must have the same length")
     
-    @classmethod
-    def from_dict(cls, data: dict):
-        """Create a MinerData instance from a dictionary"""
-        return cls(**data)
+    @abstractmethod
+    def to_dict(self) -> Dict[str, Any]:
+        pass
+
+@dataclass
+class UpscalingMinerData(BaseMinerData):
+    processing_task_type: str = "upscaling"
     
     def to_dict(self):
-        """Convert the MinerData instance to a dictionary"""
         return {
             "validator_uid": self.validator_uid,
             "validator_hotkey": self.validator_hotkey,
+            "processing_task_type": self.processing_task_type,
+            "request_type": self.request_type,
             "miner_uids": self.miner_uids,
             "miner_hotkeys": self.miner_hotkeys,
             "timestamp": self.timestamp,
-            "request_type": self.request_type,
             "vmaf_scores": self.vmaf_scores,
-            "pieapp_scores": self.pieapp_scores,
             "final_scores": self.final_scores,
             "accumulate_scores": self.accumulate_scores,
             "status": self.status,
-            "task_url": self.task_urls,
-            "processed_url": self.processed_urls,
-            "p_time": self.p_time
         }
 
 @dataclass
-class MinerInfo:
-    """
-    Class representing information about a miner.
-    """
-    miner_uid: int
-    miner_hotkey: str
-    trust: float
-    incentive: float
-    emission: float
-    daily_reward: float
+class CompressionMinerData(BaseMinerData):
+    processing_task_type: str = "compression"
+    pieapp_scores: List[float] = None
+    compression_rates: List[float] = None
     
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert the MinerInfo instance to a dictionary"""
+    def __post_init__(self):
+        super().__post_init__()
+        # Add compression-specific fields to validation
+        if self.pieapp_scores is not None:
+            if len(self.pieapp_scores) != len(self.miner_uids):
+                raise ValueError("pieapp_scores must have the same length as other list fields")
+        if self.compression_rates is not None:
+            if len(self.compression_rates) != len(self.miner_uids):
+                raise ValueError("compression_rates must have the same length as other list fields")
+    
+    def to_dict(self):
+        result = {
+            "validator_uid": self.validator_uid,
+            "validator_hotkey": self.validator_hotkey,
+            "processing_task_type": self.processing_task_type,
+            "request_type": self.request_type,
+            "miner_uids": self.miner_uids,
+            "miner_hotkeys": self.miner_hotkeys,
+            "timestamp": self.timestamp,
+            "vmaf_scores": self.vmaf_scores,
+            "final_scores": self.final_scores,
+            "accumulate_scores": self.accumulate_scores,
+            "status": self.status,
+        }
+        
+        if self.pieapp_scores is not None:
+            result["pieapp_scores"] = self.pieapp_scores
+        if self.compression_rates is not None:
+            result["compression_rates"] = self.compression_rates
+            
+        return result
+
+@dataclass
+class MinerInfo:
+    miners: List[Dict[str, Any]] = field(default_factory=list)
+    
+    def append(self, miner_uid, miner_hotkey, trust, incentive, emission, daily_reward, processing_task_type):
+        self.miners.append({
+            "miner_uid": int(miner_uid),
+            "miner_hotkey": miner_hotkey,
+            "trust": float(trust),
+            "incentive": float(incentive),
+            "emission": float(emission),
+            "daily_reward": float(daily_reward),
+            "processing_task_type": processing_task_type
+        })
+    
+    def to_dict(self):
         return {
-            "miner_uid": self.miner_uid,
-            "miner_hotkey": self.miner_hotkey,
-            "trust": self.trust,
-            "incentive": self.incentive,
-            "emission": self.emission,
-            "daily_reward": self.daily_reward
+            "miners": self.miners
         }
