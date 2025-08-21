@@ -13,6 +13,7 @@ class BaseMinerData(ABC):
     vmaf_scores: List[float]
     final_scores: List[float]
     accumulate_scores: List[float]
+    applied_multipliers: List[float]
     status: List[str]
     timestamp: str
     
@@ -25,6 +26,7 @@ class BaseMinerData(ABC):
             self.final_scores,
             self.accumulate_scores,
             self.status,
+            self.applied_multipliers
         ]
         
         lengths = [len(field) for field in list_fields]
@@ -38,6 +40,7 @@ class BaseMinerData(ABC):
 @dataclass
 class UpscalingMinerData(BaseMinerData):
     processing_task_type: str = "upscaling"
+    pieapp_scores: List[float] = None
     
     def to_dict(self):
         return {
@@ -51,21 +54,18 @@ class UpscalingMinerData(BaseMinerData):
             "vmaf_scores": self.vmaf_scores,
             "final_scores": self.final_scores,
             "accumulate_scores": self.accumulate_scores,
+            "applied_multipliers": self.applied_multipliers,
             "status": self.status,
         }
 
 @dataclass
 class CompressionMinerData(BaseMinerData):
     processing_task_type: str = "compression"
-    pieapp_scores: List[float] = None
     compression_rates: List[float] = None
+    vmaf_threshold: float = 85
     
     def __post_init__(self):
         super().__post_init__()
-        # Add compression-specific fields to validation
-        if self.pieapp_scores is not None:
-            if len(self.pieapp_scores) != len(self.miner_uids):
-                raise ValueError("pieapp_scores must have the same length as other list fields")
         if self.compression_rates is not None:
             if len(self.compression_rates) != len(self.miner_uids):
                 raise ValueError("compression_rates must have the same length as other list fields")
@@ -82,11 +82,11 @@ class CompressionMinerData(BaseMinerData):
             "vmaf_scores": self.vmaf_scores,
             "final_scores": self.final_scores,
             "accumulate_scores": self.accumulate_scores,
+            "vmaf_threshold": self.vmaf_threshold,
+            "applied_multipliers": self.applied_multipliers,
             "status": self.status,
         }
         
-        if self.pieapp_scores is not None:
-            result["pieapp_scores"] = self.pieapp_scores
         if self.compression_rates is not None:
             result["compression_rates"] = self.compression_rates
             

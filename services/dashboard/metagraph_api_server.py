@@ -8,6 +8,7 @@ from typing import Dict, Tuple
 from contextlib import contextmanager
 from vidaio_subnet_core import CONFIG
 from services.dashboard.model import MinerInfo
+from loguru import logger
 
 DATABASE_PATH = "video_subnet_validator.db"
 
@@ -275,6 +276,9 @@ def get_miner_info():
         }
 
 if __name__ == "__main__":
-    host = config.host
-    port = config.port
-    uvicorn.run(app, host=host, port=port)
+    import uvicorn
+
+    logger.info("Starting dashboard service")
+    logger.info(f"Dashboard service running on http://{CONFIG.dashboard.host}:{CONFIG.dashboard.port}")
+
+    uvicorn.run(app, host=CONFIG.dashboard.host, port=CONFIG.dashboard.port)

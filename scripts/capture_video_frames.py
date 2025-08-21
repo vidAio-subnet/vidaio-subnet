@@ -55,8 +55,7 @@ def capture_frames(video_path, output_dir, num_frames=3):
             print(f"Error reading frame {i}")
             break
 
-        # Resize frame to 128x128 pixels
-        resized_frame = cv2.resize(frame, (56, 56), interpolation=cv2.INTER_AREA)
+        resized_frame = cv2.resize(frame, (10, 10), interpolation=cv2.INTER_AREA)
 
         # Save resized frame
         frame_path = os.path.join(output_dir, f"{video_name}_frame_{i:03d}.png")

@@ -68,7 +68,13 @@ def _send_data_to_dashboard(
     Returns:
         bool: True if the data was successfully sent, False otherwise
     """
-    payload = data.to_dict()
+    if isinstance(data, UpscalingMinerData):
+        payload = data.to_dict()
+
+    if isinstance(data, CompressionMinerData):
+        payload = data.to_dict()
+
+    payload = data
     
     headers = {
         "Content-Type": "application/json",
@@ -86,11 +92,11 @@ def _send_data_to_dashboard(
             )
             
             if response.status_code == 200:
-                logger.info(f"Successfully sent {task_type} data to dashboard. Response: {response.text}")
+                logger.info(f"Successfully sent {task_type} data to dashboard")
                 return True
             
             else:
-                logger.warning(f"Failed to send {task_type} data. Status code: {response.status_code}, Response: {response.text}")
+                logger.warning(f"Failed to send {task_type} data. Status code: {response.status_code}")
                 
         except requests.exceptions.RequestException as e:
             logger.error(f"Request error for {task_type}: {str(e)}")
@@ -110,8 +116,8 @@ def main():
     upscaling_data = UpscalingMinerData(
         validator_uid=0,
         validator_hotkey="0x1234567890abcdef1234567890abcdef12345678",
-        request_type="upscaling_request",
-        miner_uids=[101, 102, 103],
+        request_type="video",
+        miner_uids=[211, 102, 103],
         miner_hotkeys=[
             "0xabcdef1234567890abcdef1234567890abcdef12",
             "0xbcdef1234567890abcdef1234567890abcdef123",
@@ -120,26 +126,27 @@ def main():
         timestamp=datetime.now().isoformat(),
         vmaf_scores=[95.2, 87.6, 92.1],
         final_scores=[91.95, 83.45, 89.0],
-        accumulate_scores=[450.2, 320.7, 410.5],
+        accumulate_scores=[7650.2, 320.7, 410.5],
+        applied_multipliers = [201, 101, 102],
         status=["completed", "completed", "completed"]
     )
     
     # Example 2: Compression data
     compression_data = CompressionMinerData(
-        validator_uid=1,
+        validator_uid=0,
         validator_hotkey="0x876543210fedcba9876543210fedcba987654321",
-        request_type="compression_request",
-        miner_uids=[201, 202],
+        request_type="video",
+        miner_uids=[222, 202],
         miner_hotkeys=[
             "0xfedcba9876543210fedcba9876543210fedcba98",
             "0xedcba9876543210fedcba9876543210fedcba987"
         ],
         timestamp=datetime.now().isoformat(),
         vmaf_scores=[88.5, 92.3],
-        pieapp_scores=[85.2, 89.7],
         compression_rates=[0.65, 0.72],
         final_scores=[86.85, 91.0],
-        accumulate_scores=[380.1, 420.8],
+        accumulate_scores=[1234.1, 420.8],
+        applied_multipliers = [9999, 107],
         status=["completed", "completed"]
     )
     

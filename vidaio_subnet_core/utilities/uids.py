@@ -24,7 +24,7 @@ def check_uid_availability(metagraph: "bt.metagraph.Metagraph", uid: int, vpermi
         return False
     return True
 
-def get_organic_forward_uids(self, count: int = None, vpermit_tao_limit: int = 20000, exclude: List[int] = None) -> np.ndarray:
+def get_organic_forward_uids(self, count: int = None, task_type : str = None, vpermit_tao_limit: int = 20000, exclude: List[int] = None) -> np.ndarray:
     """
     Get a list of UIDs that are available for forwarding, sorted by incentive.
     
@@ -38,7 +38,15 @@ def get_organic_forward_uids(self, count: int = None, vpermit_tao_limit: int = 2
     """
     exclude = exclude or []
     incentives = self.metagraph.I
-    miner_info = [{"uid": uid, "incentive": incentives[uid]} for uid in range(self.metagraph.n.item())]
+
+    miner_uids, task_types, content_lengths = self.miner_manager.get_miner_task_info()
+
+    filtered_uids = []
+    for i, uid in enumerate(miner_uids):
+        if task_types[i] == task_type and content_lengths[i] > 7.5:
+            filtered_uids.append(uid)
+
+    miner_info = [{"uid": uid, "incentive": incentives[uid]} for uid in filtered_uids]
 
     sorted_uids = sorted(miner_info, key=lambda x: x["incentive"], reverse=True)
     

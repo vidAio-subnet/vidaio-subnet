@@ -827,15 +827,6 @@ def download_transform_and_trim_downscale_video(
             
             preprocessed_video_path = Path(output_dir) / f"{vid}_preprocessed.mp4"
 
-
-            # preprocess_video(temp_path, preprocessed_video_path)
-
-            # if os.path.exists(preprocessed_video_path) and os.path.getsize(preprocessed_video_path) > 0:
-            #     print("Successfully preprocessed video 😀")
-            # else: 
-            #     print("Failed to preprocess video 😢")
-            #     preprocessed_video_path = temp_path
-
             if enable_transformations and transformations_per_video > 0:
                 print(f"\n Creating {transformations_per_video} transformed versions of the original video...")
                 
@@ -855,12 +846,6 @@ def download_transform_and_trim_downscale_video(
                         except OSError as e:
                             print(f"Warning: Could not clean up existing file {transformed_path}: {e}")
                     
-                    # transformed_result = apply_video_transformations(
-                    #     str(preprocessed_video_path), 
-                    #     str(transformed_path), 
-                    #     preserve_original=True
-                    # )
-
                     transformed_result = preprocess_video(temp_path, transformed_path)
 
                     if transformed_result and os.path.exists(transformed_path):
@@ -905,10 +890,6 @@ def download_transform_and_trim_downscale_video(
                     downscaler = 4
                 
                 print(f"task_type: {task_type}, downscaler: {downscaler}")
-
-                # _, v_height, _ = get_video_info(preprocessed_video_path)
-                # downscale_height = v_height/downscaler
-
 
                 for transform_idx, transformed_path in enumerate(transformed_video_paths):
                     print(f"\n📹 Processing chunks from transformed version {transform_idx + 1}...")

@@ -14,7 +14,7 @@ from vidaio_subnet_core.utilities.wandb_manager import WandbManager
 from vidaio_subnet_core.utilities.uids import get_organic_forward_uids
 from vidaio_subnet_core.utilities.version import get_version
 from vidaio_subnet_core.protocol import LengthCheckProtocol, TaskWarrantProtocol, VideoCompressionProtocol, TaskType
-from services.dashboard.server import send_data_to_dashboard
+from services.dashboard.server import send_upscaling_data_to_dashboard, send_compression_data_to_dashboard
 from services.video_scheduler.video_utils import get_trim_video_path
 from services.video_scheduler.redis_utils import get_redis_connection, get_organic_queue_size, set_scheduler_ready
 import os
@@ -174,7 +174,7 @@ class Validator(base.BaseValidator):
             upscaling_content_lengths = []
             for response in length_check_responses:
                 avail_max_len = response.max_content_length.value
-                if avail_max_len is not None:
+                if avail_max_len == 10:
                     upscaling_content_lengths.append(avail_max_len)
                 else:
                     upscaling_content_lengths.append(5)
@@ -422,7 +422,7 @@ class Validator(base.BaseValidator):
             "validator_uid": self.my_subnet_uid,
             "validator_hotkey": self.wallet.hotkey.ss58_address,
             "request_type": "Synthetic",
-            "task_type": "Upscaling",
+            "processing_task_type": "upscaling",
             "miner_uids": uids,
             "miner_hotkeys": miner_hotkeys,
             "vmaf_scores": vmaf_scores,
@@ -438,7 +438,7 @@ class Validator(base.BaseValidator):
             "timestamp": timestamp
         }
         
-        success = send_data_to_dashboard(miner_data)
+        success = send_upscaling_data_to_dashboard(miner_data)
         if success:
             logger.info("Data successfully sent to dashboard")
         else:
@@ -524,7 +524,7 @@ class Validator(base.BaseValidator):
             "validator_uid": self.my_subnet_uid,
             "validator_hotkey": self.wallet.hotkey.ss58_address,
             "request_type": "Synthetic",
-            "task_type": "Compression",
+            "processing_task_type": "compression",
             "miner_uids": uids,
             "miner_hotkeys": miner_hotkeys,
             "vmaf_scores": vmaf_scores,
@@ -539,11 +539,11 @@ class Validator(base.BaseValidator):
             "timestamp": timestamp
         }
         
-        # success = send_data_to_dashboard(miner_data)
-        # if success:
-        #     logger.info("Compression data successfully sent to dashboard")
-        # else:
-        #     logger.info("Failed to send compression data to dashboard")
+        success = send_compression_data_to_dashboard(miner_data)
+        if success:
+            logger.info("Compression data successfully sent to dashboard")
+        else:
+            logger.info("Failed to send compression data to dashboard")
 
     async def score_organics(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: list[str], task_types: list[str], timestamp: str):
 
@@ -607,11 +607,11 @@ class Validator(base.BaseValidator):
             "timestamp": timestamp
         }
         
-        success = send_data_to_dashboard(miner_data)
-        if success:
-            logger.info("Data successfully sent to dashboard")
-        else:
-            logger.info("Failed to send data to dashboard")
+        # success = send_data_to_dashboard(miner_data)
+        # if success:
+        #     logger.info("Data successfully sent to dashboard")
+        # else:
+        #     logger.info("Failed to send data to dashboard")
 
 
     def filter_miners(self):
@@ -640,7 +640,7 @@ class Validator(base.BaseValidator):
         
         logger.info(f"🍉 Start processing organic query. need {needed} miners 🍉")
 
-        forward_uids = get_organic_forward_uids(self, needed, CONFIG.bandwidth.min_stake)
+        forward_uids = get_organic_forward_uids(self, needed, "upscaling", CONFIG.bandwidth.min_stake)
 
         if len(forward_uids) < needed:
             logger.info(f"There are just {len(forward_uids)} miners available for organic, handling {len(forward_uids)} chunks")
@@ -780,7 +780,7 @@ class WeightSynthesizer:
 if __name__ == "__main__":
     validator = Validator()
     weight_synthesizer = WeightSynthesizer(validator)
-    # time.sleep(1000) # wait till the video scheduler is ready, # should be removed in production
+    time.sleep(1300) # wait till the video scheduler is ready
 
     set_scheduler_ready(validator.redis_conn, False)
     logger.info("Set scheduler readiness flag to False")
