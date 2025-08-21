@@ -15,7 +15,7 @@ class ContentLength(IntEnum):
     """
     FIVE = 5
     TEN = 10
-    TWENTY = 20    
+    # TWENTY = 20    
     # FORTY = 40  
     # EIGHTY = 80    
     # ONE_SIXTY = 160  

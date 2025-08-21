@@ -26,6 +26,8 @@ class MinerManager:
         self.wallet = wallet
         self.dendrite = bt.dendrite(wallet=self.wallet)
         self.metagraph = metagraph
+        self.config_url = CONFIG.sql.url
+        self.local_db_path = "video_subnet_validator.db"
         logger.info(f"Connecting to Redis at {CONFIG.redis.host}:{CONFIG.redis.port}")
         self.redis_client = redis.Redis(
             host=CONFIG.redis.host, port=CONFIG.redis.port, db=CONFIG.redis.db
@@ -35,10 +37,10 @@ class MinerManager:
         # self._cleanup_old_database_files()
         
         # Download database from URL if needed
-        db_url = self._download_database_from_url()
+        # db_url = self._download_database_from_url()
         
-        logger.info(f"Creating SQL engine with URL: {db_url}")
-        self.engine = create_engine(db_url)
+        logger.info(f"Creating SQL engine")
+        self.engine = create_engine("sqlite:///video_subnet_validator.db")
         Base.metadata.create_all(self.engine)
         Session = sessionmaker(bind=self.engine)
         self.session = Session()
@@ -113,16 +115,15 @@ class MinerManager:
         
     def _download_database_from_url(self) -> str:
         """Download database file from URL if the config URL is a HTTP/HTTPS URL"""
-        config_url = CONFIG.sql.url
         
         # Check if the URL is a HTTP/HTTPS download URL
-        if not config_url.startswith(('http://', 'https://')):
-            logger.info(f"Database URL is not HTTP/HTTPS, using as direct connection: {config_url}")
-            return config_url
+        if not self.config_url.startswith(('http://', 'https://')):
+            logger.info(f"Database URL is not HTTP/HTTPS, using as direct connection: {self.config_url}")
+            return self.config_url
         
         # Extract filename from URL or use default
         try:
-            filename = config_url.split('/')[-1]
+            filename = self.config_url.split('/')[-1]
             if not filename.endswith('.db'):
                 filename = "video_subnet_validator.db"
         except:
@@ -130,7 +131,7 @@ class MinerManager:
         
         local_db_path = Path(filename)
         
-        logger.info(f"📥 Downloading database from URL: {config_url}")
+        logger.info(f"📥 Downloading database from URL: {self.config_url}")
         logger.info(f"📁 Local database path: {local_db_path}")
         
         if os.path.exists("video_subnet_validator.db"):
@@ -138,7 +139,7 @@ class MinerManager:
 
         try:
             # Download the database file
-            response = requests.get(config_url, timeout=60)
+            response = requests.get(self.config_url, timeout=60)
             response.raise_for_status()
             
             # Write the downloaded content to local file
@@ -158,7 +159,6 @@ class MinerManager:
             
         except requests.exceptions.RequestException as e:
             logger.error(f"❌ Failed to download database from URL: {e}")
-            logger.error(f"💡 Please check if the URL is accessible: {config_url}")
             raise RuntimeError(f"Database download failed: {e}")
         except Exception as e:
             logger.error(f"❌ Unexpected error downloading database: {e}")
@@ -693,6 +693,17 @@ class MinerManager:
         else:
             return "Poor Performance"
 
+    def check_database_connection(self):
+        local_db_path = "vidaio_subnet_validator.db"
+        if not os.path.exists(local_db_path):
+            try:
+                response = requests.get(self.config_url, timeout=60)
+                response.raise_for_status()
+                with open(self.local_db_path, 'wb') as f:
+                    f.write(response.content)
+            except Exception as e:
+                logger.error(f"Unexpected error connect to database")
+
     def get_miner_stats(self, uid: int) -> Dict[str, Any]:
         """
         Get comprehensive stats for a miner
@@ -749,6 +760,8 @@ class MinerManager:
             
         finally:
             session.close()
+
+
 
     def get_all_miners_summary(self) -> List[Dict[str, Any]]:
         """
@@ -952,6 +965,31 @@ class MinerManager:
 
         return filtered_uids
 
+    def get_miner_task_info(self) -> tuple[List[int], List[str], List[float]]:
+        """
+        Get uid, processing_task_type, and avg_content_length for all miners
+        Returns three lists: (uids, processing_task_types, avg_content_lengths)
+        """
+        session = self.session
+        try:
+            miners = session.query(
+                MinerMetadata.uid,
+                MinerMetadata.processing_task_type,
+                MinerMetadata.avg_content_length
+            ).all()
+            
+            uids = [miner.uid for miner in miners]
+            processing_task_types = [miner.processing_task_type for miner in miners]
+            avg_content_lengths = [miner.avg_content_length for miner in miners]
+            
+            return uids, processing_task_types, avg_content_lengths
+            
+        except Exception as e:
+            logger.error(f"Error getting miner task info: {e}")
+            return [], [], []
+        finally:
+            session.close()
+
     @property
     def weights(self):
         """
@@ -961,7 +999,9 @@ class MinerManager:
         # Collect miners by task type
         compression_miners = []
         upscaling_miners = []
-        
+
+        self.check_database_connection()
+
         for uid, miner in self.query().items():
             if miner.accumulate_score == -1:
                 continue

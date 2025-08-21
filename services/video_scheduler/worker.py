@@ -608,8 +608,8 @@ async def main_loop():
 
                 # Check if all queues are above threshold and update readiness
                 all_queues_ready = (
-                    get_5s_queue_size(redis_conn) >= queue_thresholds["refill"] and
-                    get_10s_queue_size(redis_conn) >= queue_thresholds["refill"]
+                    get_5s_queue_size(redis_conn) >= 30 and
+                    get_10s_queue_size(redis_conn) >= 30
                 )
                 
                 # Check if all queues are healthy (above target)
@@ -677,7 +677,7 @@ async def initialize_environment(redis_conn):
     logger.info("Clearing queues and cached content...")
     clear_queues(redis_conn)
     purge_cached_videos()
-    # await storage_client.delete_all_items()
+    await storage_client.delete_all_items()
     logger.info("Environment initialized successfully")
 
 
