@@ -99,7 +99,7 @@ def _send_data_to_dashboard(
                 logger.warning(f"Failed to send {task_type} data. Status code: {response.status_code}")
                 
         except requests.exceptions.RequestException as e:
-            logger.error(f"Request error for {task_type}: {str(e)}")
+            logger.error(f"Request error for {task_type}. Check dashboard configuration")
         
         if attempt < max_retries - 1:
             logger.info(f"Retrying {task_type} data in 2 seconds...")
