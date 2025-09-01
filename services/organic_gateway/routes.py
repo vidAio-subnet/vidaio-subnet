@@ -78,7 +78,8 @@ async def compression(
         task_id=task_id,
         chunk_id=request.chunk_id,
         chunk_url=request.chunk_url,
-        resolution_type=request.compression_type
+        resolution_type=None,
+        compression_type=request.compression_type
     )
     
     # Submit to Redis service in background to avoid blocking
