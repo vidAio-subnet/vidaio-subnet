@@ -4,12 +4,15 @@ from pydantic import BaseModel
 from vidaio_subnet_core import CONFIG
 from typing import Optional, List
 from fastapi.responses import JSONResponse
-
+    
 from redis_utils import (
     get_redis_connection,
-    push_organic_chunk,
-    pop_organic_chunk,
-    get_organic_queue_size,
+    push_organic_upscaling_chunk,
+    pop_organic_upscaling_chunk,
+    get_organic_upscaling_queue_size,
+    push_organic_compression_chunk,
+    pop_organic_compression_chunk,
+    get_organic_compression_queue_size,
     get_5s_queue_size,
     get_10s_queue_size,
     get_20s_queue_size,
