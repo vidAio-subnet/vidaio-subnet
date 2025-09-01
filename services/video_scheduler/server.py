@@ -46,8 +46,8 @@ class CompressionChunkRequest(BaseModel):
 class SyntheticChunkRequest(BaseModel):
     content_lengths: Optional[List[int]] = []
 
-@app.post("/api/insert_organic_chunk")
-def api_insert_organic_chunk(payload: InsertOrganicRequest):
+@app.post("/api/insert_organic_upscaling_chunk")
+def api_insert_organic_upscaling_chunk(payload: InsertOrganicRequest):
     """
     Insert an organic video URL into the organic queue.
     """
@@ -58,8 +58,24 @@ def api_insert_organic_chunk(payload: InsertOrganicRequest):
         "task_id": payload.task_id,
         "resolution_type": payload.resolution_type
     }
-    push_organic_chunk(r, data)
-    return {"message": "Organic chunk inserted"}
+    push_organic_upscaling_chunk(r, data)
+    return {"message": "Organic upscaling chunk inserted"}
+
+@app.post("/api/insert_organic_compression_chunk")
+def api_insert_organic_compression_chunk(payload: InsertOrganicRequest):
+    """
+    Insert an organic video URL into the organic compression queue.
+    """
+    r = get_redis_connection()
+    data = {
+        "url": payload.url,
+        "chunk_id": payload.chunk_id,
+        "task_id": payload.task_id,
+        "resolution_type": payload.resolution_type
+    }
+    push_organic_compression_chunk(r, data)
+    return {"message": "Organic compression chunk inserted"}
+
 
 
 # @app.get("/api/get_prioritized_chunk")
@@ -162,7 +178,7 @@ def retrieve_chunk_with_retry(redis_conn, content_length: int, max_retries: int 
 
 @app.get("/api/get_organic_chunks")
 def api_get_organic_chunks(needed: int):
-    print("Received request for organic chunks")
+    print("Received request for organic upscaling chunks")
     
     try:
         r = get_redis_connection()
@@ -173,9 +189,9 @@ def api_get_organic_chunks(needed: int):
     chunks = []
     for i in range(needed):
         try:
-            chunk = pop_organic_chunk(r)
+            chunk = pop_organic_upscaling_chunk(r)
             if chunk is None:
-                print("No more organic chunks available")
+                print("No more organic upscaling chunks available")
                 break
             chunks.append(chunk)
         except Exception as e:
@@ -183,8 +199,36 @@ def api_get_organic_chunks(needed: int):
             raise HTTPException(status_code=500, detail="Internal server error")
     
     if len(chunks) == 0:
-        print("No organic chunks in the queue")
-        return {"message": "No organic chunks available", "chunks": chunks}
+        print("No organic upscaling chunks in the queue")
+        return {"message": "No organic upscaling chunks available", "chunks": chunks}
+    
+    return {"chunks": chunks}
+
+@app.get("/api/get_organic_compression_chunks")
+def api_get_organic_compression_chunks(needed: int):
+    print("Received request for organic compression chunks")
+    
+    try:
+        r = get_redis_connection()
+    except Exception as e:
+        print(f"Error connecting to Redis: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    
+    chunks = []
+    for i in range(needed):
+        try:
+            chunk = pop_organic_compression_chunk(r)
+            if chunk is None:
+                print("No more organic compression chunks available")
+                break
+            chunks.append(chunk)
+        except Exception as e:
+            print(f"Error popping chunk: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error")
+    
+    if len(chunks) == 0:
+        print("No organic compression chunks in the queue")
+        return {"message": "No organic compression chunks available", "chunks": chunks}
     
     return {"chunks": chunks}
 
@@ -218,7 +262,8 @@ def api_queue_sizes():
     """
     r = get_redis_connection()
     return {
-        "organic_queue_size": get_organic_queue_size(r),
+        "organic_upscaling_queue_size": get_organic_upscaling_queue_size(r),
+        "organic_compression_queue_size": get_organic_compression_queue_size(r),
         "synthetic_5s_queue_size": get_5s_queue_size(r),
         "synthetic_10s_queue_size": get_10s_queue_size(r),
         "synthetic_20s_queue_size": get_20s_queue_size(r),

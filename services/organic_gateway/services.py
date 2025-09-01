@@ -6,7 +6,7 @@ from fastapi import Depends, HTTPException
 from typing import Dict
 
 from config import get_settings, logger
-from models import TaskStatus, InsertOrganicRequest
+from models import TaskStatus, InsertOrganicUpscalingRequest, InsertOrganicCompressionRequest
 
 # Redis connection
 def get_redis_connection(settings=Depends(get_settings)):
@@ -23,7 +23,7 @@ class TaskService:
     def __init__(self, redis_conn):
         self.redis = redis_conn
     
-    def create_task(self, task_id: str, chunk_id: str, chunk_url: str, resolution_type: str):
+    def create_task(self, task_id: str, chunk_id: str, chunk_url: str, resolution_type: str, compression_type: str):
         """Create a new task and store in Redis"""
         now = datetime.utcnow().isoformat()
         task_data = {
@@ -31,6 +31,7 @@ class TaskService:
             "chunk_id": chunk_id,
             "chunk_url": chunk_url,
             "resolution_type": resolution_type,
+            "compression_type": compression_type,
             "status": TaskStatus.QUEUED,
             "created_at": now,
             "updated_at": now
@@ -128,14 +129,26 @@ class RedisServiceClient:
         self.max_retries = settings.MAX_RETRIES
         self.retry_delay = settings.RETRY_DELAY
     
-    async def insert_organic_chunk(self, url: str, chunk_id: str, task_id: str, resolution_type: str):
-        """Insert chunk into organic queue via Redis service"""
-        api_url = f"{self.endpoint}/api/insert_organic_chunk"
-        payload = InsertOrganicRequest(
+    async def insert_organic_upscaling_chunk(self, url: str, chunk_id: str, task_id: str, resolution_type: str):
+        """Insert chunk into organic upscaling queue via Redis service"""
+        api_url = f"{self.endpoint}/api/insert_organic_upscaling_chunk"
+        payload = InsertOrganicUpscalingRequest(
             url=url,
             chunk_id=chunk_id,
             task_id=task_id,
             resolution_type=resolution_type
+        )
+        
+        return await self._make_request("POST", api_url, payload.dict())
+
+    async def insert_organic_compression_chunk(self, url: str, chunk_id: str, task_id: str, compression_type: str):
+        """Insert chunk into organic compression queue via Redis service"""
+        api_url = f"{self.endpoint}/api/insert_organic_compression_chunk"
+        payload = InsertOrganicCompressionRequest(
+            url=url,
+            chunk_id=chunk_id,
+            task_id=task_id,
+            compression_type=compression_type
         )
         
         return await self._make_request("POST", api_url, payload.dict())

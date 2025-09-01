@@ -20,6 +20,16 @@ class UpscaleResponse(BaseModel):
     status: TaskStatus
     message: str
 
+class CompressionRequest(BaseModel):
+    chunk_id: str
+    chunk_url: str
+    compression_type: Literal["standard", "high", "ultra"]
+
+class CompressionResponse(BaseModel):
+    task_id: str
+    status: TaskStatus
+    message: str
+
 class StatusResponse(BaseModel):
     task_id: str
     status: TaskStatus
@@ -37,11 +47,17 @@ class ResultResponse(BaseModel):
     message: str
 
 # Redis Service Models
-class InsertOrganicRequest(BaseModel):
+class InsertOrganicUpscalingRequest(BaseModel):
     url: str
     chunk_id: str
     task_id: str
     resolution_type: str
+
+class InsertOrganicCompressionRequest(BaseModel):
+    url: str
+    chunk_id: str
+    task_id: str
+    compression_type: str
 
 class InsertResultRequest(BaseModel):
     processed_video_url: str

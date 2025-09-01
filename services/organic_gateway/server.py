@@ -24,8 +24,8 @@ async def lifespan(app: FastAPI):
 
 # Create FastAPI app with lifespan
 app = FastAPI(
-    title="Video Upscaling Subnet API",
-    description="API for handling video upscaling tasks",
+    title="Video Processing Subnet API",
+    description="API for handling video upscaling and compression tasks",
     version="1.0.0",
     lifespan=lifespan
 )
