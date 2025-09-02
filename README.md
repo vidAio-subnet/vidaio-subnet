@@ -1,120 +1,106 @@
-# Discord Message Crawler
+<div align="center">
 
-A Python script that monitors a Discord channel for messages from specific users and forwards them to your own Discord channel via webhook.
+# **Vidaio Subnet**: Revolutionizing Video Processing with AI-Driven Decentralization <!-- omit in toc -->
 
-## Features
 
-- Monitors a Discord channel for new messages from specified users
-- Runs every minute (configurable)
-- Sends new messages as rich embeds to your Discord webhook
-- Tracks seen messages to avoid duplicates
-- Handles mentions, attachments, and other message features
-- Configurable via JSON file
+Please check our [Tweet](https://x.com/vidaio_τ) to follow us.
+[Website](https://vidaio.io)
+[![vidAio](./docs/images/banner.png)](https://vidaio.io)
 
-## Setup
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) 
 
-1. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
+---
 
-2. **Configure the script:**
-   
-   Edit `config.json` with your settings:
-   ```json
-   {
-       "channel_id": "YOUR_CHANNEL_ID_TO_MONITOR",
-       "bot_token": "YOUR_BOT_TOKEN",
-       "webhook_url": "YOUR_DISCORD_WEBHOOK_URL",
-       "target_user_ids": [
-           "USER_ID_1",
-           "USER_ID_2",
-           "USER_ID_3"
-       ],
-       "check_interval_seconds": 60
-   }
-   ```
+</div>
 
-3. **Get your Discord Bot Token:**
-   - Go to [Discord Developer Portal](https://discord.com/developers/applications)
-   - Create a new application or use existing one
-   - Go to "Bot" section
-   - Copy the token
+## **Table of Contents**
 
-4. **Get Channel ID:**
-   - Enable Developer Mode in Discord (User Settings > Advanced > Developer Mode)
-   - Right-click on the channel you want to monitor
-   - Click "Copy ID"
+1. [Introduction](#1-introduction)
+2. [Subnet Architecture](#2-subnet-architecture)
+   - [Overview](#21-overview)
+   - [Miners](#22-miners)
+   - [Validators](#23-validators)
+   - [Synapses](#24-synapses)
+     - [Synthetic Query](#241-synthetic-query)
+     - [Organic Query](#242-organic-query)
+3. [Setup](#3-setup)
+4. [Roadmap](#4-roadmap)
+5. [Appendix](#5-appendix)
+   - [Technical Glossary](#a-technical-glossary)
+   - [References](#b-references)
+   - [Contact Information](#c-contact-information)
 
-5. **Get User IDs:**
-   - Enable Developer Mode in Discord
-   - Right-click on users you want to monitor
-   - Click "Copy ID"
+## **1. Introduction**
+Vidaio's mission is to democratise video enhancement through decentralisation, artificial intelligence, and blockchain technology. Leveraging the Bittensor ecosystem, Vidaio provides creators, businesses, and developers with scalable, affordable, and high-quality video processing solutions including upscaling and compression, while ensuring full ownership and control over their content.
 
-6. **Create Discord Webhook:**
-   - Go to your target Discord channel
-   - Channel Settings > Integrations > Webhooks
-   - Create New Webhook
-   - Copy the webhook URL
 
-## Usage
+## 2. Subnet Architecture
 
-### Option 1: Using config file (Recommended)
-```bash
-python discord_crawler_config.py
-```
+### 2.1 Overview
+- **Miners**: Handle video processing tasks including upscaling and compression, optimizing models to ensure high-quality outputs.
+- **Validators**: Assess miner performance using predefined metrics to maintain network integrity across all video processing workflows.
 
-### Option 2: Direct configuration
-Edit the variables in `discord_crawler.py` and run:
-```bash
-python discord_crawler.py
-```
+### 2.2 Miners
+Miners enhance video quality and optimize file sizes using AI-driven processing techniques. They can:
+- Optimise open-source models or develop proprietary ones for superior upscaling and compression results.
+- Handle video upscaling and compression requests from validators and end-users.
+- Process both upscaling tasks (enhancing video quality) and compression tasks (reducing file size while maintaining quality).
 
-## Configuration Options
+### 2.3 Validators
+Validators ensure miners deliver consistent, high-quality results by evaluating performance through synthetic and organic queries for both upscaling and compression workflows.
 
-- `channel_id`: Discord channel ID to monitor
-- `bot_token`: Your Discord bot token
-- `webhook_url`: Discord webhook URL for notifications
-- `target_user_ids`: List of user IDs to monitor
-- `check_interval_seconds`: How often to check for new messages (default: 60)
+### 2.4 Synapses
+#### 2.4.1 Synthetic Query
+Validators benchmark miner performance using controlled datasets:
+- **Upscaling**: Downscale a high-resolution video to low-resolution, then miners upscale it back to high resolution.
+- **Compression**: Provide high-quality videos for miners to compress while maintaining optimal quality-to-size ratios.
 
-## Message Format
+- Validators assess the processed outputs using metrics VMAF and PieAPP for quality evaluation.
 
-The script sends messages as Discord embeds containing:
-- Author information with avatar
-- Message content
-- Timestamp
-- Channel reference
-- Mentions (if any)
-- Attachments (if any)
-- Message ID for reference
+#### 2.4.2 Organic Query
+Real-world video data uploaded by users is processed as follows:
+- Videos are chunked and queued for miners.
+- Miners process and apply upscaling or compression based on user requirements.
+- Results are aggregated and delivered back to users.
 
-## Example Output
+### 2.5 Incentive mechanism
+- [Incetive Mechanism Guide](docs/incentive_mechanism.md)
 
-When a target user posts a message, you'll see:
-```
-[2025-01-01 12:00:00] Checking for new messages...
-Found new message from PaperMoney: got it
-Successfully sent 1 message(s) to webhook
-```
+## 3. Setup
+- [Validator Setup Guide](docs/validator_setup.md)
+- [Miner Setup Guide](docs/miner_setup.md)
 
-## Notes
+## 4. Roadmap
 
-- The script tracks message IDs to avoid sending duplicates
-- It performs an initial fetch to populate the seen messages list
-- Messages are limited to Discord's embed character limits
-- The script handles API errors gracefully and continues running
-- Use Ctrl+C to stop the crawler
+### Phase 1: Implementing the Video Processing Synapses
+- Launch the subnet with AI-powered video upscaling and compression capabilities.
+- Focus on real-time processing of videos for both quality enhancement and size optimization.
 
-## Troubleshooting
+### Phase 2: Developing Advanced Video Processing Models
+- Build AI models for adaptive bitrate streaming and intelligent compression.
+- Optimize bandwidth usage while maintaining video quality across different use cases.
 
-1. **"Failed to fetch messages"**: Check your bot token and channel ID
-2. **"Failed to send webhook"**: Verify your webhook URL is correct
-3. **No messages detected**: Ensure the user IDs are correct and users have posted recently
-4. **Rate limiting**: Discord has rate limits; the script includes error handling for this
+### Phase 3: Implementing the Transcode Optimization Synapse
+- Introduce AI-driven transcoding for compatibility across devices.
+- Evaluate miners on speed, quality, and efficiency for all processing workflows.
 
-## Security
+### Phase 4: On-Demand Streaming Architecture
+- Enable decentralized on-demand video streaming with integrated storage.
+- Utilize peer-to-peer (P2P) models for redundancy and high availability.
 
-- Keep your bot token and webhook URL secure
-- Don't commit these credentials to version control
-- Consider using environment variables for production use
+### Phase 5: Live Streaming Through the Subnet
+- Introduce live streaming with real-time AI-powered upscaling, compression, and transcoding.
+- Integrate adaptive bitrate streaming for smooth playback.
+
+### Phase 6: Subnet API for Real-World Integration
+- Develop a RESTful API for seamless integration with external platforms.
+- Include features for uploading, processing, and retrieving videos with multiple processing options.
+
+## 5. Appendix
+
+### A. Technical Glossary
+- **VMAF**: [Video Multimethod Assessment Fusion](https://github.com/vidaio-subnet/vmaf)
+- **Video2x**: [Vidio upscaling model](https://github.com/vidaio-subnet/video2x)
+- **TOPIQ**: [Top-down Image Quality Assessment](https://arxiv.org/pdf/2308.03060v1)
+- **LPIPS**: [Learned Perceptual Image Patch Similarity](https://github.com/richzhang/PerceptualSimilarity)
+- **Bittensor Subnet**: [Decentralized AI Framework](https://docs.bittensor.com)
