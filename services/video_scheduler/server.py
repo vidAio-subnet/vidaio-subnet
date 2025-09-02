@@ -176,8 +176,8 @@ def retrieve_chunk_with_retry(redis_conn, content_length: int, max_retries: int 
     return None
 
 
-@app.get("/api/get_organic_chunks")
-def api_get_organic_chunks(needed: int):
+@app.get("/api/get_organic_upscaling_chunks")
+def api_get_organic_upscaling_chunks(needed: int):
     print("Received request for organic upscaling chunks")
     
     try:

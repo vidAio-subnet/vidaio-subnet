@@ -16,7 +16,7 @@ from vidaio_subnet_core.utilities.version import get_version
 from vidaio_subnet_core.protocol import LengthCheckProtocol, TaskWarrantProtocol, VideoCompressionProtocol, TaskType
 from services.dashboard.server import send_upscaling_data_to_dashboard, send_compression_data_to_dashboard
 from services.video_scheduler.video_utils import get_trim_video_path
-from services.video_scheduler.redis_utils import get_redis_connection, get_organic_queue_size, set_scheduler_ready
+from services.video_scheduler.redis_utils import get_redis_connection, get_organic_queue_size, get_organic_upscaling_queue_size, get_organic_compression_queue_size, set_scheduler_ready
 import os
 
 VMAF_QUALITY_THRESHOLDS = [
@@ -331,11 +331,36 @@ class Validator(base.BaseValidator):
 
 
     async def start_organic_loop(self):
+        """Start organic processing loop for both upscaling and compression tasks asynchronously."""
         try:
-            is_true = await self.should_process_organic()
-            await asyncio.sleep(5)
+            # Create tasks for both upscaling and compression processing
+            upscaling_task = asyncio.create_task(self._process_organic_upscaling_loop())
+            compression_task = asyncio.create_task(self._process_organic_compression_loop())
+            
+            # Wait for both tasks to complete (they run indefinitely)
+            await asyncio.gather(upscaling_task, compression_task)
         except Exception as e:
-            logger.error(f"Error during process organic requests: {e}")
+            logger.error(f"Error during organic processing loop: {e}")
+
+    async def _process_organic_upscaling_loop(self):
+        """Process organic upscaling tasks in a loop."""
+        while True:
+            try:
+                await self.should_process_organic_upscaling()
+                await asyncio.sleep(5)
+            except Exception as e:
+                logger.error(f"Error during organic upscaling processing: {e}")
+                await asyncio.sleep(5)
+
+    async def _process_organic_compression_loop(self):
+        """Process organic compression tasks in a loop."""
+        while True:
+            try:
+                await self.should_process_organic_compression()
+                await asyncio.sleep(5)
+            except Exception as e:
+                logger.error(f"Error during organic compression processing: {e}")
+                await asyncio.sleep(5)
 
     async def score_upscalings(
         self, 
@@ -545,8 +570,8 @@ class Validator(base.BaseValidator):
         else:
             logger.info("Failed to send compression data to dashboard")
 
-    async def score_organics(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: list[str], task_types: list[str], timestamp: str):
-
+    async def score_organics_upscaling(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: list[str], task_types: list[str], timestamp: str):
+        """Score organic upscaling tasks."""
         distorted_urls = [response.miner_response.optimized_video_url for response in responses]
 
         # zip and shuffle all lists together to preserve alignment
@@ -555,7 +580,7 @@ class Validator(base.BaseValidator):
         uids, distorted_urls, reference_urls, task_types = map(list, zip(*combined))
 
         score_response = await self.score_client.post(
-            "/score_organics",
+            "/score_organics_upscaling",
             json={
                 "uids": uids,
                 "distorted_urls": distorted_urls,
@@ -577,27 +602,96 @@ class Validator(base.BaseValidator):
         pieapp_scores.extend([0.0] * (max_length - len(pieapp_scores)))
         reasons.extend(["no reason provided"] * (max_length - len(reasons)))
 
-        logger.info(f"organic scoring results for {len(uids)} miners")
+        logger.info(f"organic upscaling scoring results for {len(uids)} miners")
         logger.info(f"uids: {uids}")
         for uid, vmaf_score, pieapp_score, score, reason in zip(uids, vmaf_scores, pieapp_scores, scores, reasons):
             logger.info(f"{uid} ** {vmaf_score:.2f} ** {pieapp_score:.2f} ** {score:.4f} || {reason}")
 
-        # Generate round_id for organic scoring
-        round_id = f"organic_{int(time.time())}"
+        # Generate round_id for organic upscaling scoring
+        round_id = f"organic_upscaling_{int(time.time())}"
         
-        logger.info(f"updating miner manager with {len(scores)} miner scores after organic requests processing…")
-        accumulate_scores, applied_multipliers = self.miner_manager.step_organics(scores, uids, round_id)
+        logger.info(f"updating miner manager with {len(scores)} miner scores after organic upscaling requests processing…")
+        accumulate_scores, applied_multipliers = self.miner_manager.step_organics_upscaling(scores, uids, round_id)
 
         miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
 
         miner_data = {
             "validator_uid": self.my_subnet_uid,
             "validator_hotkey": self.wallet.hotkey.ss58_address,
-            "request_type": "Organic",
+            "request_type": "Organic_Upscaling",
             "miner_uids": uids,
             "miner_hotkeys": miner_hotkeys,
             "vmaf_scores": vmaf_scores,
             "pieapp_scores": pieapp_scores,
+            "final_scores": scores,
+            "accumulate_scores": accumulate_scores,
+            "applied_multipliers": applied_multipliers,
+            "status": reasons,
+            "task_urls": reference_urls,
+            "processed_urls": distorted_urls,
+            "timestamp": timestamp
+        }
+        
+        # success = send_data_to_dashboard(miner_data)
+        # if success:
+        #     logger.info("Data successfully sent to dashboard")
+        # else:
+        #     logger.info("Failed to send data to dashboard")
+
+    async def score_organics_compression(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: list[str], vmaf_thresholds: list[float], timestamp: str):
+        """Score organic compression tasks."""
+        distorted_urls = [response.miner_response.optimized_video_url for response in responses]
+
+        # zip and shuffle all lists together to preserve alignment
+        combined = list(zip(uids, distorted_urls, reference_urls, vmaf_thresholds))
+        random.shuffle(combined)
+        uids, distorted_urls, reference_urls, vmaf_thresholds = map(list, zip(*combined))
+
+        score_response = await self.score_client.post(
+            "/score_organics_compression",
+            json={
+                "uids": uids,
+                "distorted_urls": distorted_urls,
+                "reference_urls": reference_urls,
+                "vmaf_thresholds": vmaf_thresholds
+            },
+            timeout=1500
+        )
+
+        response_data = score_response.json()
+        scores = response_data.get("final_scores", [])
+        vmaf_scores = response_data.get("vmaf_scores", [])
+        compression_rates = response_data.get("compression_rates", [])
+        reasons = response_data.get("reasons", [])
+
+        max_length = max(len(uids), len(scores), len(vmaf_scores), len(compression_rates), len(reasons))
+        scores.extend([0.0] * (max_length - len(scores)))
+        vmaf_scores.extend([0.0] * (max_length - len(vmaf_scores)))
+        compression_rates.extend([0.5] * (max_length - len(compression_rates)))
+        reasons.extend(["no reason provided"] * (max_length - len(reasons)))
+
+        logger.info(f"organic compression scoring results for {len(uids)} miners")
+        logger.info(f"uids: {uids}")
+        for uid, vmaf_score, compression_rate, score, reason in zip(uids, vmaf_scores, compression_rates, scores, reasons):
+            logger.info(f"{uid} ** {vmaf_score:.2f} ** {compression_rate:.4f} ** {score:.4f} || {reason}")
+
+        # Generate round_id for organic compression scoring
+        round_id = f"organic_compression_{int(time.time())}"
+        
+        logger.info(f"updating miner manager with {len(scores)} miner scores after organic compression requests processing…")
+        accumulate_scores, applied_multipliers = self.miner_manager.step_organics_compression(scores, uids, round_id, compression_rates)
+
+        miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
+
+        miner_data = {
+            "validator_uid": self.my_subnet_uid,
+            "validator_hotkey": self.wallet.hotkey.ss58_address,
+            "request_type": "Organic_Compression",
+            "miner_uids": uids,
+            "miner_hotkeys": miner_hotkeys,
+            "vmaf_scores": vmaf_scores,
+            "vmaf_thresholds": vmaf_thresholds,
+            "compression_rates": compression_rates,
             "final_scores": scores,
             "accumulate_scores": accumulate_scores,
             "applied_multipliers": applied_multipliers,
@@ -621,48 +715,61 @@ class Validator(base.BaseValidator):
 
         return miner_uids
 
-    async def should_process_organic(self):
+    async def should_process_organic_upscaling(self):
+        """Check if organic upscaling tasks should be processed."""
+        num_organic_upscaling_chunks = get_organic_upscaling_queue_size(self.redis_conn)
 
-        num_organic_chunks = get_organic_queue_size(self.redis_conn)
-
-        if num_organic_chunks > 0:
-            logger.info(f"🔷🔷🔷🔷 The organic_queue_size: {num_organic_chunks}, processing organic requests. 🔷🔷🔷🔷")
-            await self.process_organic_chunks(num_organic_chunks)
+        if num_organic_upscaling_chunks > 0:
+            logger.info(f"🔷🔷🔷🔷 The organic_upscaling_queue_size: {num_organic_upscaling_chunks}, processing organic upscaling requests. 🔷🔷🔷🔷")
+            await self.process_organic_upscaling_chunks(num_organic_upscaling_chunks)
             return True
         else:
-            # logger.info("The organic queue is currently empty, so it will be skipped")
+            # logger.info("The organic upscaling queue is currently empty, so it will be skipped")
             return False
 
-    async def process_organic_chunks(self, num_organic_chunks):
+    async def should_process_organic_compression(self):
+        """Check if organic compression tasks should be processed."""
+        num_organic_compression_chunks = get_organic_compression_queue_size(self.redis_conn)
+
+        if num_organic_compression_chunks > 0:
+            logger.info(f"🔷🔷🔷🔷 The organic_compression_queue_size: {num_organic_compression_chunks}, processing organic compression requests. 🔷🔷🔷🔷")
+            await self.process_organic_compression_chunks(num_organic_compression_chunks)
+            return True
+        else:
+            # logger.info("The organic compression queue is currently empty, so it will be skipped")
+            return False
+
+    async def process_organic_upscaling_chunks(self, num_organic_chunks):
+        """Process organic upscaling chunks."""
         organic_start_time = time.time() 
 
         needed = min(CONFIG.bandwidth.requests_per_organic_interval, num_organic_chunks)
         
-        logger.info(f"🍉 Start processing organic query. need {needed} miners 🍉")
+        logger.info(f"🍉 Start processing organic upscaling query. need {needed} miners 🍉")
 
         forward_uids = get_organic_forward_uids(self, needed, "upscaling", CONFIG.bandwidth.min_stake)
 
         if len(forward_uids) < needed:
-            logger.info(f"There are just {len(forward_uids)} miners available for organic, handling {len(forward_uids)} chunks")
+            logger.info(f"There are just {len(forward_uids)} miners available for organic upscaling, handling {len(forward_uids)} chunks")
             needed = len(forward_uids)
 
         axon_list = [self.metagraph.axons[uid] for uid in forward_uids]
 
-        task_ids, original_urls, task_types, synapses = await self.challenge_synthesizer.build_organic_protocol(needed)
+        task_ids, original_urls, task_types, synapses = await self.challenge_synthesizer.build_organic_upscaling_protocol(needed)
 
         if len(task_ids) != needed or len(synapses) != needed:
             logger.error(
-                f"Mismatch in organic synapses after building organic protocol: {len(task_ids)} != {needed} or {len(synapses)} != {needed}"
+                f"Mismatch in organic upscaling synapses after building organic protocol: {len(task_ids)} != {needed} or {len(synapses)} != {needed}"
             )
             return  # Exit early if there's a mismatch
 
-        logger.info("Updating task status to 'processing'")
+        logger.info("Updating task status to 'processing' for upscaling")
         for task_id, original_url in zip(task_ids, original_urls):
             await self.update_task_status(task_id, original_url, "processing")
 
         timestamp = datetime.now(timezone.utc).isoformat()
 
-        logger.info("💡 Performing forward operations asynchronously 💡")
+        logger.info("💡 Performing forward operations asynchronously for upscaling 💡")
         forward_tasks = [
             self.dendrite.forward(axons=[axon], synapse=synapse, timeout=35)
             for axon, synapse in zip(axon_list, synapses)
@@ -673,16 +780,68 @@ class Validator(base.BaseValidator):
         responses = [response[0] for response in raw_responses]
         processed_urls = [response.miner_response.optimized_video_url for response in responses]
 
-        logger.info("Updating task status to 'completed' and pushing results")
+        logger.info("Updating task status to 'completed' and pushing results for upscaling")
         for task_id, original_url, processed_url in zip(task_ids, original_urls, processed_urls):
             await self.update_task_status(task_id, original_url, "completed")
             await self.push_result(task_id, original_url, processed_url)
 
-        asyncio.create_task(self.score_organics(forward_uids.tolist(), responses, original_urls, task_types, timestamp))
+        asyncio.create_task(self.score_organics_upscaling(forward_uids.tolist(), responses, original_urls, task_types, timestamp))
 
         end_time = time.time()
         total_time = end_time - organic_start_time
-        logger.info(f"🍏 Organic chunk processing complete in {total_time:.2f} seconds 🍏")
+        logger.info(f"🍏 Organic upscaling chunk processing complete in {total_time:.2f} seconds 🍏")
+
+    async def process_organic_compression_chunks(self, num_organic_chunks):
+        """Process organic compression chunks."""
+        organic_start_time = time.time() 
+
+        needed = min(CONFIG.bandwidth.requests_per_organic_interval, num_organic_chunks)
+        
+        logger.info(f"🍉 Start processing organic compression query. need {needed} miners 🍉")
+
+        forward_uids = get_organic_forward_uids(self, needed, "compression", CONFIG.bandwidth.min_stake)
+
+        if len(forward_uids) < needed:
+            logger.info(f"There are just {len(forward_uids)} miners available for organic compression, handling {len(forward_uids)} chunks")
+            needed = len(forward_uids)
+
+        axon_list = [self.metagraph.axons[uid] for uid in forward_uids]
+
+        task_ids, original_urls, vmaf_thresholds, synapses = await self.challenge_synthesizer.build_organic_compression_protocol(needed)
+
+        if len(task_ids) != needed or len(synapses) != needed:
+            logger.error(
+                f"Mismatch in organic compression synapses after building organic protocol: {len(task_ids)} != {needed} or {len(synapses)} != {needed}"
+            )
+            return  # Exit early if there's a mismatch
+
+        logger.info("Updating task status to 'processing' for compression")
+        for task_id, original_url in zip(task_ids, original_urls):
+            await self.update_task_status(task_id, original_url, "processing")
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+
+        logger.info("💡 Performing forward operations asynchronously for compression 💡")
+        forward_tasks = [
+            self.dendrite.forward(axons=[axon], synapse=synapse, timeout=35)
+            for axon, synapse in zip(axon_list, synapses)
+        ]
+
+        raw_responses = await asyncio.gather(*forward_tasks)
+
+        responses = [response[0] for response in raw_responses]
+        processed_urls = [response.miner_response.optimized_video_url for response in responses]
+
+        logger.info("Updating task status to 'completed' and pushing results for compression")
+        for task_id, original_url, processed_url in zip(task_ids, original_urls, processed_urls):
+            await self.update_task_status(task_id, original_url, "completed")
+            await self.push_result(task_id, original_url, processed_url)
+
+        asyncio.create_task(self.score_organics_compression(forward_uids.tolist(), responses, original_urls, vmaf_thresholds, timestamp))
+
+        end_time = time.time()
+        total_time = end_time - organic_start_time
+        logger.info(f"🍏 Organic compression chunk processing complete in {total_time:.2f} seconds 🍏")
 
 
     async def update_task_status(self, task_id, original_url, status):

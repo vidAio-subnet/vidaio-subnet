@@ -190,6 +190,21 @@ def get_organic_compression_queue_size(r: redis.Redis) -> int:
     """
     return r.llen(REDIS_CONFIG.organic_compression_queue_key)
 
+def get_organic_queue_size(r: redis.Redis) -> int:
+    """
+    Get the total size of all organic queues (upscaling + compression).
+    This is a legacy function for backward compatibility.
+    
+    Args:
+        r (redis.Redis): Redis connection
+        
+    Returns:
+        int: Total size of organic queues.
+    """
+    upscaling_size = get_organic_upscaling_queue_size(r)
+    compression_size = get_organic_compression_queue_size(r)
+    return upscaling_size + compression_size
+
 def get_5s_queue_size(r: redis.Redis) -> int:
 
     return r.llen(REDIS_CONFIG.synthetic_5s_clip_queue_key)
