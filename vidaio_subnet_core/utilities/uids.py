@@ -4,6 +4,7 @@ import numpy as np
 from typing import List
 import os
 import shutil
+from loguru import logger
 
 def check_uid_availability(metagraph: "bt.metagraph.Metagraph", uid: int, vpermit_tao_limit: int) -> bool:
     """
@@ -24,7 +25,7 @@ def check_uid_availability(metagraph: "bt.metagraph.Metagraph", uid: int, vpermi
         return False
     return True
 
-def get_organic_forward_uids(self, count: int = None, task_type : str = None, vpermit_tao_limit: int = 20000, exclude: List[int] = None) -> np.ndarray:
+def get_organic_forward_uids(self, count: int = None, task_type : str = None, vpermit_tao_limit: int = 100000000, exclude: List[int] = None) -> np.ndarray:
     """
     Get a list of UIDs that are available for forwarding, sorted by incentive.
     

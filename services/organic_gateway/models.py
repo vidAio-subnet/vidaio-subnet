@@ -15,6 +15,11 @@ class UpscaleRequest(BaseModel):
     chunk_url: str
     resolution_type: Literal["SD2HD", "SD24K", "HD24K"]
 
+class TaskCountResponse(BaseModel):
+    compression_count: int
+    upscaling_count: int
+    total_count: int
+
 class UpscaleResponse(BaseModel):
     task_id: str
     status: TaskStatus
@@ -23,7 +28,7 @@ class UpscaleResponse(BaseModel):
 class CompressionRequest(BaseModel):
     chunk_id: str
     chunk_url: str
-    compression_type: Literal["standard", "high", "ultra"]
+    compression_type: Literal["High", "Medium", "Low"]
 
 class CompressionResponse(BaseModel):
     task_id: str
@@ -51,13 +56,13 @@ class InsertOrganicUpscalingRequest(BaseModel):
     url: str
     chunk_id: str
     task_id: str
-    resolution_type: str
+    resolution_type: Literal["SD2HD", "SD24K", "HD24K"]
 
 class InsertOrganicCompressionRequest(BaseModel):
     url: str
     chunk_id: str
     task_id: str
-    compression_type: str
+    compression_type: Literal["High", "Medium", "Low"]
 
 class InsertResultRequest(BaseModel):
     processed_video_url: str

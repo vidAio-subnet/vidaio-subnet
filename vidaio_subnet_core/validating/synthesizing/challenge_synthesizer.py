@@ -363,7 +363,7 @@ class Synthesizer:
                 chunks: List[Dict] = data["chunks"]
                 logger.info("Received organic compression chunks from video-scheduler API")
 
-                required_fields = ["url", "chunk_id", "task_id", "vmaf_threshold"]
+                required_fields = ["url", "chunk_id", "task_id", "compression_type"]
                 if any(not all(field in chunk for field in required_fields) for chunk in chunks):
                     logger.info("Missing required fields in some chunk data, retrying...")
                     await asyncio.sleep(self.retry_delay)
@@ -375,15 +375,27 @@ class Synthesizer:
                 vmaf_thresholds = []
 
                 for chunk in chunks:
+                    vmaf_threshold = None
+                    if chunk["compression_type"] == "High":
+                        vmaf_threshold = 95
+                    elif chunk["compression_type"] == "Medium":
+                        vmaf_threshold = 90
+                    elif chunk["compression_type"] == "Low":
+                        vmaf_threshold = 85
+
+                    if vmaf_threshold is None:
+                        logger.info(f"Invalid compression type: {chunk['compression_type']}")
+                        continue
+
                     synapse = VideoCompressionProtocol(
                         miner_payload=CompressionMinerPayload(
                             reference_video_url=chunk["url"],
-                            vmaf_threshold=chunk["vmaf_threshold"]
+                            vmaf_threshold=vmaf_threshold
                         ),
                     )
                     task_ids.append(chunk["task_id"])
                     original_urls.append(chunk["url"])
-                    vmaf_thresholds.append(chunk["vmaf_threshold"])
+                    vmaf_thresholds.append(vmaf_threshold)
 
                     organic_synapses.append(synapse)
 

@@ -3,7 +3,7 @@ import httpx
 import asyncio
 from datetime import datetime, timedelta
 from fastapi import Depends, HTTPException
-from typing import Dict
+from typing import Dict, Optional
 
 from config import get_settings, logger
 from models import TaskStatus, InsertOrganicUpscalingRequest, InsertOrganicCompressionRequest
@@ -23,15 +23,15 @@ class TaskService:
     def __init__(self, redis_conn):
         self.redis = redis_conn
     
-    def create_task(self, task_id: str, chunk_id: str, chunk_url: str, resolution_type: str, compression_type: str):
+    def create_task(self, task_id: str, chunk_id: str, chunk_url: str, resolution_type: Optional[str], compression_type: Optional[str]):
         """Create a new task and store in Redis"""
         now = datetime.utcnow().isoformat()
         task_data = {
             "task_id": task_id,
             "chunk_id": chunk_id,
             "chunk_url": chunk_url,
-            "resolution_type": resolution_type,
-            "compression_type": compression_type,
+            "resolution_type": resolution_type or "",
+            "compression_type": compression_type or "",
             "status": TaskStatus.QUEUED,
             "created_at": now,
             "updated_at": now
@@ -123,7 +123,9 @@ class TaskService:
 
 # Redis service client
 class RedisServiceClient:
-    def __init__(self, settings=Depends(get_settings)):
+    def __init__(self, settings=None):
+        if settings is None:
+            settings = get_settings()
         self.endpoint = settings.REDIS_SERVICE_ENDPOINT
         self.timeout = settings.REQUEST_TIMEOUT
         self.max_retries = settings.MAX_RETRIES
@@ -162,10 +164,8 @@ class RedisServiceClient:
         while retry_count < self.max_retries:
             try:
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    # For FastAPI with Pydantic models in GET requests, we need to use the 
-                    # special 'content' parameter to send the body with a GET request
-                    response = await client.request(
-                        "GET",
+                    # Use POST method to send JSON data properly
+                    response = await client.post(
                         api_url,
                         json={"original_video_url": original_video_url},
                         headers={"Content-Type": "application/json"}
@@ -188,7 +188,16 @@ class RedisServiceClient:
         
         raise HTTPException(status_code=500, detail="Request failed after max retries")
 
-    
+    async def get_organic_compression_queue_size(self):
+        """Get the size of the organic compression queue"""
+        api_url = f"{self.endpoint}/api/get_organic_compression_queue_size"
+        return await self._make_request("GET", api_url)
+
+    async def get_organic_upscaling_queue_size(self):
+        """Get the size of the organic upscaling queue"""
+        api_url = f"{self.endpoint}/api/get_organic_upscaling_queue_size"
+        return await self._make_request("GET", api_url)
+
     async def _make_request(self, method: str, url: str, json_data: Dict = None):
         """Make HTTP request with retry logic"""
         retry_count = 0

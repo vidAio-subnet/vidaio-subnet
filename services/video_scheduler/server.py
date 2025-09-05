@@ -25,11 +25,17 @@ from redis_utils import (
 
 app = FastAPI()
 
-class InsertOrganicRequest(BaseModel):
+class InsertOrganicUpscalingRequest(BaseModel):
     url: str
     chunk_id: str
     task_id: str
     resolution_type: str
+
+class InsertOrganicCompressionRequest(BaseModel):
+    url: str
+    chunk_id: str
+    task_id: str
+    compression_type: str
 
 class InsertResultRequest(BaseModel):
     processed_video_url: str
@@ -47,7 +53,7 @@ class SyntheticChunkRequest(BaseModel):
     content_lengths: Optional[List[int]] = []
 
 @app.post("/api/insert_organic_upscaling_chunk")
-def api_insert_organic_upscaling_chunk(payload: InsertOrganicRequest):
+def api_insert_organic_upscaling_chunk(payload: InsertOrganicUpscalingRequest):
     """
     Insert an organic video URL into the organic queue.
     """
@@ -62,7 +68,7 @@ def api_insert_organic_upscaling_chunk(payload: InsertOrganicRequest):
     return {"message": "Organic upscaling chunk inserted"}
 
 @app.post("/api/insert_organic_compression_chunk")
-def api_insert_organic_compression_chunk(payload: InsertOrganicRequest):
+def api_insert_organic_compression_chunk(payload: InsertOrganicCompressionRequest):
     """
     Insert an organic video URL into the organic compression queue.
     """
@@ -71,12 +77,10 @@ def api_insert_organic_compression_chunk(payload: InsertOrganicRequest):
         "url": payload.url,
         "chunk_id": payload.chunk_id,
         "task_id": payload.task_id,
-        "resolution_type": payload.resolution_type
+        "compression_type": payload.compression_type
     }
     push_organic_compression_chunk(r, data)
     return {"message": "Organic compression chunk inserted"}
-
-
 
 # @app.get("/api/get_prioritized_chunk")
 # def api_get_prioritized_chunk():
@@ -95,7 +99,6 @@ def api_insert_organic_compression_chunk(payload: InsertOrganicRequest):
 #     if not chunk:
 #         return {"message": "No chunks available"}
 #     return {"chunk": chunk}
-
 
 @app.post("/api/get_synthetic_chunks")
 def api_get_synthetic_chunks(request_data: SyntheticChunkRequest):
@@ -269,6 +272,21 @@ def api_queue_sizes():
         "synthetic_20s_queue_size": get_20s_queue_size(r),
     }
 
+@app.get("/api/get_organic_compression_queue_size")
+def api_get_organic_compression_queue_size():
+    """
+    Get the size of the organic compression queue.
+    """
+    r = get_redis_connection()
+    return get_organic_compression_queue_size(r)
+
+@app.get("/api/get_organic_upscaling_queue_size")
+def api_get_organic_upscaling_queue_size():
+    """
+    Get the size of the organic upscaling queue.
+    """
+    r = get_redis_connection()
+    return get_organic_upscaling_queue_size(r)
 
 @app.post("/api/push_result")
 def api_push_result(payload: InsertResultRequest):
@@ -287,7 +305,7 @@ def api_push_result(payload: InsertResultRequest):
     return {"message": "Result saved successfully"}
 
 
-@app.get("/api/get_result")
+@app.post("/api/get_result")
 def api_get_result(payload: ResultRequest):
     """
     Retrieve processing result for a specific video URL.

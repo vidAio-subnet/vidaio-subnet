@@ -16,33 +16,23 @@ from pathlib import Path
 
 from redis_utils import (
     get_redis_connection,
-    get_organic_queue_size,
+    get_organic_upscaling_queue_size,
+    get_organic_compression_queue_size,
     get_5s_queue_size,
     get_10s_queue_size,
-    get_20s_queue_size,
     get_compression_queue_size,
     push_5s_chunks,
     push_10s_chunks,
-    push_20s_chunks,
     push_compression_chunks,
     push_pexels_video_ids,
     get_pexels_queue_size,
-    pop_pexels_video_id,
     set_scheduler_ready,
     is_scheduler_ready,
-    push_youtube_video_ids,
-    get_youtube_queue_size,
-    pop_youtube_video_id,
 )
 from video_utils import download_transform_and_trim_downscale_video
 from services.google_drive.google_drive_manager import GoogleDriveManager
 from vidaio_subnet_core import CONFIG
 from vidaio_subnet_core.utilities.storage_client import storage_client
-from video_utils import (
-    download_transform_and_trim_downscale_video,
-    download_trim_downscale_youtube_video,
-    cleanup_orphaned_files  
-)
 
 load_dotenv()
 
@@ -52,7 +42,8 @@ yaml_file_path = os.path.join(script_dir, "pexels_categories.yaml")
 def clear_queues(redis_conn) -> None:
     """Clear both organic and synthetic queues before starting."""
     logger.info("Clearing queues")
-    redis_conn.delete(CONFIG.redis.organic_queue_key)
+    redis_conn.delete(CONFIG.redis.organic_upscaling_queue_key)
+    redis_conn.delete(CONFIG.redis.organic_compression_queue_key)
     redis_conn.delete(CONFIG.redis.synthetic_5s_clip_queue_key)
     redis_conn.delete(CONFIG.redis.synthetic_10s_clip_queue_key)
     redis_conn.delete(CONFIG.redis.synthetic_20s_clip_queue_key)
@@ -738,7 +729,8 @@ def select_task_type(thresholds):
 def log_queue_status(redis_conn):
     """Log the current status of all processing queues."""
     queue_sizes = {
-        "organic": get_organic_queue_size(redis_conn),
+        "organic_upscaling": get_organic_upscaling_queue_size(redis_conn),
+        "organic_compression": get_organic_compression_queue_size(redis_conn),
         "synthetic_5s": get_5s_queue_size(redis_conn),
         "synthetic_10s": get_10s_queue_size(redis_conn),
         "compression_queue": get_compression_queue_size(redis_conn)

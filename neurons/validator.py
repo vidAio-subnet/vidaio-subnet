@@ -16,7 +16,7 @@ from vidaio_subnet_core.utilities.version import get_version
 from vidaio_subnet_core.protocol import LengthCheckProtocol, TaskWarrantProtocol, VideoCompressionProtocol, TaskType
 from services.dashboard.server import send_upscaling_data_to_dashboard, send_compression_data_to_dashboard
 from services.video_scheduler.video_utils import get_trim_video_path
-from services.video_scheduler.redis_utils import get_redis_connection, get_organic_queue_size, get_organic_upscaling_queue_size, get_organic_compression_queue_size, set_scheduler_ready
+from services.video_scheduler.redis_utils import get_redis_connection, get_organic_upscaling_queue_size, get_organic_compression_queue_size, set_scheduler_ready
 import os
 
 VMAF_QUALITY_THRESHOLDS = [
@@ -244,7 +244,7 @@ class Validator(base.BaseValidator):
 
             logger.debug(f"Processing upscaling UIDs in batch: {uids}")
             forward_tasks = [
-                self.dendrite.forward(axons=[axon], synapse=synapse, timeout=35)
+                self.dendrite.forward(axons=[axon], synapse=synapse, timeout=40)
                 for axon, synapse in zip(axons, synapses)
             ]
 
@@ -611,7 +611,7 @@ class Validator(base.BaseValidator):
         round_id = f"organic_upscaling_{int(time.time())}"
         
         logger.info(f"updating miner manager with {len(scores)} miner scores after organic upscaling requests processing…")
-        accumulate_scores, applied_multipliers = self.miner_manager.step_organics_upscaling(scores, uids, round_id)
+        accumulate_scores, applied_multipliers = self.miner_manager.step_organic_upscaling(scores, uids, round_id)
 
         miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
 
@@ -670,16 +670,21 @@ class Validator(base.BaseValidator):
         compression_rates.extend([0.5] * (max_length - len(compression_rates)))
         reasons.extend(["no reason provided"] * (max_length - len(reasons)))
 
-        logger.info(f"organic compression scoring results for {len(uids)} miners")
-        logger.info(f"uids: {uids}")
-        for uid, vmaf_score, compression_rate, score, reason in zip(uids, vmaf_scores, compression_rates, scores, reasons):
-            logger.info(f"{uid} ** {vmaf_score:.2f} ** {compression_rate:.4f} ** {score:.4f} || {reason}")
-
         # Generate round_id for organic compression scoring
         round_id = f"organic_compression_{int(time.time())}"
         
         logger.info(f"updating miner manager with {len(scores)} miner scores after organic compression requests processing…")
-        accumulate_scores, applied_multipliers = self.miner_manager.step_organics_compression(scores, uids, round_id, compression_rates)
+        accumulate_scores, applied_multipliers = self.miner_manager.step_organic_compression(scores, uids, vmaf_scores, compression_rates, vmaf_thresholds, round_id)
+
+        logger.info(f"organic compression scoring results for {len(uids)} miners")
+        logger.info(f"uids: {uids}")
+        for uid, vmaf_score, final_score, reason, compression_rate, applied_multiplier, vmaf_threshold in zip(
+            uids, vmaf_scores, scores, reasons, compression_rates, applied_multipliers, vmaf_thresholds
+        ):
+            logger.info(
+                f"{uid} ** VMAF: {vmaf_score:.2f} "
+                f"** VMAF Threshold: {vmaf_threshold} ** Compression Rate: {compression_rate:.4f} ** Applied_multiplier {applied_multiplier} ** Final: {final_score:.4f} || {reason}"
+            )
 
         miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
 
@@ -720,7 +725,7 @@ class Validator(base.BaseValidator):
         num_organic_upscaling_chunks = get_organic_upscaling_queue_size(self.redis_conn)
 
         if num_organic_upscaling_chunks > 0:
-            logger.info(f"🔷🔷🔷🔷 The organic_upscaling_queue_size: {num_organic_upscaling_chunks}, processing organic upscaling requests. 🔷🔷🔷🔷")
+            logger.info(f"🔷 | UPSCALING | The organic_upscaling_queue_size: {num_organic_upscaling_chunks}, processing organic upscaling requests. 🔷")
             await self.process_organic_upscaling_chunks(num_organic_upscaling_chunks)
             return True
         else:
@@ -732,7 +737,7 @@ class Validator(base.BaseValidator):
         num_organic_compression_chunks = get_organic_compression_queue_size(self.redis_conn)
 
         if num_organic_compression_chunks > 0:
-            logger.info(f"🔷🔷🔷🔷 The organic_compression_queue_size: {num_organic_compression_chunks}, processing organic compression requests. 🔷🔷🔷🔷")
+            logger.info(f"🔷 | COMPRESSION | The organic_compression_queue_size: {num_organic_compression_chunks}, processing organic compression requests. 🔷")
             await self.process_organic_compression_chunks(num_organic_compression_chunks)
             return True
         else:
@@ -745,7 +750,7 @@ class Validator(base.BaseValidator):
 
         needed = min(CONFIG.bandwidth.requests_per_organic_interval, num_organic_chunks)
         
-        logger.info(f"🍉 Start processing organic upscaling query. need {needed} miners 🍉")
+        logger.info(f"☘️ | UPSCALING | Start processing organic upscaling query. need {needed} miners ☘️")
 
         forward_uids = get_organic_forward_uids(self, needed, "upscaling", CONFIG.bandwidth.min_stake)
 
@@ -769,9 +774,9 @@ class Validator(base.BaseValidator):
 
         timestamp = datetime.now(timezone.utc).isoformat()
 
-        logger.info("💡 Performing forward operations asynchronously for upscaling 💡")
+        logger.info("🌜 | UPSCALING | Performing forward operations asynchronously for upscaling 🌜")
         forward_tasks = [
-            self.dendrite.forward(axons=[axon], synapse=synapse, timeout=35)
+            self.dendrite.forward(axons=[axon], synapse=synapse, timeout=120)
             for axon, synapse in zip(axon_list, synapses)
         ]
 
@@ -797,7 +802,7 @@ class Validator(base.BaseValidator):
 
         needed = min(CONFIG.bandwidth.requests_per_organic_interval, num_organic_chunks)
         
-        logger.info(f"🍉 Start processing organic compression query. need {needed} miners 🍉")
+        logger.info(f"☘️ | COMPRESSION | Start processing organic compression query. need {needed} miners ☘️")
 
         forward_uids = get_organic_forward_uids(self, needed, "compression", CONFIG.bandwidth.min_stake)
 
@@ -821,9 +826,9 @@ class Validator(base.BaseValidator):
 
         timestamp = datetime.now(timezone.utc).isoformat()
 
-        logger.info("💡 Performing forward operations asynchronously for compression 💡")
+        logger.info("🌜 | COMPRESSION | Performing forward operations asynchronously for compression 🌜")
         forward_tasks = [
-            self.dendrite.forward(axons=[axon], synapse=synapse, timeout=35)
+            self.dendrite.forward(axons=[axon], synapse=synapse, timeout=120)
             for axon, synapse in zip(axon_list, synapses)
         ]
 

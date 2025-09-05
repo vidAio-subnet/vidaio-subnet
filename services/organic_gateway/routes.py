@@ -5,7 +5,7 @@ from typing import Optional
 from config import logger
 from models import (
     UpscaleRequest, UpscaleResponse, CompressionRequest, CompressionResponse, StatusResponse, 
-    ResultResponse, TaskStatus, UpdateTaskStatusRequest
+    ResultResponse, TaskStatus, UpdateTaskStatusRequest, TaskCountResponse
 )
 from services import get_task_service, get_redis_service, TaskService
 from config import get_settings
@@ -57,7 +57,21 @@ async def upscale(
         message="Task has been queued for processing"
     )
 
-@router.post("/compression", response_model=CompressionResponse)
+@router.get("/task_count", response_model=TaskCountResponse)
+async def get_task_count(
+    redis_service = Depends(get_redis_service)
+):
+    """
+    Get the number of tasks in the queue
+    """
+
+    compression_count =await redis_service.get_organic_compression_queue_size()
+    upscaling_count = await redis_service.get_organic_upscaling_queue_size()
+    total_count = compression_count + upscaling_count
+
+    return TaskCountResponse(compression_count=compression_count, upscaling_count=upscaling_count, total_count=total_count)
+
+@router.post("/compress", response_model=CompressionResponse)
 async def compression(
     request: CompressionRequest,
     background_tasks: BackgroundTasks,
@@ -176,6 +190,15 @@ async def get_task_result(
             processed_video_url=result["processed_video_url"],
             score=result["score"],
             message="Task completed successfully"
+        )
+        
+    except HTTPException as e:
+        logger.error(f"HTTP error retrieving result for task {task_id}: {str(e.detail)}")
+        return ResultResponse(
+            task_id=task_id,
+            status=status,
+            original_video_url=original_video_url,
+            message=f"Service error: {str(e.detail)}"
         )
         
     except Exception as e:

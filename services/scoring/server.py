@@ -1065,8 +1065,6 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
                 ref_cap.release()
                 continue
 
-
-
         except Exception as e:
             print(f"system error processing reference video: {e}. skipping scoring")
             vmaf_scores.append(-1)
@@ -1382,6 +1380,15 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
         reasons=reasons
     )
 
+class OrganicsCompressionScoringResponse(BaseModel):
+    """
+    Response model for organics scoring. Contains the list of calculated scores for each distorted video.
+    """
+    vmaf_scores: List[float]
+    compression_rates: List[float]
+    final_scores: List[float]
+    reasons: List[str]
+
 @app.post("/score_organics_compression")
 async def score_organics_compression(request: OrganicsCompressionScoringRequest) -> OrganicsCompressionScoringResponse:
     print("#################### 🤖 start scoring ####################")
@@ -1404,7 +1411,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             distorted_video_paths.append(None)
 
     for idx, (ref_url, dist_path, uid, vmaf_threshold) in enumerate(
-        zip(request.reference_urls, distorted_video_paths, request.uids, request.task_types)
+        zip(request.reference_urls, distorted_video_paths, request.uids, request.vmaf_thresholds)
     ):
         print(f"🧩 processing {uid}.... downloading reference video.... 🧩")
         ref_path = None
@@ -1612,7 +1619,14 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
 
             # Delete the uploaded object
             # storage_client.delete_file(uploaded_object_name)
-            
+
+    return OrganicsCompressionScoringResponse(
+        vmaf_scores=vmaf_scores,
+        compression_rates=compression_rates,
+        final_scores=final_scores,
+        reasons=reasons
+    )
+
 
 if __name__ == "__main__":
     import uvicorn

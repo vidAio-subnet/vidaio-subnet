@@ -2,11 +2,22 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import Depends
 
 from config import logger
-from services import get_redis_connection, TaskService
+from services import TaskService
 from config import get_settings
+import redis
 
 # Data cleanup scheduler
 scheduler = BackgroundScheduler()
+
+def get_redis_connection(settings):
+    """Create Redis connection"""
+    return redis.Redis(
+        host=settings.REDIS_HOST,
+        port=settings.REDIS_PORT,
+        db=settings.REDIS_DB,
+        password=settings.REDIS_PASSWORD,
+        decode_responses=True
+    )
 
 def setup_data_cleanup_job(settings=Depends(get_settings)):
     """Setup scheduled job for data cleanup"""
