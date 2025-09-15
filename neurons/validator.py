@@ -579,15 +579,26 @@ class Validator(base.BaseValidator):
         random.shuffle(combined)
         uids, distorted_urls, reference_urls, task_types = map(list, zip(*combined))
 
+        num_pairs_to_validate = min(1, len(combined))  # Validate up to 1 pair
+        selected_indices = random.sample(range(len(combined)), num_pairs_to_validate)
+        
+        # Select only the randomly chosen pairs
+        selected_uids = [uids[i] for i in selected_indices]
+        selected_distorted_urls = [distorted_urls[i] for i in selected_indices]
+        selected_reference_urls = [reference_urls[i] for i in selected_indices]
+        selected_task_types = [task_types[i] for i in selected_indices]
+
+        logger.info(f"Randomly selected {len(selected_uids)} pairs out of {len(uids)} total pairs for validation")
+
         score_response = await self.score_client.post(
             "/score_organics_upscaling",
             json={
-                "uids": uids,
-                "distorted_urls": distorted_urls,
-                "reference_urls": reference_urls,
-                "task_types": task_types
+                "uids": selected_uids,
+                "distorted_urls": selected_distorted_urls,
+                "reference_urls": selected_reference_urls,
+                "task_types": selected_task_types
             },
-            timeout=1500
+            timeout=38
         )
 
         response_data = score_response.json()
@@ -602,24 +613,24 @@ class Validator(base.BaseValidator):
         pieapp_scores.extend([0.0] * (max_length - len(pieapp_scores)))
         reasons.extend(["no reason provided"] * (max_length - len(reasons)))
 
-        logger.info(f"organic upscaling scoring results for {len(uids)} miners")
-        logger.info(f"uids: {uids}")
-        for uid, vmaf_score, pieapp_score, score, reason in zip(uids, vmaf_scores, pieapp_scores, scores, reasons):
+        logger.info(f"organic upscaling scoring results for {len(selected_uids)} miners")
+        logger.info(f"uids: {selected_uids}")
+        for uid, vmaf_score, pieapp_score, score, reason in zip(selected_uids, vmaf_scores, pieapp_scores, scores, reasons):
             logger.info(f"{uid} ** {vmaf_score:.2f} ** {pieapp_score:.2f} ** {score:.4f} || {reason}")
 
         # Generate round_id for organic upscaling scoring
         round_id = f"organic_upscaling_{int(time.time())}"
         
         logger.info(f"updating miner manager with {len(scores)} miner scores after organic upscaling requests processing…")
-        accumulate_scores, applied_multipliers = self.miner_manager.step_organic_upscaling(scores, uids, round_id)
+        accumulate_scores, applied_multipliers = self.miner_manager.step_organic_upscaling(scores, selected_uids, round_id)
 
-        miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
+        miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in selected_uids]
 
         miner_data = {
             "validator_uid": self.my_subnet_uid,
             "validator_hotkey": self.wallet.hotkey.ss58_address,
             "request_type": "Organic_Upscaling",
-            "miner_uids": uids,
+            "miner_uids": selected_uids,
             "miner_hotkeys": miner_hotkeys,
             "vmaf_scores": vmaf_scores,
             "pieapp_scores": pieapp_scores,
@@ -627,8 +638,8 @@ class Validator(base.BaseValidator):
             "accumulate_scores": accumulate_scores,
             "applied_multipliers": applied_multipliers,
             "status": reasons,
-            "task_urls": reference_urls,
-            "processed_urls": distorted_urls,
+            "task_urls": selected_reference_urls,
+            "processed_urls": selected_distorted_urls,
             "timestamp": timestamp
         }
         
@@ -647,15 +658,26 @@ class Validator(base.BaseValidator):
         random.shuffle(combined)
         uids, distorted_urls, reference_urls, vmaf_thresholds = map(list, zip(*combined))
 
+        num_pairs_to_validate = min(5, len(combined))  # Validate up to 5 pairs
+        selected_indices = random.sample(range(len(combined)), num_pairs_to_validate)
+        
+        # Select only the randomly chosen pairs
+        selected_uids = [uids[i] for i in selected_indices]
+        selected_distorted_urls = [distorted_urls[i] for i in selected_indices]
+        selected_reference_urls = [reference_urls[i] for i in selected_indices]
+        selected_vmaf_thresholds = [vmaf_thresholds[i] for i in selected_indices]
+
+        logger.info(f"Randomly selected {len(selected_uids)} pairs out of {len(uids)} total pairs for compression validation")
+
         score_response = await self.score_client.post(
             "/score_organics_compression",
             json={
-                "uids": uids,
-                "distorted_urls": distorted_urls,
-                "reference_urls": reference_urls,
-                "vmaf_thresholds": vmaf_thresholds
+                "uids": selected_uids,
+                "distorted_urls": selected_distorted_urls,
+                "reference_urls": selected_reference_urls,
+                "vmaf_thresholds": selected_vmaf_thresholds
             },
-            timeout=1500
+            timeout=120
         )
 
         response_data = score_response.json()
@@ -664,7 +686,7 @@ class Validator(base.BaseValidator):
         compression_rates = response_data.get("compression_rates", [])
         reasons = response_data.get("reasons", [])
 
-        max_length = max(len(uids), len(scores), len(vmaf_scores), len(compression_rates), len(reasons))
+        max_length = max(len(selected_uids), len(scores), len(vmaf_scores), len(compression_rates), len(reasons))
         scores.extend([0.0] * (max_length - len(scores)))
         vmaf_scores.extend([0.0] * (max_length - len(vmaf_scores)))
         compression_rates.extend([0.5] * (max_length - len(compression_rates)))
@@ -674,35 +696,35 @@ class Validator(base.BaseValidator):
         round_id = f"organic_compression_{int(time.time())}"
         
         logger.info(f"updating miner manager with {len(scores)} miner scores after organic compression requests processing…")
-        accumulate_scores, applied_multipliers = self.miner_manager.step_organic_compression(scores, uids, vmaf_scores, compression_rates, vmaf_thresholds, round_id)
+        accumulate_scores, applied_multipliers = self.miner_manager.step_organic_compression(scores, selected_uids, vmaf_scores, compression_rates, selected_vmaf_thresholds, round_id)
 
-        logger.info(f"organic compression scoring results for {len(uids)} miners")
-        logger.info(f"uids: {uids}")
+        logger.info(f"organic compression scoring results for {len(selected_uids)} miners")
+        logger.info(f"uids: {selected_uids}")
         for uid, vmaf_score, final_score, reason, compression_rate, applied_multiplier, vmaf_threshold in zip(
-            uids, vmaf_scores, scores, reasons, compression_rates, applied_multipliers, vmaf_thresholds
+            selected_uids, vmaf_scores, scores, reasons, compression_rates, applied_multipliers, selected_vmaf_thresholds
         ):
             logger.info(
                 f"{uid} ** VMAF: {vmaf_score:.2f} "
                 f"** VMAF Threshold: {vmaf_threshold} ** Compression Rate: {compression_rate:.4f} ** Applied_multiplier {applied_multiplier} ** Final: {final_score:.4f} || {reason}"
             )
 
-        miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
+        miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in selected_uids]
 
         miner_data = {
             "validator_uid": self.my_subnet_uid,
             "validator_hotkey": self.wallet.hotkey.ss58_address,
             "request_type": "Organic_Compression",
-            "miner_uids": uids,
+            "miner_uids": selected_uids,
             "miner_hotkeys": miner_hotkeys,
             "vmaf_scores": vmaf_scores,
-            "vmaf_thresholds": vmaf_thresholds,
+            "vmaf_thresholds": selected_vmaf_thresholds,
             "compression_rates": compression_rates,
             "final_scores": scores,
             "accumulate_scores": accumulate_scores,
             "applied_multipliers": applied_multipliers,
             "status": reasons,
-            "task_urls": reference_urls,
-            "processed_urls": distorted_urls,
+            "task_urls": selected_reference_urls,
+            "processed_urls": selected_distorted_urls,
             "timestamp": timestamp
         }
         
@@ -776,7 +798,7 @@ class Validator(base.BaseValidator):
 
         logger.info("🌜 | UPSCALING | Performing forward operations asynchronously for upscaling 🌜")
         forward_tasks = [
-            self.dendrite.forward(axons=[axon], synapse=synapse, timeout=120)
+            self.dendrite.forward(axons=[axon], synapse=synapse, timeout=40)
             for axon, synapse in zip(axon_list, synapses)
         ]
 

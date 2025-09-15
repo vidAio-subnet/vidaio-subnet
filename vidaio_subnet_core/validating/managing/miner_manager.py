@@ -848,7 +848,7 @@ class MinerManager:
             for uid, score in zip(total_uids, scores):
                 # Skip processing if score is -1 (skipped)
                 if score == -1:
-                    logger.debug(f"Skipping UID {uid} due to score -1 (skipped)")
+                    logger.debug(f"Skipping UID {uid} due to score -1")
                     # Get current miner state for return values
                     miner = self.query([uid]).get(uid, None)
                     if miner:
@@ -876,26 +876,49 @@ class MinerManager:
                     self.session.add(miner)
                 
                 # Convert organic scores to synthetic-like format
-                if score == 1.0:  # Success
-                    organic_s_f = 0.3  # Moderate success score
+
+                acc_score = 0.0
+
+                if score == 3.0:
+                    organic_s_f = 0.4
+                    organic_s_q = 0.5
+                    organic_s_l = 0.5
+                    success = True
+
+                    current_score = miner.accumulate_score
+                    boost_percentage = 0.03
+                    boost_amount = current_score * boost_percentage
+                    acc_score = current_score + boost_amount
+
+                elif score == 2.0:
+                    organic_s_f = 0.3
+                    organic_s_q = 0.5
+                    organic_s_l = 0.5
+                    success = True
+
+                    acc_score = miner.accumulate_score
+
+                elif score == 1.0:  # Failure
+                    organic_s_f = 0.2  # Moderate success score
                     organic_s_q = 0.5   # Moderate quality score
                     organic_s_l = 0.5   # Moderate length score
-                    success = True
-                elif score == 0.0:  # Failure
-                    # Deduct from current accumulated score for failure
-                    deduction_factor = 0.2  # Deduct 10% of current score
-                    current_score = miner.accumulate_score
-                    deduction = current_score * deduction_factor
-                    organic_s_f = -deduction  # Negative score to deduct
-                    organic_s_q = 0.0
-                    organic_s_l = 0.0
                     success = False
-                else:
-                    # Unknown score value
+
+                    current_score = miner.accumulate_score
+                    panelty_percentage = 0.05
+                    panelty_amount = current_score * panelty_percentage
+                    acc_score = current_score - panelty_amount
+
+                elif score == 0.0:  # Failure
                     organic_s_f = 0.0
                     organic_s_q = 0.0
                     organic_s_l = 0.0
                     success = False
+
+                    current_score = miner.accumulate_score
+                    panelty_percentage = 0.15  # Deduct 15% of current score
+                    panelty_amount = current_score * panelty_percentage
+                    acc_score = current_score - panelty_amount
 
                 # Add performance record for organic scoring
                 self._add_performance_record(
@@ -913,24 +936,12 @@ class MinerManager:
                     processed_task_type='upscaling'
                 )
                 
-                # Update miner metadata (recalculate multipliers, etc.)
                 self._update_miner_metadata(self.session, miner)
                 
-                # Apply multiplier to organic score
-                score_with_multiplier = organic_s_f
+                acc_scores.append(acc_score)
+                miner.accumulate_score = acc_score
+                applied_multipliers.append(1.0)
                 
-                # Accumulate score with decay factor (same as synthetic)
-                if organic_s_f != -100:  # Not a system error
-                    miner.accumulate_score = (
-                        miner.accumulate_score * CONFIG.score.decay_factor
-                        + score_with_multiplier * (1 - CONFIG.score.decay_factor)
-                    )
-                    miner.accumulate_score = max(0, miner.accumulate_score)
-                
-                acc_scores.append(miner.accumulate_score)
-                applied_multipliers.append(1)
-                
-                # Update miner statistics
                 miner.total_rounds_completed += 1
                 miner.last_update_timestamp = datetime.now()
                 
