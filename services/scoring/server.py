@@ -9,25 +9,19 @@ import asyncio
 import aiohttp
 import logging
 import tempfile
-import requests
 import subprocess
 import numpy as np
-from PIL import Image
 from pydantic import BaseModel
-import torch.nn.functional as F
 from typing import Optional, List
-from urllib.parse import urlparse
 from firerequests import FireRequests
 from vidaio_subnet_core import CONFIG
 from torchvision.models import resnet50
-from lpips_metric import calculate_lpips
-from moviepy.editor import VideoFileClip
 from fastapi import FastAPI, HTTPException
-from pieapp_metric import calculate_pieapp_score
-from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video
-from vidaio_subnet_core.utilities.storage_client import storage_client
-from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
 import torchvision.transforms as transforms
+from pieapp_metric import calculate_pieapp_score
+from vidaio_subnet_core.utilities.storage_client import storage_client
+from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video
+from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
 
 # Compression scoring constants
 COMPRESSION_RATE_WEIGHT = 0.8  # w_c
@@ -797,8 +791,6 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 os.unlink(ref_y4m_path)
             if dist_path and os.path.exists(dist_path):
                 os.unlink(dist_path)
-            # if ref_path and os.path.exists(ref_path):
-            #     os.unlink(ref_path)
 
             # Delete the uploaded object
             storage_client.delete_file(uploaded_object_name)
@@ -1065,8 +1057,6 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 os.unlink(ref_y4m_path)
             if dist_path and os.path.exists(dist_path):
                 os.unlink(dist_path)
-            # if ref_path and os.path.exists(ref_path):
-            #     os.unlink(ref_path)
 
             # Delete the uploaded object
             storage_client.delete_file(uploaded_object_name)
@@ -1422,15 +1412,6 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
         reasons=reasons
     )
 
-class OrganicsCompressionScoringResponse(BaseModel):
-    """
-    Response model for organics scoring. Contains the list of calculated scores for each distorted video.
-    """
-    vmaf_scores: List[float]
-    compression_rates: List[float]
-    final_scores: List[float]
-    reasons: List[str]
-
 @app.post("/score_organics_compression")
 async def score_organics_compression(request: OrganicsCompressionScoringRequest) -> OrganicsCompressionScoringResponse:
     print("#################### 🤖 start scoring ####################")
@@ -1684,20 +1665,19 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             # Clean up resources for this pair
             if ref_cap:
                 ref_cap.release()
-            if ref_y4m_path and os.path.exists(ref_y4m_path):
-                os.unlink(ref_y4m_path)
+            if dist_cap:
+                dist_cap.release()
+            if ref_path and os.path.exists(ref_path):
+                os.unlink(ref_path)
             if dist_path and os.path.exists(dist_path):
                 os.unlink(dist_path)
+            if ref_y4m_path and os.path.exists(ref_y4m_path):
+                os.unlink(ref_y4m_path)
             # Clean up chunked video files
             if ref_clip_path and os.path.exists(ref_clip_path):
                 os.unlink(ref_clip_path)
             if dist_clip_path and os.path.exists(dist_clip_path):
                 os.unlink(dist_clip_path)
-            # if ref_path and os.path.exists(ref_path):
-            #     os.unlink(ref_path)
-
-            # Delete the uploaded object
-            # storage_client.delete_file(uploaded_object_name)
 
     return OrganicsCompressionScoringResponse(
         vmaf_scores=vmaf_scores,

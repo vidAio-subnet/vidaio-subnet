@@ -62,14 +62,16 @@ class UpscalingMinerData(BaseMinerData):
 class CompressionMinerData(BaseMinerData):
     processing_task_type: str = "compression"
     compression_rates: List[float] = None
-    vmaf_threshold: float = 85
+    vmaf_thresholds: List[float] = None
     
     def __post_init__(self):
         super().__post_init__()
         if self.compression_rates is not None:
             if len(self.compression_rates) != len(self.miner_uids):
                 raise ValueError("compression_rates must have the same length as other list fields")
-    
+        if self.vmaf_thresholds is not None:
+            if len(self.vmaf_thresholds) != len(self.miner_uids):
+                raise ValueError("vmaf_thresholds must have the same length as other list fields")
     def to_dict(self):
         result = {
             "validator_uid": self.validator_uid,
@@ -80,9 +82,9 @@ class CompressionMinerData(BaseMinerData):
             "miner_hotkeys": self.miner_hotkeys,
             "timestamp": self.timestamp,
             "vmaf_scores": self.vmaf_scores,
+            "vmaf_thresholds": self.vmaf_thresholds,
             "final_scores": self.final_scores,
             "accumulate_scores": self.accumulate_scores,
-            "vmaf_threshold": self.vmaf_threshold,
             "applied_multipliers": self.applied_multipliers,
             "status": self.status,
         }

@@ -1,23 +1,28 @@
-import bittensor as bt
+import os
+import time
+import uuid
 import httpx
+import random
 import asyncio
 import traceback
 import pandas as pd
-import time
-import random
-import uuid
+import bittensor as bt
 from loguru import logger
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
+from vidaio_subnet_core.utilities.version import get_version
 from vidaio_subnet_core import validating, CONFIG, base, protocol
 from vidaio_subnet_core.utilities.wandb_manager import WandbManager
-from vidaio_subnet_core.utilities.uids import get_organic_forward_uids
-from vidaio_subnet_core.utilities.version import get_version
-from vidaio_subnet_core.protocol import LengthCheckProtocol, TaskWarrantProtocol, VideoCompressionProtocol, TaskType
-from services.dashboard.server import send_upscaling_data_to_dashboard, send_compression_data_to_dashboard
 from services.video_scheduler.video_utils import get_trim_video_path
-from services.video_scheduler.redis_utils import get_redis_connection, get_organic_upscaling_queue_size, get_organic_compression_queue_size, set_scheduler_ready
-import os
+from vidaio_subnet_core.utilities.uids import get_organic_forward_uids
+from vidaio_subnet_core.protocol import LengthCheckProtocol, TaskWarrantProtocol, TaskType
+from services.dashboard.server import send_upscaling_data_to_dashboard, send_compression_data_to_dashboard
+from services.video_scheduler.redis_utils import (
+    get_redis_connection, 
+    get_organic_upscaling_queue_size, 
+    get_organic_compression_queue_size, 
+    set_scheduler_ready
+)
 
 VMAF_QUALITY_THRESHOLDS = [
     85, #Low
@@ -92,12 +97,11 @@ class Validator(base.BaseValidator):
         
         while not await self.check_scheduler_ready():
             logger.info("⏳ Waiting for scheduler server to be ready (all synthetic queues need to be populated)...")
-            await asyncio.sleep(10)  # Wait 10 seconds before checking again
+            await asyncio.sleep(10)
         
         logger.info("✅ Scheduler is ready! Proceeding with synthetic requests.")
 
     async def start_synthetic_epoch(self):
-        # Wait for scheduler to be ready first
         await self.wait_for_scheduler_ready()
         
         logger.info("✅✅✅✅✅ Starting synthetic forward ✅✅✅✅✅")
@@ -116,7 +120,6 @@ class Validator(base.BaseValidator):
 
         axons = [self.metagraph.axons[uid] for uid in random_uids]
 
-        # Step 1: Send TaskWarrantProtocol requests to determine miner capabilities
         logger.info(f"Sending TaskWarrantProtocol requests to {len(axons)} miners")
 
         version = get_version()
@@ -127,7 +130,6 @@ class Validator(base.BaseValidator):
         )
         logger.info(f"💊 Received {len(task_warrant_responses)} responses from miners for TaskWarrantProtocol requests💊")
 
-        # Step 2: Group miners based on their task warrant responses
         upscaling_miners = []
         compression_miners = []
         unknown_task_miners = []
@@ -143,7 +145,6 @@ class Validator(base.BaseValidator):
             else:
                 unknown_task_miners.append(uid)
         
-        # Handle unknown task warrant miners by checking database
         if unknown_task_miners:
             logger.info(f"🔍 Checking database for {len(unknown_task_miners)} unknown task warrant miners")
             db_task_types = self.miner_manager.get_miner_processing_task_types(unknown_task_miners)
@@ -163,15 +164,12 @@ class Validator(base.BaseValidator):
                         compression_miners.append((axon, uid))
                         resolved_from_db.append(f"{uid}(compression)")
                     else:
-                        # Unknown database value, default to upscaling
                         upscaling_miners.append((axon, uid))
                         defaulted_to_upscaling.append(f"{uid}(unknown_db_value:{db_task_type})")
                 else:
-                    # No database record or null processing_task_type, default to upscaling
                     upscaling_miners.append((axon, uid))
                     defaulted_to_upscaling.append(f"{uid}(no_db_record)")
             
-        # Log grouped results in organized lists
         upscaling_uids = [uid for _, uid in upscaling_miners]
         compression_uids = [uid for _, uid in compression_miners]
         
@@ -183,7 +181,6 @@ class Validator(base.BaseValidator):
         if unknown_task_miners:
             logger.info(f"❓ Unknown task UIDs processed: {unknown_task_miners}")
 
-        # Step 3: Send LengthCheckProtocol requests to upscaling miners
         if upscaling_miners:
             logger.info(f"Sending LengthCheckProtocol requests to {len(upscaling_miners)} upscaling miners")
             
@@ -196,7 +193,6 @@ class Validator(base.BaseValidator):
             )
             logger.info(f"💊 Received {len(length_check_responses)} responses from upscaling miners for LengthCheckProtocol requests💊")
 
-            # Extract content lengths for upscaling miners
             upscaling_content_lengths = []
             for response in length_check_responses:
                 avail_max_len = response.max_content_length.value
@@ -207,13 +203,11 @@ class Validator(base.BaseValidator):
 
             logger.info(f"Upscaling content lengths: {upscaling_content_lengths}")
 
-            # Create upscaling miner batches with content lengths
             upscaling_miners_with_lengths = []
             for i, (axon, uid) in enumerate(upscaling_miners):
                 content_length = upscaling_content_lengths[i] if i < len(upscaling_content_lengths) else 5
                 upscaling_miners_with_lengths.append((axon, uid, content_length))
 
-            # Process upscaling miners in batches
             await self.process_upscaling_miners(upscaling_miners_with_lengths, version)
 
             upscaling_processed_time = time.time() - upscaling_start_time
@@ -222,7 +216,6 @@ class Validator(base.BaseValidator):
 
             await asyncio.sleep(2)
 
-        # Step 4: Process compression miners (placeholder for now)
         if compression_miners:
             logger.info(f"Processing {len(compression_miners)} compression miners")
 
@@ -512,7 +505,7 @@ class Validator(base.BaseValidator):
             distorted_urls.append(response.miner_response.optimized_video_url)
 
         score_response = await self.score_client.post(
-            "/score_compression_synthetics",  # Using the same endpoint for now
+            "/score_compression_synthetics",
             json = {
                 "uids": uids,
                 "distorted_urls": distorted_urls,
@@ -535,11 +528,9 @@ class Validator(base.BaseValidator):
 
         miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
         
-        # Use the compression rates from the scoring response
         if not compression_rates:
-            compression_rates = [0.5] * len(uids)  # Fallback to default if not provided
+            compression_rates = [0.5] * len(uids)
         
-        # Use the updated step_synthetics_compression method with compression context
         accumulate_scores, applied_multipliers = self.miner_manager.step_synthetics_compression(
             round_id, uids, miner_hotkeys, vmaf_scores,
             final_scores, [10] * len(uids), vmaf_threshold, compression_rates
@@ -560,6 +551,8 @@ class Validator(base.BaseValidator):
         compression_rates.extend([0.5] * (max_length - len(compression_rates)))
         applied_multipliers.extend([0.0] * (max_length - len(applied_multipliers)))
 
+        vmaf_thresholds = [vmaf_threshold] * len(uids)
+
         logger.info(f"Compression scoring results for {len(uids)} miners")
         logger.info(f"Uids: {uids}")
 
@@ -579,7 +572,7 @@ class Validator(base.BaseValidator):
             "miner_uids": uids,
             "miner_hotkeys": miner_hotkeys,
             "vmaf_scores": vmaf_scores,
-            "vmaf_threshold": vmaf_threshold,
+            "vmaf_thresholds": vmaf_thresholds,
             "compression_rates": compression_rates,
             "final_scores": final_scores,
             "accumulate_scores": accumulate_scores,
@@ -600,15 +593,13 @@ class Validator(base.BaseValidator):
         """Score organic upscaling tasks."""
         distorted_urls = [response.miner_response.optimized_video_url for response in responses]
 
-        # zip and shuffle all lists together to preserve alignment
         combined = list(zip(uids, distorted_urls, reference_urls, task_types))
         random.shuffle(combined)
         uids, distorted_urls, reference_urls, task_types = map(list, zip(*combined))
 
-        num_pairs_to_validate = min(1, len(combined))  # Validate up to 1 pair
+        num_pairs_to_validate = min(1, len(combined))
         selected_indices = random.sample(range(len(combined)), num_pairs_to_validate)
         
-        # Select only the randomly chosen pairs
         selected_uids = [uids[i] for i in selected_indices]
         selected_distorted_urls = [distorted_urls[i] for i in selected_indices]
         selected_reference_urls = [reference_urls[i] for i in selected_indices]
@@ -631,20 +622,23 @@ class Validator(base.BaseValidator):
         scores = response_data.get("final_scores", [])
         vmaf_scores = response_data.get("vmaf_scores", [])
         pieapp_scores = response_data.get("pieapp_scores", [])
+        quality_scores = response_data.get("quality_scores", [])
+        length_scores = response_data.get("length_scores", [])
         reasons = response_data.get("reasons", [])
 
         max_length = max(len(uids), len(scores), len(vmaf_scores), len(pieapp_scores), len(reasons))
         scores.extend([0.0] * (max_length - len(scores)))
         vmaf_scores.extend([0.0] * (max_length - len(vmaf_scores)))
         pieapp_scores.extend([0.0] * (max_length - len(pieapp_scores)))
+        quality_scores.extend([0.0] * (max_length - len(quality_scores)))
+        length_scores.extend([0.0] * (max_length - len(length_scores)))
         reasons.extend(["no reason provided"] * (max_length - len(reasons)))
 
         logger.info(f"organic upscaling scoring results for {len(selected_uids)} miners")
         logger.info(f"uids: {selected_uids}")
-        for uid, vmaf_score, pieapp_score, score, reason in zip(selected_uids, vmaf_scores, pieapp_scores, scores, reasons):
-            logger.info(f"{uid} ** {vmaf_score:.2f} ** {pieapp_score:.2f} ** {score:.4f} || {reason}")
+        for uid, vmaf_score, score, reason in zip(selected_uids, vmaf_scores, scores, reasons):
+            logger.info(f"{uid} ** {vmaf_score:.2f} ** {score:.4f} || {reason}")
 
-        # Generate round_id for organic upscaling scoring
         round_id = f"organic_upscaling_{int(time.time())}"
         
         logger.info(f"updating miner manager with {len(scores)} miner scores after organic upscaling requests processing…")
@@ -655,11 +649,14 @@ class Validator(base.BaseValidator):
         miner_data = {
             "validator_uid": self.my_subnet_uid,
             "validator_hotkey": self.wallet.hotkey.ss58_address,
-            "request_type": "Organic_Upscaling",
+            "request_type": "Organic",
+            "processing_task_type": "upscaling",
             "miner_uids": selected_uids,
             "miner_hotkeys": miner_hotkeys,
             "vmaf_scores": vmaf_scores,
             "pieapp_scores": pieapp_scores,
+            "quality_scores": quality_scores,
+            "length_scores": length_scores,
             "final_scores": scores,
             "accumulate_scores": accumulate_scores,
             "applied_multipliers": applied_multipliers,
@@ -669,25 +666,23 @@ class Validator(base.BaseValidator):
             "timestamp": timestamp
         }
         
-        # success = send_data_to_dashboard(miner_data)
-        # if success:
-        #     logger.info("Data successfully sent to dashboard")
-        # else:
-        #     logger.info("Failed to send data to dashboard")
+        success = send_upscaling_data_to_dashboard(miner_data)
+        if success:
+            logger.info("Data successfully sent to dashboard")
+        else:
+            logger.info("Failed to send data to dashboard")
 
     async def score_organics_compression(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: list[str], vmaf_thresholds: list[float], timestamp: str):
         """Score organic compression tasks."""
         distorted_urls = [response.miner_response.optimized_video_url for response in responses]
 
-        # zip and shuffle all lists together to preserve alignment
         combined = list(zip(uids, distorted_urls, reference_urls, vmaf_thresholds))
         random.shuffle(combined)
         uids, distorted_urls, reference_urls, vmaf_thresholds = map(list, zip(*combined))
 
-        num_pairs_to_validate = min(5, len(combined))  # Validate up to 5 pairs
+        num_pairs_to_validate = min(5, len(combined))
         selected_indices = random.sample(range(len(combined)), num_pairs_to_validate)
         
-        # Select only the randomly chosen pairs
         selected_uids = [uids[i] for i in selected_indices]
         selected_distorted_urls = [distorted_urls[i] for i in selected_indices]
         selected_reference_urls = [reference_urls[i] for i in selected_indices]
@@ -718,7 +713,6 @@ class Validator(base.BaseValidator):
         compression_rates.extend([0.5] * (max_length - len(compression_rates)))
         reasons.extend(["no reason provided"] * (max_length - len(reasons)))
 
-        # Generate round_id for organic compression scoring
         round_id = f"organic_compression_{int(time.time())}"
         
         logger.info(f"updating miner manager with {len(scores)} miner scores after organic compression requests processing…")
@@ -739,7 +733,8 @@ class Validator(base.BaseValidator):
         miner_data = {
             "validator_uid": self.my_subnet_uid,
             "validator_hotkey": self.wallet.hotkey.ss58_address,
-            "request_type": "Organic_Compression",
+            "request_type": "Organic",
+            "processing_task_type": "compression",
             "miner_uids": selected_uids,
             "miner_hotkeys": miner_hotkeys,
             "vmaf_scores": vmaf_scores,
@@ -754,12 +749,11 @@ class Validator(base.BaseValidator):
             "timestamp": timestamp
         }
         
-        # success = send_data_to_dashboard(miner_data)
-        # if success:
-        #     logger.info("Data successfully sent to dashboard")
-        # else:
-        #     logger.info("Failed to send data to dashboard")
-
+        success = send_compression_data_to_dashboard(miner_data)
+        if success:
+            logger.info("Compression data successfully sent to dashboard")
+        else:
+            logger.info("Failed to send compression data to dashboard")
 
     def filter_miners(self):
         min_stake = CONFIG.bandwidth.min_stake
@@ -777,7 +771,6 @@ class Validator(base.BaseValidator):
             await self.process_organic_upscaling_chunks(num_organic_upscaling_chunks)
             return True
         else:
-            # logger.info("The organic upscaling queue is currently empty, so it will be skipped")
             return False
 
     async def should_process_organic_compression(self):
@@ -789,7 +782,6 @@ class Validator(base.BaseValidator):
             await self.process_organic_compression_chunks(num_organic_compression_chunks)
             return True
         else:
-            # logger.info("The organic compression queue is currently empty, so it will be skipped")
             return False
 
     async def process_organic_upscaling_chunks(self, num_organic_chunks):
@@ -814,7 +806,7 @@ class Validator(base.BaseValidator):
             logger.error(
                 f"Mismatch in organic upscaling synapses after building organic protocol: {len(task_ids)} != {needed} or {len(synapses)} != {needed}"
             )
-            return  # Exit early if there's a mismatch
+            return
 
         logger.info("Updating task status to 'processing' for upscaling")
         for task_id, original_url in zip(task_ids, original_urls):
@@ -867,7 +859,7 @@ class Validator(base.BaseValidator):
             logger.error(
                 f"Mismatch in organic compression synapses after building organic protocol: {len(task_ids)} != {needed} or {len(synapses)} != {needed}"
             )
-            return  # Exit early if there's a mismatch
+            return
 
         logger.info(f"Processing organic compression chunks with uids: {forward_uids.tolist()}")
         logger.info("Updating task status to 'processing' for compression")
@@ -883,7 +875,6 @@ class Validator(base.BaseValidator):
         ]
 
         raw_responses = await asyncio.gather(*forward_tasks)
-
         responses = [response[0] for response in raw_responses]
         processed_urls = [response.miner_response.optimized_video_url for response in responses]
 
