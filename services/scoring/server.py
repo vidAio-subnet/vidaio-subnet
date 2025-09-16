@@ -1459,7 +1459,9 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
         ref_path = None
         ref_cap = None
         dist_cap = None
-        ref_upscaled_y4m_path = None
+        ref_y4m_path = None
+        ref_clip_path = None
+        dist_clip_path = None
 
         uid_start_time = time.time() # start time for each uid
 
@@ -1593,7 +1595,11 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             # Get the number of frames in the clips for Y4M conversion
             ref_clip_cap = cv2.VideoCapture(ref_clip_path)
             ref_clip_frames = int(ref_clip_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            random_frames = sorted(random.sample(range(ref_clip_frames), VMAF_SAMPLE_COUNT))
+            ref_clip_cap.release()
+            
+            # Ensure we don't sample more frames than available
+            sample_count = min(VMAF_SAMPLE_COUNT, ref_clip_frames)
+            random_frames = sorted(random.sample(range(ref_clip_frames), sample_count))
             ref_y4m_path = convert_mp4_to_y4m(ref_clip_path, random_frames)
             print("The reference video clip has been successfully converted to Y4M format.")
             step_time = time.time() - uid_start_time
@@ -1683,9 +1689,9 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             if dist_path and os.path.exists(dist_path):
                 os.unlink(dist_path)
             # Clean up chunked video files
-            if 'ref_clip_path' in locals() and ref_clip_path and os.path.exists(ref_clip_path):
+            if ref_clip_path and os.path.exists(ref_clip_path):
                 os.unlink(ref_clip_path)
-            if 'dist_clip_path' in locals() and dist_clip_path and os.path.exists(dist_clip_path):
+            if dist_clip_path and os.path.exists(dist_clip_path):
                 os.unlink(dist_clip_path)
             # if ref_path and os.path.exists(ref_path):
             #     os.unlink(ref_path)

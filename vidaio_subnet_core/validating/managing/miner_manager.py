@@ -1102,6 +1102,32 @@ class MinerManager:
         finally:
             session.close()
 
+    def get_miner_processing_task_types(self, uids: List[int]) -> Dict[int, str]:
+        """
+        Get processing_task_type for specific UIDs from the database.
+        Returns a dictionary mapping UID to processing_task_type.
+        If a miner doesn't exist or has no processing_task_type, it won't be in the result.
+        """
+        session = self.session
+        try:
+            miners = session.query(
+                MinerMetadata.uid,
+                MinerMetadata.processing_task_type
+            ).filter(
+                MinerMetadata.uid.in_(uids),
+                MinerMetadata.processing_task_type.isnot(None)
+            ).all()
+            
+            uid_to_task_type = {miner.uid: miner.processing_task_type for miner in miners}
+            
+            return uid_to_task_type
+            
+        except Exception as e:
+            logger.error(f"Error getting miner processing task types: {e}")
+            return {}
+        finally:
+            session.close()
+
     @property
     def weights(self):
         """

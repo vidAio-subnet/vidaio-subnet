@@ -141,10 +141,36 @@ class Validator(base.BaseValidator):
             elif response.warrant_task == TaskType.COMPRESSION:
                 compression_miners.append((axon, uid))
             else:
-                logger.warning(f"UID {uid} has unknown task warrant: {response.warrant_task}, sending Upscaling Task")
-                upscaling_miners.append((axon, uid))
                 unknown_task_miners.append(uid)
         
+        # Handle unknown task warrant miners by checking database
+        if unknown_task_miners:
+            logger.info(f"🔍 Checking database for {len(unknown_task_miners)} unknown task warrant miners")
+            db_task_types = self.miner_manager.get_miner_processing_task_types(unknown_task_miners)
+            
+            resolved_from_db = []
+            defaulted_to_upscaling = []
+            
+            for i, uid in enumerate(unknown_task_miners):
+                axon = axons[random_uids.index(uid)]
+                
+                if uid in db_task_types:
+                    db_task_type = db_task_types[uid]
+                    if db_task_type == "upscaling":
+                        upscaling_miners.append((axon, uid))
+                        resolved_from_db.append(f"{uid}(upscaling)")
+                    elif db_task_type == "compression":
+                        compression_miners.append((axon, uid))
+                        resolved_from_db.append(f"{uid}(compression)")
+                    else:
+                        # Unknown database value, default to upscaling
+                        upscaling_miners.append((axon, uid))
+                        defaulted_to_upscaling.append(f"{uid}(unknown_db_value:{db_task_type})")
+                else:
+                    # No database record or null processing_task_type, default to upscaling
+                    upscaling_miners.append((axon, uid))
+                    defaulted_to_upscaling.append(f"{uid}(no_db_record)")
+            
         # Log grouped results in organized lists
         upscaling_uids = [uid for _, uid in upscaling_miners]
         compression_uids = [uid for _, uid in compression_miners]
@@ -155,7 +181,7 @@ class Validator(base.BaseValidator):
         if compression_uids:
             logger.info(f"📉 Compression UIDs: {compression_uids}")
         if unknown_task_miners:
-            logger.info(f"❓ Unknown task UIDs (defaulted to upscaling): {unknown_task_miners}")
+            logger.info(f"❓ Unknown task UIDs processed: {unknown_task_miners}")
 
         # Step 3: Send LengthCheckProtocol requests to upscaling miners
         if upscaling_miners:
@@ -598,7 +624,7 @@ class Validator(base.BaseValidator):
                 "reference_urls": selected_reference_urls,
                 "task_types": selected_task_types
             },
-            timeout=38
+            timeout=42
         )
 
         response_data = score_response.json()
@@ -798,7 +824,7 @@ class Validator(base.BaseValidator):
 
         logger.info("🌜 | UPSCALING | Performing forward operations asynchronously for upscaling 🌜")
         forward_tasks = [
-            self.dendrite.forward(axons=[axon], synapse=synapse, timeout=40)
+            self.dendrite.forward(axons=[axon], synapse=synapse, timeout=45)
             for axon, synapse in zip(axon_list, synapses)
         ]
 
@@ -807,6 +833,7 @@ class Validator(base.BaseValidator):
         responses = [response[0] for response in raw_responses]
         processed_urls = [response.miner_response.optimized_video_url for response in responses]
 
+        logger.info(f"Processing organic upscaling chunks with uids: {forward_uids.tolist()}")
         logger.info("Updating task status to 'completed' and pushing results for upscaling")
         for task_id, original_url, processed_url in zip(task_ids, original_urls, processed_urls):
             await self.update_task_status(task_id, original_url, "completed")
@@ -842,6 +869,7 @@ class Validator(base.BaseValidator):
             )
             return  # Exit early if there's a mismatch
 
+        logger.info(f"Processing organic compression chunks with uids: {forward_uids.tolist()}")
         logger.info("Updating task status to 'processing' for compression")
         for task_id, original_url in zip(task_ids, original_urls):
             await self.update_task_status(task_id, original_url, "processing")
