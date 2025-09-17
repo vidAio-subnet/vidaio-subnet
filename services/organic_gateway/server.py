@@ -24,8 +24,8 @@ async def lifespan(app: FastAPI):
 
 # Create FastAPI app with lifespan
 app = FastAPI(
-    title="Video Upscaling Subnet API",
-    description="API for handling video upscaling tasks",
+    title="Video Processing Subnet API",
+    description="API for handling video upscaling and compression tasks",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -38,7 +38,11 @@ app.include_router(admin_router)
 @app.exception_handler(Exception)
 async def generic_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled exception: {str(exc)}")
-    return {"detail": "An internal server error occurred"}
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "An internal server error occurred"}
+    )
 
 if __name__ == "__main__":
     host = CONFIG.organic_gateway.host

@@ -17,16 +17,27 @@ def get_redis_connection() -> redis.Redis:
         decode_responses=True,
     )
 
-def push_organic_chunk(r: redis.Redis, data: Dict[str, str]) -> None:
+def push_organic_upscaling_chunk(r: redis.Redis, data: Dict[str, str]) -> None:
     """
-    Push an organic chunk dictionary to the queue (FIFO).
+    Push an organic upscaling chunk dictionary to the queue (FIFO).
     
     Args:
         r (redis.Redis): Redis connection
-        data (Dict[str, str]): Organic chunk dictionary to push
+        data (Dict[str, str]): Organic upscaling chunk dictionary to push
     """
-    r.rpush(REDIS_CONFIG.organic_queue_key, json.dumps(data))
-    print("Pushed organic chunk correctly in the Redis queue")
+    r.rpush(REDIS_CONFIG.organic_upscaling_queue_key, json.dumps(data))
+    print("Pushed organic upscaling chunk correctly in the Redis queue")
+
+def push_organic_compression_chunk(r: redis.Redis, data: Dict[str, str]) -> None:
+    """
+    Push an organic compression chunk dictionary to the queue (FIFO).
+    
+    Args:
+        r (redis.Redis): Redis connection
+        data (Dict[str, str]): Organic compression chunk dictionary to push
+    """
+    r.rpush(REDIS_CONFIG.organic_compression_queue_key, json.dumps(data))
+    print("Pushed organic compression chunk correctly in the Redis queue")
 
 def push_5s_chunks(r: redis.Redis, data_list: List[Dict[str, str]]) -> None:
 
@@ -48,18 +59,32 @@ def push_compression_chunks(r: redis.Redis, data_list: List[Dict[str, str]]) -> 
     r.rpush(REDIS_CONFIG.synthetic_compression_queue_key, *[json.dumps(data) for data in data_list])
     print("Pushed all compression chunks correctly in the Redis queue")
 
-def pop_organic_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
+def pop_organic_upscaling_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
     """
-    Pop the oldest organic chunk dictionary (FIFO).
+    Pop the oldest organic upscaling chunk dictionary (FIFO).
     Returns a dictionary or None if queue is empty.
     
     Args:
         r (redis.Redis): Redis connection
 
     Returns:
-        Optional[Dict[str, str]]: The popped organic chunk or None if empty.
+        Optional[Dict[str, str]]: The popped organic upscaling chunk or None if empty.
     """
-    data = r.lpop(REDIS_CONFIG.organic_queue_key)
+    data = r.lpop(REDIS_CONFIG.organic_upscaling_queue_key)
+    return json.loads(data) if data else None
+
+def pop_organic_compression_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
+    """
+    Pop the oldest organic compression chunk dictionary (FIFO).
+    Returns a dictionary or None if queue is empty.
+    
+    Args:
+        r (redis.Redis): Redis connection
+
+    Returns:
+        Optional[Dict[str, str]]: The popped organic compression chunk or None if empty.
+    """
+    data = r.lpop(REDIS_CONFIG.organic_compression_queue_key)
     return json.loads(data) if data else None
 
 # def pop_synthetic_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
@@ -144,17 +169,26 @@ def pop_compression_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
     data = r.lpop(REDIS_CONFIG.synthetic_compression_queue_key)
     return json.loads(data) if data else None
 
-def get_organic_queue_size(r: redis.Redis) -> int:
+def get_organic_upscaling_queue_size(r: redis.Redis) -> int:
     """
-    Get the size of the organic queue.
+    Get the size of the organic upscaling queue.
     
     Args:
         r (redis.Redis): Redis connection
         
     Returns:
-        int: Size of the organic queue.
+        int: Size of the organic upscaling queue.
     """
-    return r.llen(REDIS_CONFIG.organic_queue_key)
+    return r.llen(REDIS_CONFIG.organic_upscaling_queue_key)
+
+def get_organic_compression_queue_size(r: redis.Redis) -> int:
+    """
+    Get the size of the organic compression queue.
+    
+    Args:
+        r (redis.Redis): Redis connection
+    """
+    return r.llen(REDIS_CONFIG.organic_compression_queue_key)
 
 def get_5s_queue_size(r: redis.Redis) -> int:
 

@@ -4,12 +4,15 @@ from pydantic import BaseModel
 from vidaio_subnet_core import CONFIG
 from typing import Optional, List
 from fastapi.responses import JSONResponse
-
+    
 from redis_utils import (
     get_redis_connection,
-    push_organic_chunk,
-    pop_organic_chunk,
-    get_organic_queue_size,
+    push_organic_upscaling_chunk,
+    pop_organic_upscaling_chunk,
+    get_organic_upscaling_queue_size,
+    push_organic_compression_chunk,
+    pop_organic_compression_chunk,
+    get_organic_compression_queue_size,
     get_5s_queue_size,
     get_10s_queue_size,
     get_20s_queue_size,
@@ -22,11 +25,17 @@ from redis_utils import (
 
 app = FastAPI()
 
-class InsertOrganicRequest(BaseModel):
+class InsertOrganicUpscalingRequest(BaseModel):
     url: str
     chunk_id: str
     task_id: str
     resolution_type: str
+
+class InsertOrganicCompressionRequest(BaseModel):
+    url: str
+    chunk_id: str
+    task_id: str
+    compression_type: str
 
 class InsertResultRequest(BaseModel):
     processed_video_url: str
@@ -43,8 +52,8 @@ class CompressionChunkRequest(BaseModel):
 class SyntheticChunkRequest(BaseModel):
     content_lengths: Optional[List[int]] = []
 
-@app.post("/api/insert_organic_chunk")
-def api_insert_organic_chunk(payload: InsertOrganicRequest):
+@app.post("/api/insert_organic_upscaling_chunk")
+def api_insert_organic_upscaling_chunk(payload: InsertOrganicUpscalingRequest):
     """
     Insert an organic video URL into the organic queue.
     """
@@ -55,9 +64,23 @@ def api_insert_organic_chunk(payload: InsertOrganicRequest):
         "task_id": payload.task_id,
         "resolution_type": payload.resolution_type
     }
-    push_organic_chunk(r, data)
-    return {"message": "Organic chunk inserted"}
+    push_organic_upscaling_chunk(r, data)
+    return {"message": "Organic upscaling chunk inserted"}
 
+@app.post("/api/insert_organic_compression_chunk")
+def api_insert_organic_compression_chunk(payload: InsertOrganicCompressionRequest):
+    """
+    Insert an organic video URL into the organic compression queue.
+    """
+    r = get_redis_connection()
+    data = {
+        "url": payload.url,
+        "chunk_id": payload.chunk_id,
+        "task_id": payload.task_id,
+        "compression_type": payload.compression_type
+    }
+    push_organic_compression_chunk(r, data)
+    return {"message": "Organic compression chunk inserted"}
 
 # @app.get("/api/get_prioritized_chunk")
 # def api_get_prioritized_chunk():
@@ -76,7 +99,6 @@ def api_insert_organic_chunk(payload: InsertOrganicRequest):
 #     if not chunk:
 #         return {"message": "No chunks available"}
 #     return {"chunk": chunk}
-
 
 @app.post("/api/get_synthetic_chunks")
 def api_get_synthetic_chunks(request_data: SyntheticChunkRequest):
@@ -157,9 +179,9 @@ def retrieve_chunk_with_retry(redis_conn, content_length: int, max_retries: int 
     return None
 
 
-@app.get("/api/get_organic_chunks")
-def api_get_organic_chunks(needed: int):
-    print("Received request for organic chunks")
+@app.get("/api/get_organic_upscaling_chunks")
+def api_get_organic_upscaling_chunks(needed: int):
+    print("Received request for organic upscaling chunks")
     
     try:
         r = get_redis_connection()
@@ -170,9 +192,9 @@ def api_get_organic_chunks(needed: int):
     chunks = []
     for i in range(needed):
         try:
-            chunk = pop_organic_chunk(r)
+            chunk = pop_organic_upscaling_chunk(r)
             if chunk is None:
-                print("No more organic chunks available")
+                print("No more organic upscaling chunks available")
                 break
             chunks.append(chunk)
         except Exception as e:
@@ -180,8 +202,36 @@ def api_get_organic_chunks(needed: int):
             raise HTTPException(status_code=500, detail="Internal server error")
     
     if len(chunks) == 0:
-        print("No organic chunks in the queue")
-        return {"message": "No organic chunks available", "chunks": chunks}
+        print("No organic upscaling chunks in the queue")
+        return {"message": "No organic upscaling chunks available", "chunks": chunks}
+    
+    return {"chunks": chunks}
+
+@app.get("/api/get_organic_compression_chunks")
+def api_get_organic_compression_chunks(needed: int):
+    print("Received request for organic compression chunks")
+    
+    try:
+        r = get_redis_connection()
+    except Exception as e:
+        print(f"Error connecting to Redis: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    
+    chunks = []
+    for i in range(needed):
+        try:
+            chunk = pop_organic_compression_chunk(r)
+            if chunk is None:
+                print("No more organic compression chunks available")
+                break
+            chunks.append(chunk)
+        except Exception as e:
+            print(f"Error popping chunk: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error")
+    
+    if len(chunks) == 0:
+        print("No organic compression chunks in the queue")
+        return {"message": "No organic compression chunks available", "chunks": chunks}
     
     return {"chunks": chunks}
 
@@ -215,12 +265,28 @@ def api_queue_sizes():
     """
     r = get_redis_connection()
     return {
-        "organic_queue_size": get_organic_queue_size(r),
+        "organic_upscaling_queue_size": get_organic_upscaling_queue_size(r),
+        "organic_compression_queue_size": get_organic_compression_queue_size(r),
         "synthetic_5s_queue_size": get_5s_queue_size(r),
         "synthetic_10s_queue_size": get_10s_queue_size(r),
         "synthetic_20s_queue_size": get_20s_queue_size(r),
     }
 
+@app.get("/api/get_organic_compression_queue_size")
+def api_get_organic_compression_queue_size():
+    """
+    Get the size of the organic compression queue.
+    """
+    r = get_redis_connection()
+    return get_organic_compression_queue_size(r)
+
+@app.get("/api/get_organic_upscaling_queue_size")
+def api_get_organic_upscaling_queue_size():
+    """
+    Get the size of the organic upscaling queue.
+    """
+    r = get_redis_connection()
+    return get_organic_upscaling_queue_size(r)
 
 @app.post("/api/push_result")
 def api_push_result(payload: InsertResultRequest):
@@ -239,7 +305,7 @@ def api_push_result(payload: InsertResultRequest):
     return {"message": "Result saved successfully"}
 
 
-@app.get("/api/get_result")
+@app.post("/api/get_result")
 def api_get_result(payload: ResultRequest):
     """
     Retrieve processing result for a specific video URL.

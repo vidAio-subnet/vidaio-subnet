@@ -4,7 +4,7 @@ numpy
 minio
 opencv-python
 loguru
-bittensor==9.0.3
+bittensor==9.9.0
 redis
 sqlalchemy
 pandas
@@ -27,8 +27,8 @@ selenium
 scikit-learn>=1.0.0
 scipy
 
-# torch>=2.0.0
-# torchvision>=0.11.0
+torch>=2.0.0
+torchvision>=0.11.0
 torchaudio
 tensorflow>=2.18.0
 tensorboard>=2.18.0

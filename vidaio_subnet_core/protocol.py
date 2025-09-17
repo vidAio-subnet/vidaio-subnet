@@ -170,12 +170,13 @@ class TaskWarrantProtocol(Synapse):
     
     Attributes:
         version (Optional[Version]): The version of the protocol implementation.
-        warrant_task (TaskType): The type of task the miner can handle,
+        warrant_task (Optional[TaskType]): The type of task the miner can handle,
             must be one of the predefined values (COMPRESSION or UPSCALING).
+            Will be None if miner doesn't respond, allowing fallback to performance history.
     """
     
     version: Optional[Version] = None
-    warrant_task: TaskType = Field(
+    warrant_task: Optional[TaskType] = Field(
         description="Type of task miner can handle: COMPRESSION or UPSCALING",
-        default=TaskType.UPSCALING
+        default=None
     )
