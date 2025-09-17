@@ -668,7 +668,7 @@ async def initialize_environment(redis_conn):
     logger.info("Clearing queues and cached content...")
     clear_queues(redis_conn)
     purge_cached_videos()
-    await storage_client.delete_all_items()
+    # await storage_client.delete_all_items()
     logger.info("Environment initialized successfully")
 
 
