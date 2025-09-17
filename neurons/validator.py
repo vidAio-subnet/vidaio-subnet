@@ -103,7 +103,7 @@ class Validator(base.BaseValidator):
 
     async def start_synthetic_epoch(self):
         # Wait for scheduler to be ready first
-        # await self.wait_for_scheduler_ready()
+        await self.wait_for_scheduler_ready()
         
         logger.info("✅✅✅✅✅ Starting synthetic forward ✅✅✅✅✅")
         epoch_start_time = time.time()
@@ -111,8 +111,7 @@ class Validator(base.BaseValidator):
         miner_uids = self.filter_miners()
         logger.debug(f"Initialized {len(miner_uids)} subnet neurons of total {len(self.metagraph.S)} neurons")
 
-        # uids = self.miner_manager.consume(miner_uids)
-        uids = [0, 2]
+        uids = self.miner_manager.consume(miner_uids)
 
         logger.info(f"Filtered UIDs after consumption: {uids}")
 
@@ -265,7 +264,7 @@ class Validator(base.BaseValidator):
 
             logger.debug(f"Processing upscaling UIDs in batch: {uids}")
             forward_tasks = [
-                self.dendrite.forward(axons=[axon], synapse=synapse, timeout=60)
+                self.dendrite.forward(axons=[axon], synapse=synapse, timeout=40)
                 for axon, synapse in zip(axons, synapses)
             ]
 
@@ -285,7 +284,7 @@ class Validator(base.BaseValidator):
 
             batch_processed_time = time.time() - batch_start_time
             
-            sleep_time = 80 - batch_processed_time
+            sleep_time = 300 - batch_processed_time
             logger.info(f"Completed upscaling batch within {batch_processed_time:.2f} seconds")
             logger.info(f"Sleeping for {sleep_time:.2f} seconds before next upscaling batch")
             
@@ -324,7 +323,7 @@ class Validator(base.BaseValidator):
 
             logger.debug(f"Processing compression UIDs in batch: {uids}")
             forward_tasks = [
-                self.dendrite.forward(axons=[axon], synapse=synapse, timeout=60)
+                self.dendrite.forward(axons=[axon], synapse=synapse, timeout=40)
                 for axon, synapse in zip(axons, synapses)
             ]
 
@@ -343,7 +342,7 @@ class Validator(base.BaseValidator):
             asyncio.create_task(self.score_compressions(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, vmaf_threshold, round_id))
 
             batch_processed_time = time.time() - batch_start_time
-            sleep_time = 80 - batch_processed_time
+            sleep_time = 300 - batch_processed_time
 
             logger.info(f"Completed compression batch within {batch_processed_time:.2f} seconds")
             logger.info(f"Sleeping for {sleep_time:.2f} seconds before next compression batch")
@@ -617,7 +616,7 @@ class Validator(base.BaseValidator):
                 "reference_urls": selected_reference_urls,
                 "task_types": selected_task_types
             },
-            timeout=42
+            timeout=38
         )
 
         response_data = score_response.json()
@@ -700,7 +699,7 @@ class Validator(base.BaseValidator):
                 "reference_urls": selected_reference_urls,
                 "vmaf_thresholds": selected_vmaf_thresholds
             },
-            timeout=120
+            timeout=115
         )
 
         response_data = score_response.json()
@@ -818,7 +817,7 @@ class Validator(base.BaseValidator):
 
         logger.info("🌜 | UPSCALING | Performing forward operations asynchronously for upscaling 🌜")
         forward_tasks = [
-            self.dendrite.forward(axons=[axon], synapse=synapse, timeout=60)
+            self.dendrite.forward(axons=[axon], synapse=synapse, timeout=40)
             for axon, synapse in zip(axon_list, synapses)
         ]
 
@@ -987,7 +986,7 @@ class WeightSynthesizer:
 if __name__ == "__main__":
     validator = Validator()
     weight_synthesizer = WeightSynthesizer(validator)
-    time.sleep(10) # wait till the video scheduler is ready
+    time.sleep(1300) # wait till the video scheduler is ready
 
     set_scheduler_ready(validator.redis_conn, False)
     logger.info("Set scheduler readiness flag to False")
