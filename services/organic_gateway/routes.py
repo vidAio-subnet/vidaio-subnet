@@ -4,8 +4,8 @@ from typing import Optional
 
 from config import logger
 from models import (
-    UpscaleRequest, UpscaleResponse, StatusResponse, 
-    ResultResponse, TaskStatus, UpdateTaskStatusRequest
+    UpscaleRequest, UpscaleResponse, CompressionRequest, CompressionResponse, StatusResponse, 
+    ResultResponse, TaskStatus, UpdateTaskStatusRequest, TaskCountResponse
 )
 from services import get_task_service, get_redis_service, TaskService
 from config import get_settings
@@ -15,7 +15,7 @@ router = APIRouter()
 @router.get("/ping")
 async def ping():
     """Health check endpoint"""
-    return {"status": "ok", "message": "Validator service is running"}
+    return {"status": "ok", "message": "Video processing service is running"}
 
 @router.post("/upscale", response_model=UpscaleResponse)
 async def upscale(
@@ -38,12 +38,13 @@ async def upscale(
         task_id=task_id,
         chunk_id=request.chunk_id,
         chunk_url=request.chunk_url,
-        resolution_type=request.resolution_type
+        resolution_type=request.resolution_type,
+        compression_type=None
     )
     
     # Submit to Redis service in background to avoid blocking
     background_tasks.add_task(
-        redis_service.insert_organic_chunk,
+        redis_service.insert_organic_upscaling_chunk,
         url=request.chunk_url,
         chunk_id=request.chunk_id,
         task_id=task_id,
@@ -54,6 +55,60 @@ async def upscale(
         task_id=task_id,
         status=TaskStatus.QUEUED,
         message="Task has been queued for processing"
+    )
+
+@router.get("/task_count", response_model=TaskCountResponse)
+async def get_task_count(
+    redis_service = Depends(get_redis_service)
+):
+    """
+    Get the number of tasks in the queue
+    """
+
+    compression_count =await redis_service.get_organic_compression_queue_size()
+    upscaling_count = await redis_service.get_organic_upscaling_queue_size()
+    total_count = compression_count + upscaling_count
+
+    return TaskCountResponse(compression_count=compression_count, upscaling_count=upscaling_count, total_count=total_count)
+
+@router.post("/compress", response_model=CompressionResponse)
+async def compression(
+    request: CompressionRequest,
+    background_tasks: BackgroundTasks,
+    task_service: TaskService = Depends(get_task_service),
+    redis_service = Depends(get_redis_service)
+):
+    """
+    Submit a video chunk for compression
+    
+    This endpoint receives a chunk ID and URL, generates a task ID,
+    and submits the chunk to the compression processing queue.
+    """
+    # Generate task ID
+    task_id = str(uuid.uuid4())
+    
+    # Create task in Redis
+    task_service.create_task(
+        task_id=task_id,
+        chunk_id=request.chunk_id,
+        chunk_url=request.chunk_url,
+        resolution_type=None,
+        compression_type=request.compression_type
+    )
+    
+    # Submit to Redis service in background to avoid blocking
+    background_tasks.add_task(
+        redis_service.insert_organic_compression_chunk,
+        url=request.chunk_url,
+        chunk_id=request.chunk_id,
+        task_id=task_id,
+        compression_type=request.compression_type
+    )
+    
+    return CompressionResponse(
+        task_id=task_id,
+        status=TaskStatus.QUEUED,
+        message="Compression task has been queued for processing"
     )
 
 @router.get("/status/{task_id}", response_model=StatusResponse)
@@ -135,6 +190,15 @@ async def get_task_result(
             processed_video_url=result["processed_video_url"],
             score=result["score"],
             message="Task completed successfully"
+        )
+        
+    except HTTPException as e:
+        logger.error(f"HTTP error retrieving result for task {task_id}: {str(e.detail)}")
+        return ResultResponse(
+            task_id=task_id,
+            status=status,
+            original_video_url=original_video_url,
+            message=f"Service error: {str(e.detail)}"
         )
         
     except Exception as e:

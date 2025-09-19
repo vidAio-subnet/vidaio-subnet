@@ -11,10 +11,10 @@ import os
 
 from services.video_scheduler.redis_utils import (
     get_redis_connection,
-    get_organic_queue_size,
     get_5s_queue_size,
     get_10s_queue_size,
-    get_compression_queue_size,
+    get_organic_upscaling_queue_size,
+    get_organic_compression_queue_size,
     get_pexels_queue_size,
     get_youtube_queue_size,
     is_scheduler_ready
@@ -39,7 +39,8 @@ def main():
         print("🎬 SYNTHETIC QUEUES:")
         print(f"   5s chunks:  {get_5s_queue_size(redis_conn):>4}")
         print(f"   10s chunks: {get_10s_queue_size(redis_conn):>4}")
-        print(f"   Compressed chunks: {get_compression_queue_size(redis_conn):>4}")
+        print(f"   Compressed chunks: {get_organic_compression_queue_size(redis_conn):>4}")
+        print(f"   Upscaling chunks: {get_organic_upscaling_queue_size(redis_conn):>4}")
         print()
         
         # Source queues
@@ -48,19 +49,14 @@ def main():
         print(f"   YouTube IDs: {get_youtube_queue_size(redis_conn):>4}")
         print()
         
-        # Organic queue
-        print("🌿 ORGANIC QUEUE:")
-        print(f"   Organic:     {get_organic_queue_size(redis_conn):>4}")
-        print()
         
         # Total counts
-        total_synthetic = get_5s_queue_size(redis_conn) + get_10s_queue_size(redis_conn) + get_compression_queue_size(redis_conn)
+        total_synthetic = get_5s_queue_size(redis_conn) + get_10s_queue_size(redis_conn) + get_organic_compression_queue_size(redis_conn) + get_organic_upscaling_queue_size(redis_conn)
         total_source = get_pexels_queue_size(redis_conn) + get_youtube_queue_size(redis_conn)
         
         print("📈 TOTALS:")
         print(f"   Total Synthetic: {total_synthetic:>4}")
         print(f"   Total Source:    {total_source:>4}")
-        print(f"   Total Organic:   {get_organic_queue_size(redis_conn):>4}")
         print("=" * 50)
         
     except Exception as e:

@@ -313,7 +313,7 @@ class MinerManager:
                     s_l, 
                     s_f, 
                     content_length, 
-                    content_type,
+                    "synthetic",
                     success,
                     processed_task_type="upscaling"
                 )
@@ -483,7 +483,7 @@ class MinerManager:
                     0,
                     s_f, 
                     content_length, 
-                    "video",
+                    "synthetic",
                     success,
                     processed_task_type="compression",
                     compression_rate=compression_rate,
@@ -831,7 +831,7 @@ class MinerManager:
             session.close()
 
 
-    def step_organics(self, scores: list[float], total_uids: list[int], round_id: str = None):
+    def step_organic_upscaling(self, scores: list[float], total_uids: list[int], round_id: str = None):
         """
         Process scores from organic mining step and update miner records
         Organic scoring should be more lenient than synthetic scoring
@@ -846,6 +846,140 @@ class MinerManager:
 
         try:
             for uid, score in zip(total_uids, scores):
+                # Skip processing if score is -1 (skipped)
+                if score == -1:
+                    logger.debug(f"Skipping UID {uid} due to score -1")
+                    # Get current miner state for return values
+                    miner = self.query([uid]).get(uid, None)
+                    if miner:
+                        acc_scores.append(miner.accumulate_score)
+                        applied_multipliers.append(miner.total_multiplier)
+                    else:
+                        acc_scores.append(0.0)
+                        applied_multipliers.append(1.0)
+                    continue
+                
+                miner = self.query([uid]).get(uid, None)
+                
+                if miner is None:
+                    logger.info(f"Creating new metadata record for UID {uid}")
+                    miner = MinerMetadata(
+                        uid=uid,
+                        hotkey="",  # Will be updated when synthetic scoring runs
+                        accumulate_score=0.0,
+                        bonus_multiplier=1.0,
+                        penalty_f_multiplier=1.0,
+                        penalty_q_multiplier=1.0,
+                        total_multiplier=1.0,
+                        performance_tier="New Miner"
+                    )
+                    self.session.add(miner)
+                
+                # Convert organic scores to synthetic-like format
+
+                acc_score = 0.0
+
+                if score == 3.0:
+                    organic_s_f = 0.4
+                    organic_s_q = 0.5
+                    organic_s_l = 0.5
+                    success = True
+
+                    current_score = miner.accumulate_score
+                    boost_percentage = 0.03
+                    boost_amount = current_score * boost_percentage
+                    acc_score = current_score + boost_amount
+
+                elif score == 2.0:
+                    organic_s_f = 0.3
+                    organic_s_q = 0.5
+                    organic_s_l = 0.5
+                    success = True
+
+                    acc_score = miner.accumulate_score
+
+                elif score == 1.0:  # Failure
+                    organic_s_f = 0.2  # Moderate success score
+                    organic_s_q = 0.5   # Moderate quality score
+                    organic_s_l = 0.5   # Moderate length score
+                    success = False
+
+                    current_score = miner.accumulate_score
+                    panelty_percentage = 0.05
+                    panelty_amount = current_score * panelty_percentage
+                    acc_score = current_score - panelty_amount
+
+                elif score == 0.0:  # Failure
+                    organic_s_f = 0.0
+                    organic_s_q = 0.0
+                    organic_s_l = 0.0
+                    success = False
+
+                    current_score = miner.accumulate_score
+                    panelty_percentage = 0.15  # Deduct 15% of current score
+                    panelty_amount = current_score * panelty_percentage
+                    acc_score = current_score - panelty_amount
+
+                # Add performance record for organic scoring
+                self._add_performance_record(
+                    self.session,
+                    uid,
+                    round_id,
+                    vmaf_score=0.0,  # Not applicable for organic
+                    pie_app_score=0.0, # Not applicable for organic
+                    s_q=organic_s_q,
+                    s_l=organic_s_l,
+                    s_f=organic_s_f,
+                    content_length=10.0,  # Default length for organic
+                    content_type="organic",
+                    success=success,
+                    processed_task_type='upscaling'
+                )
+                
+                self._update_miner_metadata(self.session, miner)
+                
+                acc_scores.append(acc_score)
+                miner.accumulate_score = acc_score
+                applied_multipliers.append(1.0)
+                
+                miner.total_rounds_completed += 1
+                miner.last_update_timestamp = datetime.now()
+                
+                # Update success rate
+                if miner.total_rounds_completed > 0:
+                    success_count = self.session.query(MinerPerformanceHistory).filter(
+                        MinerPerformanceHistory.uid == uid,
+                        MinerPerformanceHistory.success == True
+                    ).count()
+                    miner.success_rate = success_count / miner.total_rounds_completed
+            
+            self.session.commit()
+            logger.success(f"Updated organic metadata for {len(total_uids)} miners")
+            
+            return acc_scores, applied_multipliers
+            
+        except Exception as e:
+            self.session.rollback()
+            logger.error(f"Error in step_organics: {e}")
+            raise
+        finally:
+            self.session.close()
+
+    def step_organic_compression(self, scores: list[float], total_uids: list[int], vmaf_scores: list[float], compression_rates: list[float], vmaf_thresholds: list[float], round_id: str = None):
+        """
+        Process scores from organic mining step and update miner records
+        Organic scoring should be more lenient than synthetic scoring
+        """
+        logger.info(f"Updating organic scores for {len(total_uids)} miners")
+        
+        if round_id is None:
+            round_id = f"organic_{int(time.time())}"
+        
+        acc_scores = []
+        applied_multipliers = []
+
+        try:
+            for uid, score, vmaf_score, compression_rate, vmaf_threshold in zip(total_uids, scores, vmaf_scores, compression_rates, vmaf_thresholds):
                 # Skip processing if score is -1 (skipped)
                 if score == -1:
                     logger.debug(f"Skipping UID {uid} due to score -1 (skipped)")
@@ -874,42 +1008,25 @@ class MinerManager:
                         performance_tier="New Miner"
                     )
                     self.session.add(miner)
-                
-                # Convert organic scores to synthetic-like format
-                if score == 1.0:  # Success
-                    organic_s_f = 0.3  # Moderate success score
-                    organic_s_q = 0.5   # Moderate quality score
-                    organic_s_l = 0.5   # Moderate length score
-                    success = True
-                elif score == 0.0:  # Failure
-                    # Deduct from current accumulated score for failure
-                    deduction_factor = 0.1  # Deduct 10% of current score
-                    current_score = miner.accumulate_score
-                    deduction = current_score * deduction_factor
-                    organic_s_f = -deduction  # Negative score to deduct
-                    organic_s_q = 0.0
-                    organic_s_l = 0.0
-                    success = False
-                else:
-                    # Unknown score value
-                    organic_s_f = 0.0
-                    organic_s_q = 0.0
-                    organic_s_l = 0.0
-                    success = False
-                
+
+                success = score > 0.5
+
                 # Add performance record for organic scoring
                 self._add_performance_record(
                     self.session,
                     uid,
                     round_id,
-                    vmaf_score=0.0,  # Not applicable for organic
-                    pie_app_score=0.0, # Not applicable for organic
-                    s_q=organic_s_q,
-                    s_l=organic_s_l,
-                    s_f=organic_s_f,
-                    content_length=20.0,  # Default length for organic
-                    content_type="organic",
-                    success=success
+                    vmaf_score=vmaf_score,  
+                    pie_app_score=0.0, 
+                    s_q=0,
+                    s_l=0,
+                    s_f=score,
+                    content_length=10.0,
+                    content_type="organic",             
+                    success=success,
+                    processed_task_type='compression',
+                    compression_rate=compression_rate,
+                    vmaf_threshold=vmaf_threshold
                 )
                 
                 # Update miner metadata (recalculate multipliers, etc.)
@@ -917,15 +1034,14 @@ class MinerManager:
                 
                 # Apply multiplier to organic score
                 applied_multiplier = miner.total_multiplier
-                score_with_multiplier = organic_s_f * applied_multiplier
+                score_with_multiplier = score * applied_multiplier
                 
                 # Accumulate score with decay factor (same as synthetic)
-                if organic_s_f != -100:  # Not a system error
-                    miner.accumulate_score = (
-                        miner.accumulate_score * CONFIG.score.decay_factor
-                        + score_with_multiplier * (1 - CONFIG.score.decay_factor)
-                    )
-                    miner.accumulate_score = max(0, miner.accumulate_score)
+                miner.accumulate_score = (
+                    miner.accumulate_score * 0.7
+                    + score_with_multiplier * (1 - 0.7)
+                )
+                miner.accumulate_score = max(0, miner.accumulate_score)
                 
                 acc_scores.append(miner.accumulate_score)
                 applied_multipliers.append(applied_multiplier)
@@ -941,10 +1057,6 @@ class MinerManager:
                         MinerPerformanceHistory.success == True
                     ).count()
                     miner.success_rate = success_count / miner.total_rounds_completed
-                
-                # Update longest content processed (organic default)
-                if 20.0 > miner.longest_content_processed:
-                    miner.longest_content_processed = 20.0
             
             self.session.commit()
             logger.success(f"Updated organic metadata for {len(total_uids)} miners")
@@ -987,6 +1099,32 @@ class MinerManager:
         except Exception as e:
             logger.error(f"Error getting miner task info: {e}")
             return [], [], []
+        finally:
+            session.close()
+
+    def get_miner_processing_task_types(self, uids: List[int]) -> Dict[int, str]:
+        """
+        Get processing_task_type for specific UIDs from the database.
+        Returns a dictionary mapping UID to processing_task_type.
+        If a miner doesn't exist or has no processing_task_type, it won't be in the result.
+        """
+        session = self.session
+        try:
+            miners = session.query(
+                MinerMetadata.uid,
+                MinerMetadata.processing_task_type
+            ).filter(
+                MinerMetadata.uid.in_(uids),
+                MinerMetadata.processing_task_type.isnot(None)
+            ).all()
+            
+            uid_to_task_type = {miner.uid: miner.processing_task_type for miner in miners}
+            
+            return uid_to_task_type
+            
+        except Exception as e:
+            logger.error(f"Error getting miner processing task types: {e}")
+            return {}
         finally:
             session.close()
 
