@@ -1141,9 +1141,9 @@ class MinerManager:
         self.check_database_connection()
 
         for uid, miner in self.query().items():
-            if miner.accumulate_score == -1:
+            # Exclude validator from getting weights set
+            if miner.accumulate_score == -1 or self.metagraph.validator_permit[uid]: 
                 continue
-                
             if miner.processing_task_type == "compression":
                 compression_miners.append((uid, miner.accumulate_score))
             elif miner.processing_task_type == "upscaling":
