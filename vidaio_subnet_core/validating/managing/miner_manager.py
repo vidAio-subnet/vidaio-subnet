@@ -588,7 +588,8 @@ class MinerManager:
         Recalculate and update miner metadata based on recent performance
         """
         recent_records = session.query(MinerPerformanceHistory).filter(
-            MinerPerformanceHistory.uid == miner.uid
+            MinerPerformanceHistory.uid == miner.uid,
+            MinerPerformanceHistory.processed_task_type == "upscaling"
         ).order_by(desc(MinerPerformanceHistory.timestamp)).limit(10).all()
         
         if not recent_records:
