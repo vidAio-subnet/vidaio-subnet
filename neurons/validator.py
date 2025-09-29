@@ -976,8 +976,8 @@ class WeightSynthesizer:
     async def run(self):
         while True:
             try:
-                logger.info("Running weight_manager...")
-                self.validator.set_weights()  
+                logger.info("NOT running weight_manager...")
+                # self.validator.set_weights()  
             except Exception as e:
                 logger.error(f"Error in WeightSynthesizer: {e}", exc_info=True)
             await asyncio.sleep(1200)  
