@@ -118,7 +118,7 @@ echo "module.exports = {
     max_restarts: '5',
     args: [$joined_args],
     env: {
-      PYTHONPATH: "."
+      PYTHONPATH: \".\"
     }
   }]
 }" > app.config.js
