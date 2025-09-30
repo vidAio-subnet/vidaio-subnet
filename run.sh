@@ -116,7 +116,10 @@ echo "module.exports = {
     interpreter: 'python3',
     min_uptime: '5m',
     max_restarts: '5',
-    args: [$joined_args]
+    args: [$joined_args],
+    env: {
+      PYTHONPATH: "."
+    }
   }]
 }" > app.config.js
 
