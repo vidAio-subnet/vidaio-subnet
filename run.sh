@@ -126,15 +126,11 @@ pm2 start app.config.js
 check_package_installed "jq"
 
 # 🚀 START THE 4 PM2 PROCESSES
-pm2 start "python -m services.scoring.server" --name scoring_endpoint
-pm2 start "python -m services.video_scheduler.worker" --name video_scheduler_worker
-pm2 start "python -m services.video_scheduler.server" --name video_scheduler_endpoint
-pm2 start "python -m neurons.validator $joined_args" --name video-validator
-pm2 start "python -m services.organic_gateway.server" --name organic-gateway
-# pm2 delete validator 
-# pm2 delete autoupdater
-# pm2 start /usr/bin/bash --name validator -- -c "python3 -m neurons.validator --wallet.name default --wallet.hotkey default --subtensor.network finney --netuid 85 --axon.port 27000 --logging.debug"
-
+pm2 start "python services/scoring/server.py" --name scoring_endpoint
+pm2 start "python services/video_scheduler/worker.py" --name video_scheduler_worker
+pm2 start "python services/video_scheduler/server.py" --name video_scheduler_endpoint
+# pm2 start "python neurons/validator.py $joined_args" --name video-validator
+# pm2 start "python services/organic_gateway/server.py" --name organic-gateway
 
 # Auto-update loop
 last_restart_time=$(date +%s)
