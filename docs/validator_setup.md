@@ -87,7 +87,7 @@ To configure environment variables, follow these steps:
    ```bash
    cp .env.template .env
    ```
-2. Set up a bucket in cloud storage. The base miner code utilizes MinIO to connect with cloud storage services, so you'll need to prepare your bucket using a platform that supports MinIO integration, such as Backblaze. Alternatively, you can modify the code to suit your specific requirements.
+2. Set up a bucket in cloud storage. The base miner code utilizes MinIO to connect with cloud storage services, so you'll need to prepare your bucket using a platform that supports MinIO integration, such as Backblaze. Alternatively, you can modify the code to suit your specific requirements. *IMPORTANT*: Note that currently the `region` of the storage is hardcoded, and must be adjusted in `vidaio_subnet_core/utilities/storage_client.py` for corresponding storage, such as AWS.
 3. Add the required variables to the `.env` file. For example:
    ```env
    BUCKET_NAME="S3 buckent name"
