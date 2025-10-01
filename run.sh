@@ -136,6 +136,7 @@ pm2 start "PYTHONPATH=. python services/dashboard/metagraph_api_server.py" --nam
 pm2 start /usr/bin/bash --name validator -- -c "PYTHONPATH=. python -m neurons.validator --wallet.name default --wallet.hotkey default --subtensor.network finney --netuid 85 --axon.port 27000 --logging.debug"
 # pm2 start "python neurons/validator.py $joined_args" --name video-validator
 pm2 start "PYTHONPATH=. python services/organic_gateway/server.py" --name organic-gateway
+# pm2 start "PYTHONPATH=. python vidaio_subnet_core/utilities/storage_client.py" --name storage-client-debug #for debugging storage
 
 # Auto-update loop
 last_restart_time=$(date +%s)
