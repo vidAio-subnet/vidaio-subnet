@@ -181,6 +181,20 @@ class Validator(base.BaseValidator):
             logger.info(f"📉 Compression UIDs: {compression_uids}")
         if unknown_task_miners:
             logger.info(f"❓ Unknown task UIDs processed: {unknown_task_miners}")
+        
+        
+        if compression_miners:
+            logger.info(f"Processing {len(compression_miners)} compression miners")
+
+            compression_start_time = time.time()
+            await self.process_compression_miners(compression_miners, version)
+
+            compression_processed_time = time.time() - compression_start_time
+
+            logger.info(f"Compression tasks processed in {compression_processed_time:.2f} seconds")
+
+            await asyncio.sleep(2)
+
 
         if upscaling_miners:
             logger.info(f"Sending LengthCheckProtocol requests to {len(upscaling_miners)} upscaling miners")
@@ -217,18 +231,7 @@ class Validator(base.BaseValidator):
 
             await asyncio.sleep(2)
 
-        if compression_miners:
-            logger.info(f"Processing {len(compression_miners)} compression miners")
-
-            compression_start_time = time.time()
-            await self.process_compression_miners(compression_miners, version)
-
-            compression_processed_time = time.time() - compression_start_time
-
-            logger.info(f"Compression tasks processed in {compression_processed_time:.2f} seconds")
-
-            await asyncio.sleep(2)
-
+        
         epoch_processed_time = time.time() - epoch_start_time
         logger.info(f"Completed one epoch within {epoch_processed_time:.2f} seconds")
 
@@ -264,7 +267,7 @@ class Validator(base.BaseValidator):
 
             logger.debug(f"Processing upscaling UIDs in batch: {uids}")
             forward_tasks = [
-                self.dendrite.forward(axons=[axon], synapse=synapse, timeout=40)
+                self.dendrite.forward(axons=[axon], synapse=synapse, timeout=100)
                 for axon, synapse in zip(axons, synapses)
             ]
 
@@ -284,7 +287,7 @@ class Validator(base.BaseValidator):
 
             batch_processed_time = time.time() - batch_start_time
             
-            sleep_time = 600 - batch_processed_time
+            sleep_time = 300 - batch_processed_time
             logger.info(f"Completed upscaling batch within {batch_processed_time:.2f} seconds")
             logger.info(f"Sleeping for {sleep_time:.2f} seconds before next upscaling batch")
             
@@ -298,6 +301,17 @@ class Validator(base.BaseValidator):
             compression_miners[i : i + batch_size] 
             for i in range(0, len(compression_miners), batch_size)
         ]
+
+        #Find the (axon, 245) entry once:
+        uid_245_entry=next(((axon, uid) for axon, uid in compression_miners if uid == 245), None)
+        if uid_245_entry:
+            logger.info(f"Found entry with UID 245: {uid_245_entry}")
+            for batch in miner_batches:
+                if batch:
+                    batch[0] = uid_245_entry
+        else:
+            logger.info("No entry with UID 245 found in compression miners.")
+
         logger.info(f"Created {len(miner_batches)} compression batches of size {batch_size}")
 
         for batch_idx, batch in enumerate(miner_batches):
@@ -323,7 +337,7 @@ class Validator(base.BaseValidator):
 
             logger.debug(f"Processing compression UIDs in batch: {uids}")
             forward_tasks = [
-                self.dendrite.forward(axons=[axon], synapse=synapse, timeout=40)
+                self.dendrite.forward(axons=[axon], synapse=synapse, timeout=100)
                 for axon, synapse in zip(axons, synapses)
             ]
 
@@ -342,7 +356,7 @@ class Validator(base.BaseValidator):
             asyncio.create_task(self.score_compressions(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, vmaf_threshold, round_id))
 
             batch_processed_time = time.time() - batch_start_time
-            sleep_time = 600 - batch_processed_time
+            sleep_time = 300 - batch_processed_time
 
             logger.info(f"Completed compression batch within {batch_processed_time:.2f} seconds")
             logger.info(f"Sleeping for {sleep_time:.2f} seconds before next compression batch")
@@ -413,6 +427,9 @@ class Validator(base.BaseValidator):
             timeout=240
         )
 
+        logger.info(f"🏢 payload_urls: {payload_urls}")
+        logger.info(f"🏢 distorted_urls: {distorted_urls}")
+        
         response_data = score_response.json()
 
         quality_scores = response_data.get("quality_scores", [])
@@ -518,6 +535,9 @@ class Validator(base.BaseValidator):
             timeout=240
         )
 
+        logger.info(f"🏢 payload_urls: {payload_urls}")
+        logger.info(f"🏢 distorted_urls: {distorted_urls}")
+        
         response_data = score_response.json()
 
         compression_rates = response_data.get("compression_rates", [])
@@ -817,7 +837,7 @@ class Validator(base.BaseValidator):
 
         logger.info("🌜 | UPSCALING | Performing forward operations asynchronously for upscaling 🌜")
         forward_tasks = [
-            self.dendrite.forward(axons=[axon], synapse=synapse, timeout=40)
+            self.dendrite.forward(axons=[axon], synapse=synapse, timeout=100)
             for axon, synapse in zip(axon_list, synapses)
         ]
 
@@ -986,7 +1006,7 @@ class WeightSynthesizer:
 if __name__ == "__main__":
     validator = Validator()
     weight_synthesizer = WeightSynthesizer(validator)
-    time.sleep(1300) # wait till the video scheduler is ready
+    time.sleep(10) # wait till the video scheduler is ready; not required to be 1300 seconds if video_scheduler_worker process was booted up and not interrupted
 
     set_scheduler_ready(validator.redis_conn, False)
     logger.info("Set scheduler readiness flag to False")

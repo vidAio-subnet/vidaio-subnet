@@ -118,7 +118,7 @@ class BackblazeClient:
 
 
 class AmazonS3Client:
-    def __init__(self, endpoint, access_key, secret_key, bucket_name, secure=True, region="eu-west-1"):
+    def __init__(self, endpoint, access_key, secret_key, bucket_name, secure=True, region="us-east-1"):
         self.endpoint = endpoint
         self.bucket_name = bucket_name
         self.client = boto3.client(
