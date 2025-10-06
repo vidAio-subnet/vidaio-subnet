@@ -403,17 +403,86 @@ def get_sample_frames(ref_cap, dist_cap, total_frames):
     return ref_frames, dist_frames
 
 def get_frame_count(video_path):
-    cmd = [
-        "ffprobe",
-        "-v", "error",
-        "-count_frames",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=nb_read_frames",
-        "-of", "default=nokey=1:noprint_wrappers=1",
-        video_path
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    return int(result.stdout.strip())
+    """
+    Get frame count using ffprobe (primary) with OpenCV fallback.
+    ffprobe works reliably for all codecs including AV1 without warnings.
+    """
+    # Try ffprobe first (fast, works on all codecs including AV1)
+    try:
+        cmd = [
+            "ffprobe",
+            "-v", "error",
+            "-count_frames",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=nb_read_frames",
+            "-of", "default=nokey=1:noprint_wrappers=1",
+            video_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=10)
+        frame_count = int(result.stdout.strip())
+        logger.debug(f"ffprobe: {video_path} has {frame_count} frames")
+        return frame_count
+    except Exception as e:
+        logger.warning(f"ffprobe failed for {video_path}: {e}, falling back to OpenCV")
+        # Fallback to OpenCV (may have AV1 warnings but still works)
+        try:
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                raise Exception("Cannot open video with OpenCV")
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            cap.release()
+            logger.debug(f"OpenCV: {video_path} has {frame_count} frames")
+            return frame_count
+        except Exception as opencv_error:
+            logger.error(f"Both ffprobe and OpenCV failed for {video_path}: ffprobe={e}, opencv={opencv_error}")
+            raise Exception(f"Frame count failed: ffprobe={e}, opencv={opencv_error}")
+
+def is_valid_video(video_path):
+    """
+    Check if a video file is valid and can be opened using ffprobe.
+    This avoids OpenCV's AV1 decoder warnings.
+    
+    Returns:
+        bool: True if video is valid, False otherwise
+    """
+    try:
+        cmd = [
+            "ffprobe",
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=codec_type",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            video_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=5)
+        return result.stdout.strip() == "video"
+    except Exception as e:
+        logger.warning(f"ffprobe validation failed for {video_path}: {e}")
+        return False
+
+def get_video_dimensions(video_path):
+    """
+    Get video dimensions (width, height) using ffprobe.
+    This avoids OpenCV's AV1 decoder warnings.
+    
+    Returns:
+        tuple: (width, height) or (None, None) if failed
+    """
+    try:
+        cmd = [
+            "ffprobe",
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "csv=p=0",
+            video_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=5)
+        width, height = map(int, result.stdout.strip().split(','))
+        return width, height
+    except Exception as e:
+        logger.warning(f"ffprobe dimension check failed for {video_path}: {e}")
+        return None, None
 
 def calculate_pieapp_score_on_samples(ref_frames, dist_frames):
     """
@@ -653,11 +722,8 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 7. Downloaded distorted video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-            dist_cap = cv2.VideoCapture(dist_path)
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 8. Opened distorted video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
-            if not dist_cap.isOpened():
+            # Validate video using ffprobe (avoids AV1 warnings)
+            if not is_valid_video(dist_path):
                 logger.error(f"Error opening distorted video file from {dist_url}. Assigning score of 0.")
                 vmaf_scores.append(0.0)
                 pieapp_scores.append(0.0)
@@ -665,12 +731,16 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 length_scores.append(0.0)
                 final_scores.append(0.0)
                 reasons.append("error opening distorted video file")
-                dist_cap.release()
                 if dist_path and os.path.exists(dist_path):
                     os.unlink(dist_path)
                 continue
 
-            dist_total_frames = int(dist_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            step_time = time.time() - uid_start_time
+            logger.info(f"♎️ 8. Validated distorted video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            # Get frame count using ffprobe (no AV1 warnings)
+            dist_total_frames = get_frame_count(dist_path)
+
             logger.info(f"Distorted video has {dist_total_frames} frames.")
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 9. Retrieved distorted video frame count in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
@@ -685,7 +755,6 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 length_scores.append(0.0)
                 final_scores.append(0.0)
                 reasons.append("video length mismatch")
-                dist_cap.release()
                 if dist_path and os.path.exists(dist_path):
                     os.unlink(dist_path)
                 continue
@@ -693,7 +762,7 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             # Calculate VMAF
             try:
                 vmaf_start = time.time()
-                vmaf_score = calculate_vmaf(ref_y4m_path, dist_path, random_frames)
+                vmaf_score = calculate_vmaf(ref_y4m_path, dist_path, random_frames, neg_model=False)
                 vmaf_calc_time = time.time() - vmaf_start
                 logger.info(f"☣️☣️ VMAF calculation took {vmaf_calc_time:.2f} seconds.")
 
@@ -713,7 +782,6 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 length_scores.append(0.0)
                 final_scores.append(0.0)
                 reasons.append("failed to calculate VMAF score due to video dimension mismatch")
-                dist_cap.release()
                 logger.error(f"Error calculating VMAF score: {e}")
                 continue
 
@@ -724,9 +792,11 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 length_scores.append(0.0)
                 final_scores.append(0.0)
                 reasons.append(f"VMAF score is too low, current VMAF score: {vmaf_score}")
-                dist_cap.release()
                 continue
 
+            # Open video with OpenCV only when needed for frame extraction
+            dist_cap = cv2.VideoCapture(dist_path)
+            
             # Extract distorted frames
             dist_frames = []
             dist_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
@@ -887,7 +957,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 1. Opened reference video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-            ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            ref_total_frames = get_frame_count(ref_path)
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 2. Retrieved reference video frame count ({ref_total_frames}) in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
@@ -926,22 +996,22 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 3. Downloaded distorted video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-            dist_cap = cv2.VideoCapture(dist_path)
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 4. Opened distorted video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
-            if not dist_cap.isOpened():
+            # Validate video using ffprobe (avoids AV1 warnings)
+            if not is_valid_video(dist_path):
                 logger.error(f"Error opening distorted video file from {dist_url}. Assigning score of 0.")
                 vmaf_scores.append(0.0)
                 compression_rates.append(1.0)  # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("error opening distorted video file")
-                dist_cap.release()
                 if dist_path and os.path.exists(dist_path):
                     os.unlink(dist_path)
                 continue
 
-            dist_total_frames = int(dist_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            step_time = time.time() - uid_start_time
+            logger.info(f"♎️ 4. Validated distorted video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            dist_total_frames = get_frame_count(dist_path)
+
             logger.info(f"Distorted video has {dist_total_frames} frames.")
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 5. Retrieved distorted video frame count in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
@@ -963,6 +1033,14 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             dist_file_size = os.path.getsize(dist_path)
             logger.info(f"Distorted video file size: {dist_file_size} bytes")
 
+            # Calculate compression rate BEFORE VMAF calculation
+            if ref_file_size > 0 and dist_file_size < ref_file_size:
+                compression_rate = dist_file_size / ref_file_size
+                logger.info(f"Compression rate: {compression_rate:.4f} ({dist_file_size}/{ref_file_size})")
+            else:
+                compression_rate = 1.0
+                logger.info("Reference file size is 0 or distorted file size >= reference, setting compression rate to 1.0")
+
             # Sample frames for VMAF calculation
             random_frames = sorted(random.sample(range(ref_total_frames), VMAF_SAMPLE_COUNT))
             logger.info(f"Randomly selected {VMAF_SAMPLE_COUNT} frames for VMAF score: frame list: {random_frames}")
@@ -977,7 +1055,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             # Calculate VMAF
             try:
                 vmaf_start = time.time()
-                vmaf_score = calculate_vmaf(ref_y4m_path, dist_path, random_frames)
+                vmaf_score = calculate_vmaf(ref_y4m_path, dist_path, random_frames, neg_model=True)
                 vmaf_calc_time = time.time() - vmaf_start
                 logger.info(f"☣️☣️ VMAF calculation took {vmaf_calc_time:.2f} seconds.")
 
@@ -1006,19 +1084,16 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 vmaf_score=vmaf_score,
                 compression_rate=compression_rate,
                 vmaf_threshold=vmaf_threshold,
-                compression_weight=COMPRESSION_WEIGHT,
-                quality_weight=QUALITY_WEIGHT,
+                compression_weight=COMPRESSION_RATE_WEIGHT,
+                quality_weight=COMPRESSION_VMAF_WEIGHT,
                 soft_threshold_margin=SOFT_THRESHOLD_MARGIN
             )
-
            
 
             #  quality component: 
-            vmaf_quality_component = COMPRESSION_VMAF_WEIGHT * (vmaf_score - vmaf_threshold) / (100 - vmaf_threshold)
             logger.info(f"VMAF quality component: {quality_component:.4f}")
 
             # compression component
-            compression_component = compression_component + vmaf_quality_component
             logger.info(f"🎯 Compression score is {compression_component:.4f}")
 
             # final score
@@ -1194,9 +1269,8 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
                 ref_cap.release()
                 continue
 
-            # Check if miner's output can be opened
-            dist_cap = cv2.VideoCapture(dist_path)
-            if not dist_cap.isOpened():
+            # Check if miner's output can be opened (using ffprobe to avoid AV1 warnings)
+            if not is_valid_video(dist_path):
                 logger.error(f"error opening distorted video from {dist_path}. penalizing miner.")
                 reasons.append("MINER FAILURE: corrupted output video")
                 vmaf_scores.append(0.0)
@@ -1207,9 +1281,21 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
                 ref_cap.release()
                 continue
 
-            dist_total_frames = int(dist_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            dist_width = int(dist_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            dist_height = int(dist_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            # Get frame count and dimensions using ffprobe (no AV1 warnings)
+            dist_total_frames = get_frame_count(dist_path)
+            dist_width, dist_height = get_video_dimensions(dist_path)
+            
+            if dist_width is None or dist_height is None:
+                logger.error(f"failed to get video dimensions for {dist_path}. penalizing miner.")
+                reasons.append("MINER FAILURE: cannot read video dimensions")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(0.0)
+                ref_cap.release()
+                continue
+                
             logger.info(f"distorted video has {dist_total_frames} frames.")
 
             # Check frame count match
@@ -1222,7 +1308,6 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
                 length_scores.append(0.0)
                 final_scores.append(0.0)  # 0 = miner penalty
                 ref_cap.release()
-                dist_cap.release()
                 continue
 
             # Check minimum frame count for miner output
@@ -1235,7 +1320,6 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
                 length_scores.append(0.0)
                 final_scores.append(0.0)  # 0 = miner penalty
                 ref_cap.release()
-                dist_cap.release()
                 continue
 
             # === RESOLUTION CHECK ===
@@ -1251,7 +1335,6 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
                 length_scores.append(0.0)
                 final_scores.append(0.0)  # 0 = miner penalty
                 ref_cap.release()
-                dist_cap.release()
                 continue
 
         except Exception as e:
@@ -1264,8 +1347,6 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             final_scores.append(0.0)  # 0 = miner penalty
             if ref_cap:
                 ref_cap.release()
-            if dist_cap:
-                dist_cap.release()
             continue
 
         # === MAIN SCORING LOGIC ===
@@ -1313,7 +1394,7 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             
             # Calculate VMAF score
             logger.info("Calculating VMAF score...")
-            vmaf_score = calculate_vmaf(ref_y4m_path, dist_clip_path, list(range(ref_clip_frames)))
+            vmaf_score = calculate_vmaf(ref_y4m_path, dist_clip_path, list(range(ref_clip_frames)), neg_model=False)
             
             if vmaf_score is None:
                 vmaf_score = 0.0
@@ -1364,8 +1445,7 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             # Clean up resources
             if ref_cap:
                 ref_cap.release()
-            if dist_cap:
-                dist_cap.release()
+            # dist_cap is not used in this endpoint (using ffprobe instead)
             if ref_path and os.path.exists(ref_path):
                 os.unlink(ref_path)
             if dist_path and os.path.exists(dist_path):
@@ -1464,8 +1544,8 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 reasons.append("corrupted reference video - skipped")
                 final_scores.append(-1)  # -1 means skip, don't penalize
                 continue
-            
-            ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+            ref_total_frames = get_frame_count(ref_path)
 
             # Get reference video file size for compression rate calculation
             ref_file_size = os.path.getsize(ref_path)
@@ -1502,9 +1582,8 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 ref_cap.release()
                 continue
 
-            # Check if miner's output can be opened
-            dist_cap = cv2.VideoCapture(dist_path)
-            if not dist_cap.isOpened():
+            # Check if miner's output can be opened (using ffprobe to avoid AV1 warnings)
+            if not is_valid_video(dist_path):
                 logger.error(f"error opening distorted video from {dist_path}. penalizing miner.")
                 vmaf_scores.append(0.0)
                 compression_rates.append(1.0)
@@ -1513,13 +1592,13 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 ref_cap.release()
                 continue
 
-            dist_total_frames = int(dist_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            dist_total_frames = get_frame_count(dist_path)
             logger.info(f"Distorted video has {dist_total_frames} frames.")
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 5. Retrieved distorted video frame count in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             if dist_total_frames != ref_total_frames:
-                logger.info(
+                logger.error(
                     f"Video length mismatch for pair {idx+1}: ref({ref_total_frames}) != dist({dist_total_frames}). Assigning score of 0."
                 )
                 vmaf_scores.append(0.0)
@@ -1534,6 +1613,14 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             # Get distorted video file size for compression rate calculation
             dist_file_size = os.path.getsize(dist_path)
             logger.info(f"Distorted video file size: {dist_file_size} bytes")
+
+            # Calculate compression rate BEFORE VMAF calculation
+            if ref_file_size > 0 and dist_file_size < ref_file_size:
+                compression_rate = dist_file_size / ref_file_size
+                logger.info(f"Compression rate: {compression_rate:.4f} ({dist_file_size}/{ref_file_size})")
+            else:
+                compression_rate = 1.0
+                logger.info("Reference file size is 0 or distorted file size >= reference, setting compression rate to 1.0")
 
             # Calculate 0.5 second clip duration for VMAF calculation
             clip_duration = 0.5  # seconds
@@ -1564,9 +1651,10 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             logger.info(f"♎️ 8. Created distorted video clip in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Get the number of frames in the clips for Y4M conversion
-            ref_clip_cap = cv2.VideoCapture(ref_clip_path)
-            ref_clip_frames = int(ref_clip_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            ref_clip_cap.release()
+            
+            ref_clip_frames = get_frame_count(ref_clip_path)
+            logger.info(f"Reference clip has {ref_clip_frames} frames.")
+            
             
             # Ensure we don't sample more frames than available
             sample_count = min(VMAF_SAMPLE_COUNT, ref_clip_frames)
@@ -1579,7 +1667,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             # Calculate VMAF on chunked videos
             try:
                 vmaf_start = time.time()
-                vmaf_score = calculate_vmaf(ref_y4m_path, dist_clip_path, random_frames)
+                vmaf_score = calculate_vmaf(ref_y4m_path, dist_clip_path, random_frames, neg_model=True)
                 vmaf_calc_time = time.time() - vmaf_start
                 logger.info(f"☣️☣️ VMAF calculation took {vmaf_calc_time:.2f} seconds.")
 
@@ -1608,18 +1696,16 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 vmaf_score=vmaf_score,
                 compression_rate=compression_rate,
                 vmaf_threshold=vmaf_threshold,
-                compression_weight=COMPRESSION_WEIGHT,
-                quality_weight=QUALITY_WEIGHT,
+                compression_weight=COMPRESSION_RATE_WEIGHT,
+                quality_weight=COMPRESSION_VMAF_WEIGHT,
                 soft_threshold_margin=SOFT_THRESHOLD_MARGIN
             )
 
 
             #  quality component: 
-            vmaf_quality_component = COMPRESSION_VMAF_WEIGHT * (vmaf_score - vmaf_threshold) / (100 - vmaf_threshold)
             logger.info(f"VMAF quality component: {quality_component:.4f}")
 
             # compression component
-            compression_component = compression_component + vmaf_quality_component
             logger.info(f"🎯 Compression score is {compression_component:.4f}")
 
             # final score
@@ -1644,8 +1730,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             # Clean up resources for this pair
             if ref_cap:
                 ref_cap.release()
-            if dist_cap:
-                dist_cap.release()
+            # dist_cap is not used in this endpoint (using ffprobe instead)
             if ref_path and os.path.exists(ref_path):
                 os.unlink(ref_path)
             if dist_path and os.path.exists(dist_path):

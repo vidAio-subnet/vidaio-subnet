@@ -7,7 +7,7 @@ def calculate_compression_score(
     vmaf_threshold: float,
     compression_weight: float = 0.70,
     quality_weight: float = 0.30,
-    soft_threshold_margin: float = 5.0) -> tuple[float, str]:
+    soft_threshold_margin: float = 5.0) -> tuple[float, float, float, str]:
     """
     Calculate compression score that rewards hitting VMAF threshold with good compression.
     
@@ -31,7 +31,8 @@ def calculate_compression_score(
         soft_threshold_margin: Points below threshold before hard cutoff (default: 5.0)
     
     Returns:
-        Tuple of (final_score, reason) where final_score is in range [0.0, 1.0]
+        Tuple of (final_score, compression_component, quality_component, reason)
+        where final_score is in range [0.0, 1.0]
     """
     
     # Validate that weights sum to 1.0
@@ -46,7 +47,7 @@ def calculate_compression_score(
     # ========================================================================
     # If VMAF is more than 5 points below threshold, quality is unacceptable
     if vmaf_score < hard_cutoff:
-        return 0.0, f"VMAF {vmaf_score:.1f} below hard cutoff ({hard_cutoff:.1f})"
+        return 0.0, 0.0, 0.0, f"VMAF {vmaf_score:.1f} below hard cutoff ({hard_cutoff:.1f})"
     
     # ========================================================================
     # CASE 2: Soft Threshold Zone (threshold-5 to threshold)
@@ -109,7 +110,7 @@ def calculate_compression_score(
         # If you're below threshold, you need good compression to recover
         final_score = compression_component * quality_factor
         
-        return min(1.0, final_score), f"VMAF {vmaf_score:.1f} in soft zone (quality factor: {quality_factor:.2f})"
+        return min(1.0, final_score), compression_component, quality_factor, f"VMAF {vmaf_score:.1f} in soft zone (quality factor: {quality_factor:.2f})"
     
     # ========================================================================
     # CASE 3: Above Threshold - Full Scoring with Quality Bonus
