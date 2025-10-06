@@ -832,7 +832,8 @@ class Validator(base.BaseValidator):
             await self.update_task_status(task_id, original_url, "completed")
             await self.push_result(task_id, original_url, processed_url)
 
-        asyncio.create_task(self.score_organics_upscaling(forward_uids.tolist(), responses, original_urls, task_types, timestamp))
+        # TODO: re-enable organic scoring after proper handling
+        # asyncio.create_task(self.score_organics_upscaling(forward_uids.tolist(), responses, original_urls, task_types, timestamp))
 
         end_time = time.time()
         total_time = end_time - organic_start_time
@@ -884,7 +885,8 @@ class Validator(base.BaseValidator):
             await self.update_task_status(task_id, original_url, "completed")
             await self.push_result(task_id, original_url, processed_url)
 
-        asyncio.create_task(self.score_organics_compression(forward_uids.tolist(), responses, original_urls, vmaf_thresholds, timestamp))
+        # TODO: re-enable organic scoring after proper handling
+        # asyncio.create_task(self.score_organics_compression(forward_uids.tolist(), responses, original_urls, vmaf_thresholds, timestamp))
 
         end_time = time.time()
         total_time = end_time - organic_start_time
