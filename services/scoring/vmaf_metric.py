@@ -106,6 +106,7 @@ def vmaf_metric(ref_path, dist_path, output_file="vmaf_output.xml"):
         "vmaf",  
         "-r", ref_path,
         "-d", dist_path,
+        "--model", "version=vmaf_v0.6.1neg",
         "-out-fmt", "xml",
         "-o", output_file  
     ]
