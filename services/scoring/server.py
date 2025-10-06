@@ -640,120 +640,6 @@ def convert_av1_to_h264(input_path: str, output_suffix: str = "_h264") -> str:
         raise
 
 
-def convert_av1_via_intermediate(input_path: str, output_path: str) -> str:
-    """
-    Fallback AV1 conversion using OpenCV or frame extraction.
-    This method bypasses the broken FFmpeg AV1 decoder entirely.
-    """
-    try:
-        logger.info("Attempting OpenCV-based AV1 conversion...")
-        
-        # Try to open with OpenCV
-        import cv2
-        cap = cv2.VideoCapture(input_path)
-        
-        if not cap.isOpened():
-            raise Exception("OpenCV cannot open AV1 file")
-        
-        # Get video properties
-        fps = cap.get(cv2.CAP_PROP_FPS) or 25
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        
-        logger.info(f"Video properties: {width}x{height} @ {fps}fps, {frame_count} frames")
-        
-        # Create output with OpenCV writing to H.264
-        fourcc = cv2.VideoWriter_fourcc(*'avc1')  # H.264 codec
-        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-        
-        if not out.isOpened():
-            raise Exception("Cannot create output video writer")
-        
-        frame_num = 0
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            
-            out.write(frame)
-            frame_num += 1
-            
-            if frame_num % 50 == 0:
-                logger.debug(f"Processed {frame_num}/{frame_count} frames")
-        
-        cap.release()
-        out.release()
-        
-        # Verify output
-        if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
-            raise Exception("OpenCV conversion failed: output file not created")
-        
-        logger.info(f"✅ OpenCV AV1 conversion successful ({frame_num} frames)")
-        return output_path
-        
-    except Exception as opencv_error:
-        logger.warning(f"OpenCV conversion failed: {opencv_error}")
-        logger.info("Trying frame extraction method as last resort...")
-        
-        # Ultimate fallback: extract frames as images, then re-encode
-        import tempfile
-        import shutil
-        
-        temp_dir = None
-        try:
-            # Create temporary directory for frames
-            temp_dir = tempfile.mkdtemp(prefix="av1_frames_")
-            logger.info(f"Extracting AV1 frames to: {temp_dir}")
-            
-            # Extract frames - ignore errors, just get what we can
-            extract_cmd = [
-                "ffmpeg", "-y",
-                "-vsync", "0",
-                "-i", input_path,
-                "-qscale:v", "1",
-                f"{temp_dir}/frame_%06d.png"
-            ]
-            
-            subprocess.run(extract_cmd, capture_output=True, timeout=300, check=False)
-            
-            # Count extracted frames
-            frame_files = sorted([f for f in os.listdir(temp_dir) if f.startswith("frame_")])
-            
-            if len(frame_files) == 0:
-                raise Exception("No frames could be extracted from AV1 video")
-            
-            logger.info(f"Extracted {len(frame_files)} frames")
-            
-            # Re-encode from frames
-            encode_cmd = [
-                "ffmpeg", "-y",
-                "-framerate", "25",
-                "-i", f"{temp_dir}/frame_%06d.png",
-                "-c:v", "libx264", "-preset", "fast", "-crf", "20",
-                "-pix_fmt", "yuv420p", "-an",
-                output_path
-            ]
-            
-            subprocess.run(encode_cmd, capture_output=True, text=True, timeout=300, check=True)
-            
-            if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
-                raise Exception("Frame-based conversion failed")
-            
-            logger.info("✅ Frame-based AV1 conversion successful")
-            return output_path
-            
-        except Exception as e:
-            logger.error(f"All AV1 conversion methods failed: {e}")
-            raise Exception(f"Cannot convert AV1 video - FFmpeg AV1 decoder is broken on this system")
-            
-        finally:
-            if temp_dir and os.path.exists(temp_dir):
-                try:
-                    shutil.rmtree(temp_dir)
-                except:
-                    pass
-
 
 def upscale_video(input_path, scale_factor=2):
     """
@@ -1177,7 +1063,7 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
 
     processed_time = time.time() - start_time
     print(f"Completed batch scoring of {len(request.distorted_urls)} pairs within {processed_time:.2f} seconds")
-    print(f"🔯🔯🔯 Calculated final scores: {final_scores} 🔯🔯🔯")
+    print(f"🎯🎯🎯 Calculated final scores: {final_scores} 🎯🎯🎯")
     
     return UpscalingScoringResponse(
         vmaf_scores=vmaf_scores,
@@ -1487,7 +1373,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
 
     processed_time = time.time() - start_time
     print(f"Completed batch scoring of {len(request.distorted_urls)} pairs within {processed_time:.2f} seconds")
-    print(f"🔯🔯🔯 Calculated final scores: {final_scores} 🔯🔯🔯")
+    print(f"🎯🎯🎯 Calculated final scores: {final_scores} 🎯🎯🎯")
     
     return CompressionScoringResponse(
         vmaf_scores=vmaf_scores,
@@ -1802,7 +1688,7 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
                 os.unlink(ref_upscaled_clip_path)
 
     processed_time = time.time() - batch_start_time
-    print(f"🔯🔯🔯 calculated scores: {final_scores} 🔯🔯🔯")
+    print(f"🎯🎯🎯 Calculated scores: {final_scores} 🎯🎯🎯")
     print(f"completed one batch scoring within {processed_time:.2f} seconds")
     
     # Summary statistics
@@ -1824,6 +1710,314 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
         reasons=reasons
     )
 
+@app.post("/score_organics_compression")
+async def score_organics_compression(request: OrganicsCompressionScoringRequest) -> OrganicsCompressionScoringResponse:
+    print("#################### 🤖 start organics compression scoring ####################")
+    start_time = time.time()
+    vmaf_scores = []
+    compression_rates = []
+    final_scores = []
+    reasons = []
+
+    distorted_video_paths = []
+    for dist_url in request.distorted_urls:
+        if len(dist_url) < 10:
+            distorted_video_paths.append(None)
+            continue
+        try:
+            path, download_time = await download_video(dist_url, request.verbose)
+            distorted_video_paths.append(path)
+        except Exception as e:
+            print(f"failed to download distorted video: {dist_url}, error: {e}")
+            distorted_video_paths.append(None)
+
+    for idx, (ref_url, dist_path, uid, vmaf_threshold) in enumerate(
+        zip(request.reference_urls, distorted_video_paths, request.uids, request.vmaf_thresholds)
+    ):
+        print(f"🧩 processing {uid}.... downloading reference video.... 🧩")
+        ref_path = None
+        ref_cap = None
+        dist_path_downloaded = dist_path
+        converted_ref_path = None
+        converted_dist_path = None
+
+        uid_start_time = time.time()
+
+        # === REFERENCE VIDEO VALIDATION (NOT MINER'S FAULT) ===
+        try:
+            # download reference video
+            if len(ref_url) < 10:
+                print(f"invalid reference download url: {ref_url}. skipping scoring")
+                vmaf_scores.append(-1)
+                compression_rates.append(-1)
+                reasons.append("invalid reference url - skipped")
+                final_scores.append(-1)
+                continue
+
+            ref_path, download_time = await download_video(ref_url, request.verbose)
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 1. Downloaded reference video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            
+            ref_cap = cv2.VideoCapture(ref_path)
+            
+            if not ref_cap.isOpened():
+                file_exists = os.path.exists(ref_path)
+                file_size = os.path.getsize(ref_path) if file_exists else 0
+                
+                print(f"error opening reference video from {ref_url}. skipping scoring")
+                print(f"  File path: {ref_path}")
+                print(f"  File exists: {file_exists}")
+                print(f"  File size: {file_size} bytes")
+                
+                vmaf_scores.append(-1)
+                compression_rates.append(-1)
+                reasons.append("corrupted reference video - skipped")
+                final_scores.append(-1)
+                continue
+            
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 2. Opened reference video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 3. Retrieved reference frame count ({ref_total_frames}) in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            # Get reference video file size for compression rate calculation
+            ref_file_size = os.path.getsize(ref_path)
+            print(f"Reference video file size: {ref_file_size} bytes")
+
+            if ref_total_frames < 10:
+                print(f"reference video too short (<10 frames). skipping scoring")
+                vmaf_scores.append(-1)
+                compression_rates.append(-1)
+                reasons.append("reference video too short - skipped")
+                final_scores.append(-1)
+                ref_cap.release()
+                continue
+
+        except Exception as e:
+            print(f"system error processing reference video: {e}. skipping scoring")
+            vmaf_scores.append(-1)
+            compression_rates.append(-1)
+            reasons.append("system error with reference - skipped")
+            final_scores.append(-1)
+            if ref_cap:
+                ref_cap.release()
+            continue
+
+        # === MINER OUTPUT VALIDATION (MINER'S FAULT) ===
+        try:
+            # check if distorted video failed to download
+            if dist_path_downloaded is None:
+                print(f"failed to download distorted video for uid {uid}. penalizing miner.")
+                vmaf_scores.append(0.0)
+                compression_rates.append(1.0)
+                reasons.append("MINER FAILURE: failed to download distorted video, invalid url")
+                final_scores.append(0.0)
+                ref_cap.release()
+                continue
+
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 4. Distorted video already downloaded. Total time: {step_time:.2f} seconds.")
+
+            # Detect video codecs (AV1 support improvement)
+            ref_codec = detect_video_codec(ref_path)
+            dist_codec = detect_video_codec(dist_path_downloaded)
+            print(f"Detected codecs - Reference: {ref_codec}, Distorted: {dist_codec}")
+            
+            # Get distorted video file size for compression rate calculation
+            dist_file_size = os.path.getsize(dist_path_downloaded)
+            print(f"Distorted video file size: {dist_file_size} bytes")
+            
+            # Use ffprobe for ALL videos (more reliable than OpenCV - improvement from synthetic)
+            print("📊 Getting distorted video frame count via ffprobe")
+            try:
+                dist_total_frames = get_video_frame_count(dist_path_downloaded)
+                print(f"Distorted video has {dist_total_frames} frames (via ffprobe).")
+            except Exception as e:
+                print(f"Failed to get frame count: {e}. Penalizing miner.")
+                vmaf_scores.append(0.0)
+                compression_rates.append(1.0)
+                final_scores.append(0.0)
+                reasons.append(f"MINER FAILURE: Failed to read video metadata: {str(e)}")
+                ref_cap.release()
+                continue
+            
+            step_time = time.time() - uid_start_time
+            print(f"♎️ 5. Retrieved distorted video frame count in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            # Verify frame counts match
+            if dist_total_frames != ref_total_frames:
+                print(f"Video length mismatch: ref({ref_total_frames}) != dist({dist_total_frames}). Penalizing miner.")
+                vmaf_scores.append(0.0)
+                compression_rates.append(1.0)
+                final_scores.append(0.0)
+                reasons.append("MINER FAILURE: video length mismatch")
+                ref_cap.release()
+                if dist_path_downloaded and os.path.exists(dist_path_downloaded):
+                    os.unlink(dist_path_downloaded)
+                continue
+
+            # Calculate VMAF using NEG segments (same as synthetic) - try direct AV1 first, convert only if it fails
+            try:
+                print(f"🎬 Attempting VMAF calculation with original codecs (ref: {ref_codec}, dist: {dist_codec})")
+                vmaf_start = time.time()
+                vmaf_score = calculate_vmaf_neg_segments(ref_path=ref_path, dist_path=dist_path_downloaded)
+                vmaf_calc_time = time.time() - vmaf_start
+                print(f"✅ VMAF calculation succeeded with original codecs in {vmaf_calc_time:.2f} seconds")
+                print(f"☣️☣️ VMAF calculation took {vmaf_calc_time:.2f} seconds.")
+
+                step_time = time.time() - uid_start_time
+                print(f"♎️ 6. Completed VMAF calculation in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+                if vmaf_score is not None:
+                    vmaf_scores.append(vmaf_score)
+                else:
+                    vmaf_score = 0.0
+                    vmaf_scores.append(vmaf_score)
+                print(f"🎾 VMAF score is {vmaf_score}")
+                
+            except Exception as vmaf_error:
+                print(f"⚠️ VMAF calculation failed with original codecs: {vmaf_error}")
+                print("🔄 Converting AV1 videos to H264 and retrying VMAF...")
+                
+                try:
+                    # Convert AV1 videos to H264
+                    if ref_codec == 'av1':
+                        print("🔄 Reference video is AV1, converting to H264...")
+                        converted_ref_path = convert_av1_to_h264(ref_path, "_ref_264")
+                        ref_path_for_processing = converted_ref_path
+                    else:
+                        ref_path_for_processing = ref_path
+                    
+                    if dist_codec == 'av1':
+                        print("🔄 Distorted video is AV1, converting to H264...")
+                        converted_dist_path = convert_av1_to_h264(dist_path_downloaded, "_dist_264")
+                        dist_path_for_processing = converted_dist_path
+                    else:
+                        dist_path_for_processing = dist_path_downloaded
+                    
+                    step_time = time.time() - uid_start_time
+                    print(f"♎️ 6.5. Completed AV1 conversions in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+                    
+                    # Retry VMAF with converted videos
+                    vmaf_start = time.time()
+                    vmaf_score = calculate_vmaf_neg_segments(
+                        ref_path=ref_path_for_processing, 
+                        dist_path=dist_path_for_processing
+                    )
+                    vmaf_calc_time = time.time() - vmaf_start
+                    print(f"✅ VMAF calculation succeeded after conversion in {vmaf_calc_time:.2f} seconds")
+                    print(f"☣️☣️ VMAF calculation took {vmaf_calc_time:.2f} seconds.")
+
+                    step_time = time.time() - uid_start_time
+                    print(f"♎️ 7. Completed VMAF calculation (after conversion) in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+                    if vmaf_score is not None:
+                        vmaf_scores.append(vmaf_score)
+                    else:
+                        vmaf_score = 0.0
+                        vmaf_scores.append(vmaf_score)
+                    print(f"🎾 VMAF score is {vmaf_score}")
+                    
+                except Exception as conversion_error:
+                    print(f"❌ VMAF calculation failed even after conversion: {conversion_error}. Penalizing miner.")
+                    vmaf_scores.append(0.0)
+                    compression_rates.append(1.0)
+                    final_scores.append(0.0)
+                    reasons.append(f"MINER FAILURE: VMAF calculation failed: {str(conversion_error)}")
+                    continue
+
+            # Calculate compression rate
+            if ref_file_size > 0 and dist_file_size < ref_file_size:
+                compression_rate = dist_file_size / ref_file_size
+                print(f"Compression rate: {compression_rate:.4f} ({dist_file_size}/{ref_file_size})")
+            else:
+                compression_rate = 1.0
+                print("Reference file size is 0 or distorted file size >= reference, setting compression rate to 1.0")
+                # This is likely a miner failure
+                if dist_file_size >= ref_file_size:
+                    print("WARNING: Miner output is larger than input - no compression achieved")
+
+            # Use improved soft threshold scoring (from synthetic compression)
+            compression_score, reason = calculate_compression_score_with_soft_threshold(
+                compression_rate=compression_rate,
+                vmaf_score=vmaf_score,
+                vmaf_threshold=vmaf_threshold,
+                soft_threshold_margin=5
+            )
+            
+            print(f"🎯 Final compression score is {compression_score:.4f}")
+            print(f"Reason: {reason}")
+
+            compression_rates.append(compression_rate)
+            final_scores.append(compression_score)
+            reasons.append(reason)
+
+            step_time = time.time() - uid_start_time
+            print(f"🛑 Processed one UID in {step_time:.2f} seconds.")
+
+        except Exception as e:
+            error_msg = f"Failed to process video: {str(e)}"
+            print(f"{error_msg}. Penalizing miner.")
+            vmaf_scores.append(0.0)
+            compression_rates.append(1.0)
+            final_scores.append(0.0)
+            reasons.append(f"MINER FAILURE: {str(e)}")
+
+        finally:
+            # Clean up resources for this pair
+            if ref_cap:
+                ref_cap.release()
+            if ref_path and os.path.exists(ref_path):
+                os.unlink(ref_path)
+            if dist_path_downloaded and os.path.exists(dist_path_downloaded):
+                os.unlink(dist_path_downloaded)
+            
+            # Clean up converted AV1 files (new cleanup from synthetic)
+            if converted_ref_path and os.path.exists(converted_ref_path):
+                print(f"🧹 Cleaning up converted reference file: {converted_ref_path}")
+                os.unlink(converted_ref_path)
+            if converted_dist_path and os.path.exists(converted_dist_path):
+                print(f"🧹 Cleaning up converted distorted file: {converted_dist_path}")
+                os.unlink(converted_dist_path)
+
+    # Cleanup temporary files
+    tmp_directory = "/tmp"
+    try:
+        print("🧹 Cleaning up temporary files in /tmp...")
+        for file_path in glob.glob(os.path.join(tmp_directory, "*.mp4")):
+            os.remove(file_path)
+            print(f"Deleted: {file_path}")
+        for file_path in glob.glob(os.path.join(tmp_directory, "*.y4m")):
+            os.remove(file_path)
+            print(f"Deleted: {file_path}")
+    except Exception as e:
+        print(f"⚠️ Error during cleanup: {e}")
+
+    processed_time = time.time() - start_time
+    print(f"Completed batch scoring of {len(request.distorted_urls)} pairs within {processed_time:.2f} seconds")
+    print(f"🔯🔯🔯 Calculated final scores: {final_scores} 🔯🔯🔯")
+    
+    # Summary statistics
+    successful_miners = sum(1 for score in final_scores if score > 0)
+    failed_miners = sum(1 for score in final_scores if score == 0.0)
+    skipped_miners = sum(1 for score in final_scores if score == -1)
+    
+    print(f"📊 SCORING SUMMARY:")
+    print(f"  ✅ Successful miners: {successful_miners}")
+    print(f"  ❌ Failed miners: {failed_miners}")
+    print(f"  ⏭️ Skipped (system issues): {skipped_miners}")
+    
+    return OrganicsCompressionScoringResponse(
+        vmaf_scores=vmaf_scores,
+        compression_rates=compression_rates,
+        final_scores=final_scores,
+        reasons=reasons
+    )
+
+
+'''
 @app.post("/score_organics_compression")
 async def score_organics_compression(request: OrganicsCompressionScoringRequest) -> OrganicsCompressionScoringResponse:
     print("#################### 🤖 start scoring ####################")
@@ -2097,7 +2291,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
         final_scores=final_scores,
         reasons=reasons
     )
-
+'''
 if __name__ == "__main__":
     import uvicorn
     
