@@ -23,6 +23,7 @@ from vidaio_subnet_core.utilities.storage_client import storage_client
 from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video
 from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
 from scoring_function import calculate_compression_score
+
 # Compression scoring constants
 COMPRESSION_RATE_WEIGHT = 0.7  # w_c
 COMPRESSION_VMAF_WEIGHT = 0.3  # w_vmaf
@@ -484,6 +485,34 @@ def get_video_dimensions(video_path):
         logger.warning(f"ffprobe dimension check failed for {video_path}: {e}")
         return None, None
 
+def get_video_fps(video_path):
+    """
+    Get video FPS using ffprobe.
+    This avoids OpenCV's AV1 decoder warnings.
+    
+    Returns:
+        float: FPS or None if failed
+    """
+    try:
+        cmd = [
+            "ffprobe",
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=r_frame_rate",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            video_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=5)
+        # r_frame_rate returns format like "30000/1001" or "30/1"
+        fps_str = result.stdout.strip()
+        if '/' in fps_str:
+            num, den = map(int, fps_str.split('/'))
+            return num / den
+        return float(fps_str)
+    except Exception as e:
+        logger.warning(f"ffprobe FPS check failed for {video_path}: {e}")
+        return None
+
 def calculate_pieapp_score_on_samples(ref_frames, dist_frames):
     """
     Calculate PIE-APP score on sampled frames without creating temporary files.
@@ -558,10 +587,10 @@ def upscale_video(input_path, scale_factor=2):
     filename, extension = os.path.splitext(input_path)
     output_path = f"{filename}_upscaled{extension}"
     
-    cap = cv2.VideoCapture(input_path)
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    cap.release()
+    # Get video dimensions using ffprobe (avoids AV1 warnings)
+    width, height = get_video_dimensions(input_path)
+    if width is None or height is None:
+        raise ValueError(f"Could not get video dimensions for {input_path}")
     
     new_width = width * scale_factor
     new_height = height * scale_factor
@@ -622,15 +651,11 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             
             uid_start_time = time.time()  # Start time for this UID
 
-            ref_cap = None
-            dist_cap = None
             ref_y4m_path = None
             dist_path = None
 
-            ref_cap = cv2.VideoCapture(ref_path)
-            
-            # Check if the reference video was actually opened successfully
-            if not ref_cap.isOpened():
+            # Validate reference video using ffprobe (avoids AV1 warnings)
+            if not is_valid_video(ref_path):
                 # Add diagnostic information
                 file_exists = os.path.exists(ref_path)
                 file_size = os.path.getsize(ref_path) if file_exists else 0
@@ -649,11 +674,11 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 reasons.append(f"error opening reference video file: {ref_path} (exists: {file_exists}, size: {file_size})")
                 continue
             
-            # Only log success after confirming the file was opened
+            # Only log success after confirming the file was validated
             step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 1. Opened reference video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            logger.info(f"♎️ 1. Validated reference video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-            ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            ref_total_frames = get_frame_count(ref_path)
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 2. Retrieved reference video frame count ({ref_total_frames}) in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
@@ -665,7 +690,6 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 length_scores.append(0.0)
                 final_scores.append(-100)
                 reasons.append("reference video has fewer than 10 frames")
-                ref_cap.release()
                 continue
 
             sample_size = min(PIEAPP_SAMPLE_COUNT, ref_total_frames)
@@ -676,6 +700,8 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 3. Selected frame range in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
+            # Open video with OpenCV only when needed for frame extraction
+            ref_cap = cv2.VideoCapture(ref_path)
             ref_frames = []
             ref_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
             for _ in range(sample_size):
@@ -683,6 +709,7 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 if not ret:
                     break
                 ref_frames.append(frame)
+            ref_cap.release()
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 4. Extracted sampled frames from reference video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
@@ -856,7 +883,7 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
 
         finally:
             # Clean up resources for this pair
-            ref_cap.release()
+            # ref_cap is released immediately after use for frame extraction
             if ref_y4m_path and os.path.exists(ref_y4m_path):
                 os.unlink(ref_y4m_path)
             if dist_path and os.path.exists(dist_path):
@@ -928,15 +955,12 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             
             uid_start_time = time.time()  # Start time for this UID
 
-            ref_cap = None
-            dist_cap = None
+            
             ref_y4m_path = None
             dist_path = None
 
-            ref_cap = cv2.VideoCapture(ref_path)
-            
-            # Check if the reference video was actually opened successfully
-            if not ref_cap.isOpened():
+            # Validate reference video using ffprobe (avoids AV1 warnings)
+            if not is_valid_video(ref_path):
                 # Add diagnostic information
                 file_exists = os.path.exists(ref_path)
                 file_size = os.path.getsize(ref_path) if file_exists else 0
@@ -953,9 +977,9 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 reasons.append(f"error opening reference video file: {ref_path} (exists: {file_exists}, size: {file_size})")
                 continue
             
-            # Only log success after confirming the file was opened
+            # Only log success after confirming the file was validated
             step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 1. Opened reference video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            logger.info(f"♎️ 1. Validated reference video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             ref_total_frames = get_frame_count(ref_path)
             step_time = time.time() - uid_start_time
@@ -1116,8 +1140,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
 
         finally:
             # Clean up resources for this pair
-            if ref_cap:
-                ref_cap.release()
+            # ref_cap is not used in this endpoint (using ffprobe instead)
             if ref_y4m_path and os.path.exists(ref_y4m_path):
                 os.unlink(ref_y4m_path)
             if dist_path and os.path.exists(dist_path):
@@ -1181,8 +1204,7 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
     ):
         logger.info(f"🧩 processing {uid}.... downloading reference video.... 🧩")
         ref_path = None
-        ref_cap = None
-        dist_cap = None
+        
         ref_upscaled_y4m_path = None
         ref_clip_path = None
         dist_clip_path = None
@@ -1208,9 +1230,9 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
                 continue
 
             ref_path, download_time = await download_video(ref_url, request.verbose)
-            ref_cap = cv2.VideoCapture(ref_path)
             
-            if not ref_cap.isOpened():
+            # Validate reference video using ffprobe (avoids AV1 warnings)
+            if not is_valid_video(ref_path):
                 file_exists = os.path.exists(ref_path)
                 file_size = os.path.getsize(ref_path) if file_exists else 0
                 
@@ -1227,10 +1249,20 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
                 final_scores.append(-1)  # -1 means skip, don't penalize
                 continue
             
-            ref_total_frames = int(ref_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            ref_fps = ref_cap.get(cv2.CAP_PROP_FPS)
-            ref_width = int(ref_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            ref_height = int(ref_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            # Get video metadata using ffprobe (no AV1 warnings)
+            ref_total_frames = get_frame_count(ref_path)
+            ref_fps = get_video_fps(ref_path)
+            ref_width, ref_height = get_video_dimensions(ref_path)
+            
+            if ref_fps is None or ref_width is None or ref_height is None:
+                logger.error(f"failed to get reference video metadata. skipping scoring")
+                reasons.append("failed to read reference video metadata - skipped")
+                vmaf_scores.append(-1)
+                pieapp_scores.append(-1)
+                quality_scores.append(-1)
+                length_scores.append(-1)
+                final_scores.append(-1)
+                continue
 
             if ref_total_frames < 10:
                 logger.info(f"reference video too short (<10 frames). skipping scoring")
@@ -1240,7 +1272,6 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
                 quality_scores.append(-1)
                 length_scores.append(-1)
                 final_scores.append(-1)  # -1 means skip, don't penalize
-                ref_cap.release()
                 continue
 
         except Exception as e:
@@ -1251,8 +1282,6 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             quality_scores.append(-1)
             length_scores.append(-1)
             final_scores.append(-1)  # -1 means skip, don't penalize
-            if ref_cap:
-                ref_cap.release()
             continue
 
         # === MINER OUTPUT VALIDATION (MINER'S FAULT) ===
@@ -1266,7 +1295,6 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
                 quality_scores.append(0.0)
                 length_scores.append(0.0)
                 final_scores.append(0.0)  # 0 = miner penalty
-                ref_cap.release()
                 continue
 
             # Check if miner's output can be opened (using ffprobe to avoid AV1 warnings)
@@ -1278,7 +1306,6 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
                 quality_scores.append(0.0)
                 length_scores.append(0.0)
                 final_scores.append(0.0)  # 0 = miner penalty
-                ref_cap.release()
                 continue
 
             # Get frame count and dimensions using ffprobe (no AV1 warnings)
@@ -1293,7 +1320,6 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
                 quality_scores.append(0.0)
                 length_scores.append(0.0)
                 final_scores.append(0.0)
-                ref_cap.release()
                 continue
                 
             logger.info(f"distorted video has {dist_total_frames} frames.")
@@ -1307,7 +1333,6 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
                 quality_scores.append(0.0)
                 length_scores.append(0.0)
                 final_scores.append(0.0)  # 0 = miner penalty
-                ref_cap.release()
                 continue
 
             # Check minimum frame count for miner output
@@ -1319,7 +1344,6 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
                 quality_scores.append(0.0)
                 length_scores.append(0.0)
                 final_scores.append(0.0)  # 0 = miner penalty
-                ref_cap.release()
                 continue
 
             # === RESOLUTION CHECK ===
@@ -1334,7 +1358,6 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
                 quality_scores.append(0.0)
                 length_scores.append(0.0)
                 final_scores.append(0.0)  # 0 = miner penalty
-                ref_cap.release()
                 continue
 
         except Exception as e:
@@ -1385,10 +1408,8 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             
             # Create Y4M files for VMAF calculation
             logger.info("Creating Y4M files for VMAF calculation...")
-            # Get the number of frames in the clips for Y4M conversion
-            ref_clip_cap = cv2.VideoCapture(ref_upscaled_clip_path)
-            ref_clip_frames = int(ref_clip_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            ref_clip_cap.release()
+            # Get the number of frames in the clips for Y4M conversion using ffprobe
+            ref_clip_frames = get_frame_count(ref_upscaled_clip_path)
             
             ref_y4m_path = convert_mp4_to_y4m(ref_upscaled_clip_path, list(range(ref_clip_frames)))
             
@@ -1443,9 +1464,7 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
 
         finally:
             # Clean up resources
-            if ref_cap:
-                ref_cap.release()
-            # dist_cap is not used in this endpoint (using ffprobe instead)
+            
             if ref_path and os.path.exists(ref_path):
                 os.unlink(ref_path)
             if dist_path and os.path.exists(dist_path):
@@ -1508,8 +1527,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
     ):
         logger.info(f"🧩 processing {uid}.... downloading reference video.... 🧩")
         ref_path = None
-        ref_cap = None
-        dist_cap = None
+        
         ref_y4m_path = None
         ref_clip_path = None
         dist_clip_path = None
@@ -1528,9 +1546,9 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 continue
 
             ref_path, download_time = await download_video(ref_url, request.verbose)
-            ref_cap = cv2.VideoCapture(ref_path)
             
-            if not ref_cap.isOpened():
+            # Validate reference video using ffprobe (avoids AV1 warnings)
+            if not is_valid_video(ref_path):
                 file_exists = os.path.exists(ref_path)
                 file_size = os.path.getsize(ref_path) if file_exists else 0
                 
@@ -1557,7 +1575,6 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 compression_rates.append(-1)
                 reasons.append("reference video too short - skipped")
                 final_scores.append(-1)  # -1 means skip, don't penalize
-                ref_cap.release()
                 continue
 
         except Exception as e:
@@ -1566,8 +1583,6 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             compression_rates.append(-1)
             reasons.append("system error with reference - skipped")
             final_scores.append(-1)  # -1 means skip, don't penalize
-            if ref_cap:
-                ref_cap.release()
             continue
 
         # === MINER OUTPUT VALIDATION (MINER'S FAULT) ===
@@ -1625,8 +1640,8 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             # Calculate 0.5 second clip duration for VMAF calculation
             clip_duration = 0.5  # seconds
             
-            # Get video FPS to calculate frame-based timing
-            ref_fps = ref_cap.get(cv2.CAP_PROP_FPS)
+            # Get video FPS to calculate frame-based timing using ffprobe (no AV1 warnings)
+            ref_fps = get_video_fps(ref_path)
             logger.info(f"Reference video FPS: {ref_fps}")
             
             # Calculate maximum start time to ensure we don't exceed video length
@@ -1728,8 +1743,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
 
         finally:
             # Clean up resources for this pair
-            if ref_cap:
-                ref_cap.release()
+            # ref_cap is not used in this endpoint (using ffprobe instead)
             # dist_cap is not used in this endpoint (using ffprobe instead)
             if ref_path and os.path.exists(ref_path):
                 os.unlink(ref_path)
