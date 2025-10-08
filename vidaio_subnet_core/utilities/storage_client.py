@@ -5,6 +5,7 @@ import datetime
 import boto3
 from botocore.exceptions import ClientError
 from botocore.client import Config
+from botocore.config import Config as BotoConfig
 from concurrent.futures import ThreadPoolExecutor
 from vidaio_subnet_core.global_config import CONFIG
 
@@ -120,14 +121,15 @@ class AmazonS3Client:
     def __init__(self, endpoint, access_key, secret_key, bucket_name, secure=True, region="us-east-1"):
         self.endpoint = endpoint
         self.bucket_name = bucket_name
-        
         self.client = boto3.client(
-            's3',
+            "s3",
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
-            endpoint_url=endpoint,
             region_name=region,
-            config=Config(signature_version='s3v4')
+            config=BotoConfig(
+                signature_version="s3v4",
+                s3={"addressing_style": "virtual"}  # avoid path-style pitfalls
+            ),
         )
         self.executor = ThreadPoolExecutor()
 
