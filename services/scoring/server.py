@@ -419,24 +419,29 @@ def get_frame_count(video_path):
             "-of", "default=nokey=1:noprint_wrappers=1",
             video_path
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=10)
+        # Add timeout and handle interrupts properly
+        result = subprocess.run(
+            cmd, 
+            capture_output=True, 
+            text=True, 
+            check=True, 
+            timeout=20  # Increased timeout
+        )
         frame_count = int(result.stdout.strip())
         logger.debug(f"ffprobe: {video_path} has {frame_count} frames")
         return frame_count
+    except subprocess.TimeoutExpired:
+        logger.error(f"ffprobe timeout for {video_path} after 30 seconds")
+        raise Exception(f"Frame count timeout: ffprobe took too long")
+    except subprocess.CalledProcessError as e:
+        logger.warning(f"ffprobe failed for {video_path}: return code {e.returncode}, stderr: {e.stderr}")
+        raise Exception(f"Frame count failed: ffprobe error - {e.stderr}")
+    except ValueError as e:
+        logger.error(f"ffprobe returned invalid frame count for {video_path}: {e}")
+        raise Exception(f"Frame count failed: invalid ffprobe output")
     except Exception as e:
-        logger.warning(f"ffprobe failed for {video_path}: {e}, falling back to OpenCV")
-        # Fallback to OpenCV (may have AV1 warnings but still works)
-        try:
-            cap = cv2.VideoCapture(video_path)
-            if not cap.isOpened():
-                raise Exception("Cannot open video with OpenCV")
-            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            cap.release()
-            logger.debug(f"OpenCV: {video_path} has {frame_count} frames")
-            return frame_count
-        except Exception as opencv_error:
-            logger.error(f"Both ffprobe and OpenCV failed for {video_path}: ffprobe={e}, opencv={opencv_error}")
-            raise Exception(f"Frame count failed: ffprobe={e}, opencv={opencv_error}")
+        logger.error(f"Unexpected error with ffprobe for {video_path}: {e}")
+        raise Exception(f"Frame count failed: {e}")
 
 def is_valid_video(video_path):
     """
@@ -447,18 +452,63 @@ def is_valid_video(video_path):
         bool: True if video is valid, False otherwise
     """
     try:
+        # First check if file exists and has size
+        if not os.path.exists(video_path):
+            logger.error(f"Video file does not exist: {video_path}")
+            return False
+        
+        file_size = os.path.getsize(video_path)
+        if file_size == 0:
+            logger.error(f"Video file is empty: {video_path}")
+            return False
+        
+        if file_size < 1024:  # Less than 1KB is suspicious
+            logger.warning(f"Video file is very small ({file_size} bytes): {video_path}")
+        
+        # Use ffprobe to validate video stream
         cmd = [
             "ffprobe",
             "-v", "error",
             "-select_streams", "v:0",
-            "-show_entries", "stream=codec_type",
+            "-count_frames",
+            "-show_entries", "stream=codec_type,nb_read_frames",
             "-of", "default=noprint_wrappers=1:nokey=1",
             video_path
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=5)
-        return result.stdout.strip() == "video"
+        result = subprocess.run(
+            cmd, 
+            capture_output=True, 
+            text=True, 
+            check=True, 
+            timeout=30  # 30 second timeout for validation
+        )
+        
+        # Check if output indicates valid video
+        output_lines = result.stdout.strip().split('\n')
+        if len(output_lines) < 1 or output_lines[0] != "video":
+            logger.error(f"ffprobe validation failed: not a video file: {video_path}")
+            return False
+        
+        # Check if we can read frames
+        if len(output_lines) > 1:
+            try:
+                frame_count = int(output_lines[1])
+                if frame_count == 0:
+                    logger.error(f"Video has 0 frames: {video_path}")
+                    return False
+            except ValueError:
+                logger.warning(f"Could not parse frame count from ffprobe output: {video_path}")
+        
+        return True
+        
+    except subprocess.TimeoutExpired:
+        logger.error(f"ffprobe validation timeout for {video_path}")
+        return False
+    except subprocess.CalledProcessError as e:
+        logger.error(f"ffprobe validation failed for {video_path}: {e.stderr}")
+        return False
     except Exception as e:
-        logger.warning(f"ffprobe validation failed for {video_path}: {e}")
+        logger.error(f"Unexpected error validating {video_path}: {e}")
         return False
 
 def get_video_dimensions(video_path):
@@ -1091,7 +1141,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 else:
                     vmaf_score = 0.0
                     vmaf_scores.append(vmaf_score)
-                logger.info(f"🎾 VMAF score is {vmaf_score}")
+                logger.info(f"🎾 VMAF score is {vmaf_score} , Threshold: {vmaf_threshold}, Diff")
             except Exception as e:
                 vmaf_scores.append(0.0)
                 compression_rates.append(1.0)  # No compression achieved
