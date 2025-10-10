@@ -1222,7 +1222,6 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
 
             # final score
             logger.info(f"🎯 Final score is {final_score:.4f}")
-            vmaf_scores.append(vmaf_score)
             compression_rates.append(compression_rate)
             final_scores.append(final_score)
             reasons.append(reason)
