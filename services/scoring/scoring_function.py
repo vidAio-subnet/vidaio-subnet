@@ -145,18 +145,18 @@ def calculate_compression_score(
         elif compression_rate >= 0.80:
             """
             Poor compression zone (1.25x or less):
-            f(r) = ((r - 1) / 4)² * 0.4
+            f(r) = ((r - 1)² * 0.4
             
             Where r is compression ratio:
             - At 1.0x: component = 0
             - At 1.125x: component ≈ 0.004
-            - At 1.25x: component = 0.025
+            - At 1.25x: component = 0.016
             - Maximum 0.4 at this range
             
             Heavy quadratic penalty discourages minimal compression.
             """
             compression_ratio = 1 / compression_rate
-            compression_component = ((compression_ratio - 1) / 4) ** 2 * 0.4
+            compression_component = (compression_ratio - 1) ** 2 * 0.4
             reason_suffix = " (poor compression)"
             
         else:
@@ -169,7 +169,7 @@ def calculate_compression_score(
                 f(r) = ((r - 1.25) / 13.75) ^ 1.2
                 
                 Starting from 1.25x to give smooth transition from poor zone:
-                - At 1.25x: component = 0
+                - At 1.25x: component = 0.025
                 - At 2x: component ≈ 0.26
                 - At 5x: component ≈ 0.69
                 - At 10x: component ≈ 0.92
@@ -177,7 +177,7 @@ def calculate_compression_score(
                 
                 The exponent 1.2 provides balanced reward curve.
                 """
-                compression_component = ((compression_ratio - 1.25) / 13.75) ** 1.2
+                compression_component = ((compression_ratio - 1.25) / 13.75) ** 1.2 + 0.025
             else:
                 """
                 Exceptional compression bonus (>15x):
