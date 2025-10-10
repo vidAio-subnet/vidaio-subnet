@@ -86,7 +86,7 @@ ensure_process() {
         fi
     else
         echo "Starting $name..."
-        pm2 start $cmd --name "$name"
+        pm2 start bash --name "$name" -- -c "$cmd"
     fi
 }
 
@@ -202,10 +202,10 @@ ensure_config_process "app.config.js" "$proc_name" "true"
 check_package_installed "jq"
 
 # 🚀 START THE ADDITIONAL PM2 PROCESSES
-ensure_process "scoring_endpoint" "PYTHONPATH=. python services/scoring/server.py" "true"
-ensure_process "video_scheduler_worker" "PYTHONPATH=. python services/video_scheduler/worker.py" "$restart_video_scheduler"
-ensure_process "video_scheduler_endpoint" "PYTHONPATH=. python services/video_scheduler/server.py" "$restart_video_scheduler"
-ensure_process "organic-gateway" "PYTHONPATH=. python services/organic_gateway/server.py" "true"
+ensure_process "scoring_endpoint" "bash -c 'PYTHONPATH=. python services/scoring/server.py'" "true"
+ensure_process "video_scheduler_worker" "bash -c 'PYTHONPATH=. python services/video_scheduler/worker.py'" "$restart_video_scheduler"
+ensure_process "video_scheduler_endpoint" "bash -c 'PYTHONPATH=. python services/video_scheduler/server.py'" "$restart_video_scheduler"
+ensure_process "organic-gateway" "bash -c 'PYTHONPATH=. python services/organic_gateway/server.py'" "true"
 
 # Auto-update loop
 last_restart_time=$(date +%s)
