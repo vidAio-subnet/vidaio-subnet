@@ -73,6 +73,40 @@ check_variable_value_on_github() {
     echo "$value" | tr -d '"' | tr -d "'"
 }
 
+ensure_process() {
+    local name="$1"
+    local cmd="$2"
+    local restart_flag="$3"   # "true" or "false"
+
+    if pm2 describe "$name" &>/dev/null; then
+        echo "Process '$name' already running."
+        if [[ "$restart_flag" == "true" ]]; then
+            echo "Reloading $name..."
+            pm2 reload "$name"
+        fi
+    else
+        echo "Starting $name..."
+        pm2 start bash --name "$name" -- -c "$cmd"
+    fi
+}
+
+ensure_config_process() {
+    local config="$1"
+    local name="$2"
+    local restart_flag="$3"   # "true" or "false"
+
+    if pm2 describe "$name" &>/dev/null; then
+        echo "Process '$name' already running (from $config)."
+        if [[ "$restart_flag" == "true" ]]; then
+            echo "Reloading $name from config..."
+            pm2 startOrReload "$config"
+        fi
+    else
+        echo "Starting $name from config..."
+        pm2 startOrReload "$config"
+    fi
+}
+
 while [[ $# -gt 0 ]]; do
   arg="$1"
   if [[ "$arg" == -* ]]; then
@@ -112,6 +146,8 @@ done
 
 branch=$(git branch --show-current)
 echo "Watching branch: $branch"
+echo "Reapplying git stash"
+git stash pop
 echo "PM2 process name: $proc_name"
 if [[ -n "$subnet" ]]; then
     echo "Subnet: $subnet"
@@ -160,16 +196,16 @@ echo "module.exports = {
 }" > app.config.js
 
 cat app.config.js
-pm2 start app.config.js
+ensure_config_process "app.config.js" "$proc_name" "true"
+
 
 check_package_installed "jq"
 
 # 🚀 START THE ADDITIONAL PM2 PROCESSES
-pm2 start "PYTHONPATH=. python services/scoring/server.py" --name scoring_endpoint
-pm2 start "PYTHONPATH=. python services/video_scheduler/worker.py" --name video_scheduler_worker
-pm2 start "PYTHONPATH=. python services/video_scheduler/server.py" --name video_scheduler_endpoint
-#pm2 start "PYTHONPATH=. python neurons/validator.py $joined_args" --name video-validator
-pm2 start "PYTHONPATH=. python services/organic_gateway/server.py" --name organic-gateway
+ensure_process "scoring_endpoint" "bash -c 'PYTHONPATH=. python services/scoring/server.py'" "true"
+ensure_process "video_scheduler_worker" "bash -c 'PYTHONPATH=. python services/video_scheduler/worker.py'" "$restart_video_scheduler"
+ensure_process "video_scheduler_endpoint" "bash -c 'PYTHONPATH=. python services/video_scheduler/server.py'" "$restart_video_scheduler"
+ensure_process "organic-gateway" "bash -c 'PYTHONPATH=. python services/organic_gateway/server.py'" "true"
 
 # Auto-update loop
 last_restart_time=$(date +%s)
@@ -186,17 +222,10 @@ while true; do
             echo "Latest version: $latest_version"
             echo "Current version: $current_version"
 
+            git stash
             if git pull origin "$branch"; then
                 echo "New version detected. Updating..."
                 pip install -e .
-
-                echo "Restarting PM2 processes..."
-                pm2 restart scoring_endpoint
-                if [[ "$restart_video_scheduler" == "true" ]]; then
-                    pm2 restart video_scheduler_worker
-                    pm2 restart video_scheduler_endpoint
-                fi
-                pm2 restart video-validator
 
                 current_version=$(read_version_value)
                 last_restart_time=$current_time
