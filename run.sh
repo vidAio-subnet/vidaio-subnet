@@ -181,10 +181,10 @@ while true; do
 
     if [ -d "./.git" ]; then
         latest_version=$(check_variable_value_on_github "$branch" "$version")
+        echo "Current version: $current_version"
+        echo "Latest version: $latest_version"
 
-        if version_less_than $current_version $latest_version; then
-            echo "Latest version: $latest_version"
-            echo "Current version: $current_version"
+        if version_less_than $current_version $latest_version; then            
 
             if git pull origin "$branch"; then
                 echo "New version detected. Updating..."
