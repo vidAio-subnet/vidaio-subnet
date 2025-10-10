@@ -264,7 +264,7 @@ class Validator(base.BaseValidator):
 
             logger.debug(f"Processing upscaling UIDs in batch: {uids}")
             forward_tasks = [
-                self.dendrite.forward(axons=[axon], synapse=synapse, timeout=40)
+                self.dendrite.forward(axons=[axon], synapse=synapse, timeout=50)
                 for axon, synapse in zip(axons, synapses)
             ]
 
@@ -562,7 +562,7 @@ class Validator(base.BaseValidator):
         ):
             logger.info(
                 f"{uid} ** VMAF: {vmaf_score:.2f} "
-                f"** VMAF Threshold: {vmaf_threshold} ** Compression Rate: {compression_rate:.4f} ** Applied_multiplier {applied_multiplier} ** Final: {final_score:.4f} || {reason}"
+                f"** VMAF Threshold: {vmaf_threshold} ** Compression Rate: {compression_rate:.4f} ** Final: {final_score:.4f} || {reason}"
             )
 
         miner_data = {
@@ -726,7 +726,7 @@ class Validator(base.BaseValidator):
         ):
             logger.info(
                 f"{uid} ** VMAF: {vmaf_score:.2f} "
-                f"** VMAF Threshold: {vmaf_threshold} ** Compression Rate: {compression_rate:.4f} ** Applied_multiplier {applied_multiplier} ** Final: {final_score:.4f} || {reason}"
+                f"** VMAF Threshold: {vmaf_threshold} ** Compression Rate: {compression_rate:.4f} ** Final: {final_score:.4f} || {reason}"
             )
 
         miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in selected_uids]
@@ -976,8 +976,8 @@ class WeightSynthesizer:
     async def run(self):
         while True:
             try:
-                logger.info("Running weight_manager...")
-                self.validator.set_weights()  
+                logger.info("NOT running weight_manager...")
+                # self.validator.set_weights()  
             except Exception as e:
                 logger.error(f"Error in WeightSynthesizer: {e}", exc_info=True)
             await asyncio.sleep(1200)  
