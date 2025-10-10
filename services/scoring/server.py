@@ -1094,7 +1094,6 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 compression_rates.append(1.0)  # No compression achieved
                 final_scores.append(-100)
                 reasons.append("reference video has fewer than 10 frames")
-                ref_cap.release()
                 continue
 
             # Get reference video file size for compression rate calculation
@@ -1151,7 +1150,6 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 compression_rates.append(1.0)  # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("video length mismatch")
-                dist_cap.release()
                 if dist_path and os.path.exists(dist_path):
                     os.unlink(dist_path)
                 continue
@@ -1200,7 +1198,6 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 compression_rates.append(1.0)  # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("failed to calculate VMAF score due to video dimension mismatch")
-                dist_cap.release()
                 logger.error(f"Error calculating VMAF score: {e}")
                 continue
 
@@ -1471,8 +1468,6 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             quality_scores.append(0.0)
             length_scores.append(0.0)
             final_scores.append(0.0)  # 0 = miner penalty
-            if ref_cap:
-                ref_cap.release()
             continue
 
         # === MAIN SCORING LOGIC ===
@@ -1697,7 +1692,6 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 compression_rates.append(1.0)
                 reasons.append("MINER FAILURE: failed to download distorted video, invalid url")
                 final_scores.append(0.0)  # 0 = miner penalty
-                ref_cap.release()
                 continue
 
             # Check if miner's output can be opened (using ffprobe to avoid AV1 warnings)
@@ -1707,7 +1701,6 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 compression_rates.append(1.0)
                 reasons.append("MINER FAILURE: corrupted output video")
                 final_scores.append(0.0)  # 0 = miner penalty
-                ref_cap.release()
                 continue
 
             dist_total_frames = get_frame_count(dist_path)
@@ -1723,7 +1716,6 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 compression_rates.append(1.0)  # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("video length mismatch")
-                dist_cap.release()
                 if dist_path and os.path.exists(dist_path):
                     os.unlink(dist_path)
                 continue
@@ -1803,7 +1795,6 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 compression_rates.append(1.0)  # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("failed to calculate VMAF score due to video dimension mismatch")
-                dist_cap.release()
                 logger.error(f"Error calculating VMAF score: {e}")
                 continue
 
