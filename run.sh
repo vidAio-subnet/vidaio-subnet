@@ -146,6 +146,8 @@ done
 
 branch=$(git branch --show-current)
 echo "Watching branch: $branch"
+echo "Reapplying git stash"
+git stash pop
 echo "PM2 process name: $proc_name"
 if [[ -n "$subnet" ]]; then
     echo "Subnet: $subnet"
@@ -220,6 +222,7 @@ while true; do
             echo "Latest version: $latest_version"
             echo "Current version: $current_version"
 
+            git stash
             if git pull origin "$branch"; then
                 echo "New version detected. Updating..."
                 pip install -e .
