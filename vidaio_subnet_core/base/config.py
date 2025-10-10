@@ -26,7 +26,7 @@ def add_args(parser):
     Adds relevant arguments to the parser for operation.
     """
 
-    parser.add_argument("--netuid", type=int, help="Subnet netuid", default=1)
+    parser.add_argument("--netuid", type=int, help="Subnet netuid", default=85)
 
     parser.add_argument(
         "--neuron.name",
