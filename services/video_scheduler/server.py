@@ -291,7 +291,7 @@ def api_get_organic_upscaling_queue_size():
 @app.post("/api/push_result")
 def api_push_result(payload: InsertResultRequest):
     """
-    Save video processing result to Redis.
+    Save video processing result to Redis with expiry.
     """
     r = get_redis_connection()
     result_key = f"result:{payload.original_video_url}"
@@ -302,6 +302,7 @@ def api_push_result(payload: InsertResultRequest):
         "task_id": payload.task_id,
     }
     r.hmset(result_key, result_data)
+    r.expire(result_key, CONFIG.redis.redis_ttl)
     return {"message": "Result saved successfully"}
 
 
