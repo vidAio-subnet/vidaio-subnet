@@ -182,6 +182,18 @@ class Validator(base.BaseValidator):
         if unknown_task_miners:
             logger.info(f"❓ Unknown task UIDs processed: {unknown_task_miners}")
 
+        if compression_miners:
+            logger.info(f"Processing {len(compression_miners)} compression miners")
+
+            compression_start_time = time.time()
+            await self.process_compression_miners(compression_miners, version)
+
+            compression_processed_time = time.time() - compression_start_time
+
+            logger.info(f"Compression tasks processed in {compression_processed_time:.2f} seconds")
+
+            await asyncio.sleep(2)
+
         if upscaling_miners:
             logger.info(f"Sending LengthCheckProtocol requests to {len(upscaling_miners)} upscaling miners")
             
@@ -214,18 +226,6 @@ class Validator(base.BaseValidator):
             upscaling_processed_time = time.time() - upscaling_start_time
 
             logger.info(f"Upscaling tasks processed in {upscaling_processed_time:.2f} seconds")
-
-            await asyncio.sleep(2)
-
-        if compression_miners:
-            logger.info(f"Processing {len(compression_miners)} compression miners")
-
-            compression_start_time = time.time()
-            await self.process_compression_miners(compression_miners, version)
-
-            compression_processed_time = time.time() - compression_start_time
-
-            logger.info(f"Compression tasks processed in {compression_processed_time:.2f} seconds")
 
             await asyncio.sleep(2)
 
@@ -986,7 +986,7 @@ class WeightSynthesizer:
 if __name__ == "__main__":
     validator = Validator()
     weight_synthesizer = WeightSynthesizer(validator)
-    time.sleep(1300) # wait till the video scheduler is ready
+    time.sleep(1000) # wait till the video scheduler is ready
 
     set_scheduler_ready(validator.redis_conn, False)
     logger.info("Set scheduler readiness flag to False")

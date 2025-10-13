@@ -553,16 +553,6 @@ def is_valid_video(video_path):
     except Exception as e:
         logger.error(f"Unexpected error validating {video_path}: {e}")
         return False
-        
-    except subprocess.TimeoutExpired:
-        logger.error(f"ffprobe validation timeout for {video_path}")
-        return False
-    except subprocess.CalledProcessError as e:
-        logger.error(f"ffprobe validation failed for {video_path}: {e.stderr}")
-        return False
-    except Exception as e:
-        logger.error(f"Unexpected error validating {video_path}: {e}")
-        return False
 
 def get_video_dimensions(video_path):
     """
@@ -1193,6 +1183,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                     vmaf_score = 0.0
                     vmaf_scores.append(vmaf_score)
                 logger.info(f"🎾 VMAF score is {vmaf_score} , Threshold: {vmaf_threshold}, Diff: {vmaf_score - vmaf_threshold}")
+
             except Exception as e:
                 vmaf_scores.append(0.0)
                 compression_rates.append(1.0)  # No compression achieved
