@@ -1543,7 +1543,7 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             
             logger.info(f"Final score: {final_score} ({reason})")
             
-            # vmaf_scores.append(vmaf_score)
+            vmaf_scores.append(vmaf_score)
             pieapp_scores.append(0.0)  
             quality_scores.append(0.0)  
             length_scores.append(0.0)
