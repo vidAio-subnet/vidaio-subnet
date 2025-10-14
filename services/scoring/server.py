@@ -1183,7 +1183,6 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                     vmaf_score = 0.0
                     vmaf_scores.append(vmaf_score)
                 logger.info(f"🎾 VMAF score is {vmaf_score} , Threshold: {vmaf_threshold}, Diff: {vmaf_score - vmaf_threshold}")
-
             except Exception as e:
                 vmaf_scores.append(0.0)
                 compression_rates.append(1.0)  # No compression achieved
