@@ -1512,7 +1512,7 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             
             # Calculate VMAF score
             logger.info("Calculating VMAF score...")
-            vmaf_score = calculate_vmaf(ref_y4m_path, dist_clip_path, list(range(ref_clip_frames)), neg_model=True)
+            vmaf_score = calculate_vmaf(ref_y4m_path, dist_clip_path, list(range(ref_clip_frames)), neg_model=False)
             
             if vmaf_score is None:
                 vmaf_score = 0.0
