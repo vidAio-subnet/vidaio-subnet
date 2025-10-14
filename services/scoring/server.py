@@ -1512,7 +1512,7 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             
             # Calculate VMAF score
             logger.info("Calculating VMAF score...")
-            vmaf_score = calculate_vmaf(ref_y4m_path, dist_clip_path, list(range(ref_clip_frames)), neg_model=False)
+            vmaf_score = calculate_vmaf(ref_y4m_path, dist_clip_path, list(range(ref_clip_frames)), neg_model=True)
             
             if vmaf_score is None:
                 vmaf_score = 0.0
@@ -1543,7 +1543,7 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             
             logger.info(f"Final score: {final_score} ({reason})")
             
-            vmaf_scores.append(vmaf_score)
+            # vmaf_scores.append(vmaf_score)
             pieapp_scores.append(0.0)  
             quality_scores.append(0.0)  
             length_scores.append(0.0)
