@@ -30,6 +30,9 @@ VMAF_QUALITY_THRESHOLDS = [
     95, #High
 ]
 
+SLEEP_TIME_LOW = 60 * 5 # 5 minutes
+SLEEP_TIME_HIGH = 60 * 8 # 8 minutes
+
 class Validator(base.BaseValidator):
     def __init__(self):
         super().__init__()
@@ -284,7 +287,7 @@ class Validator(base.BaseValidator):
 
             batch_processed_time = time.time() - batch_start_time
             
-            sleep_time = random.uniform(300, 480) - batch_processed_time
+            sleep_time = random.uniform(SLEEP_TIME_LOW, SLEEP_TIME_HIGH) - batch_processed_time
             logger.info(f"Completed upscaling batch within {batch_processed_time:.2f} seconds")
             logger.info(f"Sleeping for 5-8 minutes before next upscaling batch")
             
@@ -342,7 +345,7 @@ class Validator(base.BaseValidator):
             asyncio.create_task(self.score_compressions(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, vmaf_threshold, round_id))
 
             batch_processed_time = time.time() - batch_start_time
-            sleep_time = random.uniform(300, 480) - batch_processed_time
+            sleep_time = random.uniform(SLEEP_TIME_LOW, SLEEP_TIME_HIGH) - batch_processed_time
 
             logger.info(f"Completed compression batch within {batch_processed_time:.2f} seconds")
             logger.info(f"Sleeping for 5-8 minutes before next compression batch")
