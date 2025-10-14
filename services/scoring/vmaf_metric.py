@@ -2,6 +2,7 @@ import subprocess
 import xml.etree.ElementTree as ET
 import os
 from moviepy.editor import VideoFileClip
+from loguru import logger
 
 def trim_video(video_path, start_time, trim_duration=1):
     """
@@ -90,7 +91,7 @@ def convert_mp4_to_y4m(input_path, random_frames, upscale_factor=1):
         raise
 
 
-def vmaf_metric(ref_path, dist_path, output_file="vmaf_output.xml"):
+def vmaf_metric(ref_path, dist_path, output_file="vmaf_output.xml", neg_model=False):
     """
     Calculate VMAF score using the VMAF tool and parse the harmonic mean value from the output.
     
@@ -102,10 +103,18 @@ def vmaf_metric(ref_path, dist_path, output_file="vmaf_output.xml"):
     Returns:
         float: The VMAF harmonic mean score.
     """
+    
+    if neg_model:
+        logger.info("Using VMAF NEG model for scoring.")
+        model_version = "version=vmaf_v0.6.1neg"
+    else:
+        logger.info("Using standard VMAF model for scoring.")
+        model_version = "version=vmaf_v0.6.1"
     command = [
         "vmaf",  
         "-r", ref_path,
         "-d", dist_path,
+        "--model", model_version,
         "-out-fmt", "xml",
         "-o", output_file  
     ]
@@ -133,14 +142,14 @@ def vmaf_metric(ref_path, dist_path, output_file="vmaf_output.xml"):
         print(f"Error in calculate_vmaf: {e}")
         raise
 
-def calculate_vmaf(ref_y4m_path, dist_mp4_path, random_frames):
+def calculate_vmaf(ref_y4m_path, dist_mp4_path, random_frames, neg_model=False):
     dist_y4m_path = None
     try:
         print("Converting distorted MP4 to Y4M...")
         dist_y4m_path = convert_mp4_to_y4m(dist_mp4_path, random_frames)
         
         print("Calculating VMAF score...")
-        vmaf_harmonic_mean = vmaf_metric(ref_y4m_path, dist_y4m_path)
+        vmaf_harmonic_mean = vmaf_metric(ref_y4m_path, dist_y4m_path, neg_model=neg_model)
         print(f"VMAF harmonic_mean Value as Float: {vmaf_harmonic_mean}")
         
         return vmaf_harmonic_mean
