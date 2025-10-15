@@ -622,8 +622,8 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str):
                 errors.append(f"Resolution must be {ref_width}x{ref_height}, got {width}x{height}")
 
         # REQUIRED encoding checks
-        if codec != "av1":
-            errors.append(f"Codec must be AV1, got {codec}")
+        if task == "compression" and codec != "av1" or task == "upscaling" and codec != "h264":
+            errors.append(f"Codec must be AV1 for compression & h264 for upscaling, got {codec}")
         if "ivf" in container.lower():
             errors.append("Container must be MP4, got IVF (incompatible for concatenation)")
         if container not in ["mov,mp4,m4a,3gp,3g2,mj2", "mp4", "isom"]:
@@ -937,9 +937,37 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 reasons.append(f"error opening reference video file: {ref_path} (exists: {file_exists}, size: {file_size})")
                 continue
             
+            try:
+                dist_path, download_time = await download_video(dist_url, request.verbose)
+            except Exception as e:
+                error_msg = f"Failed to download video from {dist_url}: {str(e)}"
+                logger.error(f"{error_msg}. Assigning score of 0.")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(0.0)
+                reasons.append("failed to download video file from url")
+                continue
+
+            step_time = time.time() - uid_start_time
+
+            # Validate video using ffprobe (avoids AV1 warnings)
+            if not is_valid_video(dist_path):
+                logger.error(f"Error opening distorted video file from {dist_url}. Assigning score of 0.")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(0.0)
+                reasons.append("error opening distorted video file")
+                if dist_path and os.path.exists(dist_path):
+                    os.unlink(dist_path)
+                continue
+
             # Only log success after confirming the file was validated
             step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 1. Validated reference video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            logger.info(f"♎️ 1. Validated reference video and miner output in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             ref_total_frames = get_frame_count(ref_path)
             step_time = time.time() - uid_start_time
@@ -989,17 +1017,17 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 reasons.append(f"invalid encoding settings: {encoding_msg}")
                 continue
             step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 4.5. Validated encoding settings ({encoding_msg}) in {step_time:.2f} seconds.")
+            logger.info(f"♎️ 5. Validated encoding settings ({encoding_msg}) in {step_time:.2f} seconds.")
 
             random_frames = sorted(random.sample(range(ref_total_frames), VMAF_SAMPLE_COUNT))
             logger.info(f"Randomly selected {VMAF_SAMPLE_COUNT} frames for VMAF score: frame list: {random_frames}")
             step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 5. Selected random frames for VMAF in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            logger.info(f"♎️ 6. Selected random frames for VMAF in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             ref_y4m_path = convert_mp4_to_y4m(ref_path, random_frames)
             logger.info("The reference video has been successfully converted to Y4M format.")
             step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 6. Converted reference video to Y4M in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            logger.info(f"♎️ 7. Converted reference video to Y4M in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             if len(dist_url) < 10:
                 logger.info(f"Wrong dist download URL: {dist_url}. Assigning score of 0.")
@@ -1009,35 +1037,6 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 length_scores.append(0.0)
                 final_scores.append(0.0)
                 reasons.append("Invalid download URL: the distorted video download URL must be at least 10 characters long.")
-                continue
-
-            try:
-                dist_path, download_time = await download_video(dist_url, request.verbose)
-            except Exception as e:
-                error_msg = f"Failed to download video from {dist_url}: {str(e)}"
-                logger.error(f"{error_msg}. Assigning score of 0.")
-                vmaf_scores.append(0.0)
-                pieapp_scores.append(0.0)
-                quality_scores.append(0.0)
-                length_scores.append(0.0)
-                final_scores.append(0.0)
-                reasons.append("failed to download video file from url")
-                continue
-
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 7. Downloaded distorted video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
-            # Validate video using ffprobe (avoids AV1 warnings)
-            if not is_valid_video(dist_path):
-                logger.error(f"Error opening distorted video file from {dist_url}. Assigning score of 0.")
-                vmaf_scores.append(0.0)
-                pieapp_scores.append(0.0)
-                quality_scores.append(0.0)
-                length_scores.append(0.0)
-                final_scores.append(0.0)
-                reasons.append("error opening distorted video file")
-                if dist_path and os.path.exists(dist_path):
-                    os.unlink(dist_path)
                 continue
 
             step_time = time.time() - uid_start_time
@@ -1538,18 +1537,6 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
                 length_scores.append(-1)
                 final_scores.append(-1)  # -1 means skip, don't penalize
                 continue
-
-            is_valid_encoding, encoding_msg = validate_dist_encoding_settings(dist_path, ref_path, task="upscaling")
-            if not is_valid_encoding:
-                logger.error(f"Invalid encoding settings for distorted video {dist_path}: {encoding_msg}")
-                logger.info(f"  Required: AV1 codec, Main profile, yuv420p, MP4 container, 1:1 SAR")
-                vmaf_scores.append(0.0)
-                pieapp_scores.append(0.0)
-                quality_scores.append(0.0)
-                length_scores.append(0.0)
-                final_scores.append(0.0)
-                reasons.append(f"invalid encoding settings: {encoding_msg}")
-                continue
             
             # Get video metadata using ffprobe (no AV1 warnings)
             ref_total_frames = get_frame_count(ref_path)
@@ -1610,6 +1597,18 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
                 final_scores.append(0.0)  # 0 = miner penalty
                 continue
 
+            is_valid_encoding, encoding_msg = validate_dist_encoding_settings(dist_path, ref_path, task="upscaling")
+            if not is_valid_encoding:
+                logger.error(f"Invalid encoding settings for distorted video {dist_path}: {encoding_msg}")
+                logger.info(f"  Required: AV1 codec, Main profile, yuv420p, MP4 container, 1:1 SAR")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(0.0)
+                reasons.append(f"invalid encoding settings: {encoding_msg}")
+                continue
+            
             # Get frame count and dimensions using ffprobe (no AV1 warnings)
             dist_total_frames = get_frame_count(dist_path)
             dist_width, dist_height = get_video_dimensions(dist_path)
