@@ -622,7 +622,7 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str):
                 errors.append(f"Resolution must be {ref_width}x{ref_height}, got {width}x{height}")
 
         # REQUIRED encoding checks
-        if task == "compression" and codec != "av1" or task == "upscaling" and codec != "h264":
+        if task == "compression" and codec != "av1" or task == "upscaling" and codec != "hevc":
             errors.append(f"Codec must be AV1 for compression & h264 for upscaling, got {codec}")
         if "ivf" in container.lower():
             errors.append("Container must be MP4, got IVF (incompatible for concatenation)")
