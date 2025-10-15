@@ -675,7 +675,7 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str):
             except subprocess.CalledProcessError:
                 logger.warning("Could not read reference colorspace info")
         
-        # SVT-AV1 PREFERRED encoder detection (check multiple locations)
+        # SVT-AV1 detection, only logging for now
         is_svtav1 = any(keyword in encoder_tag for keyword in [
             "libsvtav1", "svt-av1", "svtav1"
         ])
