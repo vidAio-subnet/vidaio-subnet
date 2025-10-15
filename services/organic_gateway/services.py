@@ -4,9 +4,11 @@ import asyncio
 from datetime import datetime, timedelta
 from fastapi import Depends, HTTPException
 from typing import Dict, Optional
-
+from vidaio_subnet_core import CONFIG
 from config import get_settings, logger
 from models import TaskStatus, InsertOrganicUpscalingRequest, InsertOrganicCompressionRequest
+
+redis_ttl = CONFIG.redis.redis_ttl
 
 # Redis connection
 def get_redis_connection(settings=Depends(get_settings)):
@@ -40,9 +42,11 @@ class TaskService:
         # Store task data
         task_key = f"task:{task_id}"
         self.redis.hset(task_key, mapping=task_data)
+        self.redis.expire(task_key, redis_ttl)
         
         # Add to task list for easier lookup
         self.redis.sadd("tasks", task_id)
+        self.redis.expire("tasks", redis_ttl)
         
         return task_data
     
@@ -74,11 +78,12 @@ class TaskService:
             update_data["progress"] = progress
         
         self.redis.hset(task_key, mapping=update_data)
+        self.redis.expire(task_key, redis_ttl)
         return True
     
     def link_task_to_result(self, task_id: str, original_video_url: str):
         """Link task to result for easy lookup"""
-        self.redis.set(f"task_result:{task_id}", original_video_url)
+        self.redis.set(f"task_result:{task_id}", original_video_url, ex=redis_ttl)
     
     def get_result_url_for_task(self, task_id: str):
         """Get the original video URL associated with a task"""
