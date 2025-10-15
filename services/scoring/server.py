@@ -565,7 +565,7 @@ def is_valid_video(video_path):
         logger.error(f"Unexpected error validating {video_path}: {e}")
         return False
 
-def validate_dist_encoding_settings(dist_path):
+def validate_dist_encoding_settings(dist_path:str, ref_path:str, task:str):
     """
     Validate that distorted video uses specific encoding settings.
     Handles real ffprobe output patterns and SVT-AV1 detection.
@@ -605,7 +605,12 @@ def validate_dist_encoding_settings(dist_path):
         encoder_tag = stream_tags.get("encoder", "").lower() or format_tags.get("encoder", "").lower()
         
         errors = []
-        
+
+        if task == "compression":
+            ref_width, ref_height = get_video_dimensions(ref_path)
+            if width != ref_width or height != ref_height:
+                errors.append(f"Resolution must be {ref_width}x{ref_height}, got {width}x{height}")
+
         # REQUIRED: Must be AV1 codec
         if codec != "av1":
             errors.append(f"Codec must be AV1, got {codec}")
@@ -934,7 +939,7 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             logger.info(f"♎️ 4. Extracted sampled frames from reference video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Validate encoding settings (MUST be AV1 in proper MP4 with specific params)
-            is_valid_encoding, encoding_msg = validate_dist_encoding_settings(dist_path)
+            is_valid_encoding, encoding_msg = validate_dist_encoding_settings(dist_path, ref_path, task="upscaling")
             if not is_valid_encoding:
                 logger.error(f"Invalid encoding settings for distorted video {dist_path}: {encoding_msg}")
                 logger.info(f"  Required: AV1 codec, Main profile, yuv420p, MP4 container, 1:1 SAR")
@@ -1269,7 +1274,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             logger.info(f"♎️ 4. Validated distorted video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Validate encoding settings (MUST be AV1 in proper MP4 with specific params)
-            is_valid_encoding, encoding_msg = validate_dist_encoding_settings(dist_path)
+            is_valid_encoding, encoding_msg = validate_dist_encoding_settings(dist_path, ref_path, task="compression")
             if not is_valid_encoding:
                 logger.error(f"Invalid encoding settings for distorted video {dist_path}: {encoding_msg}")
                 logger.info(f"  Required: AV1 codec, Main profile, yuv420p, MP4 container, 1:1 SAR")
@@ -1496,7 +1501,7 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
                 final_scores.append(-1)  # -1 means skip, don't penalize
                 continue
 
-            is_valid_encoding, encoding_msg = validate_dist_encoding_settings(dist_path)
+            is_valid_encoding, encoding_msg = validate_dist_encoding_settings(dist_path, ref_path, task="upscaling")
             if not is_valid_encoding:
                 logger.error(f"Invalid encoding settings for distorted video {dist_path}: {encoding_msg}")
                 logger.info(f"  Required: AV1 codec, Main profile, yuv420p, MP4 container, 1:1 SAR")
@@ -1862,7 +1867,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 final_scores.append(0.0)  # 0 = miner penalty
                 continue
 
-            is_valid_encoding, encoding_msg = validate_dist_encoding_settings(dist_path)
+            is_valid_encoding, encoding_msg = validate_dist_encoding_settings(dist_path, ref_path, task="compression")
             if not is_valid_encoding:
                 logger.error(f"Invalid encoding settings for distorted video {dist_path}: {encoding_msg}")
                 logger.info(f"  Required: AV1 codec, Main profile, yuv420p, MP4 container, 1:1 SAR")
