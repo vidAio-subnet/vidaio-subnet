@@ -7,6 +7,7 @@ class RedisConfig(BaseModel):
     port: int = Field(default=6379)
     db: int = Field(default=0)
     delete_after_second: int = Field(default=600)
+    redis_ttl: int = Field(default= 60 * 60 * 6) # 6 hours
     organic_upscaling_queue_key: str = Field(default="organic_upscaling_queue")
     organic_compression_queue_key: str = Field(default="organic_compression_queue")
     synthetic_5s_clip_queue_key: str = Field(default="5s_clips")
