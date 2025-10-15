@@ -151,9 +151,9 @@ class Synthesizer:
                     await asyncio.sleep(self.retry_delay)
                     continue
                 
-                logger.info(f"Successfully created {len(synapses)} protocols from {len(valid_chunks)} chunks")
+                logger.info(f"Successfully created {len(synapses)} compression protocols from {len(valid_chunks)} chunks")
                 # Return the results if we have valid data
-                return payload_urls, video_ids, uploaded_object_names, synapses
+                return payload_urls, video_ids, uploaded_object_names, target_codecs, synapses
                 
             except httpx.HTTPStatusError as e:
                 logger.error(f"HTTP error occurred (attempt {attempt + 1}/{self.max_retries}): {e}")
@@ -222,6 +222,7 @@ class Synthesizer:
                 payload_urls = []
                 video_ids = []
                 uploaded_object_names = []
+                target_codecs = []  # Track target codecs for each protocol
                 synapses = []
 
                 # Process only non-None chunks
@@ -255,10 +256,15 @@ class Synthesizer:
                         video_ids.append(chunk["video_id"])
                         uploaded_object_names.append(chunk["uploaded_object_name"])
                         
+                        # Extract target_codec from chunk, default to av1_nvenc for backward compatibility
+                        target_codec = chunk.get("target_codec", "av1_nvenc")
+                        target_codecs.append(target_codec)  # Add to target_codecs list
+                        
                         synapse = VideoCompressionProtocol(
                             miner_payload=CompressionMinerPayload(
                                 reference_video_url=chunk["sharing_link"],
-                                vmaf_threshold=vmaf_threshold
+                                vmaf_threshold=vmaf_threshold,
+                                target_codec=target_codec
                             ),
                             version=version,
                             round_id=round_id
@@ -275,8 +281,8 @@ class Synthesizer:
                     continue
                 
                 logger.info(f"Successfully created {len(synapses)} compression protocols from {len(valid_chunks)} chunks")
-                # Return the results if we have valid data
-                return payload_urls, video_ids, uploaded_object_names, synapses
+                # Return the results if we have valid data (now includes target_codecs)
+                return payload_urls, video_ids, uploaded_object_names, target_codecs, synapses
                 
             except httpx.HTTPStatusError as e:
                 logger.error(f"HTTP error occurred (attempt {attempt + 1}/{self.max_retries}): {e}")
@@ -363,7 +369,7 @@ class Synthesizer:
                 chunks: List[Dict] = data["chunks"]
                 logger.info("Received organic compression chunks from video-scheduler API")
 
-                required_fields = ["url", "chunk_id", "task_id", "compression_type"]
+                required_fields = ["url", "chunk_id", "task_id", "compression_type", "target_codec"]
                 if any(not all(field in chunk for field in required_fields) for chunk in chunks):
                     logger.info("Missing required fields in some chunk data, retrying...")
                     await asyncio.sleep(self.retry_delay)
@@ -373,6 +379,7 @@ class Synthesizer:
                 original_urls = []
                 organic_synapses = []
                 vmaf_thresholds = []
+                target_codecs = []  # Track target codecs
 
                 for chunk in chunks:
                     vmaf_threshold = None
@@ -386,11 +393,16 @@ class Synthesizer:
                     if vmaf_threshold is None:
                         logger.info(f"Invalid compression type: {chunk['compression_type']}")
                         continue
-
+                    
+                    # Get target codec from chunk (REQUIRED - no default)
+                    target_codec = chunk["target_codec"]
+                    target_codecs.append(target_codec)
+                    
                     synapse = VideoCompressionProtocol(
                         miner_payload=CompressionMinerPayload(
                             reference_video_url=chunk["url"],
-                            vmaf_threshold=vmaf_threshold
+                            vmaf_threshold=vmaf_threshold,
+                            target_codec=target_codec
                         ),
                     )
                     task_ids.append(chunk["task_id"])
@@ -399,7 +411,7 @@ class Synthesizer:
 
                     organic_synapses.append(synapse)
 
-                return task_ids, original_urls, vmaf_thresholds, organic_synapses
+                return task_ids, original_urls, vmaf_thresholds, target_codecs, organic_synapses
 
             except httpx.HTTPStatusError as e:
                 logger.info(f"HTTP error on attempt {attempt + 1}/{self.max_retries}: {e}")

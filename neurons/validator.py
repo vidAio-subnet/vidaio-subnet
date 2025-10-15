@@ -316,7 +316,7 @@ class Validator(base.BaseValidator):
 
             num_miners = len(uids)
 
-            payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_compression_protocol(vmaf_threshold, num_miners, version, round_id)
+            payload_urls, video_ids, uploaded_object_names, target_codecs, synapses = await self.challenge_synthesizer.build_compression_protocol(vmaf_threshold, num_miners, version, round_id)
             logger.debug(f"Built compression challenge protocol")
 
             timestamp = datetime.now(timezone.utc).isoformat()
@@ -339,7 +339,7 @@ class Validator(base.BaseValidator):
                     logger.warning(f"⚠️ Reference video file missing for video_id {video_id}: {reference_video_path}")
                 reference_video_paths.append(reference_video_path)
             
-            asyncio.create_task(self.score_compressions(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, vmaf_threshold, round_id))
+            asyncio.create_task(self.score_compressions(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, vmaf_threshold, round_id, target_codecs))
 
             batch_processed_time = time.time() - batch_start_time
             sleep_time = 300 - batch_processed_time
@@ -499,22 +499,29 @@ class Validator(base.BaseValidator):
         video_ids: list[str], 
         uploaded_object_names: list[str], 
         vmaf_threshold: float, 
-        round_id: str
+        round_id: str,
+        target_codecs: list[str]  # REQUIRED parameter
     ):
         distorted_urls = []
         for uid, response in zip(uids, responses):
             distorted_urls.append(response.miner_response.optimized_video_url)
 
+        # Prepare the scoring request payload - target_codecs is REQUIRED
+        scoring_payload = {
+            "uids": uids,
+            "distorted_urls": distorted_urls,
+            "reference_paths": reference_video_paths,
+            "video_ids": video_ids,
+            "uploaded_object_names": uploaded_object_names,
+            "vmaf_threshold": vmaf_threshold,
+            "target_codecs": target_codecs  # Always included, REQUIRED
+        }
+        
+        logger.info(f"Passing target codecs to scoring service: {target_codecs}")
+
         score_response = await self.score_client.post(
             "/score_compression_synthetics",
-            json = {
-                "uids": uids,
-                "distorted_urls": distorted_urls,
-                "reference_paths": reference_video_paths,
-                "video_ids": video_ids,
-                "uploaded_object_names": uploaded_object_names,
-                "vmaf_threshold": vmaf_threshold
-            },
+            json=scoring_payload,
             timeout=240
         )
 
@@ -673,13 +680,13 @@ class Validator(base.BaseValidator):
         else:
             logger.info("Failed to send data to dashboard")
 
-    async def score_organics_compression(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: list[str], vmaf_thresholds: list[float], timestamp: str):
+    async def score_organics_compression(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: list[str], vmaf_thresholds: list[float], timestamp: str, target_codecs: list[str]):
         """Score organic compression tasks."""
         distorted_urls = [response.miner_response.optimized_video_url for response in responses]
 
-        combined = list(zip(uids, distorted_urls, reference_urls, vmaf_thresholds))
+        combined = list(zip(uids, distorted_urls, reference_urls, vmaf_thresholds, target_codecs))
         random.shuffle(combined)
-        uids, distorted_urls, reference_urls, vmaf_thresholds = map(list, zip(*combined))
+        uids, distorted_urls, reference_urls, vmaf_thresholds, target_codecs = map(list, zip(*combined))
 
         num_pairs_to_validate = min(5, len(combined))
         selected_indices = random.sample(range(len(combined)), num_pairs_to_validate)
@@ -688,6 +695,7 @@ class Validator(base.BaseValidator):
         selected_distorted_urls = [distorted_urls[i] for i in selected_indices]
         selected_reference_urls = [reference_urls[i] for i in selected_indices]
         selected_vmaf_thresholds = [vmaf_thresholds[i] for i in selected_indices]
+        selected_target_codecs = [target_codecs[i] for i in selected_indices]
 
         logger.info(f"Randomly selected {len(selected_uids)} pairs out of {len(uids)} total pairs for compression validation")
 
@@ -697,7 +705,8 @@ class Validator(base.BaseValidator):
                 "uids": selected_uids,
                 "distorted_urls": selected_distorted_urls,
                 "reference_urls": selected_reference_urls,
-                "vmaf_thresholds": selected_vmaf_thresholds
+                "vmaf_thresholds": selected_vmaf_thresholds,
+                "target_codecs": selected_target_codecs  # Pass target_codecs
             },
             timeout=115
         )
@@ -854,7 +863,7 @@ class Validator(base.BaseValidator):
 
         axon_list = [self.metagraph.axons[uid] for uid in forward_uids]
 
-        task_ids, original_urls, vmaf_thresholds, synapses = await self.challenge_synthesizer.build_organic_compression_protocol(needed)
+        task_ids, original_urls, vmaf_thresholds, target_codecs, synapses = await self.challenge_synthesizer.build_organic_compression_protocol(needed)
 
         if len(task_ids) != needed or len(synapses) != needed:
             logger.error(
@@ -884,7 +893,7 @@ class Validator(base.BaseValidator):
             await self.update_task_status(task_id, original_url, "completed")
             await self.push_result(task_id, original_url, processed_url)
 
-        asyncio.create_task(self.score_organics_compression(forward_uids.tolist(), responses, original_urls, vmaf_thresholds, timestamp))
+        asyncio.create_task(self.score_organics_compression(forward_uids.tolist(), responses, original_urls, vmaf_thresholds, timestamp, target_codecs))
 
         end_time = time.time()
         total_time = end_time - organic_start_time

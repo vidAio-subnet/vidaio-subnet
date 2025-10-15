@@ -63,6 +63,7 @@ class CompressionScoringRequest(BaseModel):
     video_ids: List[str]
     uploaded_object_names: List[str]
     vmaf_threshold: float
+    target_codecs: List[str]  # REQUIRED - expected codec for each video
     fps: Optional[float] = None
     subsample: Optional[int] = 1
     verbose: Optional[bool] = False
@@ -88,6 +89,7 @@ class OrganicsCompressionScoringRequest(BaseModel):
     distorted_urls: List[str]
     reference_urls: List[str]
     vmaf_thresholds: List[float]
+    target_codecs: List[str]  # REQUIRED - no default
     uids: List[int]
     fps: Optional[float] = None
     subsample: Optional[int] = 1
@@ -563,6 +565,50 @@ def is_valid_video(video_path):
     except Exception as e:
         logger.error(f"Unexpected error validating {video_path}: {e}")
         return False
+
+def get_video_codec(video_path):
+    """
+    Detect the video codec of a file using ffprobe.
+    
+    Args:
+        video_path: Path to the video file
+        
+    Returns:
+        Codec name as string (h264, h265, hevc, av1, vp9, etc.) or None if detection fails
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=codec_name",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                video_path
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        if result.returncode == 0 and result.stdout.strip():
+            codec = result.stdout.strip().lower()
+            # Normalize codec names
+            if codec in ['h264', 'avc', 'avc1']:
+                return 'h264'
+            elif codec in ['h265', 'hevc', 'hvc1']:
+                return 'h265'
+            elif codec in ['av1', 'av01', 'av1_nvenc']:
+                return 'av1'
+            elif codec in ['vp9', 'vp09']:
+                return 'vp9'
+            else:
+                return codec
+        else:
+            logger.warning(f"Could not detect codec for {video_path}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error detecting codec for {video_path}: {e}")
+        return None
 
 def get_video_dimensions(video_path):
     """
@@ -1046,15 +1092,26 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
         )
 
     vmaf_threshold = request.vmaf_threshold
-    for idx, (ref_path, dist_url, uid, video_id, uploaded_object_name) in enumerate(zip(
+    target_codecs = request.target_codecs  # REQUIRED - no fallback
+    
+    if len(target_codecs) != len(request.distorted_urls):
+        raise HTTPException(
+            status_code=400, 
+            detail="Number of target codecs must match number of distorted URLs"
+        )
+    
+    for idx, (ref_path, dist_url, uid, video_id, uploaded_object_name, target_codec) in enumerate(zip(
         request.reference_paths, 
         request.distorted_urls, 
         request.uids,
         request.video_ids,
         request.uploaded_object_names,
+        target_codecs,
     )):
         try:
             logger.info(f"🧩 Processing pair {idx+1}/{len(request.distorted_urls)}: UID {uid} 🧩")
+            if target_codec:
+                logger.info(f"🎬 Expected codec: {target_codec}")
             
             uid_start_time = time.time()  # Start time for this UID
 
@@ -1135,6 +1192,40 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
 
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 4. Validated distorted video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            # Validate codec if target_codec is specified
+            if target_codec:
+                detected_codec = get_video_codec(dist_path)
+                logger.info(f"🎬 Detected codec: {detected_codec}")
+                
+                if detected_codec is None:
+                    logger.error(f"Could not detect codec for distorted video. Assigning score of 0.")
+                    vmaf_scores.append(0.0)
+                    compression_rates.append(1.0)
+                    final_scores.append(0.0)
+                    reasons.append("failed to detect video codec")
+                    if dist_path and os.path.exists(dist_path):
+                        os.unlink(dist_path)
+                    continue
+                
+                # Normalize both codecs for comparison (h265 == hevc)
+                normalized_target = 'h265' if target_codec.lower() in ['h265', 'hevc'] else target_codec.lower()
+                normalized_detected = 'h265' if detected_codec.lower() in ['h265', 'hevc'] else detected_codec.lower()
+                
+                if normalized_detected != normalized_target:
+                    logger.error(f"❌ Codec mismatch: expected '{target_codec}' but got '{detected_codec}'. Assigning score of 0.")
+                    vmaf_scores.append(0.0)
+                    compression_rates.append(1.0)
+                    final_scores.append(0.0)
+                    reasons.append(f"codec mismatch: expected {target_codec} but got {detected_codec}")
+                    if dist_path and os.path.exists(dist_path):
+                        os.unlink(dist_path)
+                    continue
+                else:
+                    logger.info(f"✅ Codec validation passed: {detected_codec} matches expected {target_codec}")
+                
+                step_time = time.time() - uid_start_time
+                logger.info(f"♎️ 4.5. Validated codec in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             dist_total_frames = get_frame_count(dist_path)
 
@@ -1619,10 +1710,12 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             logger.error(f"failed to download distorted video: {dist_url}, error: {e}")
             distorted_video_paths.append(None)
 
-    for idx, (ref_url, dist_path, uid, vmaf_threshold) in enumerate(
-        zip(request.reference_urls, distorted_video_paths, request.uids, request.vmaf_thresholds)
+    for idx, (ref_url, dist_path, uid, vmaf_threshold, target_codec) in enumerate(
+        zip(request.reference_urls, distorted_video_paths, request.uids, request.vmaf_thresholds, request.target_codecs)
     ):
         logger.info(f"🧩 processing {uid}.... downloading reference video.... 🧩")
+        if target_codec:
+            logger.info(f"🎬 Expected codec: {target_codec}")
         ref_path = None
         
         ref_y4m_path = None
@@ -1706,6 +1799,40 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             logger.info(f"Distorted video has {dist_total_frames} frames.")
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 5. Retrieved distorted video frame count in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            # Validate codec if target_codec is specified
+            if target_codec:
+                detected_codec = get_video_codec(dist_path)
+                logger.info(f"🎬 Detected codec: {detected_codec}")
+                
+                if detected_codec is None:
+                    logger.error(f"Could not detect codec for distorted video. Penalizing miner.")
+                    vmaf_scores.append(0.0)
+                    compression_rates.append(1.0)
+                    final_scores.append(0.0)
+                    reasons.append("MINER FAILURE: failed to detect video codec")
+                    if dist_path and os.path.exists(dist_path):
+                        os.unlink(dist_path)
+                    continue
+                
+                # Normalize both codecs for comparison (h265 == hevc)
+                normalized_target = 'h265' if target_codec.lower() in ['h265', 'hevc'] else target_codec.lower()
+                normalized_detected = 'h265' if detected_codec.lower() in ['h265', 'hevc'] else detected_codec.lower()
+                
+                if normalized_detected != normalized_target:
+                    logger.error(f"❌ Codec mismatch: expected '{target_codec}' but got '{detected_codec}'. Penalizing miner.")
+                    vmaf_scores.append(0.0)
+                    compression_rates.append(1.0)
+                    final_scores.append(0.0)
+                    reasons.append(f"MINER FAILURE: codec mismatch - expected {target_codec} but got {detected_codec}")
+                    if dist_path and os.path.exists(dist_path):
+                        os.unlink(dist_path)
+                    continue
+                else:
+                    logger.info(f"✅ Codec validation passed: {detected_codec} matches expected {target_codec}")
+                
+                step_time = time.time() - uid_start_time
+                logger.info(f"♎️ 5.5. Validated codec in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             if dist_total_frames != ref_total_frames:
                 logger.error(

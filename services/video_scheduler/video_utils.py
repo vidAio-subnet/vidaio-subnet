@@ -117,6 +117,50 @@ VIDEO_TRANSFORMATIONS = [
     "curves=r='0/0 0.5/0.505 1/1':g='0/0 0.5/0.495 1/1',unsharp=4:4:0.25:4:4:0.25,hue=h=-5:s=1.02",
 ]
 
+def get_video_codec(video_path: str) -> str:
+    """
+    Detect the video codec of a file using ffprobe.
+    
+    Args:
+        video_path: Path to the video file
+        
+    Returns:
+        Codec name as string (h264, h265, hevc, av1, vp9, etc.) or "h264" as default
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=codec_name",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                video_path
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        if result.returncode == 0 and result.stdout.strip():
+            codec = result.stdout.strip().lower()
+            # Normalize codec names
+            if codec in ['h264', 'avc', 'avc1']:
+                return 'h264'
+            elif codec in ['h265', 'hevc', 'hvc1']:
+                return 'h265'
+            elif codec in ['av1', 'av01']:
+                return 'av1'
+            elif codec in ['vp9', 'vp09']:
+                return 'vp9'
+            else:
+                return codec
+        else:
+            print(f"Warning: Could not detect codec for {video_path}, defaulting to h264")
+            return 'h264'
+            
+    except Exception as e:
+        print(f"Error detecting codec for {video_path}: {e}, defaulting to h264")
+        return 'h264'
+
 def rand_between(a, b):
     return random.uniform(a, b)
 

@@ -507,10 +507,20 @@ async def get_compression_requests_paths(num_needed: int, redis_conn: redis.Redi
                 logger.info(f"Successfully uploaded chunk {i+1}")
                 logger.info(f"Reference trim file kept for scoring: {challenge_local_path}")
 
+                # Detect codec of the uploaded video
+                try:
+                    from video_utils import get_video_codec
+                    video_codec = get_video_codec(challenge_local_path)
+                    logger.info(f"Detected codec for chunk {i+1}: {video_codec}")
+                except Exception as e:
+                    logger.warning(f"Could not detect codec for chunk {i+1}, defaulting to h264: {e}")
+                    video_codec = "h264"
+
                 uploaded_video_chunks.append({
                     "video_id": uploaded_file_id,
                     "uploaded_object_name": object_name,
                     "sharing_link": sharing_link,
+                    "target_codec": video_codec,
                 })
                 remaining_count -= 1
                     

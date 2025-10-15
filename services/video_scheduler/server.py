@@ -36,6 +36,7 @@ class InsertOrganicCompressionRequest(BaseModel):
     chunk_id: str
     task_id: str
     compression_type: str
+    target_codec: str
 
 class InsertResultRequest(BaseModel):
     processed_video_url: str
@@ -77,7 +78,8 @@ def api_insert_organic_compression_chunk(payload: InsertOrganicCompressionReques
         "url": payload.url,
         "chunk_id": payload.chunk_id,
         "task_id": payload.task_id,
-        "compression_type": payload.compression_type
+        "compression_type": payload.compression_type,
+        "target_codec": payload.target_codec
     }
     push_organic_compression_chunk(r, data)
     return {"message": "Organic compression chunk inserted"}

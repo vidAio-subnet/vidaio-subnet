@@ -93,7 +93,8 @@ async def compression(
         chunk_id=request.chunk_id,
         chunk_url=request.chunk_url,
         resolution_type=None,
-        compression_type=request.compression_type
+        compression_type=request.compression_type,
+        target_codec=request.target_codec
     )
     
     # Submit to Redis service in background to avoid blocking
@@ -102,7 +103,8 @@ async def compression(
         url=request.chunk_url,
         chunk_id=request.chunk_id,
         task_id=task_id,
-        compression_type=request.compression_type
+        compression_type=request.compression_type,
+        target_codec=request.target_codec  # Pass target_codec
     )
     
     return CompressionResponse(
