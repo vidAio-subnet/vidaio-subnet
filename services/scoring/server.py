@@ -1818,7 +1818,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
 
             # final score
             logger.info(f"🎯 Final score is {final_score:.4f}")
-            vmaf_scores.append(vmaf_score)
+            # vmaf_scores.append(vmaf_score)
             compression_rates.append(compression_rate)
             final_scores.append(final_score)
             reasons.append(reason)
