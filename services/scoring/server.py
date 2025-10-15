@@ -576,7 +576,7 @@ def validate_dist_encoding_settings(dist_path:str, ref_path:str, task:str):
             "ffprobe",
             "-v", "error",
             "-select_streams", "v:0",
-            "-show_entries", "stream=codec_name,profile,level,sample_aspect_ratio,pix_fmt,width,height",
+            "-show_entries", "stream=codec_name,profile,level,sample_aspect_ratio,pix_fmt,width,height,r_frame_rate",
             "-show_entries", "format=tags=encoder",
             "-show_format",
             "-of", "json",
@@ -598,6 +598,7 @@ def validate_dist_encoding_settings(dist_path:str, ref_path:str, task:str):
         width = video_stream.get("width", 0)
         height = video_stream.get("height", 0)
         container = format_info.get("format_name", "")
+        fps_str = video_stream.get("r_frame_rate", "0/1")
         encoder_tag = ""
         
         # Check both stream tags and format tags for encoder info
@@ -605,6 +606,10 @@ def validate_dist_encoding_settings(dist_path:str, ref_path:str, task:str):
         encoder_tag = stream_tags.get("encoder", "").lower() or format_tags.get("encoder", "").lower()
         
         errors = []
+
+        ref_fps_str = get_video_fps(ref_path, original_str=True)
+        if fps_str != ref_fps_str:
+            errors.append(f"FPS must be {ref_fps_str}, got {fps_str}")
 
         if task == "compression":
             ref_width, ref_height = get_video_dimensions(ref_path)
@@ -632,10 +637,6 @@ def validate_dist_encoding_settings(dist_path:str, ref_path:str, task:str):
         # REQUIRED: YUV 4:2:0 pixel format
         if pix_fmt != "yuv420p":
             errors.append(f"Pixel format must be yuv420p, got {pix_fmt}")
-        
-        # REQUIRED: Valid resolution
-        if width <= 0 or height <= 0:
-            errors.append("Invalid video dimensions")
         
         # SVT-AV1 PREFERRED encoder detection (check multiple locations)
         is_svtav1 = any(keyword in encoder_tag for keyword in [
@@ -710,7 +711,7 @@ def get_video_dimensions(video_path):
         logger.warning(f"ffprobe dimension check failed for {video_path}: {e}")
         return None, None
 
-def get_video_fps(video_path):
+def get_video_fps(video_path, original_str=False):
     """
     Get video FPS using ffprobe.
     This avoids OpenCV's AV1 decoder warnings.
@@ -730,6 +731,8 @@ def get_video_fps(video_path):
         result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=5)
         # r_frame_rate returns format like "30000/1001" or "30/1"
         fps_str = result.stdout.strip()
+        if original_str:
+            return fps_str
         if '/' in fps_str:
             num, den = map(int, fps_str.split('/'))
             return num / den
