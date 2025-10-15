@@ -565,10 +565,9 @@ def is_valid_video(video_path):
         logger.error(f"Unexpected error validating {video_path}: {e}")
         return False
 
-def validate_dist_encoding_settings(dist_path:str, ref_path:str, task:str):
+def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str):
     """
     Validate that distorted video uses specific encoding settings.
-    Handles real ffprobe output patterns and SVT-AV1 detection.
     """
     try:
         # Enhanced ffprobe to capture both stream and format encoder tags
@@ -576,7 +575,8 @@ def validate_dist_encoding_settings(dist_path:str, ref_path:str, task:str):
             "ffprobe",
             "-v", "error",
             "-select_streams", "v:0",
-            "-show_entries", "stream=codec_name,profile,level,sample_aspect_ratio,pix_fmt,width,height,r_frame_rate",
+            "-show_entries", "stream=codec_name,profile,level,sample_aspect_ratio,pix_fmt,"
+                           "width,height,r_frame_rate,color_space,color_primaries,color_transfer",
             "-show_entries", "format=tags=encoder",
             "-show_format",
             "-of", "json",
@@ -601,7 +601,12 @@ def validate_dist_encoding_settings(dist_path:str, ref_path:str, task:str):
         fps_str = video_stream.get("r_frame_rate", "0/1")
         encoder_tag = ""
         
-        # Check both stream tags and format tags for encoder info
+        # Colorspace properties
+        dist_color_space = video_stream.get("color_space", None)
+        dist_color_primaries = video_stream.get("color_primaries", None)
+        dist_color_transfer = video_stream.get("color_transfer", None)
+        
+        # Check encoder tags
         stream_tags = video_stream.get("tags", {})
         encoder_tag = stream_tags.get("encoder", "").lower() or format_tags.get("encoder", "").lower()
         
@@ -616,33 +621,64 @@ def validate_dist_encoding_settings(dist_path:str, ref_path:str, task:str):
             if width != ref_width or height != ref_height:
                 errors.append(f"Resolution must be {ref_width}x{ref_height}, got {width}x{height}")
 
-        # REQUIRED: Must be AV1 codec
+        # REQUIRED encoding checks
         if codec != "av1":
             errors.append(f"Codec must be AV1, got {codec}")
-        
-        # REQUIRED: Proper MP4 container (not IVF)
         if "ivf" in container.lower():
             errors.append("Container must be MP4, got IVF (incompatible for concatenation)")
         if container not in ["mov,mp4,m4a,3gp,3g2,mj2", "mp4", "isom"]:
             errors.append(f"Container must be proper MP4, got {container}")
-        
-        # REQUIRED: Main profile for AV1
         if profile != "Main":
             errors.append(f"AV1 profile must be 'Main', got {profile}")
-        
-        # REQUIRED: Square pixels (SAR 1:1) - default to 1:1 if missing
         if sar != "1:1":
             errors.append(f"Sample aspect ratio must be 1:1, got {sar}")
-        
-        # REQUIRED: YUV 4:2:0 pixel format
         if pix_fmt != "yuv420p":
             errors.append(f"Pixel format must be yuv420p, got {pix_fmt}")
+
+        # Colorspace validation
+        if ref_path and os.path.exists(ref_path):
+            try:
+                # Get reference colorspace
+                ref_cmd = [
+                    "ffprobe", "-v", "error", "-select_streams", "v:0",
+                    "-show_entries", "stream=color_space,color_primaries,color_transfer",
+                    "-of", "json", ref_path
+                ]
+                ref_result = subprocess.run(ref_cmd, capture_output=True, text=True, 
+                                          timeout=5, check=True)
+                ref_info = json.loads(ref_result.stdout)
+                ref_stream = ref_info.get("streams", [{}])[0]
+                
+                ref_color_space = ref_stream.get("color_space", None)
+                ref_color_primaries = ref_stream.get("color_primaries", None)
+                ref_color_transfer = ref_stream.get("color_transfer", None)
+                
+                # Colorspace - mismatch affects color accuracy
+                if (ref_color_space and dist_color_space and 
+                    ref_color_space != dist_color_space):
+                    errors.append(f"color_space mismatch, reference: {ref_color_space}, distorted: {dist_color_space}")
+                
+                # Transfer characteristics - mismatch affects VMAF significantly
+                if (ref_color_transfer and dist_color_transfer and 
+                    ref_color_transfer != dist_color_transfer):
+                    errors.append(f"color_transfer mismatch, reference: {ref_color_transfer}, distorted: {dist_color_transfer}")
+                
+                # Primaries - less critical but still affects color accuracy
+                if (ref_color_primaries and dist_color_primaries and 
+                    ref_color_primaries != dist_color_primaries):
+                    errors.append(f"color_primaries mismatch, reference: {ref_color_primaries}, distorted: {dist_color_primaries}")
+
+                logger.warning(f"  Ref: space={ref_color_space}, primaries={ref_color_primaries}, transfer={ref_color_transfer}")
+                logger.warning(f"  Dist: space={dist_color_space}, primaries={dist_color_primaries}, transfer={dist_color_transfer}")
+                    # NOT a hard fail - allows innovation in HDR/Dolby Vision/etc.
+                
+            except subprocess.CalledProcessError:
+                logger.warning("Could not read reference colorspace info")
         
         # SVT-AV1 PREFERRED encoder detection (check multiple locations)
         is_svtav1 = any(keyword in encoder_tag for keyword in [
             "libsvtav1", "svt-av1", "svtav1"
         ])
-        
         # # AV1 Level validation (FFmpeg uses internal integer levels)
         # av1_level_valid = False
         # if level is not None:
@@ -657,30 +693,29 @@ def validate_dist_encoding_settings(dist_path:str, ref_path:str, task:str):
         #     logger.warning("AV1 level not specified in metadata")
         
         # Encoder preference validation (not blocking)
+        
         if is_svtav1:
             logger.info(f"✅ SVT-AV1 encoder detected: {encoder_tag}")
         elif encoder_tag:
-            # Check for other known AV1 encoders
             other_av1_encoders = ["libaom-av1", "rav1e", "libdav1d"]
             is_known_av1 = any(other in encoder_tag for other in other_av1_encoders)
             if is_known_av1:
-                logger.info(f"ℹ️ Known AV1 encoder: {encoder_tag} (SVT-AV1 preferred)")
+                logger.info(f"ℹ️ Known AV1 encoder: {encoder_tag}")
             else:
-                logger.warning(f"⚠️ Unknown encoder: {encoder_tag} (SVT-AV1 strongly preferred)")
+                logger.warning(f"⚠️ Unknown encoder: {encoder_tag}")
         else:
-            logger.warning("⚠️ No encoder tag found (SVT-AV1 detection unavailable)")
+            logger.warning("⚠️ No encoder tag found")
         
-        # Log detailed analysis
-        logger.debug(f"Video analysis: {width}x{height}, {codec}/{profile}, level={level}, "
-                    f"container={container}, encoder='{encoder_tag}', SVT-AV1={is_svtav1}")
+        logger.debug(f"Video analysis: {width}x{height}@{fps_str}, {codec}/{profile}, "
+                    f"container={container}, color_space={dist_color_space}, "
+                    f"SVT-AV1={is_svtav1}")
         
-        # Only fail on REQUIRED errors, encoder preference is advisory
         if errors:
             return False, "; ".join(errors)
         
-        # Success with encoder preference info
+        color_info = f"space={dist_color_space or 'default'}" if dist_color_space else ""
         encoder_status = "SVT-AV1" if is_svtav1 else "Other AV1"
-        return True, f"Valid encoding ({encoder_status}, {width}x{height}, level {level})"
+        return True, f"Valid encoding ({encoder_status}, {width}x{height}, {color_info}, level {level})"
         
     except subprocess.CalledProcessError as e:
         return False, f"ffprobe failed: {e.stderr}"
