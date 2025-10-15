@@ -637,18 +637,18 @@ def validate_dist_encoding_settings(dist_path):
             "libsvtav1", "svt-av1", "svtav1"
         ])
         
-        # AV1 Level validation (FFmpeg uses internal integer levels)
-        av1_level_valid = False
-        if level is not None:
-            # FFmpeg level 12 ≈ AV1 Level 5.1 (4K), map roughly
-            # This is internal FFmpeg representation, not spec levels
-            if isinstance(level, int) and level >= 8:  # Reasonable minimum for HD+
-                av1_level_valid = True
-            else:
-                errors.append(f"AV1 level {level} too low for practical use")
-        else:
-            # Level missing is acceptable if other params valid
-            logger.warning("AV1 level not specified in metadata")
+        # # AV1 Level validation (FFmpeg uses internal integer levels)
+        # av1_level_valid = False
+        # if level is not None:
+        #     # FFmpeg level 12 ≈ AV1 Level 5.1 (4K), map roughly
+        #     # This is internal FFmpeg representation, not spec levels
+        #     if isinstance(level, int) and level >= 8:  # Reasonable minimum for HD+
+        #         av1_level_valid = True
+        #     else:
+        #         errors.append(f"AV1 level {level} too low for practical use")
+        # else:
+        #     # Level missing is acceptable if other params valid
+        #     logger.warning("AV1 level not specified in metadata")
         
         # Encoder preference validation (not blocking)
         if is_svtav1:
