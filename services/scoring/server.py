@@ -975,7 +975,9 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
 
             # === RESOLUTION CHECK ===
             dist_width, dist_height = get_video_dimensions(dist_path)
+            logger.info(f"Distorted video resolution: {dist_width}x{dist_height}")
             ref_width, ref_height = get_video_dimensions(ref_path)
+            logger.info(f"Reference video resolution: {ref_width}x{ref_height}")
             expected_width = ref_width * scale_factor
             expected_height = ref_height * scale_factor
             
