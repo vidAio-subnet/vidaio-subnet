@@ -15,7 +15,7 @@ class Synthesizer:
         self.retry_delay = 10  
 
     async def build_synthetic_protocol(self, content_lengths: list[int], version, round_id) -> Tuple[list[str], list[str], list[str], list[VideoUpscalingProtocol]]:
-        """Fetches synthetic video chunks and builds the video compression protocols.
+        """Fetches synthetic video chunks and builds the video upscaling protocols.
         
         Args:
             content_lengths: List of requested content durations in seconds
@@ -71,6 +71,7 @@ class Synthesizer:
                 payload_urls = []
                 video_ids = []
                 uploaded_object_names = []
+                task_types = []
                 synapses = []
 
                 # Process only non-None chunks
@@ -128,6 +129,7 @@ class Synthesizer:
                     try:
                         payload_urls.append(chunk["sharing_link"])
                         video_ids.append(chunk["video_id"])
+                        task_types.append(chunk["task_type"])
                         uploaded_object_names.append(chunk["uploaded_object_name"])
                         
                         synapse = VideoUpscalingProtocol(
@@ -153,7 +155,7 @@ class Synthesizer:
                 
                 logger.info(f"Successfully created {len(synapses)} protocols from {len(valid_chunks)} chunks")
                 # Return the results if we have valid data
-                return payload_urls, video_ids, uploaded_object_names, synapses
+                return payload_urls, video_ids, uploaded_object_names, synapses, task_types
                 
             except httpx.HTTPStatusError as e:
                 logger.error(f"HTTP error occurred (attempt {attempt + 1}/{self.max_retries}): {e}")

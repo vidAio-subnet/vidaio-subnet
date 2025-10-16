@@ -49,6 +49,7 @@ class UpscalingScoringRequest(BaseModel):
     video_ids: List[str]
     uploaded_object_names: List[str]
     content_lengths: List[int]
+    task_types: List[str]
     fps: Optional[float] = None
     subsample: Optional[int] = 1
     verbose: Optional[bool] = False
@@ -901,13 +902,14 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             detail="Number of UIDs must match number of distorted URLs"
         )
 
-    for idx, (ref_path, dist_url, uid, video_id, uploaded_object_name, content_length) in enumerate(zip(
+    for idx, (ref_path, dist_url, uid, video_id, uploaded_object_name, content_length, task_type) in enumerate(zip(
         request.reference_paths, 
         request.distorted_urls, 
         request.uids,
         request.video_ids,
         request.uploaded_object_names,
-        request.content_lengths
+        request.content_lengths,
+        request.task_types
     )):
         try:
             logger.info(f"🧩 Processing pair {idx+1}/{len(request.distorted_urls)}: UID {uid} 🧩")
@@ -916,6 +918,12 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
 
             ref_y4m_path = None
             dist_path = None
+
+            scale_factor = 2
+            if task_type == "SD24K":
+                scale_factor = 4
+
+            logger.info(f"scale factor: {scale_factor}")
 
             # Validate reference video using ffprobe (avoids AV1 warnings)
             if not is_valid_video(ref_path):
@@ -964,6 +972,23 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 if dist_path and os.path.exists(dist_path):
                     os.unlink(dist_path)
                 continue
+
+            # === RESOLUTION CHECK ===
+            dist_width, dist_height = get_video_dimensions(dist_path)
+            ref_width, ref_height = get_video_dimensions(ref_path)
+            expected_width = ref_width * scale_factor
+            expected_height = ref_height * scale_factor
+            
+            if dist_width != expected_width or dist_height != expected_height:
+                logger.info(f"resolution mismatch: expected {expected_width}x{expected_height}, got {dist_width}x{dist_height}. penalizing miner.")
+                reasons.append("MINER FAILURE: incorrect upscaling resolution")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(0.0)  # 0 = miner penalty
+                continue
+            logger.info(f"Resolution check passed: expected {expected_width}x{expected_height}, got {dist_width}x{dist_height}.")
 
             # Only log success after confirming the file was validated
             step_time = time.time() - uid_start_time

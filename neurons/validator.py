@@ -257,7 +257,7 @@ class Validator(base.BaseValidator):
                 axons.append(miner[0])
             
             round_id = str(uuid.uuid4())
-            payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_synthetic_protocol(content_lengths, version, round_id)
+            payload_urls, video_ids, uploaded_object_names, synapses, task_types = await self.challenge_synthesizer.build_synthetic_protocol(content_lengths, version, round_id)
             logger.debug(f"Built upscaling challenge protocol")
 
             timestamp = datetime.now(timezone.utc).isoformat()
@@ -280,7 +280,7 @@ class Validator(base.BaseValidator):
                     logger.warning(f"⚠️ Reference video file missing for video_id {video_id}: {reference_video_path}")
                 reference_video_paths.append(reference_video_path)
             
-            asyncio.create_task(self.score_upscalings(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, content_lengths, round_id))
+            asyncio.create_task(self.score_upscalings(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, content_lengths, task_types, round_id))
 
             batch_processed_time = time.time() - batch_start_time
             
@@ -392,6 +392,7 @@ class Validator(base.BaseValidator):
         video_ids: list[str], 
         uploaded_object_names: list[str], 
         content_lengths: list[int], 
+        task_types: list[str],
         round_id: str
     ):
         distorted_urls = []
@@ -408,7 +409,8 @@ class Validator(base.BaseValidator):
                 "reference_paths": reference_video_paths,
                 "video_ids": video_ids,
                 "uploaded_object_names": uploaded_object_names,
-                "content_lengths": content_lengths
+                "content_lengths": content_lengths,
+                "task_types": task_types
             },
             timeout=240
         )
