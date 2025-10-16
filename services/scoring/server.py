@@ -1,6 +1,7 @@
 import os
 import cv2
 import glob
+import json
 import time
 import math
 import torch
@@ -564,6 +565,163 @@ def is_valid_video(video_path):
         logger.error(f"Unexpected error validating {video_path}: {e}")
         return False
 
+def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str):
+    """
+    Validate that distorted video uses specific encoding settings.
+    """
+    try:
+        # Enhanced ffprobe to capture both stream and format encoder tags
+        cmd = [
+            "ffprobe",
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=codec_name,profile,level,sample_aspect_ratio,pix_fmt,"
+                           "width,height,r_frame_rate,color_space,color_primaries,color_transfer",
+            "-show_entries", "format=tags=encoder",
+            "-show_format",
+            "-of", "json",
+            dist_path
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=10)
+        info = json.loads(result.stdout)
+        
+        video_stream = info.get("streams", [{}])[0]
+        format_info = info.get("format", {})
+        format_tags = format_info.get("tags", {})
+        
+        codec = video_stream.get("codec_name", "")
+        profile = video_stream.get("profile", "")
+        level = video_stream.get("level")
+        sar = video_stream.get("sample_aspect_ratio", "1:1")
+        pix_fmt = video_stream.get("pix_fmt", "")
+        width = video_stream.get("width", 0)
+        height = video_stream.get("height", 0)
+        container = format_info.get("format_name", "")
+        fps_str = video_stream.get("r_frame_rate", "0/1")
+        encoder_tag = ""
+        
+        # Colorspace properties
+        dist_color_space = video_stream.get("color_space", None)
+        dist_color_primaries = video_stream.get("color_primaries", None)
+        dist_color_transfer = video_stream.get("color_transfer", None)
+        
+        # Check encoder tags
+        stream_tags = video_stream.get("tags", {})
+        encoder_tag = stream_tags.get("encoder", "").lower() or format_tags.get("encoder", "").lower()
+        
+        errors = []
+
+        ref_fps_str = get_video_fps(ref_path, original_str=True)
+        if fps_str != ref_fps_str:
+            errors.append(f"FPS must be {ref_fps_str}, got {fps_str}")
+
+        if task == "compression":
+            ref_width, ref_height = get_video_dimensions(ref_path)
+            if width != ref_width or height != ref_height:
+                errors.append(f"Resolution must be {ref_width}x{ref_height}, got {width}x{height}")
+
+        # REQUIRED encoding checks
+        if task == "compression" and codec != "av1" or task == "upscaling" and codec != "hevc":
+            errors.append(f"Codec must be AV1 for compression & hevc for upscaling, got {codec}")
+        if "ivf" in container.lower():
+            errors.append("Container must be MP4, got IVF (incompatible for concatenation)")
+        if container not in ["mov,mp4,m4a,3gp,3g2,mj2", "mp4", "isom"]:
+            errors.append(f"Container must be proper MP4, got {container}")
+        if profile != "Main":
+            errors.append(f"AV1 profile must be 'Main', got {profile}")
+        if sar != "1:1":
+            errors.append(f"Sample aspect ratio must be 1:1, got {sar}")
+        if pix_fmt != "yuv420p":
+            errors.append(f"Pixel format must be yuv420p, got {pix_fmt}")
+
+        # Colorspace validation
+        if ref_path and os.path.exists(ref_path):
+            try:
+                # Get reference colorspace
+                ref_cmd = [
+                    "ffprobe", "-v", "error", "-select_streams", "v:0",
+                    "-show_entries", "stream=color_space,color_primaries,color_transfer",
+                    "-of", "json", ref_path
+                ]
+                ref_result = subprocess.run(ref_cmd, capture_output=True, text=True, 
+                                          timeout=5, check=True)
+                ref_info = json.loads(ref_result.stdout)
+                ref_stream = ref_info.get("streams", [{}])[0]
+                
+                ref_color_space = ref_stream.get("color_space", None)
+                ref_color_primaries = ref_stream.get("color_primaries", None)
+                ref_color_transfer = ref_stream.get("color_transfer", None)
+                
+                # Colorspace - mismatch affects color accuracy
+                if (ref_color_space and dist_color_space and 
+                    ref_color_space != dist_color_space):
+                    errors.append(f"color_space mismatch, reference: {ref_color_space}, distorted: {dist_color_space}")
+                
+                # Transfer characteristics - mismatch affects VMAF significantly
+                if (ref_color_transfer and dist_color_transfer and 
+                    ref_color_transfer != dist_color_transfer):
+                    errors.append(f"color_transfer mismatch, reference: {ref_color_transfer}, distorted: {dist_color_transfer}")
+                
+                # Primaries - less critical but still affects color accuracy
+                if (ref_color_primaries and dist_color_primaries and 
+                    ref_color_primaries != dist_color_primaries):
+                    errors.append(f"color_primaries mismatch, reference: {ref_color_primaries}, distorted: {dist_color_primaries}")
+
+                logger.warning(f"  Ref: space={ref_color_space}, primaries={ref_color_primaries}, transfer={ref_color_transfer}")
+                logger.warning(f"  Dist: space={dist_color_space}, primaries={dist_color_primaries}, transfer={dist_color_transfer}")
+                    # NOT a hard fail - allows innovation in HDR/Dolby Vision/etc.
+                
+            except subprocess.CalledProcessError:
+                logger.warning("Could not read reference colorspace info")
+        
+        # SVT-AV1 detection, only logging for now
+        is_svtav1 = any(keyword in encoder_tag for keyword in [
+            "libsvtav1", "svt-av1", "svtav1"
+        ])
+        # # AV1 Level validation (FFmpeg uses internal integer levels)
+        # av1_level_valid = False
+        # if level is not None:
+        #     # FFmpeg level 12 ≈ AV1 Level 5.1 (4K), map roughly
+        #     # This is internal FFmpeg representation, not spec levels
+        #     if isinstance(level, int) and level >= 8:  # Reasonable minimum for HD+
+        #         av1_level_valid = True
+        #     else:
+        #         errors.append(f"AV1 level {level} too low for practical use")
+        # else:
+        #     # Level missing is acceptable if other params valid
+        #     logger.warning("AV1 level not specified in metadata")
+        
+        # Encoder preference validation (not blocking)
+        
+        if is_svtav1:
+            logger.info(f"✅ SVT-AV1 encoder detected: {encoder_tag}")
+        elif encoder_tag:
+            other_av1_encoders = ["libaom-av1", "rav1e", "libdav1d"]
+            is_known_av1 = any(other in encoder_tag for other in other_av1_encoders)
+            if is_known_av1:
+                logger.info(f"ℹ️ Known AV1 encoder: {encoder_tag}")
+            else:
+                logger.warning(f"⚠️ Unknown encoder: {encoder_tag}")
+        else:
+            logger.warning("⚠️ No encoder tag found")
+        
+        logger.debug(f"Video analysis: {width}x{height}@{fps_str}, {codec}/{profile}, "
+                    f"container={container}, color_space={dist_color_space}, "
+                    f"SVT-AV1={is_svtav1}")
+        
+        if errors:
+            return False, "; ".join(errors)
+        
+        color_info = f"space={dist_color_space or 'default'}" if dist_color_space else ""
+        encoder_status = "SVT-AV1" if is_svtav1 else "Other AV1"
+        return True, f"Valid encoding ({encoder_status}, {width}x{height}, {color_info}, level {level})"
+        
+    except subprocess.CalledProcessError as e:
+        return False, f"ffprobe failed: {e.stderr}"
+    except Exception as e:
+        return False, f"Validation error: {str(e)}"
+
 def get_video_dimensions(video_path):
     """
     Get video dimensions (width, height) using ffprobe.
@@ -588,7 +746,7 @@ def get_video_dimensions(video_path):
         logger.warning(f"ffprobe dimension check failed for {video_path}: {e}")
         return None, None
 
-def get_video_fps(video_path):
+def get_video_fps(video_path, original_str=False):
     """
     Get video FPS using ffprobe.
     This avoids OpenCV's AV1 decoder warnings.
@@ -608,6 +766,8 @@ def get_video_fps(video_path):
         result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=5)
         # r_frame_rate returns format like "30000/1001" or "30/1"
         fps_str = result.stdout.strip()
+        if original_str:
+            return fps_str
         if '/' in fps_str:
             num, den = map(int, fps_str.split('/'))
             return num / den
@@ -777,9 +937,37 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 reasons.append(f"error opening reference video file: {ref_path} (exists: {file_exists}, size: {file_size})")
                 continue
             
+            try:
+                dist_path, download_time = await download_video(dist_url, request.verbose)
+            except Exception as e:
+                error_msg = f"Failed to download video from {dist_url}: {str(e)}"
+                logger.error(f"{error_msg}. Assigning score of 0.")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(0.0)
+                reasons.append("failed to download video file from url")
+                continue
+
+            step_time = time.time() - uid_start_time
+
+            # Validate video using ffprobe (avoids AV1 warnings)
+            if not is_valid_video(dist_path):
+                logger.error(f"Error opening distorted video file from {dist_url}. Assigning score of 0.")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(0.0)
+                reasons.append("error opening distorted video file")
+                if dist_path and os.path.exists(dist_path):
+                    os.unlink(dist_path)
+                continue
+
             # Only log success after confirming the file was validated
             step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 1. Validated reference video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            logger.info(f"♎️ 1. Validated reference video and miner output in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             ref_total_frames = get_frame_count(ref_path)
             step_time = time.time() - uid_start_time
@@ -816,15 +1004,30 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 4. Extracted sampled frames from reference video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
+            # Validate encoding settings (MUST be AV1 in proper MP4 with specific params)
+            is_valid_encoding, encoding_msg = validate_dist_encoding_settings(dist_path, ref_path, task="upscaling")
+            if not is_valid_encoding:
+                logger.error(f"Invalid encoding settings for distorted video {dist_path}: {encoding_msg}")
+                logger.info(f"  Required: AV1 codec, Main profile, yuv420p, MP4 container, 1:1 SAR")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(0.0)
+                reasons.append(f"invalid encoding settings: {encoding_msg}")
+                continue
+            step_time = time.time() - uid_start_time
+            logger.info(f"♎️ 5. Validated encoding settings ({encoding_msg}) in {step_time:.2f} seconds.")
+
             random_frames = sorted(random.sample(range(ref_total_frames), VMAF_SAMPLE_COUNT))
             logger.info(f"Randomly selected {VMAF_SAMPLE_COUNT} frames for VMAF score: frame list: {random_frames}")
             step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 5. Selected random frames for VMAF in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            logger.info(f"♎️ 6. Selected random frames for VMAF in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             ref_y4m_path = convert_mp4_to_y4m(ref_path, random_frames)
             logger.info("The reference video has been successfully converted to Y4M format.")
             step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 6. Converted reference video to Y4M in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            logger.info(f"♎️ 7. Converted reference video to Y4M in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             if len(dist_url) < 10:
                 logger.info(f"Wrong dist download URL: {dist_url}. Assigning score of 0.")
@@ -834,35 +1037,6 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 length_scores.append(0.0)
                 final_scores.append(0.0)
                 reasons.append("Invalid download URL: the distorted video download URL must be at least 10 characters long.")
-                continue
-
-            try:
-                dist_path, download_time = await download_video(dist_url, request.verbose)
-            except Exception as e:
-                error_msg = f"Failed to download video from {dist_url}: {str(e)}"
-                logger.error(f"{error_msg}. Assigning score of 0.")
-                vmaf_scores.append(0.0)
-                pieapp_scores.append(0.0)
-                quality_scores.append(0.0)
-                length_scores.append(0.0)
-                final_scores.append(0.0)
-                reasons.append("failed to download video file from url")
-                continue
-
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 7. Downloaded distorted video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
-            # Validate video using ffprobe (avoids AV1 warnings)
-            if not is_valid_video(dist_path):
-                logger.error(f"Error opening distorted video file from {dist_url}. Assigning score of 0.")
-                vmaf_scores.append(0.0)
-                pieapp_scores.append(0.0)
-                quality_scores.append(0.0)
-                length_scores.append(0.0)
-                final_scores.append(0.0)
-                reasons.append("error opening distorted video file")
-                if dist_path and os.path.exists(dist_path):
-                    os.unlink(dist_path)
                 continue
 
             step_time = time.time() - uid_start_time
@@ -1136,6 +1310,22 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 4. Validated distorted video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
+            # Validate encoding settings (MUST be AV1 in proper MP4 with specific params)
+            is_valid_encoding, encoding_msg = validate_dist_encoding_settings(dist_path, ref_path, task="compression")
+            if not is_valid_encoding:
+                logger.error(f"Invalid encoding settings for distorted video {dist_path}: {encoding_msg}")
+                logger.info(f"  Required: AV1 codec, Main profile, yuv420p, MP4 container, 1:1 SAR")
+                vmaf_scores.append(0.0)
+                compression_rates.append(1.0)
+                final_scores.append(0.0)
+                reasons.append(f"invalid encoding settings: {encoding_msg}")
+                if dist_path and os.path.exists(dist_path):
+                    os.unlink(dist_path)
+                continue
+
+            step_time = time.time() - uid_start_time
+            logger.info(f"♎️ 4.5. Validated encoding settings ({encoding_msg}) in {step_time:.2f} seconds.")
+
             dist_total_frames = get_frame_count(dist_path)
 
             logger.info(f"Distorted video has {dist_total_frames} frames.")
@@ -1407,6 +1597,18 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
                 final_scores.append(0.0)  # 0 = miner penalty
                 continue
 
+            is_valid_encoding, encoding_msg = validate_dist_encoding_settings(dist_path, ref_path, task="upscaling")
+            if not is_valid_encoding:
+                logger.error(f"Invalid encoding settings for distorted video {dist_path}: {encoding_msg}")
+                logger.info(f"  Required: AV1 codec, Main profile, yuv420p, MP4 container, 1:1 SAR")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(0.0)
+                reasons.append(f"invalid encoding settings: {encoding_msg}")
+                continue
+            
             # Get frame count and dimensions using ffprobe (no AV1 warnings)
             dist_total_frames = get_frame_count(dist_path)
             dist_width, dist_height = get_video_dimensions(dist_path)
@@ -1700,6 +1902,18 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 compression_rates.append(1.0)
                 reasons.append("MINER FAILURE: corrupted output video")
                 final_scores.append(0.0)  # 0 = miner penalty
+                continue
+
+            is_valid_encoding, encoding_msg = validate_dist_encoding_settings(dist_path, ref_path, task="compression")
+            if not is_valid_encoding:
+                logger.error(f"Invalid encoding settings for distorted video {dist_path}: {encoding_msg}")
+                logger.info(f"  Required: AV1 codec, Main profile, yuv420p, MP4 container, 1:1 SAR")
+                vmaf_scores.append(0.0)
+                compression_rates.append(1.0)
+                final_scores.append(0.0)
+                reasons.append(f"invalid encoding settings: {encoding_msg}")
+                if dist_path and os.path.exists(dist_path):
+                    os.unlink(dist_path)
                 continue
 
             dist_total_frames = get_frame_count(dist_path)
