@@ -405,6 +405,7 @@ class Validator(base.BaseValidator):
             "/score_upscaling_synthetics",
             json = {
                 "uids": uids,
+                "payload_urls": payload_urls,
                 "distorted_urls": distorted_urls,
                 "reference_paths": reference_video_paths,
                 "video_ids": video_ids,
