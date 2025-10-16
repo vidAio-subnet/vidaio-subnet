@@ -1213,6 +1213,8 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 os.unlink(ref_y4m_path)
             if dist_path and os.path.exists(dist_path):
                 os.unlink(dist_path)
+            if payload_path and os.path.exists(payload_path):
+                os.unlink(payload_path)
 
             # Delete the uploaded object
             storage_client.delete_file(uploaded_object_name)
