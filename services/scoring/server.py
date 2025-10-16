@@ -947,7 +947,7 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 quality_scores.append(0.0)
                 length_scores.append(0.0)
                 final_scores.append(0.0)
-                reasons.append("failed to download video file from url")
+                reasons.append(error_msg)
                 continue
 
             step_time = time.time() - uid_start_time
@@ -1290,7 +1290,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 vmaf_scores.append(0.0)
                 compression_rates.append(1.0)  # No compression achieved
                 final_scores.append(0.0)
-                reasons.append("failed to download video file from url")
+                reasons.append(error_msg)
                 continue
 
             step_time = time.time() - uid_start_time
