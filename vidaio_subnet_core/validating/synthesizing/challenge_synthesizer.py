@@ -14,7 +14,7 @@ class Synthesizer:
         self.max_retries = 20
         self.retry_delay = 10  
 
-    async def build_synthetic_protocol(self, content_lengths: list[int], version, round_id) -> Tuple[list[str], list[str], list[str], list[VideoUpscalingProtocol]]:
+    async def build_synthetic_protocol(self, content_lengths: list[int], version, round_id) -> Tuple[list[str], list[str], list[str], list[VideoUpscalingProtocol], list[str]]:
         """Fetches synthetic video chunks and builds the video upscaling protocols.
         
         Args:
