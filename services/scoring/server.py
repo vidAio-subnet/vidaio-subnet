@@ -46,6 +46,7 @@ class UpscalingScoringRequest(BaseModel):
     distorted_urls: List[str]
     reference_paths: List[str]
     uids: List[int]
+    payload_urls: List[str]
     video_ids: List[str]
     uploaded_object_names: List[str]
     content_lengths: List[int]
@@ -901,10 +902,17 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             status_code=400, 
             detail="Number of UIDs must match number of distorted URLs"
         )
+    
+    if len(request.payload_urls) != len(request.distorted_urls):
+        raise HTTPException(
+            status_code=400, 
+            detail="Number of payload URLs must match number of distorted URLs"
+        )
 
-    for idx, (ref_path, dist_url, uid, video_id, uploaded_object_name, content_length, task_type) in enumerate(zip(
+    for idx, (ref_path, dist_url, payload_url, uid, video_id, uploaded_object_name, content_length, task_type) in enumerate(zip(
         request.reference_paths, 
         request.distorted_urls, 
+        request.payload_urls,
         request.uids,
         request.video_ids,
         request.uploaded_object_names,
@@ -948,7 +956,20 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             try:
                 dist_path, download_time = await download_video(dist_url, request.verbose)
             except Exception as e:
-                error_msg = f"Failed to download video from {dist_url}: {str(e)}"
+                error_msg = f"Failed to download distorted video from {dist_url}: {str(e)}"
+                logger.error(f"{error_msg}. Assigning score of 0.")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(0.0)
+                reasons.append("failed to download video file from url")
+                continue
+
+            try:
+                payload_path, download_time = await download_video(payload_url, request.verbose)
+            except Exception as e:
+                error_msg = f"Failed to download payload video from {payload_path}: {str(e)}"
                 logger.error(f"{error_msg}. Assigning score of 0.")
                 vmaf_scores.append(0.0)
                 pieapp_scores.append(0.0)
@@ -976,7 +997,7 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             # === RESOLUTION CHECK ===
             dist_width, dist_height = get_video_dimensions(dist_path)
             logger.info(f"Distorted video resolution: {dist_width}x{dist_height}")
-            ref_width, ref_height = get_video_dimensions(ref_path)
+            ref_width, ref_height = get_video_dimensions(payload_path)
             logger.info(f"Reference video resolution: {ref_width}x{ref_height}")
             expected_width = ref_width * scale_factor
             expected_height = ref_height * scale_factor
