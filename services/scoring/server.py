@@ -1173,17 +1173,17 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
         if os.path.exists(ref_path):
             os.unlink(ref_path)
 
-    tmp_directory = "/tmp"
-    try:
-        logger.info("🧹 Cleaning up temporary files in /tmp...")
-        for file_path in glob.glob(os.path.join(tmp_directory, "*.mp4")):
-            os.remove(file_path)
-            logger.info(f"Deleted: {file_path}")
-        for file_path in glob.glob(os.path.join(tmp_directory, "*.y4m")):
-            os.remove(file_path)
-            logger.info(f"Deleted: {file_path}")
-    except Exception as e:
-        logger.error(f"⚠️ Error during cleanup: {e}")
+    # tmp_directory = "/tmp"
+    # try:
+    #     logger.info("🧹 Cleaning up temporary files in /tmp...")
+    #     for file_path in glob.glob(os.path.join(tmp_directory, "*.mp4")):
+    #         os.remove(file_path)
+    #         logger.info(f"Deleted: {file_path}")
+    #     for file_path in glob.glob(os.path.join(tmp_directory, "*.y4m")):
+    #         os.remove(file_path)
+    #         logger.info(f"Deleted: {file_path}")
+    # except Exception as e:
+    #     logger.error(f"⚠️ Error during cleanup: {e}")
 
     processed_time = time.time() - start_time
     logger.info(f"Completed batch scoring of {len(request.distorted_urls)} pairs within {processed_time:.2f} seconds")
@@ -1442,17 +1442,17 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
         if os.path.exists(ref_path):
             os.unlink(ref_path)
 
-    tmp_directory = "/tmp"
-    try:
-        logger.info("🧹 Cleaning up temporary files in /tmp...")
-        for file_path in glob.glob(os.path.join(tmp_directory, "*.mp4")):
-            os.remove(file_path)
-            logger.info(f"Deleted: {file_path}")
-        for file_path in glob.glob(os.path.join(tmp_directory, "*.y4m")):
-            os.remove(file_path)
-            logger.info(f"Deleted: {file_path}")
-    except Exception as e:
-        logger.error(f"⚠️ Error during cleanup: {e}")
+    # tmp_directory = "/tmp"
+    # try:
+    #     logger.info("🧹 Cleaning up temporary files in /tmp...")
+    #     for file_path in glob.glob(os.path.join(tmp_directory, "*.mp4")):
+    #         os.remove(file_path)
+    #         logger.info(f"Deleted: {file_path}")
+    #     for file_path in glob.glob(os.path.join(tmp_directory, "*.y4m")):
+    #         os.remove(file_path)
+    #         logger.info(f"Deleted: {file_path}")
+    # except Exception as e:
+    #     logger.error(f"⚠️ Error during cleanup: {e}")
 
     processed_time = time.time() - start_time
     logger.info(f"Completed batch scoring of {len(request.distorted_urls)} pairs within {processed_time:.2f} seconds")
