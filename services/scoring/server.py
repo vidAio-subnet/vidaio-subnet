@@ -144,15 +144,13 @@ def load_quality_model():
     model.eval()
     return model
 
-async def download_video(video_url: str, verbose: bool, dir_path: str | None = None) -> tuple[str, float]:
+async def download_video(video_url: str, verbose: bool) -> tuple[str, float]:
     """
     Download a video from the given URL and save it to a temporary file.
 
     Args:
         video_url (str): The URL of the video to download.
         verbose (bool): Whether to show download progress.
-        dir_path (str | None): Optional directory path where the video should be saved.
-                               If None, a system temporary directory is used.
 
     Returns:
         tuple[str, float]: A tuple containing the path to the downloaded video file
@@ -162,15 +160,8 @@ async def download_video(video_url: str, verbose: bool, dir_path: str | None = N
         Exception: If the download fails or takes longer than the timeout.
     """
     try:
-        # Ensure directory exists (if provided)
-        if dir_path is not None:
-            os.makedirs(dir_path, exist_ok=True)
-            with tempfile.NamedTemporaryFile(suffix=".mp4", dir=dir_path, delete=False) as vid_temp:
-                file_path = vid_temp.name  # Path to the temporary file
-        else:
-            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as vid_temp:
-                file_path = vid_temp.name  # Path to the temporary file
-
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as vid_temp:
+            file_path = vid_temp.name  # Path to the temporary file
         if verbose:
             logger.info(f"Downloading video from {video_url} to {file_path}")
 
@@ -187,7 +178,8 @@ async def download_video(video_url: str, verbose: bool, dir_path: str | None = N
                     async for chunk in response.content.iter_chunked(2 * 1024 * 1024):
                         f.write(chunk)
 
-        download_time = time.time() - start_time
+        end_time = time.time()  # Record end time
+        download_time = end_time - start_time  # Calculate download duration
 
         if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
             raise Exception(f"Download failed or file is empty: {file_path}")
@@ -1483,14 +1475,14 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
     length_scores = []
     final_scores = []
     reasons = []
-    tmp_path = "/tmp_ups_organics"
+
     distorted_video_paths = []
     for dist_url in request.distorted_urls:
         if len(dist_url) < 10:
             distorted_video_paths.append(None)
             continue
         try:
-            path, download_time = await download_video(dist_url, request.verbose, tmp_path)
+            path, download_time = await download_video(dist_url, request.verbose)
             distorted_video_paths.append(path)
         except Exception as e:
             logger.error(f"failed to download distorted video: {dist_url}, error: {e}")
@@ -1526,7 +1518,7 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
                 final_scores.append(-1)  # -1 means skip, don't penalize
                 continue
 
-            ref_path, download_time = await download_video(ref_url, request.verbose, tmp_path)
+            ref_path, download_time = await download_video(ref_url, request.verbose)
             
             # Validate reference video using ffprobe (avoids AV1 warnings)
             if not is_valid_video(ref_path):
@@ -1816,7 +1808,6 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
     compression_rates = []
     final_scores = []
     reasons = []
-    tmp_path = "/tmp_comp_organics"
 
     distorted_video_paths = []
     for dist_url in request.distorted_urls:
@@ -1824,7 +1815,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             distorted_video_paths.append(None)
             continue
         try:
-            path, download_time = await download_video(dist_url, request.verbose, tmp_path)
+            path, download_time = await download_video(dist_url, request.verbose)
             distorted_video_paths.append(path)
         except Exception as e:
             logger.error(f"failed to download distorted video: {dist_url}, error: {e}")
@@ -1853,7 +1844,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 final_scores.append(-1)  # -1 means skip, don't penalize
                 continue
 
-            ref_path, download_time = await download_video(ref_url, request.verbose, tmp_path)
+            ref_path, download_time = await download_video(ref_url, request.verbose)
             
             # Validate reference video using ffprobe (avoids AV1 warnings)
             if not is_valid_video(ref_path):
