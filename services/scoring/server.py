@@ -165,10 +165,11 @@ async def download_video(video_url: str, verbose: bool, dir_path: str | None = N
         # Ensure directory exists (if provided)
         if dir_path is not None:
             os.makedirs(dir_path, exist_ok=True)
-
-        # Create temporary file in the given directory or default temp directory
-        with tempfile.NamedTemporaryFile(suffix=".mp4", dir=dir_path, delete=False) as vid_temp:
-            file_path = vid_temp.name  # Path to the temporary file
+            with tempfile.NamedTemporaryFile(suffix=".mp4", dir=dir_path, delete=False) as vid_temp:
+                file_path = vid_temp.name  # Path to the temporary file
+        else:
+            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as vid_temp:
+                file_path = vid_temp.name  # Path to the temporary file
 
         if verbose:
             logger.info(f"Downloading video from {video_url} to {file_path}")
