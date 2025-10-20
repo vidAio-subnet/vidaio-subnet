@@ -1735,13 +1735,16 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             # Final scoring based on ClipIQ scores
             if dist_clipiqa_score > ref_clipiqa_score:
                 final_score = 3
-                reason = "distorted better than reference"
-            elif dist_clipiqa_score >= ref_upscaled_clipiqa_score + 0.008:
+                reason = "upscaled better than reference"
+            elif dist_clipiqa_score > (ref_upscaled_clipiqa_score * 1.05):
                 final_score = 2
-                reason = "distorted between reference and upscaled+0.008"
-            else:
+                reason = "upscaled at least 5% better than ffmpeg upscaled"
+            elif dist_clipiqa_score > (ref_upscaled_clipiqa_score):
                 final_score = 1
-                reason = "distorted below upscaled+0.008"
+                reason = "Better than ffmpeg upscaled"
+            else:
+                final_score = 0
+                reason = "Worse than ffmpeg upscaled"
             
             logger.info(f"Final score: {final_score} ({reason})")
             
