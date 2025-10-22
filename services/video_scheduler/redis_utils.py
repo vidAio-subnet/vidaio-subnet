@@ -4,6 +4,7 @@ from vidaio_subnet_core import CONFIG
 from typing import Dict, List, Optional
 
 REDIS_CONFIG = CONFIG.redis
+REDIS_TTL = REDIS_CONFIG.redis_ttl #TTL in seconds
 
 def get_redis_connection() -> redis.Redis:
     """
@@ -26,6 +27,7 @@ def push_organic_upscaling_chunk(r: redis.Redis, data: Dict[str, str]) -> None:
         data (Dict[str, str]): Organic upscaling chunk dictionary to push
     """
     r.rpush(REDIS_CONFIG.organic_upscaling_queue_key, json.dumps(data))
+    r.expire(REDIS_CONFIG.organic_upscaling_queue_key, REDIS_TTL)
     print("Pushed organic upscaling chunk correctly in the Redis queue")
 
 def push_organic_compression_chunk(r: redis.Redis, data: Dict[str, str]) -> None:
@@ -37,6 +39,7 @@ def push_organic_compression_chunk(r: redis.Redis, data: Dict[str, str]) -> None
         data (Dict[str, str]): Organic compression chunk dictionary to push
     """
     r.rpush(REDIS_CONFIG.organic_compression_queue_key, json.dumps(data))
+    r.expire(REDIS_CONFIG.organic_compression_queue_key, REDIS_TTL)
     print("Pushed organic compression chunk correctly in the Redis queue")
 
 def push_5s_chunks(r: redis.Redis, data_list: List[Dict[str, str]]) -> None:

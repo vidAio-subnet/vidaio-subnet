@@ -493,8 +493,8 @@ class MinerManager:
                 if not is_new_miner:
                     self._update_miner_metadata_compression(session, miner)
                 
-                applied_multiplier = miner.total_multiplier
-                score_with_multiplier = s_f * applied_multiplier
+                applied_multiplier = miner.total_multiplier 
+                score_with_multiplier = s_f * applied_multiplier if compression_rate < 1 else -10 
                 
                 if s_f != -100:
                     miner.accumulate_score = (
@@ -878,6 +878,7 @@ class MinerManager:
                 # Convert organic scores to synthetic-like format
 
                 acc_score = 0.0
+                current_score = miner.accumulate_score
 
                 if score == 3.0:
                     organic_s_f = 0.4
@@ -885,7 +886,6 @@ class MinerManager:
                     organic_s_l = 0.5
                     success = True
 
-                    current_score = miner.accumulate_score
                     boost_percentage = 0.03
                     boost_amount = current_score * boost_percentage
                     acc_score = current_score + boost_amount
@@ -904,7 +904,6 @@ class MinerManager:
                     organic_s_l = 0.5   # Moderate length score
                     success = False
 
-                    current_score = miner.accumulate_score
                     panelty_percentage = 0.05
                     panelty_amount = current_score * panelty_percentage
                     acc_score = current_score - panelty_amount
@@ -915,7 +914,6 @@ class MinerManager:
                     organic_s_l = 0.0
                     success = False
 
-                    current_score = miner.accumulate_score
                     panelty_percentage = 0.15  # Deduct 15% of current score
                     panelty_amount = current_score * panelty_percentage
                     acc_score = current_score - panelty_amount
@@ -1034,12 +1032,12 @@ class MinerManager:
                 
                 # Apply multiplier to organic score
                 applied_multiplier = miner.total_multiplier
-                score_with_multiplier = score * applied_multiplier
+                score_with_multiplier = score * applied_multiplier if compression_rate < 1 else -10 
                 
                 # Accumulate score with decay factor (same as synthetic)
                 miner.accumulate_score = (
-                    miner.accumulate_score * 0.7
-                    + score_with_multiplier * (1 - 0.7)
+                    miner.accumulate_score * CONFIG.score.decay_factor
+                    + score_with_multiplier * (1 - CONFIG.score.decay_factor)
                 )
                 miner.accumulate_score = max(0, miner.accumulate_score)
                 

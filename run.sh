@@ -7,6 +7,8 @@ args=()
 version_location="./vidaio_subnet_core/__init__.py"
 version="__version__"
 old_args=$@
+subnet=85
+restart_video_scheduler=true
 
 if ! command -v pm2 &> /dev/null
 then
@@ -71,6 +73,40 @@ check_variable_value_on_github() {
     echo "$value" | tr -d '"' | tr -d "'"
 }
 
+ensure_process() {
+    local name="$1"
+    local cmd="$2"
+    local restart_flag="$3"   # "true" or "false"
+
+    if pm2 describe "$name" &>/dev/null; then
+        echo "Process '$name' already running."
+        if [[ "$restart_flag" == "true" ]]; then
+            echo "Reloading $name..."
+            pm2 reload "$name"
+        fi
+    else
+        echo "Starting $name..."
+        pm2 start bash --name "$name" -- -c "$cmd"
+    fi
+}
+
+ensure_config_process() {
+    local config="$1"
+    local name="$2"
+    local restart_flag="$3"   # "true" or "false"
+
+    if pm2 describe "$name" &>/dev/null; then
+        echo "Process '$name' already running (from $config)."
+        if [[ "$restart_flag" == "true" ]]; then
+            echo "Reloading $name from config..."
+            pm2 startOrReload "$config"
+        fi
+    else
+        echo "Starting $name from config..."
+        pm2 startOrReload "$config"
+    fi
+}
+
 while [[ $# -gt 0 ]]; do
   arg="$1"
   if [[ "$arg" == -* ]]; then
@@ -78,14 +114,29 @@ while [[ $# -gt 0 ]]; do
         if [[ "$arg" == "--script" ]]; then
             script="$2"
             shift 2
+        elif [[ "$arg" == "--subnet" ]]; then
+            subnet="$2"
+            args+=("'--netuid'")
+            args+=("'$2'")
+            shift 2
+        elif [[ "$arg" == "--netuid" ]]; then
+            subnet="$2"
+            args+=("'$arg'")
+            args+=("'$2'")
+            shift 2
         else
             args+=("'$arg'")
             args+=("'$2'")
             shift 2
         fi
     else
-        args+=("'$arg'")
-        shift
+        if [[ "$arg" == "--no-video-scheduler" ]]; then
+            restart_video_scheduler=false
+            shift
+        else
+            args+=("'$arg'")
+            shift
+        fi
     fi
   else
     args+=("'$arg'")
@@ -95,7 +146,13 @@ done
 
 branch=$(git branch --show-current)
 echo "Watching branch: $branch"
+echo "Reapplying git stash"
+git stash pop
 echo "PM2 process name: $proc_name"
+if [[ -n "$subnet" ]]; then
+    echo "Subnet: $subnet"
+fi
+echo "Restart video scheduler: $restart_video_scheduler"
 
 current_version=$(read_version_value)
 
@@ -105,6 +162,20 @@ if pm2 status | grep -q $proc_name; then
 fi
 
 echo "Running $script with the following PM2 config:"
+
+# Ensure netuid is always included in args
+netuid_found=false
+for arg in "${args[@]}"; do
+    if [[ "$arg" == "'--netuid'" ]]; then
+        netuid_found=true
+        break
+    fi
+done
+
+if [[ "$netuid_found" == "false" ]]; then
+    args+=("'--netuid'")
+    args+=("'$subnet'")
+fi
 
 joined_args=$(printf "%s," "${args[@]}")
 joined_args=${joined_args%,}
@@ -117,26 +188,35 @@ echo "module.exports = {
     min_uptime: '5m',
     max_restarts: '5',
     args: [$joined_args],
+    cwd: '$(pwd)',
     env: {
-      PYTHONPATH: \".\"
+      PYTHONPATH: '.'
     }
   }]
 }" > app.config.js
 
 cat app.config.js
-pm2 start app.config.js
+ensure_config_process "app.config.js" "$proc_name" "true"
+
 
 check_package_installed "jq"
 
 # 🚀 START THE 4 PM2 PROCESSES
-pm2 start "PYTHONPATH=. python services/scoring/server.py" --name scoring_endpoint
-pm2 start "PYTHONPATH=. python services/video_scheduler/worker.py" --name video_scheduler_worker
-pm2 start "PYTHONPATH=. python services/video_scheduler/server.py" --name video_scheduler_endpoint
-pm2 start "PYTHONPATH=. python services/dashboard/metagraph_api_server.py" --name metagraph-api
-pm2 start /usr/bin/bash --name validator -- -c "PYTHONPATH=. python -m neurons.validator --wallet.name default --wallet.hotkey default --subtensor.network finney --netuid 85 --axon.port 27000 --logging.debug"
+# pm2 start "PYTHONPATH=. python services/scoring/server.py" --name scoring_endpoint
+# pm2 start "PYTHONPATH=. python services/video_scheduler/worker.py" --name video_scheduler_worker
+# pm2 start "PYTHONPATH=. python services/video_scheduler/server.py" --name video_scheduler_endpoint
+# pm2 start "PYTHONPATH=. python services/dashboard/metagraph_api_server.py" --name metagraph-api
+# pm2 start /usr/bin/bash --name validator -- -c "PYTHONPATH=. python -m neurons.validator --wallet.name default --wallet.hotkey default --subtensor.network finney --netuid 85 --axon.port 27000 --logging.debug"
 # pm2 start "python neurons/validator.py $joined_args" --name video-validator
-pm2 start "PYTHONPATH=. python services/organic_gateway/server.py" --name organic-gateway
+# pm2 start "PYTHONPATH=. python services/organic_gateway/server.py" --name organic-gateway
 # pm2 start "PYTHONPATH=. python vidaio_subnet_core/utilities/storage_client.py" --name storage-client-debug #for debugging storage
+
+
+# 🚀 START THE ADDITIONAL PM2 PROCESSES
+ensure_process "scoring_endpoint" "bash -c 'PYTHONPATH=. python services/scoring/server.py'" "true"
+ensure_process "video_scheduler_worker" "bash -c 'PYTHONPATH=. python services/video_scheduler/worker.py'" "$restart_video_scheduler"
+ensure_process "video_scheduler_endpoint" "bash -c 'PYTHONPATH=. python services/video_scheduler/server.py'" "$restart_video_scheduler"
+ensure_process "organic-gateway" "bash -c 'PYTHONPATH=. python services/organic_gateway/server.py'" "true"
 
 # Auto-update loop
 last_restart_time=$(date +%s)
@@ -153,21 +233,16 @@ while true; do
             echo "Latest version: $latest_version"
             echo "Current version: $current_version"
 
+            git stash
             if git pull origin "$branch"; then
                 echo "New version detected. Updating..."
                 pip install -e .
-
-                echo "Restarting all PM2 processes..."
-                pm2 restart scoring_endpoint
-                pm2 restart video_scheduler_worker
-                pm2 restart video_scheduler_endpoint
-                pm2 restart video-validator
 
                 current_version=$(read_version_value)
                 last_restart_time=$current_time
 
                 echo "Restarting script..."
-                ./$(basename "$0") "$old_args" && exit
+                exec ./$(basename "$0") $old_args
             else
                 echo "** Will not update **"
                 echo "You have uncommitted changes. Please stash them using 'git stash'."
@@ -179,8 +254,10 @@ while true; do
             if [ $time_since_last_restart -ge $restart_interval ]; then
                 echo "30 hours passed. Performing periodic PM2 restart..."
                 pm2 restart scoring_endpoint
-                pm2 restart video_scheduler_worker
-                pm2 restart video_scheduler_endpoint
+                if [[ "$restart_video_scheduler" == "true" ]]; then
+                    pm2 restart video_scheduler_worker
+                    pm2 restart video_scheduler_endpoint
+                fi
                 pm2 restart video-validator
 
                 last_restart_time=$current_time
