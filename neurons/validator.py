@@ -30,6 +30,9 @@ VMAF_QUALITY_THRESHOLDS = [
     95, #High
 ]
 
+SLEEP_TIME_LOW = 60 * 5 # 5 minutes
+SLEEP_TIME_HIGH = 60 * 8 # 8 minutes
+
 class Validator(base.BaseValidator):
     def __init__(self):
         super().__init__()
@@ -257,7 +260,7 @@ class Validator(base.BaseValidator):
                 axons.append(miner[0])
             
             round_id = str(uuid.uuid4())
-            payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_synthetic_protocol(content_lengths, version, round_id)
+            payload_urls, video_ids, uploaded_object_names, synapses, task_types = await self.challenge_synthesizer.build_synthetic_protocol(content_lengths, version, round_id)
             logger.debug(f"Built upscaling challenge protocol")
 
             timestamp = datetime.now(timezone.utc).isoformat()
@@ -280,13 +283,13 @@ class Validator(base.BaseValidator):
                     logger.warning(f"⚠️ Reference video file missing for video_id {video_id}: {reference_video_path}")
                 reference_video_paths.append(reference_video_path)
             
-            asyncio.create_task(self.score_upscalings(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, content_lengths, round_id))
+            asyncio.create_task(self.score_upscalings(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, content_lengths, task_types, round_id))
 
             batch_processed_time = time.time() - batch_start_time
             
-            sleep_time = 300 - batch_processed_time
+            sleep_time = random.uniform(SLEEP_TIME_LOW, SLEEP_TIME_HIGH) - batch_processed_time
             logger.info(f"Completed upscaling batch within {batch_processed_time:.2f} seconds")
-            logger.info(f"Sleeping for {sleep_time:.2f} seconds before next upscaling batch")
+            logger.info(f"Sleeping for 5-8 minutes before next upscaling batch")
             
             await asyncio.sleep(sleep_time)
 
@@ -342,10 +345,10 @@ class Validator(base.BaseValidator):
             asyncio.create_task(self.score_compressions(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, vmaf_threshold, round_id))
 
             batch_processed_time = time.time() - batch_start_time
-            sleep_time = 300 - batch_processed_time
+            sleep_time = random.uniform(SLEEP_TIME_LOW, SLEEP_TIME_HIGH) - batch_processed_time
 
             logger.info(f"Completed compression batch within {batch_processed_time:.2f} seconds")
-            logger.info(f"Sleeping for {sleep_time:.2f} seconds before next compression batch")
+            logger.info(f"Sleeping for 5-8 minutes before next compression batch")
             
             await asyncio.sleep(sleep_time)
 
@@ -392,6 +395,7 @@ class Validator(base.BaseValidator):
         video_ids: list[str], 
         uploaded_object_names: list[str], 
         content_lengths: list[int], 
+        task_types: list[str],
         round_id: str
     ):
         distorted_urls = []
@@ -404,11 +408,13 @@ class Validator(base.BaseValidator):
             "/score_upscaling_synthetics",
             json = {
                 "uids": uids,
+                "payload_urls": payload_urls,
                 "distorted_urls": distorted_urls,
                 "reference_paths": reference_video_paths,
                 "video_ids": video_ids,
                 "uploaded_object_names": uploaded_object_names,
-                "content_lengths": content_lengths
+                "content_lengths": content_lengths,
+                "task_types": task_types
             },
             timeout=240
         )
