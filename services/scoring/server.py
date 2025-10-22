@@ -167,7 +167,7 @@ async def download_video(video_url: str, verbose: bool) -> tuple[str, float]:
         if verbose:
             logger.info(f"Downloading video from {video_url} to {file_path}")
 
-        timeout = aiohttp.ClientTimeout(sock_connect=5, total=20)
+        timeout = aiohttp.ClientTimeout(sock_connect=10, total=40)
 
         start_time = time.time()  # Record start time
 
@@ -625,7 +625,7 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str):
 
         # REQUIRED encoding checks
         if task == "compression" and codec != "av1" or task == "upscaling" and codec != "hevc":
-            errors.append(f"Codec must be AV1 for compression & h264 for upscaling, got {codec}")
+            errors.append(f"Codec must be AV1 for compression & hevc for upscaling, got {codec}")
         if "ivf" in container.lower():
             errors.append("Container must be MP4, got IVF (incompatible for concatenation)")
         if container not in ["mov,mp4,m4a,3gp,3g2,mj2", "mp4", "isom"]:
@@ -1223,17 +1223,17 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
         if os.path.exists(ref_path):
             os.unlink(ref_path)
 
-    tmp_directory = "/tmp"
-    try:
-        logger.info("🧹 Cleaning up temporary files in /tmp...")
-        for file_path in glob.glob(os.path.join(tmp_directory, "*.mp4")):
-            os.remove(file_path)
-            logger.info(f"Deleted: {file_path}")
-        for file_path in glob.glob(os.path.join(tmp_directory, "*.y4m")):
-            os.remove(file_path)
-            logger.info(f"Deleted: {file_path}")
-    except Exception as e:
-        logger.error(f"⚠️ Error during cleanup: {e}")
+    # tmp_directory = "/tmp"
+    # try:
+    #     logger.info("🧹 Cleaning up temporary files in /tmp...")
+    #     for file_path in glob.glob(os.path.join(tmp_directory, "*.mp4")):
+    #         os.remove(file_path)
+    #         logger.info(f"Deleted: {file_path}")
+    #     for file_path in glob.glob(os.path.join(tmp_directory, "*.y4m")):
+    #         os.remove(file_path)
+    #         logger.info(f"Deleted: {file_path}")
+    # except Exception as e:
+    #     logger.error(f"⚠️ Error during cleanup: {e}")
 
     processed_time = time.time() - start_time
     logger.info(f"Completed batch scoring of {len(request.distorted_urls)} pairs within {processed_time:.2f} seconds")
@@ -1340,7 +1340,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 vmaf_scores.append(0.0)
                 compression_rates.append(1.0)  # No compression achieved
                 final_scores.append(0.0)
-                reasons.append("failed to download video file from url")
+                reasons.append(error_msg)
                 continue
 
             step_time = time.time() - uid_start_time
@@ -1492,17 +1492,17 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
         if os.path.exists(ref_path):
             os.unlink(ref_path)
 
-    tmp_directory = "/tmp"
-    try:
-        logger.info("🧹 Cleaning up temporary files in /tmp...")
-        for file_path in glob.glob(os.path.join(tmp_directory, "*.mp4")):
-            os.remove(file_path)
-            logger.info(f"Deleted: {file_path}")
-        for file_path in glob.glob(os.path.join(tmp_directory, "*.y4m")):
-            os.remove(file_path)
-            logger.info(f"Deleted: {file_path}")
-    except Exception as e:
-        logger.error(f"⚠️ Error during cleanup: {e}")
+    # tmp_directory = "/tmp"
+    # try:
+    #     logger.info("🧹 Cleaning up temporary files in /tmp...")
+    #     for file_path in glob.glob(os.path.join(tmp_directory, "*.mp4")):
+    #         os.remove(file_path)
+    #         logger.info(f"Deleted: {file_path}")
+    #     for file_path in glob.glob(os.path.join(tmp_directory, "*.y4m")):
+    #         os.remove(file_path)
+    #         logger.info(f"Deleted: {file_path}")
+    # except Exception as e:
+    #     logger.error(f"⚠️ Error during cleanup: {e}")
 
     processed_time = time.time() - start_time
     logger.info(f"Completed batch scoring of {len(request.distorted_urls)} pairs within {processed_time:.2f} seconds")
@@ -1785,13 +1785,16 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             # Final scoring based on ClipIQ scores
             if dist_clipiqa_score > ref_clipiqa_score:
                 final_score = 3
-                reason = "distorted better than reference"
-            elif dist_clipiqa_score >= ref_upscaled_clipiqa_score + 0.008:
+                reason = "upscaled better than reference"
+            elif dist_clipiqa_score > (ref_upscaled_clipiqa_score * 1.05):
                 final_score = 2
-                reason = "distorted between reference and upscaled+0.008"
-            else:
+                reason = "upscaled at least 5% better than ffmpeg upscaled"
+            elif dist_clipiqa_score > (ref_upscaled_clipiqa_score):
                 final_score = 1
-                reason = "distorted below upscaled+0.008"
+                reason = "Better than ffmpeg upscaled"
+            else:
+                final_score = 0
+                reason = "Worse than ffmpeg upscaled"
             
             logger.info(f"Final score: {final_score} ({reason})")
             
