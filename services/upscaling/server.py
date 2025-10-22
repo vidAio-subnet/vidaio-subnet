@@ -117,11 +117,18 @@ def upscale_video(payload_video_path: str, task_type: str):
             "video2x",
             "-i", str(output_file_with_extra_frames),
             "-o", str(output_file_upscaled),
-            "-p", "realesrgan",  
-            "-s", scale_factor,  # Scale factor of 2 or 4
-            "-c", "libx264",  
-            "-e", "preset=slow",  
-            "-e", "crf=28"
+            "-p", "realesrgan",               
+            "-s", scale_factor,               
+            "-c", "libx265",                  
+            "-e", "preset=slow",              
+            "-e", "crf=20",                   
+            "-e", "profile=main",             
+            "-e", "pix_fmt=yuv420p",          
+            "-e", "sar=1:1",                  
+            "-e", "color_primaries=bt709",    
+            "-e", "color_trc=bt709",
+            "-e", "colorspace=bt709",
+            "-e", "movflags=+faststart",
         ]
         video2x_process = subprocess.run(video2x_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         elapsed_time = time.time() - start_time
