@@ -46,9 +46,11 @@ class UpscalingScoringRequest(BaseModel):
     distorted_urls: List[str]
     reference_paths: List[str]
     uids: List[int]
+    payload_urls: List[str]
     video_ids: List[str]
     uploaded_object_names: List[str]
     content_lengths: List[int]
+    task_types: List[str]
     fps: Optional[float] = None
     subsample: Optional[int] = 1
     verbose: Optional[bool] = False
@@ -900,14 +902,22 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             status_code=400, 
             detail="Number of UIDs must match number of distorted URLs"
         )
+    
+    if len(request.payload_urls) != len(request.distorted_urls):
+        raise HTTPException(
+            status_code=400, 
+            detail="Number of payload URLs must match number of distorted URLs"
+        )
 
-    for idx, (ref_path, dist_url, uid, video_id, uploaded_object_name, content_length) in enumerate(zip(
+    for idx, (ref_path, dist_url, payload_url, uid, video_id, uploaded_object_name, content_length, task_type) in enumerate(zip(
         request.reference_paths, 
         request.distorted_urls, 
+        request.payload_urls,
         request.uids,
         request.video_ids,
         request.uploaded_object_names,
-        request.content_lengths
+        request.content_lengths,
+        request.task_types
     )):
         try:
             logger.info(f"🧩 Processing pair {idx+1}/{len(request.distorted_urls)}: UID {uid} 🧩")
@@ -916,6 +926,12 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
 
             ref_y4m_path = None
             dist_path = None
+
+            scale_factor = 2
+            if task_type == "SD24K":
+                scale_factor = 4
+
+            logger.info(f"scale factor: {scale_factor}")
 
             # Validate reference video using ffprobe (avoids AV1 warnings)
             if not is_valid_video(ref_path):
@@ -940,14 +956,27 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             try:
                 dist_path, download_time = await download_video(dist_url, request.verbose)
             except Exception as e:
-                error_msg = f"Failed to download video from {dist_url}: {str(e)}"
+                error_msg = f"Failed to download distorted video from {dist_url}: {str(e)}"
                 logger.error(f"{error_msg}. Assigning score of 0.")
                 vmaf_scores.append(0.0)
                 pieapp_scores.append(0.0)
                 quality_scores.append(0.0)
                 length_scores.append(0.0)
                 final_scores.append(0.0)
-                reasons.append(error_msg)
+                reasons.append("failed to download video file from url")
+                continue
+
+            try:
+                payload_path, download_time = await download_video(payload_url, request.verbose)
+            except Exception as e:
+                error_msg = f"Failed to download payload video from {payload_path}: {str(e)}"
+                logger.error(f"{error_msg}. Assigning score of 0.")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(0.0)
+                reasons.append("failed to download video file from url")
                 continue
 
             step_time = time.time() - uid_start_time
@@ -964,6 +993,25 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 if dist_path and os.path.exists(dist_path):
                     os.unlink(dist_path)
                 continue
+
+            # === RESOLUTION CHECK ===
+            dist_width, dist_height = get_video_dimensions(dist_path)
+            logger.info(f"Distorted video resolution: {dist_width}x{dist_height}")
+            ref_width, ref_height = get_video_dimensions(payload_path)
+            logger.info(f"Reference video resolution: {ref_width}x{ref_height}")
+            expected_width = ref_width * scale_factor
+            expected_height = ref_height * scale_factor
+            
+            if dist_width != expected_width or dist_height != expected_height:
+                logger.info(f"resolution mismatch: expected {expected_width}x{expected_height}, got {dist_width}x{dist_height}. penalizing miner.")
+                reasons.append("MINER FAILURE: incorrect upscaling resolution")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(0.0)  # 0 = miner penalty
+                continue
+            logger.info(f"Resolution check passed: expected {expected_width}x{expected_height}, got {dist_width}x{dist_height}.")
 
             # Only log success after confirming the file was validated
             step_time = time.time() - uid_start_time
@@ -1165,6 +1213,8 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 os.unlink(ref_y4m_path)
             if dist_path and os.path.exists(dist_path):
                 os.unlink(dist_path)
+            if payload_path and os.path.exists(payload_path):
+                os.unlink(payload_path)
 
             # Delete the uploaded object
             storage_client.delete_file(uploaded_object_name)
