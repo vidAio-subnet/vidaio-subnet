@@ -142,7 +142,21 @@ def vmaf_metric(ref_path, dist_path, output_file="vmaf_output.xml", neg_model=Fa
         print(f"Error in calculate_vmaf: {e}")
         raise
 
-def calculate_vmaf(ref_y4m_path, dist_mp4_path, random_frames, neg_model=False):
+def calculate_vmaf(ref_y4m_path, dist_mp4_path, random_frames, neg_model=False, return_y4m_path=False):
+    """
+    Calculate VMAF score between reference and distorted videos.
+    
+    Args:
+        ref_y4m_path: Path to reference Y4M file
+        dist_mp4_path: Path to distorted MP4 file
+        random_frames: List of frame indices to sample
+        neg_model: Whether to use negative VMAF model
+        return_y4m_path: If True, returns (score, dist_y4m_path) instead of just score
+        
+    Returns:
+        If return_y4m_path=False: vmaf_score (float or None)
+        If return_y4m_path=True: (vmaf_score, dist_y4m_path) tuple
+    """
     dist_y4m_path = None
     try:
         print("Converting distorted MP4 to Y4M...")
@@ -152,14 +166,22 @@ def calculate_vmaf(ref_y4m_path, dist_mp4_path, random_frames, neg_model=False):
         vmaf_harmonic_mean = vmaf_metric(ref_y4m_path, dist_y4m_path, neg_model=neg_model)
         print(f"VMAF harmonic_mean Value as Float: {vmaf_harmonic_mean}")
         
-        return vmaf_harmonic_mean
+        if return_y4m_path:
+            # Return Y4M path for reuse (caller is responsible for cleanup)
+            return vmaf_harmonic_mean, dist_y4m_path
+        else:
+            # Original behavior: cleanup and return score only
+            return vmaf_harmonic_mean
         
     except Exception as e:
         print(f"Failed to calculate VMAF: {e}")
+        if return_y4m_path:
+            return None, dist_y4m_path
         return None
 
     finally:
-        if dist_y4m_path and os.path.exists(dist_y4m_path):
+        # Only cleanup if NOT returning the Y4M path
+        if not return_y4m_path and dist_y4m_path and os.path.exists(dist_y4m_path):
             try:
                 os.remove(dist_y4m_path)
                 print("Intermediate Y4M files deleted.")
