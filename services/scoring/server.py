@@ -572,13 +572,14 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str):
     Validate that distorted video uses specific encoding settings.
     """
     try:
-        # Enhanced ffprobe to capture both stream and format encoder tags
+        # Enhanced ffprobe to capture both video and audio streams
+        # Removed "-select_streams", "v:0" to get ALL streams (video + audio)
         cmd = [
             "ffprobe",
             "-v", "error",
-            "-select_streams", "v:0",
-            "-show_entries", "stream=codec_name,profile,level,sample_aspect_ratio,pix_fmt,"
-                           "width,height,r_frame_rate,color_space,color_primaries,color_transfer",
+            "-show_entries", "stream=codec_type,codec_name,profile,level,sample_aspect_ratio,pix_fmt,"
+                           "width,height,r_frame_rate,color_space,color_primaries,color_transfer,"
+                           "channels,sample_rate,bit_rate",
             "-show_entries", "format=tags=encoder",
             "-show_format",
             "-of", "json",
@@ -588,7 +589,33 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str):
         result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=10)
         info = json.loads(result.stdout)
         
-        video_stream = info.get("streams", [{}])[0]
+        # Separate video and audio streams
+        streams = info.get("streams", [])
+        video_stream = None
+        audio_stream = None
+        
+        for stream in streams:
+            codec_type = stream.get("codec_type", "")
+            if codec_type == "video" and video_stream is None:
+                video_stream = stream
+            elif codec_type == "audio" and audio_stream is None:
+                audio_stream = stream
+        
+        if not video_stream:
+            return False, "No video stream found"
+        
+        # Check for audio stream
+        if audio_stream:
+            audio_codec = audio_stream.get("codec_name", "unknown")
+            audio_bitrate = audio_stream.get("bit_rate", "unknown")
+            audio_channels = audio_stream.get("channels", "unknown")
+            audio_sample_rate = audio_stream.get("sample_rate", "unknown")
+            
+            logger.info(f"🔊 Video HAS AUDIO: codec={audio_codec}, bitrate={audio_bitrate} bps, "
+                       f"channels={audio_channels}, sample_rate={audio_sample_rate} Hz")
+        else:
+            logger.warning(f"🔇 Video has NO AUDIO stream")
+        
         format_info = info.get("format", {})
         format_tags = format_info.get("tags", {})
         
