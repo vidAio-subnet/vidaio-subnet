@@ -1286,11 +1286,10 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                     os.unlink(dist_path)
                 continue
 
-            # Calculate VMAF and get Y4M paths for validation
-            dist_y4m_path = None
+            # Calculate VMAF
             try:
                 vmaf_start = time.time()
-                vmaf_score, dist_y4m_path = calculate_vmaf(ref_y4m_path, dist_path, random_frames, neg_model=False, return_y4m_path=True)
+                vmaf_score = calculate_vmaf(ref_y4m_path, dist_path, random_frames, neg_model=False)
                 vmaf_calc_time = time.time() - vmaf_start
                 logger.info(f"☣️☣️ VMAF calculation took {vmaf_calc_time:.2f} seconds.")
 
@@ -1311,61 +1310,7 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 final_scores.append(0.0)
                 reasons.append("failed to calculate VMAF score due to video dimension mismatch")
                 logger.error(f"Error calculating VMAF score: {e}")
-                if dist_y4m_path and os.path.exists(dist_y4m_path):
-                    os.unlink(dist_y4m_path)
                 continue
-            
-            # Now reuse the Y4M files for color validation (no redundant conversion!)
-            # Extract frames for color validation from Y4M files
-            logger.info(f"Extracting frames from Y4M for color validation (reusing VMAF Y4M files)")
-            dist_frames = extract_frames_from_y4m(dist_y4m_path)
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 10.5. Extracted {len(dist_frames)} frames from Y4M for color validation in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
-            # Validate color channels (grayscale check)
-            color_valid, color_reason = validate_color_channels_on_frames(dist_frames)
-            if not color_valid:
-                logger.error(f"UID {uid}: {color_reason}")
-                vmaf_scores.append(0.0)
-                pieapp_scores.append(0.0)
-                quality_scores.append(0.0)
-                length_scores.append(0.0)
-                final_scores.append(0.0)
-                reasons.append(f"Color validation failed: {color_reason}")
-                if dist_path and os.path.exists(dist_path):
-                    os.unlink(dist_path)
-                if dist_y4m_path and os.path.exists(dist_y4m_path):
-                    os.unlink(dist_y4m_path)
-                continue
-            
-            logger.info(f"✅ UID {uid}: Color channels validated - {color_reason}")
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 10.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
-            # Extract reference frames from Y4M for chroma quality comparison
-            ref_frames = extract_frames_from_y4m(ref_y4m_path)
-            
-            # Validate chroma quality (prevents partial UV reduction)
-            chroma_valid, chroma_reason = validate_chroma_quality_on_frames(
-                ref_frames, dist_frames, threshold=0.7
-            )
-            if not chroma_valid:
-                logger.error(f"UID {uid}: {chroma_reason}")
-                vmaf_scores.append(0.0)
-                pieapp_scores.append(0.0)
-                quality_scores.append(0.0)
-                length_scores.append(0.0)
-                final_scores.append(0.0)
-                reasons.append(f"Chroma validation failed: {chroma_reason}")
-                if dist_path and os.path.exists(dist_path):
-                    os.unlink(dist_path)
-                if dist_y4m_path and os.path.exists(dist_y4m_path):
-                    os.unlink(dist_y4m_path)
-                continue
-            
-            logger.info(f"✅ UID {uid}: Chroma quality validated - {chroma_reason}")
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 10.7. Validated chroma quality in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             if vmaf_score / 100 < VMAF_THRESHOLD:
                 logger.info(f"VMAF score is too low, giving zero score, current VMAF score: {vmaf_score}")
@@ -1441,8 +1386,6 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             # ref_cap is released immediately after use for frame extraction
             if ref_y4m_path and os.path.exists(ref_y4m_path):
                 os.unlink(ref_y4m_path)
-            if dist_y4m_path and os.path.exists(dist_y4m_path):
-                os.unlink(dist_y4m_path)
             if dist_path and os.path.exists(dist_path):
                 os.unlink(dist_path)
             if payload_path and os.path.exists(payload_path):
@@ -1649,10 +1592,11 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 7. Converted reference video to Y4M in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-            # Calculate VMAF
+            # Calculate VMAF and get Y4M paths for validation
+            dist_y4m_path = None
             try:
                 vmaf_start = time.time()
-                vmaf_score = calculate_vmaf(ref_y4m_path, dist_path, random_frames, neg_model=True)
+                vmaf_score, dist_y4m_path = calculate_vmaf(ref_y4m_path, dist_path, random_frames, neg_model=True, return_y4m_path=True)
                 vmaf_calc_time = time.time() - vmaf_start
                 logger.info(f"☣️☣️ VMAF calculation took {vmaf_calc_time:.2f} seconds.")
 
@@ -1671,7 +1615,57 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 final_scores.append(0.0)
                 reasons.append("failed to calculate VMAF score due to video dimension mismatch")
                 logger.error(f"Error calculating VMAF score: {e}")
+                if dist_y4m_path and os.path.exists(dist_y4m_path):
+                    os.unlink(dist_y4m_path)
                 continue
+            
+            # Now reuse the Y4M files for color validation (no redundant conversion!)
+            # Extract frames for color validation from Y4M files
+            logger.info(f"Extracting frames from Y4M for color validation (reusing VMAF Y4M files)")
+            dist_frames = extract_frames_from_y4m(dist_y4m_path)
+            step_time = time.time() - uid_start_time
+            logger.info(f"♎️ 8.5. Extracted {len(dist_frames)} frames from Y4M for color validation in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            # Validate color channels (grayscale check)
+            color_valid, color_reason = validate_color_channels_on_frames(dist_frames)
+            if not color_valid:
+                logger.error(f"UID {uid}: {color_reason}")
+                vmaf_scores.append(0.0)
+                compression_rates.append(1.0)
+                final_scores.append(0.0)
+                reasons.append(f"Color validation failed: {color_reason}")
+                if dist_path and os.path.exists(dist_path):
+                    os.unlink(dist_path)
+                if dist_y4m_path and os.path.exists(dist_y4m_path):
+                    os.unlink(dist_y4m_path)
+                continue
+            
+            logger.info(f"✅ UID {uid}: Color channels validated - {color_reason}")
+            step_time = time.time() - uid_start_time
+            logger.info(f"♎️ 8.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            # Extract reference frames from Y4M for chroma quality comparison
+            ref_frames = extract_frames_from_y4m(ref_y4m_path)
+            
+            # Validate chroma quality (prevents partial UV reduction)
+            chroma_valid, chroma_reason = validate_chroma_quality_on_frames(
+                ref_frames, dist_frames, threshold=0.7
+            )
+            if not chroma_valid:
+                logger.error(f"UID {uid}: {chroma_reason}")
+                vmaf_scores.append(0.0)
+                compression_rates.append(1.0)
+                final_scores.append(0.0)
+                reasons.append(f"Chroma validation failed: {chroma_reason}")
+                if dist_path and os.path.exists(dist_path):
+                    os.unlink(dist_path)
+                if dist_y4m_path and os.path.exists(dist_y4m_path):
+                    os.unlink(dist_y4m_path)
+                continue
+            
+            logger.info(f"✅ UID {uid}: Chroma quality validated - {chroma_reason}")
+            step_time = time.time() - uid_start_time
+            logger.info(f"♎️ 8.7. Validated chroma quality in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Calculate compression score using the proper formula
             # Check scoring function for details
@@ -1714,6 +1708,8 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             # ref_cap is not used in this endpoint (using ffprobe instead)
             if ref_y4m_path and os.path.exists(ref_y4m_path):
                 os.unlink(ref_y4m_path)
+            if dist_y4m_path and os.path.exists(dist_y4m_path):
+                os.unlink(dist_y4m_path)
             if dist_path and os.path.exists(dist_path):
                 os.unlink(dist_path)
 
