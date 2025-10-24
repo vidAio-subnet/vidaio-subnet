@@ -951,6 +951,7 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             
             uid_start_time = time.time()  # Start time for this UID
 
+            payload_path = None
             ref_y4m_path = None
             dist_path = None
 
