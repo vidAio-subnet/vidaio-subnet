@@ -1460,7 +1460,8 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             
             ref_y4m_path = None
             dist_path = None
-
+            dist_y4m_path = None
+            
             # Validate reference video using ffprobe (avoids AV1 warnings)
             if not is_valid_video(ref_path):
                 # Add diagnostic information
