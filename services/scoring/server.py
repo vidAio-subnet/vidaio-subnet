@@ -315,7 +315,9 @@ def validate_color_channels_on_frames(frames):
         if not frames:
             return False, "No frames available for color validation"
         
-        color_threshold = 5.0  # Same threshold as before
+        color_threshold = 5.0  # Threshold for channel difference
+        brightness_threshold = 20.0  # Minimum average brightness to consider frame valid for color check
+        valid_frames_checked = 0
         
         for i, frame in enumerate(frames):
             # Convert BGR to RGB
@@ -326,6 +328,17 @@ def validate_color_channels_on_frames(frames):
             g_channel = img_array[:,:,1].astype(float)
             b_channel = img_array[:,:,2].astype(float)
             
+            # Calculate average brightness (mean of all channels)
+            avg_brightness = (np.mean(r_channel) + np.mean(g_channel) + np.mean(b_channel)) / 3.0
+            
+            # Skip very dark frames (black frames, fade-to-black, etc.)
+            if avg_brightness < brightness_threshold:
+                logger.debug(
+                    f"Frame {i} is too dark (brightness={avg_brightness:.2f}), "
+                    f"skipping color validation for this frame"
+                )
+                continue
+            
             # Calculate average difference between channels
             rg_diff = np.mean(np.abs(r_channel - g_channel))
             rb_diff = np.mean(np.abs(r_channel - b_channel))
@@ -335,11 +348,20 @@ def validate_color_channels_on_frames(frames):
             if rg_diff < color_threshold and rb_diff < color_threshold and gb_diff < color_threshold:
                 logger.warning(
                     f"Frame {i} appears to be grayscale: "
-                    f"RG diff={rg_diff:.2f}, RB diff={rb_diff:.2f}, GB diff={gb_diff:.2f}"
+                    f"RG diff={rg_diff:.2f}, RB diff={rb_diff:.2f}, GB diff={gb_diff:.2f}, "
+                    f"brightness={avg_brightness:.2f}"
                 )
                 return False, f"Video has no color information (grayscale). UV channels required. Frame {i} detected as grayscale."
+            
+            valid_frames_checked += 1
         
-        return True, "Color channels validated"
+        # If all frames were too dark, we can't validate colors properly
+        if valid_frames_checked == 0:
+            logger.warning(f"All {len(frames)} frames were too dark to validate colors")
+            return False, "All sampled frames are too dark to validate color information"
+        
+        logger.info(f"Color validation passed: checked {valid_frames_checked}/{len(frames)} frames")
+        return True, f"Color channels validated ({valid_frames_checked}/{len(frames)} frames checked)"
         
     except Exception as e:
         logger.error(f"Error validating color channels: {e}")
