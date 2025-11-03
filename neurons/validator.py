@@ -823,7 +823,7 @@ class Validator(base.BaseValidator):
 
         logger.info("🌜 | UPSCALING | Performing forward operations asynchronously for upscaling 🌜")
         forward_tasks = [
-            self.dendrite.forward(axons=[axon], synapse=synapse, timeout=40)
+            self.dendrite.forward(axons=[axon], synapse=synapse, timeout=100)
             for axon, synapse in zip(axon_list, synapses)
         ]
 
