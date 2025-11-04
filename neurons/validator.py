@@ -244,7 +244,7 @@ class Validator(base.BaseValidator):
     #   --------------------------------------------------------------------------- #
     #  Helper – turn the raw list of (axon, uid) into a dict {uid: (axon, uid)}
     # --------------------------------------------------------------------------- #
-    def _miner_lookup(miners: List[Tuple[Any, int]]) -> dict[int, Tuple[Any, int]]:
+    def _miner_lookup(self, miners: List[Tuple[Any, int]]) -> dict[int, Tuple[Any, int]]:
         """{uid: (axon, uid)} – fast lookup while preserving the original tuple."""
         return {uid: (axon, uid) for axon, uid in miners}
 
