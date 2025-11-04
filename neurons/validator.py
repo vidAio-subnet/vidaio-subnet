@@ -251,7 +251,7 @@ class Validator(base.BaseValidator):
 
     async def create_miner_batches(
         self,
-        miners_with_lengths: List[Tuple[Any, int]],
+        miners: List[Tuple[Any, int]],
         batch_size: int,
         task_type: str = "upscaling",
     ) -> List[List[Tuple[Any, int]]]:
@@ -282,7 +282,7 @@ class Validator(base.BaseValidator):
             )
             .filter(
                 MinerPerformanceHistory.processed_task_type == task_type,
-                MinerPerformanceHistory.uid.in_([uid for _axon, uid in miners_with_lengths]),
+                MinerPerformanceHistory.uid.in_([uid for _axon, uid in miners]),
             )
             .group_by(MinerPerformanceHistory.uid)
             .subquery()
@@ -302,14 +302,14 @@ class Validator(base.BaseValidator):
         # ------------------------------------------------------------------- #
         # 2. Miners that have *zero* rows are the highest priority
         # ------------------------------------------------------------------- #
-        all_uids = {uid for _axon, uid in miners_with_lengths}
+        all_uids = {uid for _axon, uid in miners}
         for uid in all_uids - uid_info.keys():
             uid_info[uid] = (0, None)
 
         # ------------------------------------------------------------------- #
         # 3. Build a fast lookup {uid: original_tuple}
         # ------------------------------------------------------------------- #
-        miner_by_uid = self._miner_lookup(miners_with_lengths)
+        miner_by_uid = self._miner_lookup(miners)
 
         # ------------------------------------------------------------------- #
         # 4. Filter + priority key
@@ -350,7 +350,7 @@ class Validator(base.BaseValidator):
 
         logger.info(
             f"Created {len(batches)} {task_type} batches (size≤{batch_size}). "
-            f"Selected {len(sorted_miners)}/{len(miners_with_lengths)} miners."
+            f"Selected {len(sorted_miners)}/{len(miners)} miners."
             f" New UIDs with no history: {info_new_uids}"
         )
         if eligible:
@@ -365,7 +365,10 @@ class Validator(base.BaseValidator):
         """Process upscaling miners in batches similar to the original implementation."""
         batch_size = CONFIG.bandwidth.requests_per_synthetic_interval
 
-        miner_batches = await self.create_miner_batches(upscaling_miners_with_lengths, batch_size, task_type="upscaling")
+        upscaling_miners = [(axon, uid) for axon, uid, _ in upscaling_miners_with_lengths]
+        upscaling_content_lengths = {uid: length for _, uid, length in upscaling_miners_with_lengths}
+
+        miner_batches = await self.create_miner_batches(upscaling_miners, batch_size, task_type="upscaling")
 
         logger.info(f"Created {len(miner_batches)} upscaling batches of size {batch_size}")
 
@@ -377,7 +380,7 @@ class Validator(base.BaseValidator):
             axons = []
             content_lengths = []
             for miner in batch:
-                content_lengths.append(miner[2])
+                content_lengths.append(upscaling_content_lengths[miner[1]])
                 uids.append(miner[1])
                 axons.append(miner[0])
             
