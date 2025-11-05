@@ -323,15 +323,15 @@ class Validator(base.BaseValidator):
             miner_tuple = miner_by_uid[uid]
             rec_cnt, latest_ts = uid_info[uid]
 
-            # ---- Rule 3: skip saturated & recently touched miners ----
+            # ---- Rule 3: skip capped miners with recent performance record ----
             if rec_cnt >= max_records and latest_ts and latest_ts >= hours_threshold:
                 logger.info(
                     f"Skipping miner uid={uid}: {rec_cnt} records, last update {latest_ts}"
                 )
                 continue
 
-            # ---- Rule 2: include if never seen or stale ----
-            if rec_cnt == 0 or not latest_ts or latest_ts < hours_threshold:
+            # ---- Rule 2: include if never seen, below capacity or stale ----
+            if rec_cnt < max_records or not latest_ts or latest_ts < hours_threshold:
                 priority = (
                     rec_cnt,                                   # fewer records first
                     latest_ts if latest_ts else datetime.min,  # oldest first
