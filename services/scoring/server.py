@@ -1101,6 +1101,7 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
 
             ref_y4m_path = None
             dist_path = None
+            payload_path = None
 
             scale_factor = 2
             if task_type == "SD24K":
