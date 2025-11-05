@@ -34,6 +34,15 @@ VMAF_QUALITY_THRESHOLDS = [
     95, #High
 ]
 
+TARGET_CODECS = [
+    "av1_nvenc",    # AV1 (NVIDIA GPU)
+    # "hevc_nvenc", # H.265 (NVIDIA GPU)
+    # "h264_nvenc", # H.264 (NVIDIA GPU)
+    # "libsvtav1",  # AV1 (CPU - SVT-AV1)
+    # "libx265",    # H.265 (CPU)
+    # "libx264",    # H.264 (CPU)
+]
+
 SLEEP_TIME_LOW = 60 * 3 # 3 minutes
 SLEEP_TIME_HIGH = 60 * 4 # 4 minutes
 
@@ -440,14 +449,15 @@ class Validator(base.BaseValidator):
                 axons.append(miner[0])
             
             vmaf_threshold = random.choice(VMAF_QUALITY_THRESHOLDS)
-            
+            target_codec = random.choice(TARGET_CODECS)
+
             round_id = str(uuid.uuid4())
 
             num_miners = len(uids)
 
-            payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_compression_protocol(vmaf_threshold, num_miners, version, round_id)
-            logger.debug(f"Built compression challenge protocol")
-
+            payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_compression_protocol(vmaf_threshold, num_miners, version, round_id, target_codec)
+            logger.warning(f"Built compression challenge protocol with VMAF threshold {vmaf_threshold} and codec {target_codec}")
+            
             timestamp = datetime.now(timezone.utc).isoformat()
 
             logger.debug(f"Processing compression UIDs in batch: {uids}")
