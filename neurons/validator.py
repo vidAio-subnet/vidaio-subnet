@@ -239,7 +239,10 @@ class Validator(base.BaseValidator):
         epoch_processed_time = time.time() - epoch_start_time
         logger.info(f"Completed one epoch within {epoch_processed_time:.2f} seconds")
 
-        await asyncio.sleep(2)
+        if epoch_processed_time < 60: # if epoch completed within 60 seconds in case of no miners requiring synth checking, sleep for 10 minutes
+            await asyncio.sleep(60 * 10)
+        else:
+            await asyncio.sleep(2)
 
     #   --------------------------------------------------------------------------- #
     #  Helper – turn the raw list of (axon, uid) into a dict {uid: (axon, uid)}
