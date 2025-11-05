@@ -9,3 +9,5 @@ class ScoreConfig(BaseModel):
     vmaf_sample_count: int = Field(default=10)
     pieapp_threshold: float = Field(default=1.0)
     pieapp_sample_count: int = Field(default=4)
+    max_performance_records: int = Field(default=10)
+    synthetics_hours_threshold: int = Field(default=6)

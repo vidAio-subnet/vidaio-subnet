@@ -579,8 +579,8 @@ class MinerManager:
             MinerPerformanceHistory.uid == uid
         ).order_by(desc(MinerPerformanceHistory.timestamp)).all()
         
-        if len(records) > 10:
-            for record in records[10:]:
+        if len(records) > CONFIG.score.max_performance_records:
+            for record in records[CONFIG.score.max_performance_records:]:
                 session.delete(record)
 
     def _update_miner_metadata(self, session: Session, miner: MinerMetadata) -> None:
