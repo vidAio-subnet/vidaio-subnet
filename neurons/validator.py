@@ -239,7 +239,130 @@ class Validator(base.BaseValidator):
         epoch_processed_time = time.time() - epoch_start_time
         logger.info(f"Completed one epoch within {epoch_processed_time:.2f} seconds")
 
-        await asyncio.sleep(2)
+        if epoch_processed_time < 60: # if epoch completed within 60 seconds in case of no miners requiring synth checking, sleep for 10 minutes
+            await asyncio.sleep(60 * 10)
+        else:
+            await asyncio.sleep(2)
+
+    #   --------------------------------------------------------------------------- #
+    #  Helper – turn the raw list of (axon, uid) into a dict {uid: (axon, uid)}
+    # --------------------------------------------------------------------------- #
+    def _miner_lookup(self, miners: List[Tuple[Any, int]]) -> dict[int, Tuple[Any, int]]:
+        """{uid: (axon, uid)} – fast lookup while preserving the original tuple."""
+        return {uid: (axon, uid) for axon, uid in miners}
+
+
+    async def create_miner_batches(
+        self,
+        miners: List[Tuple[Any, int]],
+        batch_size: int,
+        task_type: str = "upscaling",
+    ) -> List[List[Tuple[Any, int]]]:
+        """
+        Build batches of miners for *task_type* (upscaling / compression).
+
+        Rules
+        -----
+        1. Miners with **fewest** performance-history rows go first.
+        2. Miners whose **most recent entry** is older than 6 h are eligible.
+        3. Miners that already have >= CONFIG.score.max_performance_records rows
+        **and** whose latest entry is < 6 h are **skipped**.
+        """
+        session = self.miner_manager.session
+        hours_threshold = datetime.utcnow() - timedelta(hours=CONFIG.score.synthetics_hours_threshold)
+        max_records = CONFIG.score.max_performance_records
+
+        info_new_uids = []
+
+        # ------------------------------------------------------------------- #
+        # 1. One-shot aggregated stats per UID (count + latest timestamp)
+        # ------------------------------------------------------------------- #
+        uid_stats_subq = (
+            session.query(
+                MinerPerformanceHistory.uid,
+                func.count(MinerPerformanceHistory.id).label("record_count"),
+                func.max(MinerPerformanceHistory.timestamp).label("latest_timestamp"),
+            )
+            .filter(
+                MinerPerformanceHistory.processed_task_type == task_type,
+                MinerPerformanceHistory.uid.in_([uid for _axon, uid in miners]),
+            )
+            .group_by(MinerPerformanceHistory.uid)
+            .subquery()
+        )
+
+        uid_stats = session.query(
+            uid_stats_subq.c.uid,
+            uid_stats_subq.c.record_count,
+            uid_stats_subq.c.latest_timestamp,
+        ).all()
+
+        # uid → (record_count, latest_timestamp)
+        uid_info: dict[int, Tuple[int, datetime | None]] = {
+            row.uid: (row.record_count or 0, row.latest_timestamp) for row in uid_stats
+        }
+
+        # ------------------------------------------------------------------- #
+        # 2. Miners that have *zero* rows are the highest priority
+        # ------------------------------------------------------------------- #
+        all_uids = {uid for _axon, uid in miners}
+        for uid in all_uids - uid_info.keys():
+            uid_info[uid] = (0, None)
+
+        # ------------------------------------------------------------------- #
+        # 3. Build a fast lookup {uid: original_tuple}
+        # ------------------------------------------------------------------- #
+        miner_by_uid = self._miner_lookup(miners)
+
+        # ------------------------------------------------------------------- #
+        # 4. Filter + priority key
+        # ------------------------------------------------------------------- #
+        eligible: List[Tuple[Tuple[int, datetime], Tuple[Any, int]]] = []
+
+        for uid in all_uids:
+            miner_tuple = miner_by_uid[uid]
+            rec_cnt, latest_ts = uid_info[uid]
+
+            # ---- Rule 3: skip capped miners with recent performance record ----
+            if rec_cnt >= max_records and latest_ts and latest_ts >= hours_threshold:
+                logger.info(
+                    f"Skipping miner uid={uid}: {rec_cnt} records, last update {latest_ts}"
+                )
+                continue
+
+            # ---- Rule 2: include if never seen, below capacity or stale ----
+            if rec_cnt < max_records or not latest_ts or latest_ts < hours_threshold:
+                priority = (
+                    rec_cnt,                                   # fewer records first
+                    latest_ts if latest_ts else datetime.min,  # oldest first
+                )
+                if rec_cnt == 0:
+                    info_new_uids.append(uid) 
+                eligible.append((priority, miner_tuple))
+
+        # ------------------------------------------------------------------- #
+        # 5. Sort & batch
+        # ------------------------------------------------------------------- #
+        eligible.sort(key=lambda x: x[0])                     # by priority tuple
+        sorted_miners = [miner for _prio, miner in eligible]
+
+        batches = [
+            sorted_miners[i : i + batch_size]
+            for i in range(0, len(sorted_miners), batch_size)
+        ]
+
+        logger.info(
+            f"Created {len(batches)} {task_type} batches (size≤{batch_size}). "
+            f"Selected {len(sorted_miners)}/{len(miners)} miners."
+            f" New UIDs with no history: {info_new_uids}"
+        )
+        if eligible:
+            top_uid = eligible[0][1][1]   # (axon, uid) → uid
+            logger.info(
+                f"Top-priority miner uid={top_uid} – records={uid_info[top_uid][0]}"
+            )
+
+        return batches
 
     #   --------------------------------------------------------------------------- #
     #  Helper – turn the raw list of (axon, uid) into a dict {uid: (axon, uid)}

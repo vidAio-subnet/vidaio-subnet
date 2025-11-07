@@ -1205,6 +1205,8 @@ class MinerManager:
         upscaling_total_weight = sum(scores[i] for i, uid in enumerate(uids) if uid in [u[0] for u in upscaling_miners])
         
         logger.info(f"Reward distribution: {compression_count} compression miners ({compression_total_weight:.3f} weight), "
-                   f"{upscaling_count} upscaling miners ({upscaling_total_weight:.3f} weight)")
+                   f"{upscaling_count} upscaling miners ({upscaling_total_weight:.3f} weight)"
+                   f"Rewards data will be distributed as: {[(int(uid), float(score)) for uid, score in zip(uids, scores)]}"
+                   )
         
         return uids, scores
