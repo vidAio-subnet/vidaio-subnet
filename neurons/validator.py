@@ -17,7 +17,8 @@ from services.video_scheduler.video_utils import get_trim_video_path
 from vidaio_subnet_core.utilities.uids import get_organic_forward_uids
 from vidaio_subnet_core.protocol import LengthCheckProtocol, TaskWarrantProtocol, TaskType
 from vidaio_subnet_core.validating.managing.sql_schemas import MinerMetadata, MinerPerformanceHistory, Base
-from sqlalchemy import desc, asc, func
+from sqlalchemy import desc, asc, func, select, delete
+from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta
 from services.dashboard.server import send_upscaling_data_to_dashboard, send_compression_data_to_dashboard
 from services.video_scheduler.redis_utils import (
@@ -108,6 +109,39 @@ class Validator(base.BaseValidator):
         
         logger.info("✅ Scheduler is ready! Proceeding with synthetic requests.")
 
+    async def refresh_miner_manager(self, miner_uids: list[int]):
+        if not miner_uids:
+            return
+
+        miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in miner_uids]
+
+        # Single query to fetch all miners
+        stmt = select(MinerMetadata).where(MinerMetadata.uid.in_(miner_uids))
+        result = self.miner_manager.session.execute(stmt)
+        miners = {miner.uid: miner for miner in result.scalars().all()}
+
+        delete_uids = []
+
+        for uid, latest_hotkey in zip(miner_uids, miner_hotkeys):
+            miner = miners.get(uid)
+            if miner is None:
+                continue
+
+            if miner.hotkey != latest_hotkey:
+                delete_uids.append(uid)
+                logger.info(
+                    f"UID {uid} hotkey changed from {miner.hotkey} → {latest_hotkey}"
+                )
+                miner.hotkey = latest_hotkey  # update record in-memory
+
+        if delete_uids:
+            delete_stmt = delete(MinerPerformanceHistory).where(
+                MinerPerformanceHistory.uid.in_(delete_uids)
+            )
+            self.miner_manager.session.execute(delete_stmt)
+
+        self.miner_manager.session.commit()
+
     async def start_synthetic_epoch(self):
         # Wait for scheduler to be ready first
         await self.wait_for_scheduler_ready()
@@ -180,6 +214,9 @@ class Validator(base.BaseValidator):
             
         upscaling_uids = [uid for _, uid in upscaling_miners]
         compression_uids = [uid for _, uid in compression_miners]
+        all_uids = upscaling_uids + compression_uids
+        
+        await self.refresh_miner_manager(all_uids)
         
         logger.info(f"🛜 Grouped miners: {len(upscaling_miners)} upscaling, {len(compression_miners)} compression 🛜")
         if upscaling_uids:
