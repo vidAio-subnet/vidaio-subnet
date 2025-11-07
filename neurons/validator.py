@@ -264,9 +264,9 @@ class Validator(base.BaseValidator):
         Rules
         -----
         1. Miners with **fewest** performance-history rows go first.
-        2. Miners whose **most recent entry** is older than 6 h are eligible.
+        2. Miners whose **most recent entry** is older than 2 h are eligible, subject to 70% probability of selection in batching.
         3. Miners that already have >= CONFIG.score.max_performance_records rows
-        **and** whose latest entry is < 6 h are **skipped**.
+        **and** whose latest entry is < 2 h are **skipped**.
         """
         session = self.miner_manager.session
         hours_threshold = datetime.utcnow() - timedelta(hours=CONFIG.score.synthetics_hours_threshold)
@@ -331,7 +331,8 @@ class Validator(base.BaseValidator):
                 continue
 
             # ---- Rule 2: include if never seen, below capacity or stale ----
-            if rec_cnt < max_records or not latest_ts or latest_ts < hours_threshold:
+            if rec_cnt < max_records or not latest_ts \
+                or (latest_ts < hours_threshold and random.random() < CONFIG.score.synthetics_select_probability):
                 priority = (
                     rec_cnt,                                   # fewer records first
                     latest_ts if latest_ts else datetime.min,  # oldest first
