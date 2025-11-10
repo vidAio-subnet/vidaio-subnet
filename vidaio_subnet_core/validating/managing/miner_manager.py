@@ -1215,7 +1215,7 @@ class MinerManager:
         
         # burn self.burn_proportion fraction of miner emissions
         total_scores = sum(scores)
-        scores = scores * (1 - self.burn_proportion)
+        scores = [x * (1 - self.burn_proportion) for x in scores]
         uids.append(owner_uid)
         scores.append(self.burn_proportion * total_scores)
 
