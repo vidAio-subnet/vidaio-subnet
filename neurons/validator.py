@@ -1117,18 +1117,19 @@ class Validator(base.BaseValidator):
             logger.info(f"Weight info:\n{weight_info_df.to_markdown()}")
             logger.info("Trying to set weights.")
             try:
-                future = self.set_weights_executor.submit(
-                    self.subtensor.set_weights,
-                    netuid=self.config.netuid,
-                    wallet=self.wallet,
-                    uids=uint_uids,
-                    weights=uint_weights,
-                )
-                success, msg = future.result(timeout=120)
-                if not success:
-                    logger.error(f"😠 Failed to set weights: {msg}")
-                else: 
-                    logger.debug("😎 Set weights successfully ")
+                # future = self.set_weights_executor.submit(
+                #     self.subtensor.set_weights,
+                #     netuid=self.config.netuid,
+                #     wallet=self.wallet,
+                #     uids=uint_uids,
+                #     weights=uint_weights,
+                # )
+                # success, msg = future.result(timeout=120)
+                # if not success:
+                #     logger.error(f"😠 Failed to set weights: {msg}")
+                # else: 
+                #     logger.debug("😎 Set weights successfully ")
+                logger.info("NOT settings weights on dev")
             except Exception as e:
                 logger.error(f"Failed to set weights: {e}")
                 traceback.print_exc()
