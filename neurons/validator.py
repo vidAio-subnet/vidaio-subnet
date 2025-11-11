@@ -454,10 +454,10 @@ class Validator(base.BaseValidator):
             round_id = str(uuid.uuid4())
 
             num_miners = len(uids)
-
+            
             payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_compression_protocol(vmaf_threshold, num_miners, version, round_id, target_codec)
             logger.warning(f"Built compression challenge protocol with VMAF threshold {vmaf_threshold} and codec {target_codec}")
-            
+
             timestamp = datetime.now(timezone.utc).isoformat()
 
             logger.debug(f"Processing compression UIDs in batch: {uids}")

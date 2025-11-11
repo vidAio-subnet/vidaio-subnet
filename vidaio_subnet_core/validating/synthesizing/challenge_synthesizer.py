@@ -172,23 +172,24 @@ class Synthesizer:
                     
         raise RuntimeError(f"Failed to get synthetic chunks after {self.max_retries} attempts")
 
-    async def build_compression_protocol(self, vmaf_threshold: float, num_miners: int, version, round_id, target_codec: str = "av1_nvenc") -> Tuple[list[str], list[str], list[str], list[VideoCompressionProtocol]]:
+    async def build_compression_protocol(self, vmaf_threshold: float, num_miners: int, version, round_id,
+     target_codec: str = "av1_nvenc") -> Tuple[list[str], list[str], list[str], list[VideoCompressionProtocol]]:
         """Fetches synthetic video chunks and builds the video compression protocols.
-
+        
         Args:
-            vmaf_threshold: VMAF threshold for compression quality control
+            vmaf_thresholds: List of VMAF thresholds for compression quality control
             num_miners: Number of miners to create protocols for
             version: Version of the protocol to use
             round_id: Unique identifier for this round
             target_codec: Target codec for compression (default: "av1_nvenc")
-
+            
         Returns:
             Tuple containing lists of:
             - payload URLs
             - video IDs
             - uploaded object names
             - VideoCompressionProtocol instances
-
+        
         Raises:
             httpx.HTTPStatusError: If the request to the video scheduler fails
             RuntimeError: If max retries exceeded without valid response
@@ -201,6 +202,8 @@ class Synthesizer:
         num_needed = (num_protocols + miners_per_task - 1) // miners_per_task  # Ceiling division
         
         logger.info(f"Vmaf_threshold: {vmaf_threshold}")
+
+
         logger.info(f"Using {miners_per_task} miners per task")
         logger.info(f"Optimized chunk request: {num_needed} chunks (reduced from {num_protocols} protocols)")
         
