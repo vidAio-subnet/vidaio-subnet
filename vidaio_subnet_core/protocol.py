@@ -57,6 +57,10 @@ class CompressionMinerPayload(BaseModel):
         ge=0.0,
         le=100.0,
     )
+    target_codec: str = Field(
+        description="The target codec for compression (e.g., H264, H265, VP9, AV1)",
+        default="av1_nvenc",
+    )
 
 
 class MinerResponse(BaseModel):

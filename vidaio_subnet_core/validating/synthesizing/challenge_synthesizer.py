@@ -172,13 +172,16 @@ class Synthesizer:
                     
         raise RuntimeError(f"Failed to get synthetic chunks after {self.max_retries} attempts")
 
-    async def build_compression_protocol(self, vmaf_threshold: float, num_miners: int, version, round_id) -> Tuple[list[str], list[str], list[str], list[VideoCompressionProtocol]]:
+    async def build_compression_protocol(self, vmaf_threshold: float, num_miners: int, version, round_id,
+     target_codec: str = "av1_nvenc") -> Tuple[list[str], list[str], list[str], list[VideoCompressionProtocol]]:
         """Fetches synthetic video chunks and builds the video compression protocols.
         
         Args:
             vmaf_thresholds: List of VMAF thresholds for compression quality control
+            num_miners: Number of miners to create protocols for
             version: Version of the protocol to use
             round_id: Unique identifier for this round
+            target_codec: Target codec for compression (default: "av1_nvenc")
             
         Returns:
             Tuple containing lists of:
@@ -199,6 +202,8 @@ class Synthesizer:
         num_needed = (num_protocols + miners_per_task - 1) // miners_per_task  # Ceiling division
         
         logger.info(f"Vmaf_threshold: {vmaf_threshold}")
+
+
         logger.info(f"Using {miners_per_task} miners per task")
         logger.info(f"Optimized chunk request: {num_needed} chunks (reduced from {num_protocols} protocols)")
         
@@ -256,11 +261,13 @@ class Synthesizer:
                         payload_urls.append(chunk["sharing_link"])
                         video_ids.append(chunk["video_id"])
                         uploaded_object_names.append(chunk["uploaded_object_name"])
-                        
+
+                        # Use the provided target_codec parameter
                         synapse = VideoCompressionProtocol(
                             miner_payload=CompressionMinerPayload(
                                 reference_video_url=chunk["sharing_link"],
-                                vmaf_threshold=vmaf_threshold
+                                vmaf_threshold=vmaf_threshold,
+                                target_codec=target_codec
                             ),
                             version=version,
                             round_id=round_id
@@ -389,10 +396,14 @@ class Synthesizer:
                         logger.info(f"Invalid compression type: {chunk['compression_type']}")
                         continue
 
+                    # Get target_codec from chunk, default to av1_nvenc if not present
+                    target_codec = chunk.get("target_codec", "av1_nvenc")
+
                     synapse = VideoCompressionProtocol(
                         miner_payload=CompressionMinerPayload(
                             reference_video_url=chunk["url"],
-                            vmaf_threshold=vmaf_threshold
+                            vmaf_threshold=vmaf_threshold,
+                            target_codec=target_codec
                         ),
                     )
                     task_ids.append(chunk["task_id"])

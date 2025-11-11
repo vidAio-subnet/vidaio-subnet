@@ -29,6 +29,7 @@ class CompressionRequest(BaseModel):
     chunk_id: str
     chunk_url: str
     compression_type: Literal["High", "Medium", "Low"]
+    target_codec: Optional[str] = "av1_nvenc"  # Default to av1_nvenc for best compression
 
 class CompressionResponse(BaseModel):
     task_id: str
@@ -63,6 +64,7 @@ class InsertOrganicCompressionRequest(BaseModel):
     chunk_id: str
     task_id: str
     compression_type: Literal["High", "Medium", "Low"]
+    target_codec: Optional[str] = "av1_nvenc"
 
 class InsertResultRequest(BaseModel):
     processed_video_url: str

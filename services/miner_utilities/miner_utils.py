@@ -88,16 +88,26 @@ async def video_upscaler(payload_url: str, task_type: str) -> str | None:
             logger.error(f"Upscaling service error: {response.status}")
             return None
 
-async def video_compressor(payload_url: str, vmaf_threshold: float) -> str | None:
+async def video_compressor(payload_url: str, vmaf_threshold: float, target_codec: str = "av1_nvenc") -> str | None:
     """
     Sends a video file path to the compression service and retrieves the processed video path.
+
+    Args:
+        payload_url (str): The URL of the video to be compressed.
+        vmaf_threshold (float): The VMAF threshold for quality control.
+        target_codec (str): The target codec for compression (default: "av1_nvenc").
+
+    Returns:
+        str | None: The URL of the compressed video or None if an error occurs.
     """
     url = f"http://{CONFIG.video_compressor.host}:{CONFIG.video_compressor.port}/compress-video"
     headers = {"Content-Type": "application/json"}
     data = {
         "payload_url": payload_url,
         "vmaf_threshold": vmaf_threshold,
+        "target_codec": target_codec,
     }
+    logger.info(f"🎬 Sending compression request: VMAF={vmaf_threshold}, Codec={target_codec}")
     async with aiohttp.ClientSession() as session:
         async with session.post(url, headers=headers, data=json.dumps(data)) as response:
             if response.status == 200:

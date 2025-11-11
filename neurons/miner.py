@@ -62,30 +62,31 @@ class Miner(BaseMiner):
         Processes a video compression request by downloading, compressing,
         uploading, and returning a sharing link.
         """
-        
+
         start_time = time.time()
-        
+
         payload_url: str = synapse.miner_payload.reference_video_url
         vmaf_threshold: float = synapse.miner_payload.vmaf_threshold
+        target_codec: str = synapse.miner_payload.target_codec
         validator_uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
-        
-        logger.info(f"🛜🛜🛜 Receiving CompressionRequest from validator: {synapse.dendrite.hotkey} with uid: {validator_uid} 🛜🛜🛜")
+
+        logger.info(f"🛜🛜🛜 Receiving CompressionRequest from validator: {synapse.dendrite.hotkey} with uid: {validator_uid} | VMAF: {vmaf_threshold} | Codec: {target_codec} 🛜🛜🛜")
 
         check_version(synapse.version)
-        
+
         try:
-            processed_video_url = await video_compressor(payload_url, vmaf_threshold)
-            
+            processed_video_url = await video_compressor(payload_url, vmaf_threshold, target_codec)
+
             if processed_video_url is None:
                 logger.info(f"💔 Failed to compress video 💔")
                 return synapse
-            
+
             synapse.miner_response.optimized_video_url = processed_video_url
-            
+
             processed_time = time.time() - start_time
 
             logger.info(f"💜 Returning Response, Processed in {processed_time:.2f} seconds 💜")
-            
+
             return synapse
 
         except Exception as e:
