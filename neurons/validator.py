@@ -42,7 +42,7 @@ class Validator(base.BaseValidator):
     def __init__(self):
         super().__init__()
         self.miner_manager = validating.managing.MinerManager(
-            uid=self.uid, wallet=self.wallet, metagraph=self.metagraph
+            uid=self.uid, config=self.config, wallet=self.wallet, metagraph=self.metagraph
         )
         logger.info("💧 Initialized miner manager 💧")
         
