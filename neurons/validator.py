@@ -403,21 +403,53 @@ class Validator(base.BaseValidator):
         return batches
 
     async def call_miner(self, axon, synapse, uid, timeout=60):
+        start = time.perf_counter()
+
         try:
-            result = await self.dendrite.forward(
+            raw = await self.dendrite.forward(
                 axons=[axon],
                 synapse=synapse,
                 timeout=timeout,
             )
-            logger.info(f"UID {uid} → miner responded successfully")
-            return {"uid": uid, "result": result[0], "error": None}
+            duration = (time.perf_counter() - start) * 1000  # ms
+
+            try:
+                result = raw[0]
+            except Exception as e:
+                logger.error(
+                    f"UID {uid} → invalid response structure after {duration:.2f} ms | {e}",
+                    exc_info=True
+                )
+                return {
+                    "uid": uid,
+                    "result": None,
+                    "error": e,
+                    "latency_ms": duration,
+                }
+
+            logger.info(f"UID {uid} → success | {duration:.2f} ms")
+
+            return {
+                "uid": uid,
+                "result": result,
+                "error": None,
+                "latency_ms": duration,
+            }
 
         except Exception as e:
+            duration = (time.perf_counter() - start) * 1000  # ms
+
             logger.error(
-                f"UID {uid} → miner call FAILED: {type(e).__name__}: {e}",
+                f"UID {uid} → failure after {duration:.2f} ms | {type(e).__name__}: {e}",
                 exc_info=True
             )
-            return {"uid": uid, "result": None, "error": e}
+
+            return {
+                "uid": uid,
+                "result": None,  # EXACT same shape as original gather usage
+                "error": e,
+                "latency_ms": duration,
+            }
     
     async def process_upscaling_miners(self, upscaling_miners_with_lengths, version):
         """Process upscaling miners in batches similar to the original implementation."""
@@ -453,7 +485,8 @@ class Validator(base.BaseValidator):
                 self.call_miner(axon, synapse, uid, timeout=60)
                 for uid, axon, synapse in zip(uids, axons, synapses)
             ]
-            responses = await asyncio.gather(*forward_tasks)
+            raw_responses = await asyncio.gather(*forward_tasks)
+            responses = [response['result'] for response in raw_responses]
 
             logger.info(f"🎲 Received {len(responses)} upscaling responses from miners 🎲")
 
@@ -510,7 +543,8 @@ class Validator(base.BaseValidator):
                 self.call_miner(axon, synapse, uid, timeout=60)
                 for uid, axon, synapse in zip(uids, axons, synapses)
             ]
-            responses = await asyncio.gather(*forward_tasks)
+            raw_responses = await asyncio.gather(*forward_tasks)
+            responses = [response['result'] for response in raw_responses]
 
             logger.info(f"🎲 Received {len(responses)} compression responses from miners 🎲")
 
@@ -1005,7 +1039,8 @@ class Validator(base.BaseValidator):
             self.call_miner(axon, synapse, uid, timeout=100)
             for uid, axon, synapse in zip(forward_uids, axon_list, synapses)
         ]
-        responses = await asyncio.gather(*forward_tasks)
+        raw_responses = await asyncio.gather(*forward_tasks)
+        responses = [response['result'] for response in raw_responses]
 
         processed_urls = [response.miner_response.optimized_video_url for response in responses]
 
@@ -1058,7 +1093,8 @@ class Validator(base.BaseValidator):
             self.call_miner(axon, synapse, uid, timeout=120)
             for uid, axon, synapse in zip(forward_uids, axon_list, synapses)
         ]
-        responses = await asyncio.gather(*forward_tasks)
+        raw_responses = await asyncio.gather(*forward_tasks)
+        responses = [response['result'] for response in raw_responses]
 
         processed_urls = [response.miner_response.optimized_video_url for response in responses]
 
