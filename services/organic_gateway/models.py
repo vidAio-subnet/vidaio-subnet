@@ -29,7 +29,9 @@ class CompressionRequest(BaseModel):
     chunk_id: str
     chunk_url: str
     compression_type: Literal["High", "Medium", "Low"]
-    target_codec: Optional[str] = "av1_nvenc"  # Default to av1_nvenc for best compression
+    target_codec: Optional[str] = "av1"  # Default to av1 for best compression
+    codec_mode: Optional[str] = "CRF"  # CBR, VBR, or CRF (default)
+    target_bitrate: Optional[float] = 10.0  # Target bitrate in Mbps
 
 class CompressionResponse(BaseModel):
     task_id: str
@@ -64,7 +66,9 @@ class InsertOrganicCompressionRequest(BaseModel):
     chunk_id: str
     task_id: str
     compression_type: Literal["High", "Medium", "Low"]
-    target_codec: Optional[str] = "av1_nvenc"
+    target_codec: Optional[str] = "av1"
+    codec_mode: Optional[str] = "CRF"
+    target_bitrate: Optional[float] = 10.0
 
 class InsertResultRequest(BaseModel):
     processed_video_url: str

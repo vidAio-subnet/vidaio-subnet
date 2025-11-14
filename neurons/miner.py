@@ -68,14 +68,16 @@ class Miner(BaseMiner):
         payload_url: str = synapse.miner_payload.reference_video_url
         vmaf_threshold: float = synapse.miner_payload.vmaf_threshold
         target_codec: str = synapse.miner_payload.target_codec
+        codec_mode: str = synapse.miner_payload.codec_mode
+        target_bitrate: float = synapse.miner_payload.target_bitrate
         validator_uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
 
-        logger.info(f"🛜🛜🛜 Receiving CompressionRequest from validator: {synapse.dendrite.hotkey} with uid: {validator_uid} | VMAF: {vmaf_threshold} | Codec: {target_codec} 🛜🛜🛜")
+        logger.info(f"🛜🛜🛜 Receiving CompressionRequest from validator: {synapse.dendrite.hotkey} with uid: {validator_uid} | VMAF: {vmaf_threshold} | Codec: {target_codec} | Mode: {codec_mode} | Bitrate: {target_bitrate} Mbps 🛜🛜🛜")
 
         check_version(synapse.version)
 
         try:
-            processed_video_url = await video_compressor(payload_url, vmaf_threshold, target_codec)
+            processed_video_url = await video_compressor(payload_url, vmaf_threshold, target_codec, codec_mode, target_bitrate)
 
             if processed_video_url is None:
                 logger.info(f"💔 Failed to compress video 💔")

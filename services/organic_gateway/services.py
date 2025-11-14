@@ -25,7 +25,7 @@ class TaskService:
     def __init__(self, redis_conn):
         self.redis = redis_conn
     
-    def create_task(self, task_id: str, chunk_id: str, chunk_url: str, resolution_type: Optional[str], compression_type: Optional[str], target_codec: Optional[str] = None):
+    def create_task(self, task_id: str, chunk_id: str, chunk_url: str, resolution_type: Optional[str], compression_type: Optional[str], target_codec: Optional[str] = None, codec_mode: Optional[str] = None, target_bitrate: Optional[float] = None):
         """Create a new task and store in Redis"""
         now = datetime.utcnow().isoformat()
         task_data = {
@@ -35,6 +35,8 @@ class TaskService:
             "resolution_type": resolution_type or "",
             "compression_type": compression_type or "",
             "target_codec": target_codec or "",
+            "codec_mode": codec_mode or "",
+            "target_bitrate": str(target_bitrate) if target_bitrate is not None else "",
             "status": TaskStatus.QUEUED,
             "created_at": now,
             "updated_at": now
@@ -149,7 +151,7 @@ class RedisServiceClient:
         
         return await self._make_request("POST", api_url, payload.dict())
 
-    async def insert_organic_compression_chunk(self, url: str, chunk_id: str, task_id: str, compression_type: str, target_codec: str = "av1_nvenc"):
+    async def insert_organic_compression_chunk(self, url: str, chunk_id: str, task_id: str, compression_type: str, target_codec: str = "av1", codec_mode: str = "CRF", target_bitrate: float = 10.0):
         """Insert chunk into organic compression queue via Redis service"""
         api_url = f"{self.endpoint}/api/insert_organic_compression_chunk"
         payload = InsertOrganicCompressionRequest(
@@ -157,7 +159,9 @@ class RedisServiceClient:
             chunk_id=chunk_id,
             task_id=task_id,
             compression_type=compression_type,
-            target_codec=target_codec
+            target_codec=target_codec,
+            codec_mode=codec_mode,
+            target_bitrate=target_bitrate
         )
 
         return await self._make_request("POST", api_url, payload.dict())

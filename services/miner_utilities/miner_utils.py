@@ -88,14 +88,17 @@ async def video_upscaler(payload_url: str, task_type: str) -> str | None:
             logger.error(f"Upscaling service error: {response.status}")
             return None
 
-async def video_compressor(payload_url: str, vmaf_threshold: float, target_codec: str = "av1_nvenc") -> str | None:
+async def video_compressor(payload_url: str, vmaf_threshold: float, target_codec: str = "av1",
+                          codec_mode: str = "CRF", target_bitrate: float = 10.0) -> str | None:
     """
     Sends a video file path to the compression service and retrieves the processed video path.
 
     Args:
         payload_url (str): The URL of the video to be compressed.
         vmaf_threshold (float): The VMAF threshold for quality control.
-        target_codec (str): The target codec for compression (default: "av1_nvenc").
+        target_codec (str): The target codec for compression (default: "av1").
+        codec_mode (str): Codec mode - CBR, VBR, or CRF (default: "CRF").
+        target_bitrate (float): Target bitrate in Mbps (default: 10.0).
 
     Returns:
         str | None: The URL of the compressed video or None if an error occurs.
@@ -106,8 +109,10 @@ async def video_compressor(payload_url: str, vmaf_threshold: float, target_codec
         "payload_url": payload_url,
         "vmaf_threshold": vmaf_threshold,
         "target_codec": target_codec,
+        "codec_mode": codec_mode,
+        "target_bitrate": target_bitrate,
     }
-    logger.info(f"🎬 Sending compression request: VMAF={vmaf_threshold}, Codec={target_codec}")
+    logger.info(f"🎬 Sending compression request: VMAF={vmaf_threshold}, Codec={target_codec}, Mode={codec_mode}, Bitrate={target_bitrate} Mbps")
     async with aiohttp.ClientSession() as session:
         async with session.post(url, headers=headers, data=json.dumps(data)) as response:
             if response.status == 200:

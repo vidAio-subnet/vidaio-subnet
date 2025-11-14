@@ -66,6 +66,9 @@ class CompressionScoringRequest(BaseModel):
     video_ids: List[str]
     uploaded_object_names: List[str]
     vmaf_threshold: float
+    target_codec: Optional[str] = "av1"  # Target codec family (av1, h264, hevc, vp9, etc.)
+    codec_mode: Optional[str] = "CRF"  # Codec mode: CBR, VBR, or CRF
+    target_bitrate: Optional[float] = 10.0  # Target bitrate in Mbps
     fps: Optional[float] = None
     subsample: Optional[int] = 1
     verbose: Optional[bool] = False
@@ -91,6 +94,9 @@ class OrganicsCompressionScoringRequest(BaseModel):
     distorted_urls: List[str]
     reference_urls: List[str]
     vmaf_thresholds: List[float]
+    target_codecs: Optional[List[str]] = None  # List of target codecs (one per video)
+    codec_modes: Optional[List[str]] = None  # List of codec modes (one per video)
+    target_bitrates: Optional[List[float]] = None  # List of target bitrates (one per video)
     uids: List[int]
     fps: Optional[float] = None
     subsample: Optional[int] = 1
@@ -304,33 +310,42 @@ def validate_color_channels_on_frames(frames):
     """
     Validate that frames have color information (not grayscale).
     Reuses frames already extracted for VMAF calculation.
-    
+
     Args:
         frames: List of frames (BGR numpy arrays from cv2)
-        
+
     Returns:
         tuple: (is_valid, reason)
     """
     try:
         if not frames:
             return False, "No frames available for color validation"
-        
+
         color_threshold = 5.0  # Same threshold as before
-        
+        brightness_threshold = 20.0  # Threshold for detecting black/near-black frames
+
         for i, frame in enumerate(frames):
             # Convert BGR to RGB
             img_array = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
+
             # Extract RGB channels
             r_channel = img_array[:,:,0].astype(float)
             g_channel = img_array[:,:,1].astype(float)
             b_channel = img_array[:,:,2].astype(float)
-            
+
+            # Check if frame is black/near-black (low brightness)
+            avg_brightness = np.mean([r_channel.mean(), g_channel.mean(), b_channel.mean()])
+
+            # Skip validation for black/near-black frames (valid content)
+            if avg_brightness < brightness_threshold:
+                logger.debug(f"Frame {i} is black/near-black (brightness={avg_brightness:.2f}), skipping color validation")
+                continue
+
             # Calculate average difference between channels
             rg_diff = np.mean(np.abs(r_channel - g_channel))
             rb_diff = np.mean(np.abs(r_channel - b_channel))
             gb_diff = np.mean(np.abs(g_channel - b_channel))
-            
+
             # If all channels are nearly identical, it's grayscale
             if rg_diff < color_threshold and rb_diff < color_threshold and gb_diff < color_threshold:
                 logger.warning(
@@ -338,9 +353,9 @@ def validate_color_channels_on_frames(frames):
                     f"RG diff={rg_diff:.2f}, RB diff={rb_diff:.2f}, GB diff={gb_diff:.2f}"
                 )
                 return False, f"Video has no color information (grayscale). UV channels required. Frame {i} detected as grayscale."
-        
+
         return True, "Color channels validated"
-        
+
     except Exception as e:
         logger.error(f"Error validating color channels: {e}")
         return False, f"Error validating color: {str(e)}"
@@ -349,62 +364,69 @@ def validate_chroma_quality_on_frames(ref_frames, dist_frames, threshold=0.7):
     """
     Validate chroma (UV) quality by comparing reference and distorted frames.
     Reuses frames already extracted for VMAF calculation.
-    
+
     Args:
         ref_frames: List of reference frames (BGR numpy arrays)
         dist_frames: List of distorted frames (BGR numpy arrays)
         threshold: Minimum acceptable chroma similarity (0.0-1.0)
-        
+
     Returns:
         tuple: (is_valid, reason)
     """
     try:
         if len(ref_frames) != len(dist_frames):
             return False, "Frame count mismatch between reference and distorted"
-        
+
         if not ref_frames or not dist_frames:
             return False, "No frames available for chroma validation"
-        
+
         chroma_ratios = []
-        
+        low_energy_threshold = 1.0  # Minimum chroma energy to consider (filters black/flat frames)
+
         for i, (ref_frame, dist_frame) in enumerate(zip(ref_frames, dist_frames)):
             # Convert BGR to YUV
             ref_yuv = cv2.cvtColor(ref_frame, cv2.COLOR_BGR2YUV)
             dist_yuv = cv2.cvtColor(dist_frame, cv2.COLOR_BGR2YUV)
-            
+
             # Extract U and V channels
             ref_u = ref_yuv[:, :, 1].astype(float)
             ref_v = ref_yuv[:, :, 2].astype(float)
             dist_u = dist_yuv[:, :, 1].astype(float)
             dist_v = dist_yuv[:, :, 2].astype(float)
-            
+
             # Calculate chroma variance/energy
             ref_u_variance = np.var(ref_u)
             ref_v_variance = np.var(ref_v)
             dist_u_variance = np.var(dist_u)
             dist_v_variance = np.var(dist_v)
-            
+
             ref_chroma_energy = ref_u_variance + ref_v_variance
             dist_chroma_energy = dist_u_variance + dist_v_variance
-            
-            if ref_chroma_energy > 0:
-                chroma_ratio = dist_chroma_energy / ref_chroma_energy
-                chroma_ratios.append(chroma_ratio)
-                logger.debug(f"Frame {i} chroma ratio: {chroma_ratio:.3f}")
-        
+
+            # Skip frames with very low chroma energy (black/flat frames - valid content)
+            if ref_chroma_energy < low_energy_threshold:
+                logger.debug(f"Frame {i} has low chroma energy ({ref_chroma_energy:.3f}), skipping")
+                continue
+
+            chroma_ratio = dist_chroma_energy / ref_chroma_energy
+            chroma_ratios.append(chroma_ratio)
+            logger.debug(f"Frame {i} chroma ratio: {chroma_ratio:.3f}")
+
+        # If all frames are low-energy (e.g., all black), consider it valid
         if not chroma_ratios:
-            return False, "Could not calculate chroma ratios"
-        
+            logger.info("All frames have low chroma energy (e.g., black frames), skipping chroma validation")
+            return True, "Chroma validation skipped (low-energy content)"
+
         # Calculate average chroma ratio
         avg_chroma_ratio = np.mean(chroma_ratios)
-        
+
         logger.info(f"Average chroma quality ratio: {avg_chroma_ratio:.3f}, Threshold: {threshold}")
-        
+
         if avg_chroma_ratio < threshold:
             return False, f"Chroma quality too low: {avg_chroma_ratio:.3f} < {threshold} (UV channels reduced/degraded)"
-        
+
         return True, f"Chroma quality validated: {avg_chroma_ratio:.3f}"
-        
+
     except Exception as e:
         logger.error(f"Error validating chroma quality: {e}")
         return False, f"Error validating chroma: {str(e)}"
@@ -742,18 +764,54 @@ def is_valid_video(video_path):
         logger.error(f"Unexpected error validating {video_path}: {e}")
         return False
 
-def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str):
+def normalize_codec_family(codec_name: str) -> str:
+    """
+    Normalize codec name to its family for comparison.
+    Returns standard ffprobe codec names to match video metadata.
+
+    Args:
+        codec_name: The codec name (e.g., "av1", "hevc", "h265", "h264")
+
+    Returns:
+        Normalized codec family name matching ffprobe output (e.g., "av1", "hevc", "h264", "vp9")
+    """
+    codec_lower = codec_name.lower().strip()
+
+    # AV1 variants
+    if any(variant in codec_lower for variant in ["av1", "libaom", "libsvtav1", "svt-av1"]):
+        return "av1"
+
+    # H.265/HEVC variants (ffprobe returns "hevc", not "h265")
+    if any(variant in codec_lower for variant in ["hevc", "h265", "x265", "libx265"]):
+        return "hevc"
+
+    # H.264/AVC variants
+    if any(variant in codec_lower for variant in ["h264", "avc", "x264", "libx264"]):
+        return "h264"
+
+    # VP9 variants
+    if "vp9" in codec_lower or "libvpx-vp9" in codec_lower:
+        return "vp9"
+
+    # VP8 variants
+    if "vp8" in codec_lower or "libvpx" in codec_lower:
+        return "vp8"
+
+    # Return as-is if no match (for future codecs)
+    return codec_lower
+
+def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, target_codec: str = "av1"):
     """
     Validate that distorted video uses specific encoding settings.
     """
     try:
-        # Enhanced ffprobe to capture both stream and format encoder tags
+        # Enhanced ffprobe to capture both stream and format encoder tags, including bitrate
         cmd = [
             "ffprobe",
             "-v", "error",
             "-select_streams", "v:0",
             "-show_entries", "stream=codec_name,profile,level,sample_aspect_ratio,pix_fmt,"
-                           "width,height,r_frame_rate,color_space,color_primaries,color_transfer",
+                           "width,height,r_frame_rate,color_space,color_primaries,color_transfer,bit_rate",
             "-show_entries", "format=tags=encoder",
             "-show_format",
             "-of", "json",
@@ -777,7 +835,13 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str):
         container = format_info.get("format_name", "")
         fps_str = video_stream.get("r_frame_rate", "0/1")
         encoder_tag = ""
-        
+
+        # Get bitrate (prefer stream-level, fallback to format-level)
+        bit_rate = video_stream.get("bit_rate") or format_info.get("bit_rate")
+        if bit_rate:
+            bit_rate = int(bit_rate)  # Convert to integer (bits per second)
+            bit_rate_mbps = bit_rate / 1_000_000  # Megabits per second
+            logger.info(f"Distorted video bitrate: {bit_rate_mbps:.2f} Mbps")
         # Colorspace properties
         dist_color_space = video_stream.get("color_space", None)
         dist_color_primaries = video_stream.get("color_primaries", None)
@@ -799,14 +863,27 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str):
                 errors.append(f"Resolution must be {ref_width}x{ref_height}, got {width}x{height}")
 
         # REQUIRED encoding checks
-        if task == "compression" and codec != "av1" or task == "upscaling" and codec != "hevc":
-            errors.append(f"Codec must be AV1 for compression & hevc for upscaling, got {codec}")
+        # Normalize both the detected codec and target codec to family names
+        detected_codec_family = normalize_codec_family(codec)
+        expected_codec_family = normalize_codec_family(target_codec) if task == "compression" else "hevc"
+
+        if task == "compression":
+            if detected_codec_family != expected_codec_family:
+                errors.append(f"Codec must be {expected_codec_family} (got {codec} which normalizes to {detected_codec_family})")
+        elif task == "upscaling" and detected_codec_family != "hevc":
+            errors.append(f"Codec must be hevc for upscaling, got {codec}")
         if "ivf" in container.lower():
             errors.append("Container must be MP4, got IVF (incompatible for concatenation)")
         if container not in ["mov,mp4,m4a,3gp,3g2,mj2", "mp4", "isom"]:
             errors.append(f"Container must be proper MP4, got {container}")
-        if profile != "Main":
+
+        # Profile validation based on codec family
+        if detected_codec_family == "av1" and profile != "Main":
             errors.append(f"AV1 profile must be 'Main', got {profile}")
+        elif detected_codec_family == "hevc" and profile not in ["Main", "Main 10"]:
+            errors.append(f"HEVC profile must be 'Main' or 'Main 10', got {profile}")
+        elif detected_codec_family == "h264" and profile not in ["Main", "High", "Baseline"]:
+            errors.append(f"H.264 profile must be 'Main', 'High', or 'Baseline', got {profile}")
         if sar != "1:1":
             errors.append(f"Sample aspect ratio must be 1:1, got {sar}")
         if pix_fmt != "yuv420p":
@@ -1537,11 +1614,12 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 4. Validated distorted video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-            # Validate encoding settings (MUST be AV1 in proper MP4 with specific params)
-            is_valid_encoding, encoding_msg = validate_dist_encoding_settings(dist_path, ref_path, task="compression")
+            # Validate encoding settings (codec must match target_codec)
+            target_codec = request.target_codec or "av1"
+            is_valid_encoding, encoding_msg = validate_dist_encoding_settings(dist_path, ref_path, task="compression", target_codec=target_codec)
             if not is_valid_encoding:
                 logger.error(f"Invalid encoding settings for distorted video {dist_path}: {encoding_msg}")
-                logger.info(f"  Required: AV1 codec, Main profile, yuv420p, MP4 container, 1:1 SAR")
+                logger.info(f"  Required: {target_codec} codec family, proper profile, yuv420p, MP4 container, 1:1 SAR")
                 vmaf_scores.append(0.0)
                 compression_rates.append(1.0)
                 final_scores.append(0.0)
@@ -2104,8 +2182,11 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             logger.error(f"failed to download distorted video: {dist_url}, error: {e}")
             distorted_video_paths.append(None)
 
-    for idx, (ref_url, dist_path, uid, vmaf_threshold) in enumerate(
-        zip(request.reference_urls, distorted_video_paths, request.uids, request.vmaf_thresholds)
+    # Get target_codecs list, defaulting to "av1" if not provided
+    target_codecs = request.target_codecs if request.target_codecs else ["av1"] * len(request.uids)
+
+    for idx, (ref_url, dist_path, uid, vmaf_threshold, target_codec) in enumerate(
+        zip(request.reference_urls, distorted_video_paths, request.uids, request.vmaf_thresholds, target_codecs)
     ):
         logger.info(f"🧩 processing {uid}.... downloading reference video.... 🧩")
         ref_path = None
@@ -2188,10 +2269,10 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 final_scores.append(0.0)  # 0 = miner penalty
                 continue
 
-            is_valid_encoding, encoding_msg = validate_dist_encoding_settings(dist_path, ref_path, task="compression")
+            is_valid_encoding, encoding_msg = validate_dist_encoding_settings(dist_path, ref_path, task="compression", target_codec=target_codec)
             if not is_valid_encoding:
                 logger.error(f"Invalid encoding settings for distorted video {dist_path}: {encoding_msg}")
-                logger.info(f"  Required: AV1 codec, Main profile, yuv420p, MP4 container, 1:1 SAR")
+                logger.info(f"  Required: {target_codec} codec family, proper profile, yuv420p, MP4 container, 1:1 SAR")
                 vmaf_scores.append(0.0)
                 compression_rates.append(1.0)
                 final_scores.append(0.0)

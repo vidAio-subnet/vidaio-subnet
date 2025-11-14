@@ -58,8 +58,17 @@ class CompressionMinerPayload(BaseModel):
         le=100.0,
     )
     target_codec: str = Field(
-        description="The target codec for compression (e.g., H264, H265, VP9, AV1)",
-        default="av1_nvenc",
+        description="The target codec for compression (e.g., av1, hevc, h264, vp9)",
+        default="av1",
+    )
+    codec_mode: str = Field(
+        description="Codec mode: CBR (Constant Bitrate), VBR (Variable Bitrate), or CRF (Constant Rate Factor)",
+        default="CRF",
+    )
+    target_bitrate: float = Field(
+        description="Target bitrate in Mbps (megabits per second)",
+        default=10.0,
+        gt=0.0,
     )
 
 
