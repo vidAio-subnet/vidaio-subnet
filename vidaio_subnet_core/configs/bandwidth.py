@@ -6,5 +6,5 @@ class BandwidthConfig(BaseModel):
     request_interval: int = Field(default=500)
     requests_per_synthetic_interval: int = Field(default=5)
     requests_per_organic_interval: int = Field(default = 30)
-    miners_per_task: int = Field(default=1)
+    miners_per_task: int = Field(default=2)
     min_stake: int = Field(default=25000)
