@@ -402,6 +402,55 @@ class Validator(base.BaseValidator):
 
         return batches
 
+    async def call_miner(self, axon, synapse, uid, timeout=60):
+        start = time.perf_counter()
+
+        try:
+            raw = await self.dendrite.forward(
+                axons=[axon],
+                synapse=synapse,
+                timeout=timeout,
+            )
+            duration = (time.perf_counter() - start) * 1000  # ms
+
+            try:
+                result = raw[0]
+            except Exception as e:
+                logger.error(
+                    f"UID {uid} → invalid response structure after {duration:.2f} ms | {e}",
+                    exc_info=True
+                )
+                return {
+                    "uid": uid,
+                    "result": None,
+                    "error": e,
+                    "latency_ms": duration,
+                }
+
+            logger.info(f"UID {uid} → success | {duration:.2f} ms")
+
+            return {
+                "uid": uid,
+                "result": result,
+                "error": None,
+                "latency_ms": duration,
+            }
+
+        except Exception as e:
+            duration = (time.perf_counter() - start) * 1000  # ms
+
+            logger.error(
+                f"UID {uid} → failure after {duration:.2f} ms | {type(e).__name__}: {e}",
+                exc_info=True
+            )
+
+            return {
+                "uid": uid,
+                "result": None,  # EXACT same shape as original gather usage
+                "error": e,
+                "latency_ms": duration,
+            }
+    
     async def process_upscaling_miners(self, upscaling_miners_with_lengths, version):
         """Process upscaling miners in batches similar to the original implementation."""
         batch_size = CONFIG.bandwidth.requests_per_synthetic_interval
@@ -427,19 +476,18 @@ class Validator(base.BaseValidator):
             
             round_id = str(uuid.uuid4())
             payload_urls, video_ids, uploaded_object_names, synapses, task_types = await self.challenge_synthesizer.build_synthetic_protocol(content_lengths, version, round_id)
+            logger.info(f"Built compression challenge protocol: payload URLs: {payload_urls}\nvideo IDs: {video_ids}")
             logger.debug(f"Built upscaling challenge protocol")
 
             timestamp = datetime.now(timezone.utc).isoformat()
 
-            logger.debug(f"Processing upscaling UIDs in batch: {uids}")
             forward_tasks = [
-                self.dendrite.forward(axons=[axon], synapse=synapse, timeout=60)
-                for axon, synapse in zip(axons, synapses)
+                self.call_miner(axon, synapse, uid, timeout=60)
+                for uid, axon, synapse in zip(uids, axons, synapses)
             ]
-
             raw_responses = await asyncio.gather(*forward_tasks)
+            responses = [response['result'] for response in raw_responses]
 
-            responses = [response[0] for response in raw_responses]
             logger.info(f"🎲 Received {len(responses)} upscaling responses from miners 🎲")
 
             reference_video_paths = []
@@ -484,19 +532,20 @@ class Validator(base.BaseValidator):
             num_miners = len(uids)
 
             payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_compression_protocol(vmaf_threshold, num_miners, version, round_id)
+            logger.info(f"Built compression challenge protocol: payload URLs: {payload_urls}\nvideo IDs: {video_ids}")
             logger.debug(f"Built compression challenge protocol")
 
             timestamp = datetime.now(timezone.utc).isoformat()
 
             logger.debug(f"Processing compression UIDs in batch: {uids}")
+            
             forward_tasks = [
-                self.dendrite.forward(axons=[axon], synapse=synapse, timeout=60)
-                for axon, synapse in zip(axons, synapses)
+                self.call_miner(axon, synapse, uid, timeout=60)
+                for uid, axon, synapse in zip(uids, axons, synapses)
             ]
-
             raw_responses = await asyncio.gather(*forward_tasks)
+            responses = [response['result'] for response in raw_responses]
 
-            responses = [response[0] for response in raw_responses]
             logger.info(f"🎲 Received {len(responses)} compression responses from miners 🎲")
 
             reference_video_paths = []
@@ -566,7 +615,7 @@ class Validator(base.BaseValidator):
         for uid, response in zip(uids, responses):
             distorted_urls.append(response.miner_response.optimized_video_url)
 
-        logger.info("responses: ", responses)
+        logger.info(f"responses: {responses}")
 
         score_response = await self.score_client.post(
             "/score_upscaling_synthetics",
@@ -987,13 +1036,12 @@ class Validator(base.BaseValidator):
 
         logger.info("🌜 | UPSCALING | Performing forward operations asynchronously for upscaling 🌜")
         forward_tasks = [
-            self.dendrite.forward(axons=[axon], synapse=synapse, timeout=100)
-            for axon, synapse in zip(axon_list, synapses)
+            self.call_miner(axon, synapse, uid, timeout=100)
+            for uid, axon, synapse in zip(forward_uids, axon_list, synapses)
         ]
-
         raw_responses = await asyncio.gather(*forward_tasks)
+        responses = [response['result'] for response in raw_responses]
 
-        responses = [response[0] for response in raw_responses]
         processed_urls = [response.miner_response.optimized_video_url for response in responses]
 
         logger.info(f"Processing organic upscaling chunks with uids: {forward_uids.tolist()}")
@@ -1040,13 +1088,14 @@ class Validator(base.BaseValidator):
         timestamp = datetime.now(timezone.utc).isoformat()
 
         logger.info("🌜 | COMPRESSION | Performing forward operations asynchronously for compression 🌜")
-        forward_tasks = [
-            self.dendrite.forward(axons=[axon], synapse=synapse, timeout=120)
-            for axon, synapse in zip(axon_list, synapses)
-        ]
 
+        forward_tasks = [
+            self.call_miner(axon, synapse, uid, timeout=120)
+            for uid, axon, synapse in zip(forward_uids, axon_list, synapses)
+        ]
         raw_responses = await asyncio.gather(*forward_tasks)
-        responses = [response[0] for response in raw_responses]
+        responses = [response['result'] for response in raw_responses]
+
         processed_urls = [response.miner_response.optimized_video_url for response in responses]
 
         logger.info("Updating task status to 'completed' and pushing results for compression")
