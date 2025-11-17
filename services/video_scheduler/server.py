@@ -36,6 +36,9 @@ class InsertOrganicCompressionRequest(BaseModel):
     chunk_id: str
     task_id: str
     compression_type: str
+    target_codec: Optional[str] = "av1"
+    codec_mode: Optional[str] = "CRF"
+    target_bitrate: Optional[float] = 10.0
 
 class InsertResultRequest(BaseModel):
     processed_video_url: str
