@@ -80,7 +80,10 @@ def api_insert_organic_compression_chunk(payload: InsertOrganicCompressionReques
         "url": payload.url,
         "chunk_id": payload.chunk_id,
         "task_id": payload.task_id,
-        "compression_type": payload.compression_type
+        "compression_type": payload.compression_type,
+        "target_codec": payload.target_codec,
+        "codec_mode": payload.codec_mode,
+        "target_bitrate": payload.target_bitrate
     }
     push_organic_compression_chunk(r, data)
     return {"message": "Organic compression chunk inserted"}
