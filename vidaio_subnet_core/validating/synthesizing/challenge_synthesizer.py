@@ -376,7 +376,7 @@ class Synthesizer:
                 chunks: List[Dict] = data["chunks"]
                 logger.info("Received organic compression chunks from video-scheduler API")
 
-                required_fields = ["url", "chunk_id", "task_id", "compression_type", "target_codec", "codec_mode", "target_bitrate"]
+                required_fields = ["url", "chunk_id", "task_id", "compression_type"]
                 if any(not all(field in chunk for field in required_fields) for chunk in chunks):
                     logger.info("Missing required fields in some chunk data, retrying...")
                     await asyncio.sleep(self.retry_delay)
