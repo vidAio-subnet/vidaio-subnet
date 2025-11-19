@@ -33,8 +33,8 @@ from enum import IntEnum
 
 class VMAF_QUALITY_THRESHOLD(IntEnum):
     LOW = 85
-    MEDIUM = 90
-    HIGH = 95
+    MEDIUM = 89
+    HIGH = 93
 
 
 SLEEP_TIME_LOW = 60 * 3 # 3 minutes
