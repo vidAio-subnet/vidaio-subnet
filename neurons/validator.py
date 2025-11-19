@@ -529,6 +529,7 @@ class Validator(base.BaseValidator):
                 axons.append(miner[0])
                 recent_counts.append(recent_count)
 
+            logger.info(f"VMAF dev log:\nrecent_counts: {recent_counts} ; CONFIG.score.max_performance_records: {CONFIG.score.max_performance_records}")
             vmaf_thresholds = [
                 random.choice(list(VMAF_QUALITY_THRESHOLD)) if recent_count > CONFIG.score.max_performance_records
                 else [VMAF_QUALITY_THRESHOLD.LOW, VMAF_QUALITY_THRESHOLD.MEDIUM]
