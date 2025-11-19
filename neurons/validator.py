@@ -28,12 +28,14 @@ from services.video_scheduler.redis_utils import (
     set_scheduler_ready
 )
 from typing import List, Tuple, Any
+from enum import IntEnum
 
-VMAF_QUALITY_THRESHOLDS = [
-    85, #Low
-    90, #Medium
-    95, #High
-]
+
+class VMAF_QUALITY_THRESHOLD(IntEnum):
+    LOW = 85
+    MEDIUM = 90
+    HIGH = 95
+
 
 SLEEP_TIME_LOW = 60 * 3 # 3 minutes
 SLEEP_TIME_HIGH = 60 * 4 # 4 minutes
@@ -294,7 +296,7 @@ class Validator(base.BaseValidator):
         miners: List[Tuple[Any, int]],
         batch_size: int,
         task_type: str = "upscaling",
-    ) -> List[List[Tuple[Any, int]]]:
+    ) -> List[List[Tuple[int, Tuple[Any, int]]]]:
         """
         Build batches of miners for *task_type* (upscaling / compression).
 
@@ -382,7 +384,7 @@ class Validator(base.BaseValidator):
         # 5. Sort & batch
         # ------------------------------------------------------------------- #
         eligible.sort(key=lambda x: x[0])                     # by priority tuple
-        sorted_miners = [miner for _prio, miner in eligible]
+        sorted_miners = [(prio[0], miner) for prio, miner in eligible]
 
         batches = [
             sorted_miners[i : i + batch_size]
@@ -521,17 +523,23 @@ class Validator(base.BaseValidator):
             
             uids = []
             axons = []
-            for miner in batch:
+            recent_counts = []
+            for recent_count, miner in batch:
                 uids.append(miner[1])
                 axons.append(miner[0])
-            
-            vmaf_threshold = random.choice(VMAF_QUALITY_THRESHOLDS)
-            
+                recent_counts.append(recent_count)
+
+            vmaf_thresholds = [
+                random.choice(list(VMAF_QUALITY_THRESHOLD)) if recent_count
+                else [VMAF_QUALITY_THRESHOLD.LOW, VMAF_QUALITY_THRESHOLD.MEDIUM]
+                for idx, recent_count in enumerate(recent_counts)
+            ]
+
             round_id = str(uuid.uuid4())
 
             num_miners = len(uids)
 
-            payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_compression_protocol(vmaf_threshold, num_miners, version, round_id)
+            payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_compression_protocol(vmaf_threshold, num_miners, version, round_id, recent_counts)
             logger.info(f"Built compression challenge protocol: payload URLs: {payload_urls}\nvideo IDs: {video_ids}")
             logger.debug(f"Built compression challenge protocol")
 

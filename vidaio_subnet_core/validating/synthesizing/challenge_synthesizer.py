@@ -172,7 +172,7 @@ class Synthesizer:
                     
         raise RuntimeError(f"Failed to get synthetic chunks after {self.max_retries} attempts")
 
-    async def build_compression_protocol(self, vmaf_threshold: float, num_miners: int, version, round_id) -> Tuple[list[str], list[str], list[str], list[VideoCompressionProtocol]]:
+    async def build_compression_protocol(self, vmaf_thresholds: List[float], num_miners: int, version, round_id, recent_counts: List[int]) -> Tuple[list[str], list[str], list[str], list[VideoCompressionProtocol]]:
         """Fetches synthetic video chunks and builds the video compression protocols.
         
         Args:
@@ -196,9 +196,10 @@ class Synthesizer:
         
         # Calculate required chunks (one chunk per miners_per_task protocols)
         num_protocols = num_miners
+        assert len(vmaf_thresholds) == num_protocols
         num_needed = (num_protocols + miners_per_task - 1) // miners_per_task  # Ceiling division
         
-        logger.info(f"Vmaf_threshold: {vmaf_threshold}")
+        logger.info(f"Vmaf_thresholds: {vmaf_thresholds}")
         logger.info(f"Using {miners_per_task} miners per task")
         logger.info(f"Optimized chunk request: {num_needed} chunks (reduced from {num_protocols} protocols)")
         
@@ -260,7 +261,7 @@ class Synthesizer:
                         synapse = VideoCompressionProtocol(
                             miner_payload=CompressionMinerPayload(
                                 reference_video_url=chunk["sharing_link"],
-                                vmaf_threshold=vmaf_threshold
+                                vmaf_threshold=vmaf_thresholds[i]
                             ),
                             version=version,
                             round_id=round_id
