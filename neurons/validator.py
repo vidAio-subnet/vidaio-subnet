@@ -530,7 +530,7 @@ class Validator(base.BaseValidator):
                 recent_counts.append(recent_count)
 
             vmaf_thresholds = [
-                random.choice(list(VMAF_QUALITY_THRESHOLD)) if recent_count
+                random.choice(list(VMAF_QUALITY_THRESHOLD)) if recent_count > CONFIG.score.max_performance_records
                 else [VMAF_QUALITY_THRESHOLD.LOW, VMAF_QUALITY_THRESHOLD.MEDIUM]
                 for idx, recent_count in enumerate(recent_counts)
             ]
@@ -539,7 +539,7 @@ class Validator(base.BaseValidator):
 
             num_miners = len(uids)
 
-            payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_compression_protocol(vmaf_threshold, num_miners, version, round_id, recent_counts)
+            payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_compression_protocol(vmaf_thresholds, num_miners, version, round_id, recent_counts)
             logger.info(f"Built compression challenge protocol: payload URLs: {payload_urls}\nvideo IDs: {video_ids}")
             logger.debug(f"Built compression challenge protocol")
 
