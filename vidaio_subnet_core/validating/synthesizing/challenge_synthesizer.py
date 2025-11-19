@@ -261,7 +261,7 @@ class Synthesizer:
                         synapse = VideoCompressionProtocol(
                             miner_payload=CompressionMinerPayload(
                                 reference_video_url=chunk["sharing_link"],
-                                vmaf_threshold=vmaf_thresholds[i]
+                                vmaf_threshold=vmaf_thresholds[i].value
                             ),
                             version=version,
                             round_id=round_id

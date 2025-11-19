@@ -531,8 +531,8 @@ class Validator(base.BaseValidator):
 
             logger.info(f"VMAF dev log:\nrecent_counts: {recent_counts} ; CONFIG.score.max_performance_records: {CONFIG.score.max_performance_records}")
             vmaf_thresholds = [
-                random.choice(list(VMAF_QUALITY_THRESHOLD)) if recent_count > CONFIG.score.max_performance_records
-                else [VMAF_QUALITY_THRESHOLD.LOW, VMAF_QUALITY_THRESHOLD.MEDIUM]
+                random.choice(list(VMAF_QUALITY_THRESHOLD)) if recent_count >= CONFIG.score.max_performance_records
+                else random.choice([VMAF_QUALITY_THRESHOLD.LOW, VMAF_QUALITY_THRESHOLD.MEDIUM])
                 for idx, recent_count in enumerate(recent_counts)
             ]
 
@@ -564,7 +564,7 @@ class Validator(base.BaseValidator):
                     logger.warning(f"⚠️ Reference video file missing for video_id {video_id}: {reference_video_path}")
                 reference_video_paths.append(reference_video_path)
             
-            asyncio.create_task(self.score_compressions(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, vmaf_threshold, round_id))
+            asyncio.create_task(self.score_compressions(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, vmaf_thresholds, round_id))
 
             batch_processed_time = time.time() - batch_start_time
             sleep_time = random.uniform(SLEEP_TIME_LOW, SLEEP_TIME_HIGH) - batch_processed_time
@@ -726,7 +726,7 @@ class Validator(base.BaseValidator):
         timestamp: str, 
         video_ids: list[str], 
         uploaded_object_names: list[str], 
-        vmaf_threshold: float, 
+        vmaf_thresholds: List[float], 
         round_id: str
     ):
         distorted_urls = []
@@ -741,7 +741,7 @@ class Validator(base.BaseValidator):
                 "reference_paths": reference_video_paths,
                 "video_ids": video_ids,
                 "uploaded_object_names": uploaded_object_names,
-                "vmaf_threshold": vmaf_threshold
+                "vmaf_thresholds": vmaf_thresholds
             },
             timeout=240
         )
@@ -762,7 +762,7 @@ class Validator(base.BaseValidator):
         
         accumulate_scores, applied_multipliers = self.miner_manager.step_synthetics_compression(
             round_id, uids, miner_hotkeys, vmaf_scores,
-            final_scores, [10] * len(uids), vmaf_threshold, compression_rates
+            final_scores, [10] * len(uids), vmaf_thresholds, compression_rates
         )
 
         max_length = max(
@@ -780,13 +780,12 @@ class Validator(base.BaseValidator):
         compression_rates.extend([0.5] * (max_length - len(compression_rates)))
         applied_multipliers.extend([0.0] * (max_length - len(applied_multipliers)))
 
-        vmaf_thresholds = [vmaf_threshold] * len(uids)
 
         logger.info(f"Synthetic compression scoring results for {len(uids)} miners")
         logger.info(f"Uids: {uids}")
 
-        for uid, vmaf_score, final_score, reason, compression_rate, applied_multiplier in zip(
-            uids, vmaf_scores, final_scores, reasons, compression_rates, applied_multipliers
+        for uid, vmaf_score, final_score, reason, compression_rate, applied_multiplier, vmaf_threshold in zip(
+            uids, vmaf_scores, final_scores, reasons, compression_rates, applied_multipliers, vmaf_thresholds
         ):
             logger.info(
                 f"{uid} ** VMAF: {vmaf_score:.2f} "

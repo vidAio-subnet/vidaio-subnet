@@ -372,7 +372,7 @@ class MinerManager:
         vmaf_scores: List[float],
         final_scores: List[float],
         content_lengths: List[float],
-        vmaf_threshold: float,
+        vmaf_thresholds: List[float],
         compression_rates: List[float],
         content_type: str = "video"
     ) -> None:
@@ -492,7 +492,7 @@ class MinerManager:
                     success,
                     processed_task_type="compression",
                     compression_rate=compression_rate,
-                    vmaf_threshold=vmaf_threshold
+                    vmaf_threshold=vmaf_thresholds[i]
                 )
                 
                 if not is_new_miner:
