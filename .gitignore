@@ -31,3 +31,4 @@ services/scoring/vmaf
 services/upscaling/models/
 test.py
 ignore/
+test_outputs/

@@ -581,21 +581,39 @@ def ai_encoding(scene_metadata, config, resources, target_vmaf=None, target_qual
     target_vmaf = safe_float(target_vmaf or original_video_metadata.get('target_vmaf') or 
                            config.get('video_processing', {}).get('target_vmaf', 0.0), 0.0)
 
-    original_codec = original_video_metadata.get('original_codec', 'unknown')
+    # Get codec from config (set by the request)
+    # Priority: config['video_processing']['target_codec'] > metadata > fallback
+    target_codec_from_config = config.get('video_processing', {}).get('target_codec')
     target_codec_from_part1 = original_video_metadata.get('target_codec', 'auto')
+    original_codec = original_video_metadata.get('original_codec', 'unknown')
     current_codec = original_video_metadata.get('codec', original_codec)
-    config_codec = config.get('video_processing', {}).get('codec', 'auto')
-    
-    if target_codec_from_part1 and target_codec_from_part1 != 'auto':
+
+    # Use target_codec from config (highest priority - comes from the request)
+    if target_codec_from_config and target_codec_from_config != 'auto':
+        codec = target_codec_from_config
+        if logging_enabled:
+            print(f"   🎯 Using target codec from request: {codec}")
+    # Fallback to Part 1 metadata
+    elif target_codec_from_part1 and target_codec_from_part1 != 'auto':
         codec = target_codec_from_part1
-    elif config_codec != 'auto':
-        codec = config_codec
+        if logging_enabled:
+            print(f"   📋 Using target codec from metadata: {codec}")
+    # Final fallback to upgrade map
     else:
         codec_upgrade_map = {'h264': 'av1_nvenc', 'hevc': 'av1_nvenc', 'vp9': 'av1_nvenc', 'av1': 'av1_nvenc'}
         codec = codec_upgrade_map.get(current_codec.lower(), 'av1_nvenc')
+        if logging_enabled:
+            print(f"   ⚡ Using fallback codec mapping: {current_codec} → {codec}")
 
     if logging_enabled:
-        print(f"   🎥 Selected Codec: {codec}")
+        print(f"   🎥 Final Selected Codec: {codec}")
+
+    # Get codec_mode and target_bitrate from config (set by the request)
+    codec_mode = config.get('video_processing', {}).get('codec_mode', 'CRF')
+    target_bitrate = config.get('video_processing', {}).get('target_bitrate', 10.0)
+
+    if logging_enabled:
+        print(f"   ⚙️ Codec Mode: {codec_mode}, Target Bitrate: {target_bitrate} Mbps")
 
     # STEP 1: BASIC ANALYSIS - Classify scene and extract video features in one call
     if logging_enabled:
@@ -741,7 +759,9 @@ def ai_encoding(scene_metadata, config, resources, target_vmaf=None, target_qual
                 codec=codec,
                 adjusted_cq=final_cq,
                 content_type=scene_type,
-                contrast_value=0.5, 
+                contrast_value=0.5,
+                codec_mode=codec_mode,
+                target_bitrate=target_bitrate,
                 max_retries=max_encoding_retries,
                 logging_enabled=logging_enabled
             )
@@ -758,7 +778,9 @@ def ai_encoding(scene_metadata, config, resources, target_vmaf=None, target_qual
                 codec=codec,
                 rate=final_cq,
                 scene_type=scene_type,
-                contrast_value=0.5, # Default contrast
+                contrast_value=0.5,  # Default contrast
+                codec_mode=codec_mode,
+                target_bitrate=target_bitrate,
                 logging_enabled=logging_enabled
             )
             encoded_path = output_scene_path

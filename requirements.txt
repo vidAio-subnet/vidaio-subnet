@@ -7,7 +7,7 @@ numpy==2.0.2
 minio==7.2.16
 opencv-python==4.12.0.88
 loguru==0.7.3
-bittensor==9.9.0
+bittensor>=9.9.0
 redis==6.4.0
 sqlalchemy==2.0.43
 pandas==2.3.2
@@ -23,8 +23,8 @@ wandb==0.22.0
 apscheduler==3.11.0
 boto3==1.40.34
 google-auth-oauthlib==1.2.2
-google-auth==2.40.3
-google-api-python-client==2.182.0
+google-auth>=2.40.3
+google-api-python-client>=2.182.0
 yt-dlp==2025.9.5
 selenium==4.35.0
 scikit-learn==1.7.2
@@ -33,7 +33,7 @@ scipy==1.16.2
 torch==2.8.0
 torchvision==0.23.0
 torchaudio==2.8.0
-tensorflow==2.19.1
+tensorflow>=2.19.1
 tensorboard==2.19.0
 
 # Video and Image Processing

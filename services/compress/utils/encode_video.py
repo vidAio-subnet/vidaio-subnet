@@ -132,13 +132,13 @@ def get_contrast_optimized_params(scene_type, contrast_value, codec):
     
     return params
 
-def encode_video(input_path, output_path, codec, rate=None, max_bit_rate=None, preset=None, scene_type=None, contrast_value=None, logging_enabled=True):
+def encode_video(input_path, output_path, codec, rate=None, max_bit_rate=None, preset=None, scene_type=None, contrast_value=None, codec_mode=None, target_bitrate=None, logging_enabled=True):
     """
     Encodes a video using specified codec settings, optimized for scene type and contrast.
     Audio is copied without re-encoding for efficiency.
-    
+
     Note: encoding decisions should be made BEFORE calling this function.
-    
+
     Args:
         input_path (str): Path to input video file
         output_path (str): Path for output video file
@@ -148,8 +148,10 @@ def encode_video(input_path, output_path, codec, rate=None, max_bit_rate=None, p
         preset (str, optional): Encoder preset override
         scene_type (str, optional): Scene classification for optimization
         contrast_value (float, optional): Perceptual contrast (0.0-1.0)
+        codec_mode (str, optional): Encoding mode - 'CRF', 'CBR', or 'VBR'
+        target_bitrate (float, optional): Target bitrate in Mbps (for CBR/VBR modes)
         logging_enabled (bool): Enable detailed logging
-        
+
     Returns:
         tuple: (encoding_results_log, encoding_time) or (None, None) on failure
     """
@@ -288,6 +290,69 @@ def encode_video(input_path, output_path, codec, rate=None, max_bit_rate=None, p
         current_settings['preset'] = preset
         if logging_enabled:
             print(f"Applying preset override: {preset}")
+
+    # 5.5. Apply codec_mode and target_bitrate if provided
+    if codec_mode and target_bitrate:
+        if logging_enabled:
+            print(f"Applying codec_mode='{codec_mode}' with target_bitrate={target_bitrate} Mbps")
+
+        if codec_mode.upper() == 'CBR':
+            # Constant Bitrate Mode - fixed bitrate throughout
+            bitrate_kbps = int(target_bitrate * 1000)  # Convert Mbps to kbps
+            bitrate_value = f"{bitrate_kbps}k"
+
+            current_settings['bitrate'] = bitrate_value
+            current_settings['maxrate'] = bitrate_value
+            current_settings['bufsize'] = f"{bitrate_kbps * 2}k"  # Buffer = 2x bitrate
+
+            # Remove CRF/CQ parameters for CBR mode (incompatible)
+            if 'crf' in current_settings:
+                del current_settings['crf']
+                if logging_enabled:
+                    print(f"Removed 'crf' for CBR mode")
+            if 'cq' in current_settings:
+                del current_settings['cq']
+                if logging_enabled:
+                    print(f"Removed 'cq' for CBR mode")
+
+            # Set rate control mode for NVENC
+            if codec.endswith('_nvenc'):
+                current_settings['rc'] = 'cbr'
+                if logging_enabled:
+                    print(f"Set NVENC rate control to CBR")
+            elif codec.endswith('_qsv'):
+                current_settings['rc'] = 'cbr'
+
+            if logging_enabled:
+                print(f"CBR mode: bitrate={bitrate_value}, maxrate={bitrate_value}, bufsize={bitrate_kbps * 2}k")
+
+        elif codec_mode.upper() == 'VBR':
+            # Variable Bitrate Mode - allows bitrate to vary but caps at target
+            bitrate_kbps = int(target_bitrate * 1000)
+            bitrate_value = f"{bitrate_kbps}k"
+
+            current_settings['maxrate'] = bitrate_value
+            current_settings['bufsize'] = f"{bitrate_kbps * 2}k"
+
+            # Keep CRF/CQ for quality target, but limit with maxrate
+            # This gives best quality within the bitrate constraint
+            if codec.endswith('_nvenc') or codec.endswith('_qsv'):
+                current_settings['rc'] = 'vbr'
+                if logging_enabled:
+                    print(f"Set rate control to VBR")
+
+            if logging_enabled:
+                print(f"VBR mode: maxrate={bitrate_value}, bufsize={bitrate_kbps * 2}k, keeping CQ/CRF for quality")
+
+        elif codec_mode.upper() == 'CRF':
+            # CRF mode is the default - no changes needed
+            # This mode prioritizes quality (uses the rate/CQ parameter)
+            if logging_enabled:
+                print(f"CRF mode: Using quality-based encoding (rate={rate})")
+
+        else:
+            if logging_enabled:
+                print(f"Warning: Unknown codec_mode '{codec_mode}', defaulting to CRF behavior")
 
     # 6. Apply max_bit_rate and enable VBR for NVENC/QSV when maxrate is provided
     if max_bit_rate is not None:
