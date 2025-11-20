@@ -20,11 +20,16 @@ import hashlib
 import time
 
 class MinerManager:
-    def __init__(self, uid, wallet, metagraph):
+    def __init__(self, uid, config, wallet, metagraph):
         logger.info(f"Initializing MinerManager with uid: {uid}")
         self.uid = uid
         self.wallet = wallet
         self.dendrite = bt.dendrite(wallet=self.wallet)
+
+        self.config = config
+        self.subtensor = bt.subtensor(config=self.config)
+        self.burn_proportion = float(2/3)   # 2/3 of miner emissions burnt
+
         self.metagraph = metagraph
         self.config_url = CONFIG.sql.url
         self.local_db_path = "video_subnet_validator.db"
@@ -82,7 +87,7 @@ class MinerManager:
         self.df = self.df.set_index('uid')
 
         logger.success("MinerManager initialization complete")
-        
+
     def _cleanup_old_database_files(self):
         """Delete old local database files if they exist before connecting to new database URL"""
         old_db_files = [
@@ -1126,6 +1131,23 @@ class MinerManager:
         finally:
             session.close()
 
+    def get_burn_uid(self):
+        # Get the subtensor owner hotkey
+        sn_owner_hotkey = self.subtensor.query_subtensor(
+            "SubnetOwnerHotkey",
+            params=[self.config.netuid],
+        )
+        logger.info(f"SN Owner Hotkey: {sn_owner_hotkey}")
+
+        # Get the UID of this hotkey
+        sn_owner_uid = self.subtensor.get_uid_for_hotkey_on_subnet(
+            hotkey_ss58=sn_owner_hotkey,
+            netuid=self.config.netuid,
+        )
+        logger.info(f"SN Owner UID: {sn_owner_uid}")
+
+        return sn_owner_uid
+
     @property
     def weights(self):
         """
@@ -1135,6 +1157,8 @@ class MinerManager:
         # Collect miners by task type
         compression_miners = []
         upscaling_miners = []
+
+        owner_uid = self.get_burn_uid()
 
         self.check_database_connection()
 
@@ -1189,6 +1213,12 @@ class MinerManager:
             uids.extend(upscaling_uids)
             scores.extend(upscaling_weights)
         
+        # burn self.burn_proportion fraction of miner emissions
+        total_scores = sum(scores)
+        scores = [x * (1 - self.burn_proportion) for x in scores]
+        uids.append(owner_uid)
+        scores.append(self.burn_proportion * total_scores)
+
         # Convert to numpy arrays and sort by UID
         uids = np.array(uids)
         scores = np.array(scores)
@@ -1205,6 +1235,8 @@ class MinerManager:
         upscaling_total_weight = sum(scores[i] for i, uid in enumerate(uids) if uid in [u[0] for u in upscaling_miners])
         
         logger.info(f"Reward distribution: {compression_count} compression miners ({compression_total_weight:.3f} weight), "
-                   f"{upscaling_count} upscaling miners ({upscaling_total_weight:.3f} weight)")
+                   f"{upscaling_count} upscaling miners ({upscaling_total_weight:.3f} weight)"
+                   f"Rewards data will be distributed as: {[(int(uid), float(score)) for uid, score in zip(uids, scores)]}"
+                   )
         
         return uids, scores

@@ -1553,7 +1553,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 logger.info(f"  Assigning score of 0.")
                 
                 vmaf_scores.append(0.0)
-                compression_rates.append(1.0)  # No compression achieved
+                compression_rates.append(0.9999)   # No compression achieved
                 final_scores.append(-100)
                 reasons.append(f"error opening reference video file: {ref_path} (exists: {file_exists}, size: {file_size})")
                 continue
@@ -1569,7 +1569,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             if ref_total_frames < 10:
                 logger.error(f"Video must contain at least 10 frames. Assigning score of 0.")
                 vmaf_scores.append(0.0)
-                compression_rates.append(1.0)  # No compression achieved
+                compression_rates.append(0.9999)   # No compression achieved
                 final_scores.append(-100)
                 reasons.append("reference video has fewer than 10 frames")
                 continue
@@ -1581,7 +1581,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             if len(dist_url) < 10:
                 logger.error(f"Wrong dist download URL: {dist_url}. Assigning score of 0.")
                 vmaf_scores.append(0.0)
-                compression_rates.append(1.0)  # No compression achieved
+                compression_rates.append(0.9999)   # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("Invalid download URL: the distorted video download URL must be at least 10 characters long.")
                 continue
@@ -1592,7 +1592,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 error_msg = f"Failed to download video from {dist_url}: {str(e)}"
                 logger.error(f"{error_msg}. Assigning score of 0.")
                 vmaf_scores.append(0.0)
-                compression_rates.append(1.0)  # No compression achieved
+                compression_rates.append(0.9999)   # No compression achieved
                 final_scores.append(0.0)
                 reasons.append(error_msg)
                 continue
@@ -1604,7 +1604,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             if not is_valid_video(dist_path):
                 logger.error(f"Error opening distorted video file from {dist_url}. Assigning score of 0.")
                 vmaf_scores.append(0.0)
-                compression_rates.append(1.0)  # No compression achieved
+                compression_rates.append(0.9999)   # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("error opening distorted video file")
                 if dist_path and os.path.exists(dist_path):
@@ -1621,7 +1621,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 logger.error(f"Invalid encoding settings for distorted video {dist_path}: {encoding_msg}")
                 logger.info(f"  Required: {target_codec} codec family, proper profile, yuv420p, MP4 container, 1:1 SAR")
                 vmaf_scores.append(0.0)
-                compression_rates.append(1.0)
+                compression_rates.append(0.9999) 
                 final_scores.append(0.0)
                 reasons.append(f"invalid encoding settings: {encoding_msg}")
                 if dist_path and os.path.exists(dist_path):
@@ -1642,7 +1642,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                     f"Video length mismatch for pair {idx+1}: ref({ref_total_frames}) != dist({dist_total_frames}). Assigning score of 0."
                 )
                 vmaf_scores.append(0.0)
-                compression_rates.append(1.0)  # No compression achieved
+                compression_rates.append(0.9999)   # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("video length mismatch")
                 if dist_path and os.path.exists(dist_path):
@@ -1691,7 +1691,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 logger.info(f"🎾 VMAF score is {vmaf_score} , Threshold: {vmaf_threshold}, Diff: {vmaf_score - vmaf_threshold}")
             except Exception as e:
                 vmaf_scores.append(0.0)
-                compression_rates.append(1.0)  # No compression achieved
+                compression_rates.append(0.9999)   # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("failed to calculate VMAF score due to video dimension mismatch")
                 logger.error(f"Error calculating VMAF score: {e}")
@@ -1711,7 +1711,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             if not color_valid:
                 logger.error(f"UID {uid}: {color_reason}")
                 vmaf_scores.append(0.0)
-                compression_rates.append(1.0)
+                compression_rates.append(0.9999) 
                 final_scores.append(0.0)
                 reasons.append(f"Color validation failed: {color_reason}")
                 if dist_path and os.path.exists(dist_path):
@@ -1734,7 +1734,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             if not chroma_valid:
                 logger.error(f"UID {uid}: {chroma_reason}")
                 vmaf_scores.append(0.0)
-                compression_rates.append(1.0)
+                compression_rates.append(0.9999) 
                 final_scores.append(0.0)
                 reasons.append(f"Chroma validation failed: {chroma_reason}")
                 if dist_path and os.path.exists(dist_path):
@@ -1779,7 +1779,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             error_msg = f"Failed to process video from {dist_url}: {str(e)}"
             logger.error(f"{error_msg}. Assigning score of 0.")
             vmaf_scores.append(0.0)
-            compression_rates.append(1.0)  # No compression achieved
+            compression_rates.append(0.9999)   # No compression achieved
             final_scores.append(0.0)
             reasons.append("failed to process video")
 
@@ -2255,7 +2255,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             if dist_path is None:
                 logger.error(f"failed to download distorted video for uid {uid}. penalizing miner.")
                 vmaf_scores.append(0.0)
-                compression_rates.append(1.0)
+                compression_rates.append(0.9999)
                 reasons.append("MINER FAILURE: failed to download distorted video, invalid url")
                 final_scores.append(0.0)  # 0 = miner penalty
                 continue
@@ -2264,7 +2264,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             if not is_valid_video(dist_path):
                 logger.error(f"error opening distorted video from {dist_path}. penalizing miner.")
                 vmaf_scores.append(0.0)
-                compression_rates.append(1.0)
+                compression_rates.append(0.9999)
                 reasons.append("MINER FAILURE: corrupted output video")
                 final_scores.append(0.0)  # 0 = miner penalty
                 continue
@@ -2274,7 +2274,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 logger.error(f"Invalid encoding settings for distorted video {dist_path}: {encoding_msg}")
                 logger.info(f"  Required: {target_codec} codec family, proper profile, yuv420p, MP4 container, 1:1 SAR")
                 vmaf_scores.append(0.0)
-                compression_rates.append(1.0)
+                compression_rates.append(0.9999)
                 final_scores.append(0.0)
                 reasons.append(f"invalid encoding settings: {encoding_msg}")
                 if dist_path and os.path.exists(dist_path):
@@ -2291,7 +2291,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                     f"Video length mismatch for pair {idx+1}: ref({ref_total_frames}) != dist({dist_total_frames}). Assigning score of 0."
                 )
                 vmaf_scores.append(0.0)
-                compression_rates.append(1.0)  # No compression achieved
+                compression_rates.append(0.9999)  # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("video length mismatch")
                 if dist_path and os.path.exists(dist_path):
@@ -2371,7 +2371,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 logger.info(f"🎾 VMAF score is {vmaf_score}")
             except Exception as e:
                 vmaf_scores.append(0.0)
-                compression_rates.append(1.0)  # No compression achieved
+                compression_rates.append(0.9999)   # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("failed to calculate VMAF score due to video dimension mismatch")
                 logger.error(f"Error calculating VMAF score: {e}")
@@ -2391,7 +2391,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             if not color_valid:
                 logger.error(f"UID {uid}: {color_reason}")
                 vmaf_scores.append(0.0)
-                compression_rates.append(1.0)
+                compression_rates.append(0.9999) 
                 final_scores.append(0.0)
                 reasons.append(f"Color validation failed: {color_reason}")
                 if dist_path and os.path.exists(dist_path):
@@ -2418,7 +2418,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             if not chroma_valid:
                 logger.error(f"UID {uid}: {chroma_reason}")
                 vmaf_scores.append(0.0)
-                compression_rates.append(1.0)
+                compression_rates.append(0.9999) 
                 final_scores.append(0.0)
                 reasons.append(f"Chroma validation failed: {chroma_reason}")
                 if dist_path and os.path.exists(dist_path):
@@ -2468,7 +2468,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             error_msg = f"Failed to process video from {dist_url}: {str(e)}"
             logger.error(f"{error_msg}. Assigning score of 0.")
             vmaf_scores.append(0.0)
-            compression_rates.append(1.0)  # No compression achieved
+            compression_rates.append(0.9999)   # No compression achieved
             final_scores.append(0.0)
             reasons.append("failed to process video")
 
