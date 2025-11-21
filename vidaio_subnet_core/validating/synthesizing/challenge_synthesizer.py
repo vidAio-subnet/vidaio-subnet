@@ -1,6 +1,7 @@
 import asyncio
 import httpx
 from typing import Tuple, Dict, List
+from neurons.validator import VMAF_QUALITY_THRESHOLD
 from ...protocol import VideoUpscalingProtocol, UpscalingMinerPayload, VideoCompressionProtocol, CompressionMinerPayload
 from ...global_config import CONFIG
 from loguru import logger
@@ -380,11 +381,11 @@ class Synthesizer:
                 for chunk in chunks:
                     vmaf_threshold = None
                     if chunk["compression_type"] == "High":
-                        vmaf_threshold = 95
+                        vmaf_threshold = VMAF_QUALITY_THRESHOLD.HIGH.value
                     elif chunk["compression_type"] == "Medium":
-                        vmaf_threshold = 90
+                        vmaf_threshold = VMAF_QUALITY_THRESHOLD.MEDIUM.value
                     elif chunk["compression_type"] == "Low":
-                        vmaf_threshold = 85
+                        vmaf_threshold = VMAF_QUALITY_THRESHOLD.LOW.value
 
                     if vmaf_threshold is None:
                         logger.info(f"Invalid compression type: {chunk['compression_type']}")
