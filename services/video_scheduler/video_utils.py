@@ -1068,13 +1068,34 @@ def process_video_permutations(
     # 2. Define Permutation Strategy
     perm_inputs = []
     if pool_count >= 3:
-        perm_inputs = [video_pools[0], video_pools[1], video_pools[2]]
-    elif pool_count == 2:
-        print("ℹ️ Only 2 matching videos found. Using sequence [Video A, Video B, Video A]")
-        perm_inputs = [video_pools[0], video_pools[1], video_pools[0]]
+        # All 6 pool orders
+        pool_orders = list(itertools.permutations([0, 1, 2]))
 
-    # 3. Generate Permutations
-    raw_combinations = list(itertools.product(*perm_inputs))
+        # Choose how many different pool orders to include (1–3 randomly)
+        num_orders = random.randint(1, 3)
+
+        # Pick random unique orders
+        chosen_orders = random.sample(pool_orders, num_orders)
+
+        # Build multiple perm_inputs variants
+        for order in chosen_orders:
+            perm_inputs = [video_pools[i] for i in order]
+            perm_inputs_list.append(perm_inputs)
+
+    elif pool_count == 2:
+        print("ℹ️ Only 2 matching videos found. Using sequence [Video A, Video B, Video A] or [B, A, B]")
+        perm_inputs_list = [
+            [video_pools[0], video_pools[1], video_pools[0]],
+            [video_pools[1], video_pools[0], video_pools[1]],
+        ]
+
+    # 3. Generate permutations from EACH perm_inputs variant
+    raw_combinations = []
+
+    for perm_inputs in perm_inputs_list:
+        combos = list(itertools.product(*perm_inputs))
+        raw_combinations.extend(combos)
+
     random.shuffle(raw_combinations)
     selected_combinations = raw_combinations[:max_permutations]
     
