@@ -1066,7 +1066,7 @@ def process_video_permutations(
         return [], []
 
     # 2. Define Permutation Strategy
-    perm_inputs = []
+    perm_inputs_list = []
     if pool_count >= 3:
         # All 6 pool orders
         pool_orders = list(itertools.permutations([0, 1, 2]))
