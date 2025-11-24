@@ -465,17 +465,17 @@ async def get_compression_requests_paths(num_needed: int, redis_conn: redis.Redi
 
         clip_duration = 30
 
-        _, video_ids, challenge_local_paths, _ = process_video_permutations(
+        video_ids, challenge_local_paths = process_video_permutations(
             redis_conn=redis_conn,
             max_permutations=100
         )
 
-        if challenge_local_paths is None:
-            logger.info("Failed to download and process video. Retrying...")
+        if not challenge_local_paths:
+            logger.info("Failed to process video batch. Retrying...")
             continue
 
-        logger.info(f"Successfully processed video with {len(challenge_local_paths)} chunks")
-        logger.info(f"Trim(referenc) paths: {len(challenge_local_paths)}")
+        logger.info(f"Successfully processed batch with {len(challenge_local_paths)} permutations")
+        logger.info(f"Trim(reference) paths: {challenge_local_paths}")
 
         # Upload downscaled videos and create sharing links
         # The reference trim files are kept locally for scoring
