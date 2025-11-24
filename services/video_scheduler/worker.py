@@ -29,7 +29,7 @@ from redis_utils import (
     set_scheduler_ready,
     is_scheduler_ready,
 )
-from video_utils import download_transform_and_trim_downscale_video
+from video_utils import download_transform_and_trim_downscale_video, process_video_permutations
 from services.google_drive.google_drive_manager import GoogleDriveManager
 from vidaio_subnet_core import CONFIG
 from vidaio_subnet_core.utilities.storage_client import storage_client
@@ -465,18 +465,9 @@ async def get_compression_requests_paths(num_needed: int, redis_conn: redis.Redi
 
         clip_duration = 30
 
-        # Check if color space transformation is enabled (default: True)
-        enable_color_transform = os.getenv("ENABLE_COLOR_TRANSFORM", "true").lower() == "true"
-        
-        # Number of transformations to apply per chunk (default: 3)
-        transformations_per_chunk = int(os.getenv("TRANSFORMATIONS_PER_CHUNK", "3"))
-        
-        _, video_ids, challenge_local_paths, _ = download_transform_and_trim_downscale_video(
-            clip_duration=clip_duration,
-            use_downscale_video=False,
-            transformations_per_video=transformations_per_chunk,
-            enable_transformations=enable_color_transform,
-            redis_conn=redis_conn
+        _, video_ids, challenge_local_paths, _ = process_video_permutations(
+            redis_conn=redis_conn,
+            max_permutations=100
         )
 
         if challenge_local_paths is None:

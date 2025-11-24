@@ -547,9 +547,13 @@ def download_transform_and_trim_downscale_video(
             "-an", str(clipped_path), "-hide_banner", "-loglevel", "error"
         ]
         
+        # Added -r 30, -pix_fmt yuv420p, and scale=-2 to ensure compatibility for concatenation
         scale_cmd = [
             "taskset", "-c", "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20",
-            "ffmpeg", "-y", "-i", str(clipped_path), "-vf", f"scale=-1:{downscale_height}", 
+            "ffmpeg", "-y", "-i", str(clipped_path), 
+            "-vf", f"scale=-2:{downscale_height}",  # Ensure width is even
+            "-r", "30",                             # Force 30 FPS
+            "-pix_fmt", "yuv420p",                  # Force standard pixel format
             "-c:v", "libx264", "-preset", "ultrafast", "-an",
             str(downscale_path), "-hide_banner", "-loglevel", "error"
         ]
@@ -565,7 +569,7 @@ def download_transform_and_trim_downscale_video(
                 return None
 
             if use_downscale_video:
-                print(f"Downscaling chunk {i+1} to {downscale_height}p")
+                print(f"Downscaling chunk {i+1} to {downscale_height}p with normalized framerate")
                 subprocess.run(scale_cmd, check=True)
                 
                 if not os.path.exists(downscale_path) or os.path.getsize(downscale_path) == 0:
@@ -938,6 +942,14 @@ def download_transform_and_trim_downscale_video(
                                   for idx, (i, start, end) in enumerate(chunks_info)]
                 
                 results = []
+                
+                _, v_height, _ = get_video_info(temp_path)
+                
+                downscaler = 2
+                if task_type == "SD24K":
+                    downscaler = 4
+                downscale_height = v_height/downscaler
+                
                 with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                     future_to_chunk = {
                         executor.submit(
@@ -946,6 +958,7 @@ def download_transform_and_trim_downscale_video(
                             temp_path, 
                             base_video_ids[idx],
                             downscale_height,
+                            None, # No transform_idx
                             use_downscale_video
                         ): chunk 
                         for idx, chunk in enumerate(chunks_with_ids)
@@ -995,8 +1008,135 @@ def download_transform_and_trim_downscale_video(
     except Exception as e:
         print(f"Unexpected error: {str(e)}")
         return None, None, None, None
+    
 
+def process_video_permutations(
+        redis_conn, 
+        output_dir: str = "videos", 
+        max_permutations=100
+    ):
+    """
+    Orchestrates the creation of 30s clips by downloading 3 videos, 
+    permuting their 10s chunks, and cleaning up.
+    """
+    
+    # 1. Acquire Video Pools
+    # We aim for 3, but if one fails resolution checks (returns None), 
+    # we might end up with 2. The existing download function returns None 
+    # if resolution doesn't match EXPECTED_RESOLUTIONS, handling the "discard" logic automatically.
+    
+    video_pools = []  # List of lists: [ [chunks_video_A], [chunks_video_B], ... ]
+    source_video_ids = []
+    
+    attempts = 0
+    target_video_count = 3
+    
+    print(f"\n--- Starting Batch Permutation (Target: {target_video_count} videos) ---")
+    
+    while len(video_pools) < target_video_count and attempts < 6:
+        chunks, vid_id, _, _ = download_transform_and_trim_downscale_video(
+            clip_duration=10,
+            use_downscale_video=True,
+            redis_conn=redis_conn,
+            output_dir=output_dir,
+            transformations_per_video=0,
+            enable_transformations=False
+        )
+        
+        # If valid chunks returned, add to pool
+        if chunks and len(chunks) > 0:
+            video_pools.append(chunks)
+            source_video_ids.append(vid_id[0].split('_')[0]) # Extract raw ID
+            print(f"✅ Pool {len(video_pools)} ready ({len(chunks)} chunks)")
+        else:
+            print("⚠️ Video rejected (resolution mismatch or error), retrying...")
+            
+        attempts += 1
 
+    pool_count = len(video_pools)
+
+    # 2. Define Permutation Strategy based on Pool Count
+    if pool_count < 2:
+        print("❌ Not enough matching videos found to create permutations.")
+        return None
+
+    # If we have 3 videos: Use [A, B, C]
+    # If we have 2 videos (one was discarded): Use [A, B, A] to fill the 3 slots
+    perm_inputs = []
+    if pool_count >= 3:
+        perm_inputs = [video_pools[0], video_pools[1], video_pools[2]]
+    elif pool_count == 2:
+        print("ℹ️ Only 2 matching videos found. Using sequence [Video A, Video B, Video A]")
+        perm_inputs = [video_pools[0], video_pools[1], video_pools[0]]
+
+    # 3. Generate Permutations
+    # itertools.product generates tuples of (chunk_path_1, chunk_path_2, chunk_path_3)
+    raw_combinations = list(itertools.product(*perm_inputs))
+    
+    # Shuffle to ensure variety if we hit the limit
+    random.shuffle(raw_combinations)
+    
+    # Limit to max_permutations (e.g., 100)
+    selected_combinations = raw_combinations[:max_permutations]
+    
+    print(f"🧩 Generating {len(selected_combinations)} permuted 30s videos (Limit: {max_permutations})...")
+    
+    final_output_paths = []
+    
+    for i, (p1, p2, p3) in enumerate(selected_combinations):
+        # p1 is path to chunk 1, etc.
+        
+        output_filename = f"permuted_30s_{source_video_ids[0]}_{i}.mp4"
+        output_path = os.path.join(output_dir, output_filename)
+        concat_list_path = os.path.join(output_dir, f"concat_{i}.txt")
+        
+        try:
+            # Create concat list
+            with open(concat_list_path, 'w') as f:
+                f.write(f"file '{os.path.abspath(p1)}'\n")
+                f.write(f"file '{os.path.abspath(p2)}'\n")
+                f.write(f"file '{os.path.abspath(p3)}'\n")
+            
+            # Run concatenation
+            cmd = [
+                "ffmpeg", "-y",
+                "-f", "concat", "-safe", "0",
+                "-i", concat_list_path,
+                "-c", "copy",
+                "-an", output_path,
+                "-hide_banner", "-loglevel", "error"
+            ]
+            subprocess.run(cmd, check=True)
+            final_output_paths.append(output_path)
+            
+        except Exception as e:
+            print(f"Error creating permutation {i}: {e}")
+        finally:
+            if os.path.exists(concat_list_path):
+                os.remove(concat_list_path)
+
+    # 4. Cleanup Intermediate Chunks
+    # We delete ALL chunks in the pools now that we are done
+    print(f"🧹 Cleaning up {sum(len(p) for p in video_pools)} source chunks...")
+    cleaned_count = 0
+    seen_files = set()
+    
+    for pool in video_pools:
+        for chunk_path in pool:
+            if chunk_path not in seen_files and os.path.exists(chunk_path):
+                try:
+                    os.remove(chunk_path)
+                    cleaned_count += 1
+                    seen_files.add(chunk_path)
+                except OSError:
+                    pass
+    
+    # Also clean up reference trim files if they exist (based on logic in original function)
+    # This requires tracking reference paths returned by the original function if strict cleanup is needed.
+                    
+    print(f"🎉 Batch complete. Generated {len(final_output_paths)} videos. Deleted {cleaned_count} chunks.")
+    return final_output_paths
+    
 def get_trim_video_path(file_id: int, dir_path: str = "videos") -> str:
     """Returns the path of the clipped trim video based on the file ID."""
     return str(Path(dir_path) / f"{file_id}_trim.mp4")
