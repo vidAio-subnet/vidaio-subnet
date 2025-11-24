@@ -15,9 +15,11 @@ from tqdm import tqdm
 from pathlib import Path
 import concurrent.futures
 from dotenv import load_dotenv
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 from services.video_scheduler.redis_utils import pop_pexels_video_id
 from vidaio_subnet_core import CONFIG
+import itertools
+import json
 
 load_dotenv()
 
@@ -460,9 +462,14 @@ def download_transform_and_trim_downscale_video(
         "HD24K": 1080,
         "4K28K": 2160,
     }
+
+    # synced with `get_pexels_random_vids`
     EXPECTED_RESOLUTIONS = {
+        "HD24K": (3840, 2160),
         "SD2HD": (1920, 1080),
-        "4K28K": (7680, 4320),
+        "SD24K": (3840, 2160),
+        # "4K28K": (7680, 4320),
+        # "HD28K": (7680, 4320),
     }
 
     print_lock = threading.Lock()
