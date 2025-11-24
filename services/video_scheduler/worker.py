@@ -573,6 +573,12 @@ async def main_loop():
                 # Track if any queue needed replenishment
                 any_replenished = False
                 
+                await replenish_synthetic_compression_queue(
+                    redis_conn,
+                    queue_thresholds["refill"],
+                    queue_thresholds["target"]
+                )
+                
                 for duration in [5, 10]:
 
                     replenished = await replenish_synthetic_queue(
@@ -584,11 +590,6 @@ async def main_loop():
                     if replenished:
                         any_replenished = True
                 
-                await replenish_synthetic_compression_queue(
-                    redis_conn,
-                    queue_thresholds["refill"],
-                    queue_thresholds["target"]
-                )
 
                 # Check if all queues are above threshold and update readiness
                 all_queues_ready = (
