@@ -309,6 +309,7 @@ def get_pexels_random_vids(
 
     return return_val
 
+# TODO: look into this
 async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis, chunk_duration: int) -> List[Dict[str, str]]:
     """
     Generate synthetic sharing URLs by uploading trimmed videos.
@@ -441,6 +442,7 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis,
     
     return uploaded_video_chunks
 
+# TODO: look into this
 async def get_compression_requests_paths(num_needed: int, redis_conn: redis.Redis) -> List[Dict[str, str]]:
     """
     Generate synthetic sharing URLs by uploading compressed videos.
@@ -461,7 +463,7 @@ async def get_compression_requests_paths(num_needed: int, redis_conn: redis.Redi
 
     while remaining_count > 0:
 
-        clip_duration = 10
+        clip_duration = 30
 
         # Check if color space transformation is enabled (default: True)
         enable_color_transform = os.getenv("ENABLE_COLOR_TRANSFORM", "true").lower() == "true"
