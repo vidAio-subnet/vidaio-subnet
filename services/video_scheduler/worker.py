@@ -593,8 +593,8 @@ async def main_loop():
 
                 # Check if all queues are above threshold and update readiness
                 all_queues_ready = (
-                    get_5s_queue_size(redis_conn) >= 30 and
-                    get_10s_queue_size(redis_conn) >= 30
+                    get_5s_queue_size(redis_conn) >= queue_thresholds["target"] and
+                    get_10s_queue_size(redis_conn) >= queue_thresholds["target"]
                 )
                 
                 # Check if all queues are healthy (above target)
