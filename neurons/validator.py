@@ -540,7 +540,7 @@ class Validator(base.BaseValidator):
             logger.debug(f"Processing compression UIDs in batch: {uids}")
             
             forward_tasks = [
-                self.call_miner(axon, synapse, uid, timeout=60)
+                self.call_miner(axon, synapse, uid, timeout=90)
                 for uid, axon, synapse in zip(uids, axons, synapses)
             ]
             raw_responses = await asyncio.gather(*forward_tasks)
