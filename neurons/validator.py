@@ -140,6 +140,9 @@ class Validator(base.BaseValidator):
             )
             self.miner_manager.session.execute(delete_stmt)
 
+            delete_stmt = delete(MinerMetadata).where(MinerMetadata.uid.in_(delete_uids))
+            self.miner_manager.session.execute(delete_stmt)
+
         self.miner_manager.session.commit()
 
     async def start_synthetic_epoch(self):
