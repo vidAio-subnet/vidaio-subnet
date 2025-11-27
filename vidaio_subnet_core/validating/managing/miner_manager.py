@@ -240,6 +240,7 @@ class MinerManager:
                         performance_tier="New Miner"
                     )
                     session.add(miner)
+                    logger.info(f"New upscaling miner detected for UID {uid}: {hotkey}")
                     is_new_miner = True
                 elif miner.hotkey != hotkey:
                     bt.logging.info(f"Hotkey change detected for UID {uid}: {miner.hotkey} -> {hotkey}")
@@ -409,6 +410,7 @@ class MinerManager:
                         performance_tier="New Miner"
                     )
                     session.add(miner)
+                    logger.info(f"New compression miner detected for UID {uid}: {hotkey}")
                     is_new_miner = True
                 elif miner.hotkey != hotkey:
                     bt.logging.info(f"Hotkey change detected for UID {uid}: {miner.hotkey} -> {hotkey}")
