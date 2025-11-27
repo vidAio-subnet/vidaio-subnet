@@ -76,9 +76,9 @@ async def compress_video(video: CompressPayload):
     # Map VMAF threshold to target quality
     if vmaf_threshold == 85:
         target_quality = 'Low'
-    elif vmaf_threshold == 90:
+    elif vmaf_threshold == 89:
         target_quality = 'Medium'
-    elif vmaf_threshold == 95:
+    elif vmaf_threshold == 93:
         target_quality = 'High'
     else:
         raise HTTPException(status_code=400, detail="Invalid VMAF threshold.")
@@ -486,9 +486,9 @@ def _execute_ai_encoding(scenes_metadata: list, config: dict, target_quality: st
     
     # Display CQ ranges for selected quality level
     quality_info = {
-        'High': {'vmaf': 95, 'cq_range': '16-22'},
-        'Medium': {'vmaf': 93, 'cq_range': '19-25'},
-        'Low': {'vmaf': 90, 'cq_range': '22-28'}
+        'High': {'vmaf': 93, 'cq_range': '16-22'},
+        'Medium': {'vmaf': 89, 'cq_range': '19-25'},
+        'Low': {'vmaf': 85, 'cq_range': '22-28'}
     }
     
     if target_quality in quality_info:

@@ -26,8 +26,8 @@ def get_cq_from_lookup_table(scene_type, config, target_vmaf=None, target_qualit
     The lookup table now supports two selection modes:
     - By explicit quality level via config['video_processing']['basic_cq_lookup_by_quality']
     - By VMAF-derived tiers via config['video_processing']['basic_cq_lookup_tiered']
-    - High quality tier (VMAF 95+): Lower CQ values for better quality
-    - Medium quality tier (VMAF ~90): Balanced CQ values
+    - High quality tier (VMAF 93+): Lower CQ values for better quality
+    - Medium quality tier (VMAF ~88): Balanced CQ values
     - Low quality tier (VMAF ~85): Higher CQ values for smaller files
     
     Args:
@@ -482,8 +482,8 @@ def ai_encoding(scene_metadata, config, resources, target_vmaf=None, target_qual
     2. Look up a pre-determined CQ value from a table based on scene type AND quality tier
     3. Encode the scene once with that CQ value
     
-    - High quality tier (VMAF ~95): Lower CQ values for better quality
-    - Medium quality tier (VMAF ~90): Balanced CQ values
+    - High quality tier (VMAF ~93): Lower CQ values for better quality
+    - Medium quality tier (VMAF ~89): Balanced CQ values
     - Low quality tier (VMAF ~85): Higher CQ values for smaller files
     
     - Runs multiple encoding attempts with different CQ values
@@ -872,8 +872,8 @@ def get_target_vmaf_from_quality(quality_level):
     
 
     Quality Level Mappings:
-    - High: 95 VMAF (Maximum quality preservation)
-    - Medium: 90 VMAF (Balanced quality and file size)
+    - High: 93 VMAF (Maximum quality preservation)
+    - Medium: 89 VMAF (Balanced quality and file size)
     - Low: 85 VMAF (Aggressive compression for smaller files)
     
     Args:
@@ -883,8 +883,8 @@ def get_target_vmaf_from_quality(quality_level):
         float: Target VMAF score for the specified quality level
     """
     quality_vmaf_map = {
-        'High': 95.0,
-        'Medium': 90.0,
+        'High': 93.0,
+        'Medium': 89.0,
         'Low': 85.0
     }
     
