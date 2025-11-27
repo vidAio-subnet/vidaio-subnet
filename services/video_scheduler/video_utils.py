@@ -1189,13 +1189,14 @@ def process_video_permutations(
                     except:
                         pass
                 # After all permutations: remove temp dir
-                try:
-                    import shutil
-                    shutil.rmtree(temp_dir)
-                except:
-                    pass
-                                
-    print(f"🎉 Batch complete. Generated {len(final_output_paths)} videos. Deleted {concat_list_path} chunks.")
+    # After all permutations: remove temp dir
+    try:
+        import shutil
+        shutil.rmtree(temp_dir)
+    except:
+        pass
+                    
+    print(f"🎉 Batch complete. Generated {len(final_output_paths)} videos. Deleted {len(concat_list_path)} chunks.")
     
     return final_video_ids, final_output_paths
 
