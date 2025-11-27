@@ -1137,17 +1137,20 @@ def process_video_permutations(
 
                 # Head: 0 to x seconds
                 subprocess.run([
-                    "ffmpeg", "-y", "-i", path,
+                    "ffmpeg", "-y",
+                    "-ss", "0", "-i", path,
                     "-t", str(duration_head),
-                    "-c", "copy", "-avoid_negative_ts", "make_zero",
+                    "-c", "copy",
+                    "-avoid_negative_ts", "make_zero",
                     head
                 ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
                 # Tail: x to end (10 sec)
                 subprocess.run([
-                    "ffmpeg", "-y", "-i", path,
-                    "-ss", str(duration_head),
-                    "-c", "copy", "-avoid_negative_ts", "make_zero",
+                    "ffmpeg", "-y",
+                    "-ss", str(duration_head), "-i", path,
+                    "-c", "copy",
+                    "-avoid_negative_ts", "make_zero",
                     tail
                 ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
