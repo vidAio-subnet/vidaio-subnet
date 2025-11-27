@@ -1099,25 +1099,70 @@ def process_video_permutations(
     random.shuffle(raw_combinations)
     selected_combinations = raw_combinations[:max_permutations]
     
+    # 4. Generate 30s permutations
     print(f"🧩 Generating {len(selected_combinations)} permuted 30s videos (Limit: {max_permutations})...")
     
     final_output_paths = []
     final_video_ids = []
     
+    temp_dir = os.path.join(output_dir, "temp_swaps")
+    os.makedirs(temp_dir, exist_ok=True)
+
     for i, (p1, p2, p3) in enumerate(selected_combinations):
         # Generate a unique UUID for this specific 30s permutation to serve as the object ID
         perm_uuid = str(uuid.uuid4())
-        
-        output_filename = f"permuted_30s_{perm_uuid}.mp4"
-        output_path = os.path.join(output_dir, output_filename)
-        concat_list_path = os.path.join(output_dir, f"concat_{perm_uuid}.txt")
-        
+        output_path = os.path.join(output_dir, f"permuted_30s_{perm_uuid}.mp4")
+        concat_list_path = os.path.join(temp_dir, f"concat_{perm_uuid}.txt")
+
         try:
+            # Random split point: 1 to 7 seconds
+            x = random.randint(1, 7)
+            duration_head = x
+            duration_tail = 10.0 - x
+
+            # Temporary files for split segments
+            segments = {}
+
+            # Split p1 (A), p2 (B), p3 (C) at x seconds
+            for label, path in zip(['A', 'B', 'C'], [p1, p2, p3]):
+                head = os.path.join(temp_dir, f"{perm_uuid}_{label}_head.mp4")
+                tail = os.path.join(temp_dir, f"{perm_uuid}_{label}_tail.mp4")
+
+                # Head: 0 to x seconds
+                subprocess.run([
+                    "ffmpeg", "-y", "-i", path,
+                    "-t", str(duration_head),
+                    "-c", "copy", "-avoid_negative_ts", "make_zero",
+                    head
+                ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+                # Tail: x to end (10 sec)
+                subprocess.run([
+                    "ffmpeg", "-y", "-i", path,
+                    "-ss", str(duration_head),
+                    "-c", "copy", "-avoid_negative_ts", "make_zero",
+                    tail
+                ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+                segments[f"{label}_head"] = head
+                segments[f"{label}_tail"] = tail
+
+            # NOW PERFORM THE SWAP:
+            # Final order: A_head -> B_tail -> C_head -> A_tail -> B_head -> C_tail
+            # This is maximally confusing: middle video (B) is "injected" with parts from A and C
+            final_segment_order = [
+                segments["A_head"],   # A_head (x sec)
+                segments["B_tail"],   # B_tail (10-x sec)
+                segments["C_head"],   # C_head (x sec)
+                segments["A_tail"],   # A_tail (10-x sec)
+                segments["B_head"],   # B_head (x sec)
+                segments["C_tail"],   # C_tail (10-x sec)
+            ]
+
             with open(concat_list_path, 'w') as f:
-                f.write(f"file '{os.path.abspath(p1)}'\n")
-                f.write(f"file '{os.path.abspath(p2)}'\n")
-                f.write(f"file '{os.path.abspath(p3)}'\n")
-            
+                for seg in final_segment_order:
+                    f.write(f"file '{os.path.abspath(seg)}'\n")
+
             cmd = [
                 "ffmpeg", "-y",
                 "-f", "concat", "-safe", "0",
@@ -1127,32 +1172,30 @@ def process_video_permutations(
                 "-hide_banner", "-loglevel", "error"
             ]
             subprocess.run(cmd, check=True)
-            
+
             final_output_paths.append(output_path)
             final_video_ids.append(perm_uuid)
-            
+
         except Exception as e:
-            print(f"Error creating permutation {i}: {e}")
+            print(f"Error creating scrambled permutation {i}: {e}")
         finally:
+            # Clean up temp segments and concat list
             if os.path.exists(concat_list_path):
                 os.remove(concat_list_path)
-
-    # 4. Cleanup Intermediate Chunks
-    print(f"🧹 Cleaning up {sum(len(p) for p in video_pools)} source chunks...")
-    cleaned_count = 0
-    seen_files = set()
-    
-    for pool in video_pools:
-        for chunk_path in pool:
-            if chunk_path not in seen_files and os.path.exists(chunk_path):
+            for seg_path in segments.values():
+                if os.path.exists(seg_path):
+                    try:
+                        os.remove(seg_path)
+                    except:
+                        pass
+                # After all permutations: remove temp dir
                 try:
-                    os.remove(chunk_path)
-                    cleaned_count += 1
-                    seen_files.add(chunk_path)
-                except OSError:
+                    import shutil
+                    shutil.rmtree(temp_dir)
+                except:
                     pass
-                    
-    print(f"🎉 Batch complete. Generated {len(final_output_paths)} videos. Deleted {cleaned_count} chunks.")
+                                
+    print(f"🎉 Batch complete. Generated {len(final_output_paths)} videos. Deleted {concat_list_path} chunks.")
     
     return final_video_ids, final_output_paths
 
