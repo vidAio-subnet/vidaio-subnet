@@ -543,8 +543,12 @@ def download_transform_and_trim_downscale_video(
         trim_cmd = [
             "taskset", "-c", "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20",
             "ffmpeg", "-y", "-i", str(transformed_source_path), "-ss", str(start_time_clip), 
-            "-t", str(actual_duration), "-c:v", "libx264", "-preset", "ultrafast",
-            "-an", str(clipped_path), "-hide_banner", "-loglevel", "error"
+            "-t", str(actual_duration), 
+            "-g", "30",              # Force a keyframe every 30 frames (1 second)
+            "-keyint_min", "30",     # Enforce minimum keyframe interval
+            "-sc_threshold", "0",    # Disable scene change detection (prevents random I-frames)
+            "-c:v", "libx264", "-preset", "ultrafast", "-an", 
+            str(clipped_path), "-hide_banner", "-loglevel", "error"
         ]
         
         # Added -r 30, -pix_fmt yuv420p, and scale=-2 to ensure compatibility for concatenation
@@ -554,6 +558,9 @@ def download_transform_and_trim_downscale_video(
             "-vf", f"scale=-2:{downscale_height}",  # Ensure width is even
             "-r", "30",                             # Force 30 FPS
             "-pix_fmt", "yuv420p",                  # Force standard pixel format
+            "-g", "30",              # Force a keyframe every 30 frames (1 second)
+            "-keyint_min", "30",     # Enforce minimum keyframe interval
+            "-sc_threshold", "0",    # Disable scene change detection (prevents random I-frames)
             "-c:v", "libx264", "-preset", "ultrafast", "-an",
             str(downscale_path), "-hide_banner", "-loglevel", "error"
         ]
