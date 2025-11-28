@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from vidaio_subnet_core.utilities.version import get_version
 from vidaio_subnet_core import validating, CONFIG, base, protocol
 from vidaio_subnet_core.utilities.wandb_manager import WandbManager
-from services.video_scheduler.video_utils import get_trim_video_path
+from services.video_scheduler.video_utils import get_trim_video_path, get_perumted_video_path
 from vidaio_subnet_core.utilities.uids import get_organic_forward_uids
 from vidaio_subnet_core.protocol import LengthCheckProtocol, TaskWarrantProtocol, TaskType
 from vidaio_subnet_core.validating.managing.sql_schemas import MinerMetadata, MinerPerformanceHistory, Base
@@ -551,7 +551,7 @@ class Validator(base.BaseValidator):
             logger.debug(f"Processing compression UIDs in batch: {uids}")
             
             forward_tasks = [
-                self.call_miner(axon, synapse, uid, timeout=60)
+                self.call_miner(axon, synapse, uid, timeout=90)
                 for uid, axon, synapse in zip(uids, axons, synapses)
             ]
             raw_responses = await asyncio.gather(*forward_tasks)
@@ -561,7 +561,7 @@ class Validator(base.BaseValidator):
 
             reference_video_paths = []
             for video_id in video_ids:
-                reference_video_path = get_trim_video_path(video_id)
+                reference_video_path = get_perumted_video_path(video_id)
                 if not os.path.exists(reference_video_path):
                     logger.warning(f"⚠️ Reference video file missing for video_id {video_id}: {reference_video_path}")
                 reference_video_paths.append(reference_video_path)

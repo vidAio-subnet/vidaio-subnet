@@ -29,7 +29,7 @@ from redis_utils import (
     set_scheduler_ready,
     is_scheduler_ready,
 )
-from video_utils import download_transform_and_trim_downscale_video
+from video_utils import download_transform_and_trim_downscale_video, process_video_permutations
 from services.google_drive.google_drive_manager import GoogleDriveManager
 from vidaio_subnet_core import CONFIG
 from vidaio_subnet_core.utilities.storage_client import storage_client
@@ -309,6 +309,7 @@ def get_pexels_random_vids(
 
     return return_val
 
+# TODO: look into this
 async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis, chunk_duration: int) -> List[Dict[str, str]]:
     """
     Generate synthetic sharing URLs by uploading trimmed videos.
@@ -441,6 +442,7 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis,
     
     return uploaded_video_chunks
 
+# TODO: look into this
 async def get_compression_requests_paths(num_needed: int, redis_conn: redis.Redis) -> List[Dict[str, str]]:
     """
     Generate synthetic sharing URLs by uploading compressed videos.
@@ -461,28 +463,19 @@ async def get_compression_requests_paths(num_needed: int, redis_conn: redis.Redi
 
     while remaining_count > 0:
 
-        clip_duration = 10
+        clip_duration = 30
 
-        # Check if color space transformation is enabled (default: True)
-        enable_color_transform = os.getenv("ENABLE_COLOR_TRANSFORM", "true").lower() == "true"
-        
-        # Number of transformations to apply per chunk (default: 3)
-        transformations_per_chunk = int(os.getenv("TRANSFORMATIONS_PER_CHUNK", "3"))
-        
-        _, video_ids, challenge_local_paths, _ = download_transform_and_trim_downscale_video(
-            clip_duration=clip_duration,
-            use_downscale_video=False,
-            transformations_per_video=transformations_per_chunk,
-            enable_transformations=enable_color_transform,
-            redis_conn=redis_conn
+        video_ids, challenge_local_paths = process_video_permutations(
+            redis_conn=redis_conn,
+            max_permutations=100
         )
 
-        if challenge_local_paths is None:
-            logger.info("Failed to download and process video. Retrying...")
+        if not challenge_local_paths:
+            logger.info("Failed to process video batch. Retrying...")
             continue
 
-        logger.info(f"Successfully processed video with {len(challenge_local_paths)} chunks")
-        logger.info(f"Trim(referenc) paths: {len(challenge_local_paths)}")
+        logger.info(f"Successfully processed batch with {len(challenge_local_paths)} permutations")
+        logger.info(f"Trim(reference) paths: {challenge_local_paths}")
 
         # Upload downscaled videos and create sharing links
         # The reference trim files are kept locally for scoring
@@ -580,6 +573,12 @@ async def main_loop():
                 # Track if any queue needed replenishment
                 any_replenished = False
                 
+                await replenish_synthetic_compression_queue(
+                    redis_conn,
+                    queue_thresholds["refill"],
+                    queue_thresholds["target"]
+                )
+                
                 for duration in [5, 10]:
 
                     replenished = await replenish_synthetic_queue(
@@ -591,16 +590,11 @@ async def main_loop():
                     if replenished:
                         any_replenished = True
                 
-                await replenish_synthetic_compression_queue(
-                    redis_conn,
-                    queue_thresholds["refill"],
-                    queue_thresholds["target"]
-                )
 
                 # Check if all queues are above threshold and update readiness
                 all_queues_ready = (
-                    get_5s_queue_size(redis_conn) >= 30 and
-                    get_10s_queue_size(redis_conn) >= 30
+                    get_5s_queue_size(redis_conn) >= queue_thresholds["target"] and
+                    get_10s_queue_size(redis_conn) >= queue_thresholds["target"]
                 )
                 
                 # Check if all queues are healthy (above target)
