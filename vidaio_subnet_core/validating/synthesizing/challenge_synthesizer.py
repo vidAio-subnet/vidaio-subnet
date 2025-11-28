@@ -1,10 +1,15 @@
 import asyncio
 import httpx
 from typing import Tuple, Dict, List
-from neurons.validator import VMAF_QUALITY_THRESHOLD
 from ...protocol import VideoUpscalingProtocol, UpscalingMinerPayload, VideoCompressionProtocol, CompressionMinerPayload
 from ...global_config import CONFIG
 from loguru import logger
+from enum import IntEnum
+
+class VMAF_QUALITY_THRESHOLD(IntEnum):
+    LOW = 85
+    MEDIUM = 89
+    HIGH = 93
 
 class Synthesizer:
     def __init__(self):
