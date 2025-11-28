@@ -1214,6 +1214,9 @@ def get_trim_video_path(file_id: int, dir_path: str = "videos") -> str:
     """Returns the path of the clipped trim video based on the file ID."""
     return str(Path(dir_path) / f"{file_id}_trim.mp4")
 
+def get_perumted_video_path(file_id: int, dir_path: str = "videos") -> str:
+    """Returns the path of the clipped trim video based on the file ID."""
+    return str(Path(dir_path) / f"permuted_30s_{file_id}.mp4")
 
 def delete_videos_with_fileid(file_id: int, dir_path: str = "videos") -> None:
     """Deletes all video files associated with the given file ID."""
