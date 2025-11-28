@@ -956,7 +956,7 @@ def download_transform_and_trim_downscale_video(
                             chunk, 
                             temp_path, 
                             base_video_ids[idx],
-                            v_height,
+                            downscale_height,
                             None, # No transform_idx
                             use_downscale_video
                         ): chunk 
@@ -1040,11 +1040,11 @@ def process_video_permutations(
         # (30fps, yuv420p) for valid concatenation, regardless of external config.
         chunks, vid_id_list, _, _ = download_transform_and_trim_downscale_video(
             clip_duration=10,
-            use_downscale_video=True, 
             redis_conn=redis_conn,
             output_dir=output_dir,
             transformations_per_video=0,
-            enable_transformations=False
+            enable_transformations=False,
+            use_downscale_video=False
         )
         
         if chunks and len(chunks) > 0:
