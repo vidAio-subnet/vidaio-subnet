@@ -1038,7 +1038,7 @@ def process_video_permutations(
     while len(video_pools) < target_video_count and attempts < 6:
         # We enforce use_downscale_video=True here to ensure chunks are normalized 
         # (30fps, yuv420p) for valid concatenation, regardless of external config.
-        chunks, vid_id_list, _, _ = download_transform_and_trim_downscale_video(
+        _, vid_id_list, chunks, _ = download_transform_and_trim_downscale_video(
             clip_duration=10,
             redis_conn=redis_conn,
             output_dir=output_dir,
