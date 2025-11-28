@@ -155,7 +155,6 @@ def make_linear_gradient(h, w, c0, c1):
 def _make_multiple_of_8(n: int) -> int:
     return int(np.ceil(n / 8.0) * 8)
 
-# TODO: look into this
 def preprocess_video(inp, outp, min_crop=0.05, max_crop=0.1,
                      min_banner=0.08, max_banner=0.15,
                      min_scale=0.9, max_scale=1.1,
