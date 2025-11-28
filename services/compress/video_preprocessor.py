@@ -16,7 +16,7 @@ def pre_processing(video_path, target_quality='Medium',codec='auto', max_duratio
     Args:
         video_path (str): The full path to the input video file.
         target_quality (str): Target quality level - 'High', 'Medium', or 'Low'.
-                             Gets converted to VMAF scores: High=95, Medium=93, Low=90.
+                             Gets converted to VMAF scores: High=93, Medium=89, Low=85.
         max_duration (int): Maximum allowed video duration in seconds. Default: 3600 (1 hour).
         output_dir (str): Directory for final output files. Default: './output'.
         codec (str): Target encoding codec. Default: 'auto' (auto-detect best available).
@@ -39,8 +39,8 @@ def pre_processing(video_path, target_quality='Medium',codec='auto', max_duratio
     
     # ✅ QUALITY MAPPING: Convert target quality to VMAF score
     quality_vmaf_mapping = {
-        'High': 95.0,
-        'Medium': 90.0,  # Updated from 93.0 to 90.0
+        'High': 93.0,
+        'Medium': 89.0,  # Updated from 93.0 to 90.0
         'Low': 85.0      # Updated from 90.0 to 85.0
     }
     
