@@ -950,13 +950,6 @@ def download_transform_and_trim_downscale_video(
                 
                 results = []
                 
-                _, v_height, _ = get_video_info(temp_path)
-                
-                downscaler = 2
-                if task_type == "SD24K":
-                    downscaler = 4
-                downscale_height = v_height/downscaler
-                
                 with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                     future_to_chunk = {
                         executor.submit(
@@ -964,7 +957,7 @@ def download_transform_and_trim_downscale_video(
                             chunk, 
                             temp_path, 
                             base_video_ids[idx],
-                            downscale_height,
+                            v_height,
                             None, # No transform_idx
                             use_downscale_video
                         ): chunk 
