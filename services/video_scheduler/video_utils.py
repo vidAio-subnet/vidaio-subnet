@@ -486,7 +486,7 @@ def download_transform_and_trim_downscale_video(
 
     def download_video(video_url, output_path):
         """Download video from URL with progress bar"""
-        print(f"\nDownloading video from Pexels...")
+        print(f"\nDownloading video with url {video_url} from Pexels...")
         response = requests.get(video_url, stream=True)
         total_size = int(response.headers.get('content-length', 0))
         
@@ -543,6 +543,8 @@ def download_transform_and_trim_downscale_video(
             "taskset", "-c", "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20",
             "ffmpeg", "-y", "-i", str(transformed_source_path), "-ss", str(start_time_clip), 
             "-t", str(actual_duration), 
+            "-r", "30",                             # Force 30 FPS
+            "-pix_fmt", "yuv420p",                  # Force standard pixel format
             "-g", "30",              # Force a keyframe every 30 frames (1 second)
             "-keyint_min", "30",     # Enforce minimum keyframe interval
             "-sc_threshold", "0",    # Disable scene change detection (prevents random I-frames)
