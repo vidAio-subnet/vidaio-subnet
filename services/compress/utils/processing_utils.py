@@ -94,7 +94,7 @@ def should_skip_encoding(input_path, estimated_cq, target_vmaf, logging_enabled=
     
     return False, adjusted_cq 
 
-def encode_scene_with_size_check(scene_path, output_path, codec, adjusted_cq, content_type, contrast_value, max_retries=2, logging_enabled=True):
+def encode_scene_with_size_check(scene_path, output_path, codec, adjusted_cq, content_type, contrast_value, codec_mode=None, target_bitrate=None, max_retries=2, logging_enabled=True):
     
     original_size = os.path.getsize(scene_path)
     input_analysis = analyze_input_compression(scene_path)
@@ -137,6 +137,8 @@ def encode_scene_with_size_check(scene_path, output_path, codec, adjusted_cq, co
             rate=retry_cq,  # FIXED: Use retry_cq instead of adjusted_cq
             scene_type=content_type if attempt == 0 else None,
             contrast_value=contrast_value if attempt == 0 else None,
+            codec_mode=codec_mode,
+            target_bitrate=target_bitrate,
             logging_enabled=logging_enabled
         )
         

@@ -9,6 +9,123 @@ import traceback
 import numpy as np
 from .encoder_configs import ENCODER_SETTINGS, SCENE_SPECIFIC_PARAMS, MODEL_CQ_REFERENCE_CODEC, QUALITY_MAPPING_ANCHORS
 
+def cleanup_quality_params(settings, keep_param=None):
+    """
+    Remove conflicting quality parameters (CRF, CQ, QP).
+
+    Args:
+        settings (dict): Current settings dictionary
+        keep_param (str, optional): Which parameter to keep ('crf', 'cq', or 'qp')
+                                   If None, removes all quality parameters
+
+    Returns:
+        dict: Updated settings with cleaned quality parameters
+    """
+    quality_params = ['crf', 'cq', 'qp']
+
+    if keep_param:
+        # Remove all except the one we want to keep
+        for param in quality_params:
+            if param != keep_param:
+                settings.pop(param, None)
+    else:
+        # Remove all quality parameters
+        for param in quality_params:
+            settings.pop(param, None)
+
+    return settings
+
+
+def apply_rate_mapping(codec, rate, current_settings, logging_enabled=True):
+    """
+    Apply rate (CQ/CRF) mapping to current settings based on codec type.
+
+    Args:
+        codec (str): Video codec name
+        rate (int/float): Model-predicted CQ value
+        current_settings (dict): Current encoder settings
+        logging_enabled (bool): Enable logging
+
+    Returns:
+        dict: Updated settings with rate parameter applied
+    """
+    model_predicted_ref_cq = int(rate)
+
+    if codec == MODEL_CQ_REFERENCE_CODEC:
+        # Use the predicted CQ directly for the reference codec
+        if 'cq' in current_settings:
+            current_settings['cq'] = model_predicted_ref_cq
+            cleanup_quality_params(current_settings, keep_param='cq')
+            if logging_enabled:
+                print(f"Applying model CQ directly for {MODEL_CQ_REFERENCE_CODEC}: {current_settings['cq']}")
+        elif 'crf' in current_settings:
+            current_settings['crf'] = model_predicted_ref_cq
+            cleanup_quality_params(current_settings, keep_param='crf')
+            if logging_enabled:
+                print(f"Applying model CQ as CRF for {MODEL_CQ_REFERENCE_CODEC}: {current_settings['crf']}")
+        else:
+            if logging_enabled:
+                print(f"Warning: Neither 'cq' nor 'crf' in base settings for {MODEL_CQ_REFERENCE_CODEC}. Using CRF fallback.")
+            current_settings['crf'] = model_predicted_ref_cq
+
+    elif codec in QUALITY_MAPPING_ANCHORS:
+        # Use quality mapping for non-reference codecs
+        mapping_config = QUALITY_MAPPING_ANCHORS[codec]
+
+        model_anchor_cqs = [p[0] for p in mapping_config['anchor_points']]
+        target_anchor_params = [p[1] for p in mapping_config['anchor_points']]
+
+        # Interpolate with clamping
+        clamped_model_cq = np.clip(model_predicted_ref_cq,
+                                 mapping_config['model_ref_cq_range'][0],
+                                 mapping_config['model_ref_cq_range'][1])
+        if logging_enabled and clamped_model_cq != model_predicted_ref_cq:
+            print(f"Clamped model_predicted_ref_cq from {model_predicted_ref_cq} to {clamped_model_cq}")
+
+        mapped_param_float = np.interp(clamped_model_cq, model_anchor_cqs, target_anchor_params)
+
+        # Clamp to target parameter range
+        min_target_param, max_target_param = mapping_config['target_param_range']
+        mapped_param_clamped = np.clip(mapped_param_float, min_target_param, max_target_param)
+        mapped_param_int = int(round(mapped_param_clamped))
+
+        target_param_type = mapping_config['target_param_type']
+        if target_param_type == 'cq':
+            current_settings['cq'] = mapped_param_int
+            cleanup_quality_params(current_settings, keep_param='cq')
+            if logging_enabled:
+                print(f"Applying mapped CQ for {codec} from model ref CQ {model_predicted_ref_cq}: {current_settings['cq']}")
+        elif target_param_type == 'crf':
+            current_settings['crf'] = mapped_param_int
+            cleanup_quality_params(current_settings, keep_param='crf')
+            if logging_enabled:
+                print(f"Applying mapped CRF for {codec} from model ref CQ {model_predicted_ref_cq}: {current_settings['crf']}")
+        else:
+            if logging_enabled:
+                print(f"Warning: Unknown target_param_type '{target_param_type}' for {codec}. Using fallback.")
+            if 'cq' in current_settings:
+                current_settings['cq'] = model_predicted_ref_cq
+            elif 'crf' in current_settings:
+                current_settings['crf'] = model_predicted_ref_cq
+
+    else:
+        # Fallback for codecs without mapping
+        if logging_enabled:
+            print(f"Warning: No quality mapping found for {codec}. Applying model ref CQ {model_predicted_ref_cq} directly.")
+        if 'cq' in current_settings:
+            current_settings['cq'] = model_predicted_ref_cq
+            cleanup_quality_params(current_settings, keep_param='cq')
+        elif 'crf' in current_settings:
+            current_settings['crf'] = model_predicted_ref_cq
+            cleanup_quality_params(current_settings, keep_param='crf')
+        else:
+            current_settings['crf'] = model_predicted_ref_cq
+        if logging_enabled:
+            print(f"Applied direct rate {model_predicted_ref_cq} to {codec}.")
+
+    return current_settings
+
+
 def get_contrast_optimized_params(scene_type, contrast_value, codec):
     """
     Get contrast-optimized encoding parameters for a specific scene type and codec.
@@ -132,24 +249,25 @@ def get_contrast_optimized_params(scene_type, contrast_value, codec):
     
     return params
 
-def encode_video(input_path, output_path, codec, rate=None, max_bit_rate=None, preset=None, scene_type=None, contrast_value=None, logging_enabled=True):
+def encode_video(input_path, output_path, codec, rate=None, preset=None, scene_type=None, contrast_value=None, codec_mode=None, target_bitrate=None, logging_enabled=True):
     """
     Encodes a video using specified codec settings, optimized for scene type and contrast.
     Audio is copied without re-encoding for efficiency.
-    
+
     Note: encoding decisions should be made BEFORE calling this function.
-    
+
     Args:
         input_path (str): Path to input video file
         output_path (str): Path for output video file
         codec (str): Video codec to use (e.g., 'av1_nvenc', 'libx264')
         rate (int/float, optional): Quality parameter (CQ value from model)
-        max_bit_rate (str, optional): Maximum bitrate (e.g., '5000k', '10m')
         preset (str, optional): Encoder preset override
         scene_type (str, optional): Scene classification for optimization
         contrast_value (float, optional): Perceptual contrast (0.0-1.0)
+        codec_mode (str, optional): Encoding mode - 'CRF', 'CBR', or 'VBR'
+        target_bitrate (float, optional): Target bitrate in Mbps (for CBR/VBR modes)
         logging_enabled (bool): Enable detailed logging
-        
+
     Returns:
         tuple: (encoding_results_log, encoding_time) or (None, None) on failure
     """
@@ -186,172 +304,107 @@ def encode_video(input_path, output_path, codec, rate=None, max_bit_rate=None, p
                 print(f"Applying contrast-specific params: {contrast_params}")
             current_settings.update(contrast_params)
 
-    # 4. Apply rate (CQ) parameter with codec-specific handling
-    if rate is not None:
-        model_predicted_ref_cq = int(rate)
-        
-        if codec == MODEL_CQ_REFERENCE_CODEC:
-            # Use the predicted CQ directly for the reference codec
-            if 'cq' in current_settings:
-                current_settings['cq'] = model_predicted_ref_cq
-                if 'crf' in current_settings: 
-                    del current_settings['crf']
-                # Use VBR for NVENC/QSV with CQ
-                if codec.endswith("_nvenc") or codec.endswith("_qsv"):
-                    current_settings['rc'] = 'vbr'
-                if 'qp' in current_settings: 
-                    del current_settings['qp']
-                if logging_enabled: 
-                    print(f"Applying model CQ directly for {MODEL_CQ_REFERENCE_CODEC}: {current_settings['cq']}")
-            elif 'crf' in current_settings:
-                current_settings['crf'] = model_predicted_ref_cq
-                if 'cq' in current_settings: 
-                    del current_settings['cq']
-                if logging_enabled: 
-                    print(f"Applying model CQ as CRF for {MODEL_CQ_REFERENCE_CODEC}: {current_settings['crf']}")
-            else:
-                if logging_enabled: 
-                    print(f"Warning: Neither 'cq' nor 'crf' in base settings for {MODEL_CQ_REFERENCE_CODEC}. Using CRF fallback.")
-                current_settings['crf'] = model_predicted_ref_cq
+    # 4. Apply codec_mode and target_bitrate if provided (BEFORE rate mapping)
+    # This determines whether we should apply CQ/CRF or use bitrate control
+    skip_rate_application = False
+    if codec_mode and target_bitrate:
+        if logging_enabled:
+            print(f"Applying codec_mode='{codec_mode}' with target_bitrate={target_bitrate} Mbps")
 
-        elif codec in QUALITY_MAPPING_ANCHORS:
-            # Use quality mapping for non-reference codecs
-            mapping_config = QUALITY_MAPPING_ANCHORS[codec]
-            
-            model_anchor_cqs = [p[0] for p in mapping_config['anchor_points']]
-            target_anchor_params = [p[1] for p in mapping_config['anchor_points']]
+        if codec_mode.upper() == 'CBR':
+            # Constant Bitrate Mode - fixed bitrate throughout
+            skip_rate_application = True  # Don't apply CQ/CRF in CBR mode
+            bitrate_kbps = int(target_bitrate * 1000)  # Convert Mbps to kbps
+            bitrate_value = f"{bitrate_kbps}k"
 
-            # Interpolate with clamping
-            clamped_model_cq = np.clip(model_predicted_ref_cq, 
-                                     mapping_config['model_ref_cq_range'][0], 
-                                     mapping_config['model_ref_cq_range'][1])
-            if logging_enabled and clamped_model_cq != model_predicted_ref_cq:
-                print(f"Clamped model_predicted_ref_cq from {model_predicted_ref_cq} to {clamped_model_cq}")
+            current_settings['bitrate'] = bitrate_value
+            current_settings['maxrate'] = bitrate_value
+            current_settings['bufsize'] = f"{bitrate_kbps * 2}k"  # Buffer = 2x bitrate
 
-            mapped_param_float = np.interp(clamped_model_cq, model_anchor_cqs, target_anchor_params)
-            
-            # Clamp to target parameter range
-            min_target_param, max_target_param = mapping_config['target_param_range']
-            mapped_param_clamped = np.clip(mapped_param_float, min_target_param, max_target_param)
-            mapped_param_int = int(round(mapped_param_clamped))
+            # Remove quality parameters (incompatible with CBR)
+            cleanup_quality_params(current_settings)
 
-            target_param_type = mapping_config['target_param_type']
-            if target_param_type == 'cq':
-                current_settings['cq'] = mapped_param_int
-                if 'crf' in current_settings: 
-                    del current_settings['crf']
-                # Use VBR for NVENC and QSV when using CQ
-                if codec.endswith("_nvenc") or codec.endswith("_qsv"):
-                    current_settings['rc'] = 'vbr'
-                if 'qp' in current_settings: 
-                    del current_settings['qp']
-                if logging_enabled: 
-                    print(f"Applying mapped CQ (VBR) for {codec} from model ref CQ {model_predicted_ref_cq}: {current_settings['cq']}")
-            elif target_param_type == 'crf':
-                current_settings['crf'] = mapped_param_int
-                if 'cq' in current_settings: 
-                    del current_settings['cq']
-                if logging_enabled: 
-                    print(f"Applying mapped CRF for {codec} from model ref CQ {model_predicted_ref_cq}: {current_settings['crf']}")
-            else:
-                if logging_enabled: 
-                    print(f"Warning: Unknown target_param_type '{target_param_type}' for {codec}. Using fallback.")
-                if 'cq' in current_settings: 
-                    current_settings['cq'] = model_predicted_ref_cq
-                elif 'crf' in current_settings: 
-                    current_settings['crf'] = model_predicted_ref_cq
+            # Set rate control mode for NVENC/QSV
+            if codec.endswith('_nvenc'):
+                current_settings['rc'] = 'cbr'
+                if logging_enabled:
+                    print(f"Set NVENC rate control to CBR")
+            elif codec.endswith('_qsv'):
+                current_settings['rc'] = 'cbr'
+
+            if logging_enabled:
+                print(f"CBR mode: bitrate={bitrate_value}, maxrate={bitrate_value}, bufsize={bitrate_kbps * 2}k")
+
+        elif codec_mode.upper() == 'VBR':
+            # Variable Bitrate Mode - allows bitrate to vary but caps at target
+            # We will still apply CQ/CRF for quality, but add maxrate constraint
+            bitrate_kbps = int(target_bitrate * 1000)
+            bitrate_value = f"{bitrate_kbps}k"
+
+            current_settings['maxrate'] = bitrate_value
+            current_settings['bufsize'] = f"{bitrate_kbps * 2}k"
+
+            # Set rate control mode for NVENC/QSV
+            if codec.endswith('_nvenc') or codec.endswith('_qsv'):
+                current_settings['rc'] = 'vbr'
+                if logging_enabled:
+                    print(f"Set rate control to VBR")
+
+            if logging_enabled:
+                print(f"VBR mode: maxrate={bitrate_value}, bufsize={bitrate_kbps * 2}k, will apply CQ/CRF for quality")
+
+        elif codec_mode.upper() == 'CRF':
+            # CRF mode is the default - will apply rate parameter below
+            if logging_enabled:
+                print(f"CRF mode: Will apply quality-based encoding (rate={rate})")
 
         else:
-            # Fallback for codecs without mapping
             if logging_enabled:
-                print(f"Warning: No quality mapping found for {codec}. Applying model ref CQ {model_predicted_ref_cq} directly.")
-            if 'cq' in current_settings:
-                current_settings['cq'] = model_predicted_ref_cq
-                if 'crf' in current_settings: 
-                    del current_settings['crf']
-                # Use VBR for NVENC and QSV with CQ
-                if codec.endswith("_nvenc") or codec.endswith("_qsv"):
-                    current_settings['rc'] = 'vbr'
-                if 'qp' in current_settings: 
-                    del current_settings['qp']
-            elif 'crf' in current_settings:
-                current_settings['crf'] = model_predicted_ref_cq
-                if 'cq' in current_settings: 
-                    del current_settings['cq']
-            else:
-                current_settings['crf'] = model_predicted_ref_cq
-            if logging_enabled: 
-                print(f"Applied direct rate {model_predicted_ref_cq} to {codec}.")
+                print(f"Warning: Unknown codec_mode '{codec_mode}', defaulting to CRF behavior")
 
-    # 5. Apply preset override if provided
+    # 5. Apply rate (CQ) parameter with codec-specific handling (skip if CBR mode)
+    if rate is not None and not skip_rate_application:
+        current_settings = apply_rate_mapping(codec, rate, current_settings, logging_enabled)
+
+    # 6. Apply preset override if provided
     if preset is not None:
         current_settings['preset'] = preset
         if logging_enabled:
             print(f"Applying preset override: {preset}")
 
-    # 6. Apply max_bit_rate and enable VBR for NVENC/QSV when maxrate is provided
-    if max_bit_rate is not None:
-        current_settings['maxrate'] = max_bit_rate
-        try:
-            # Extract numeric part and unit (k or m)
-            numeric_maxrate = int(re.sub(r'\D', '', max_bit_rate))
-            unit = re.sub(r'\d', '', max_bit_rate).lower()
-            if unit not in ['k', 'm']: 
-                unit = 'k'
-            bufsize_val = numeric_maxrate * 2
-            current_settings['bufsize'] = f"{bufsize_val}{unit}"
-            
-            # Enable VBR when maxrate is provided for NVENC/QSV
-            if codec.endswith("_nvenc") or codec.endswith("_qsv"):
-                current_settings['rc'] = 'vbr'
-                if logging_enabled:
-                    print(f"Enabled VBR rate control for {codec} due to maxrate setting")
-            
-            if logging_enabled:
-                print(f"Applying maxrate: {current_settings['maxrate']}, bufsize: {current_settings['bufsize']}")
-        except (ValueError, Exception) as e:
-            print(f"Warning: Could not parse max_bit_rate '{max_bit_rate}': {e}. Ignoring.")
-
     # 7. Handle CRF usage - disable constqp when CRF is used
     try:
         uses_crf = 'crf' in current_settings
         has_maxrate = 'maxrate' in current_settings
-        
+
         if uses_crf:
             # Remove constqp explicitly when CRF is used
             if str(current_settings.get('rc', '')).lower() == 'constqp':
                 if logging_enabled:
                     print("Disabling 'constqp' because CRF is in use")
                 del current_settings['rc']
-            
-            # For NVENC/QSV with CRF + maxrate, use VBR
-            if (codec.endswith('_nvenc') or codec.endswith('_qsv')) and has_maxrate:
+
+            # For NVENC/QSV with CRF + maxrate, use VBR (only if rc not already set by codec_mode)
+            if (codec.endswith('_nvenc') or codec.endswith('_qsv')) and has_maxrate and 'rc' not in current_settings:
                 current_settings['rc'] = 'vbr'
                 if logging_enabled:
                     print(f"Using 'vbr' with CRF due to specified maxrate")
     except Exception:
         pass
 
-    # 8. CQ policy for NVENC/QSV - use VBR with CQ unless maxrate + CQ requires constqp
+    # 8. CQ policy for NVENC/QSV - use VBR with CQ (only if rc not already set by codec_mode)
     try:
         has_cq = 'cq' in current_settings and isinstance(current_settings.get('cq'), (int, float))
         has_maxrate = 'maxrate' in current_settings
-        
-        if (codec.endswith('_nvenc') or codec.endswith('_qsv')) and has_cq:
-            if has_maxrate:
-                # Use VBR with both CQ and maxrate for rate-limited quality encoding
-                current_settings['rc'] = 'vbr'
-                if 'qp' in current_settings:
-                    del current_settings['qp']
-                if logging_enabled:
-                    print(f"Using VBR with CQ and maxrate for {codec}")
-            else:
-                # Standard CQ encoding with VBR
-                current_settings['rc'] = 'vbr'
-                if 'qp' in current_settings:
-                    del current_settings['qp']
-                if logging_enabled:
-                    print(f"Using VBR with CQ for {codec}")
+        rc_already_set = 'rc' in current_settings
+
+        if (codec.endswith('_nvenc') or codec.endswith('_qsv')) and has_cq and not rc_already_set:
+            # Standard CQ encoding with VBR (fallback when codec_mode not specified)
+            current_settings['rc'] = 'vbr'
+            cleanup_quality_params(current_settings, keep_param='cq')
+            if logging_enabled:
+                maxrate_info = " and maxrate" if has_maxrate else ""
+                print(f"Using VBR with CQ{maxrate_info} for {codec}")
     except Exception:
         pass
 
