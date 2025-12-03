@@ -94,6 +94,10 @@ class BaseValidator(ABC):
         pass
 
     @abstractmethod
+    async def refresh_miner_manager(self):
+        pass
+
+    @abstractmethod
     async def start_organic_loop(self):
         pass
 

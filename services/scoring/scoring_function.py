@@ -25,7 +25,7 @@ def calculate_compression_score(
     Args:
         vmaf_score: VMAF quality score (0-100)
         compression_rate: Size ratio compressed/original (0-1, lower is better)
-        vmaf_threshold: Required VMAF threshold (e.g., 85, 90, 95)
+        vmaf_threshold: Required VMAF threshold (e.g., 85, 89, 93)
         compression_weight: Weight for compression component (default: 0.70)
         quality_weight: Weight for quality component (default: 0.30)
         soft_threshold_margin: Points below threshold before hard cutoff (default: 5.0)
@@ -41,6 +41,16 @@ def calculate_compression_score(
     
     # Calculate hard cutoff point
     hard_cutoff = vmaf_threshold - soft_threshold_margin
+    
+    # ========================================================================
+    # CASE 0: No Meaningful Compression - Immediate Failure
+    # ========================================================================
+    # If compression_rate >= 0.80 (less than 1.25x compression), this is likely
+    # the miner returning the same video or minimal compression to exploit high VMAF.
+    # Zero the entire score to prevent this exploit.
+    if compression_rate >= 0.80:
+        compression_ratio = 1 / compression_rate if compression_rate > 0 else 1.0
+        return 0.0, 0.0, 0.0, f"No meaningful compression (ratio: {compression_ratio:.2f}x, rate: {compression_rate:.2f}). Minimum 1.25x required."
     
     # ========================================================================
     # CASE 1: Below Hard Cutoff - Immediate Failure
@@ -72,48 +82,44 @@ def calculate_compression_score(
         """
         quality_factor = 0.7 * (soft_zone_position ** 2)
         
-        # Calculate compression component
-        if compression_rate >= 0.95:
-            # Less than 1.05x compression - essentially no compression
-            compression_component = 0.0
+        # Calculate compression component (compression_rate < 0.80 guaranteed by CASE 0)
+        compression_ratio = 1 / compression_rate
+        
+        if compression_ratio <= 20:
+            """
+            Compression scoring for 1x to 20x:
+            f(r) = ((r - 1) / 19) ^ 1.5
+            
+            Where r is compression ratio (e.g., 5 for 5x compression)
+            - At 1x: component = 0
+            - At 2x: component ≈ 0.23
+            - At 5x: component ≈ 0.65
+            - At 10x: component ≈ 0.89
+            - At 15x: component ≈ 0.97
+            - At 20x: component = 1.0
+            
+            The exponent 1.5 provides:
+            - Slow growth initially (encouraging minimum viable compression)
+            - Steeper growth in practical range (5-15x)
+            - Reaches 1.0 exactly at 20x
+            """
+            compression_component = ((compression_ratio - 1) / 19) ** 1.5
         else:
-            compression_ratio = 1 / compression_rate
+            """
+            Bonus for exceptional compression (>20x):
+            f(r) = 1.0 + 0.3 * ln(r / 20)
             
-            if compression_ratio <= 20:
-                """
-                Compression scoring for 1x to 20x:
-                f(r) = ((r - 1) / 19) ^ 1.5
-                
-                Where r is compression ratio (e.g., 5 for 5x compression)
-                - At 1x: component = 0
-                - At 2x: component ≈ 0.23
-                - At 5x: component ≈ 0.65
-                - At 10x: component ≈ 0.89
-                - At 15x: component ≈ 0.97
-                - At 20x: component = 1.0
-                
-                The exponent 1.5 provides:
-                - Slow growth initially (encouraging minimum viable compression)
-                - Steeper growth in practical range (5-15x)
-                - Reaches 1.0 exactly at 20x
-                """
-                compression_component = ((compression_ratio - 1) / 19) ** 1.5
-            else:
-                """
-                Bonus for exceptional compression (>20x):
-                f(r) = 1.0 + 0.3 * ln(r / 20)
-                
-                Logarithmic bonus rewards exceptional performance:
-                - At 20x: component = 1.0 (continuous at boundary)
-                - At 30x: component ≈ 1.12
-                - At 40x: component ≈ 1.21
-                - At 60x: component ≈ 1.30 (capped)
-                
-                Natural log ensures smooth transition from linear region.
-                """
-                compression_component = 1.0 + 0.3 * math.log(compression_ratio / 20)
+            Logarithmic bonus rewards exceptional performance:
+            - At 20x: component = 1.0 (continuous at boundary)
+            - At 30x: component ≈ 1.12
+            - At 40x: component ≈ 1.21
+            - At 60x: component ≈ 1.30 (capped)
             
-            compression_component = min(1.3, compression_component)
+            Natural log ensures smooth transition from linear region.
+            """
+            compression_component = 1.0 + 0.3 * math.log(compression_ratio / 20)
+        
+        compression_component = min(1.3, compression_component)
         
         # In soft zone, both compression AND quality factor matter
         # If you're below threshold, you need good compression to recover
@@ -150,66 +156,42 @@ def calculate_compression_score(
         """
         quality_component = 0.7 + 0.3 * min(1.0, vmaf_excess / max_vmaf_excess)
         
-        # Calculate compression component
-        if compression_rate >= 0.95:
-            # Less than 1.05x compression - essentially no compression
-            compression_component = 0.0
-            reason_suffix = " (WARNING: minimal compression)"
-            
-        elif compression_rate >= 0.80:
+        # Calculate compression component (compression_rate < 0.80 guaranteed by CASE 0)
+        compression_ratio = 1 / compression_rate
+        
+        if compression_ratio <= 20:
             """
-            Poor compression zone (1.25x or less):
-            f(r) = ((r - 1)² * 0.4
+            Good compression scoring (1.25x to 20x):
+            f(r) = ((r - 1.25) / 18.75) ^ 1.2
             
-            Where r is compression ratio:
-            - At 1.0x: component = 0
-            - At 1.125x: component ≈ 0.004
-            - At 1.25x: component = 0.016
-            - Maximum 0.4 at this range
+            Starting from 1.25x to give smooth transition from poor zone:
+            - At 1.25x: component = 0.025
+            - At 2x: component ≈ 0.24
+            - At 5x: component ≈ 0.64
+            - At 10x: component ≈ 0.88
+            - At 15x: component ≈ 0.96
+            - At 20x: component = 1.0
             
-            Heavy quadratic penalty discourages minimal compression.
+            The exponent 1.2 provides balanced reward curve.
             """
-            compression_ratio = 1 / compression_rate
-            compression_component = (compression_ratio - 1) ** 2 * 0.4
-            reason_suffix = " (poor compression)"
-            
+            compression_component = ((compression_ratio - 1.25) / 18.75) ** 1.2 + 0.025
         else:
-            # Good compression zone
-            compression_ratio = 1 / compression_rate
+            """
+            Exceptional compression bonus (>20x):
+            f(r) = 1.0 + 0.3 * ln(r / 20)
             
-            if compression_ratio <= 20:
-                """
-                Good compression scoring (1.25x to 20x):
-                f(r) = ((r - 1.25) / 18.75) ^ 1.2
-                
-                Starting from 1.25x to give smooth transition from poor zone:
-                - At 1.25x: component = 0.025
-                - At 2x: component ≈ 0.24
-                - At 5x: component ≈ 0.64
-                - At 10x: component ≈ 0.88
-                - At 15x: component ≈ 0.96
-                - At 20x: component = 1.0
-                
-                The exponent 1.2 provides balanced reward curve.
-                """
-                compression_component = ((compression_ratio - 1.25) / 18.75) ** 1.2 + 0.025
-            else:
-                """
-                Exceptional compression bonus (>20x):
-                f(r) = 1.0 + 0.3 * ln(r / 20)
-                
-                Logarithmic bonus up to 1.3 cap:
-                - At 20x: component = 1.0 (continuous at boundary)
-                - At 30x: component ≈ 1.12
-                - At 40x: component ≈ 1.21
-                - At 60x: component ≈ 1.30 (capped)
-                
-                Natural log ensures smooth transition from power region.
-                """
-                compression_component = 1.0 + 0.3 * math.log(compression_ratio / 20)
+            Logarithmic bonus up to 1.3 cap:
+            - At 20x: component = 1.0 (continuous at boundary)
+            - At 30x: component ≈ 1.12
+            - At 40x: component ≈ 1.21
+            - At 60x: component ≈ 1.30 (capped)
             
-            compression_component = min(1.3, compression_component)
-            reason_suffix = "" if compression_ratio < 10 else " (excellent compression)"
+            Natural log ensures smooth transition from power region.
+            """
+            compression_component = 1.0 + 0.3 * math.log(compression_ratio / 20)
+        
+        compression_component = min(1.3, compression_component)
+        reason_suffix = "" if compression_ratio < 10 else " (excellent compression)"
         
         """
         Final score is weighted combination:

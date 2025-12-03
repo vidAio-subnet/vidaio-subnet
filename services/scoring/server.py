@@ -65,7 +65,7 @@ class CompressionScoringRequest(BaseModel):
     uids: List[int]
     video_ids: List[str]
     uploaded_object_names: List[str]
-    vmaf_threshold: float
+    vmaf_thresholds: List[float]
     target_codec: Optional[str] = "av1"  # Target codec family (av1, h264, hevc, vp9, etc.)
     codec_mode: Optional[str] = "CRF"  # Codec mode: CBR, VBR, or CRF
     target_bitrate: Optional[float] = 10.0  # Target bitrate in Mbps
@@ -1522,7 +1522,6 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             detail="Number of UIDs must match number of distorted URLs"
         )
 
-    vmaf_threshold = request.vmaf_threshold
     for idx, (ref_path, dist_url, uid, video_id, uploaded_object_name) in enumerate(zip(
         request.reference_paths, 
         request.distorted_urls, 
@@ -1534,7 +1533,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             logger.info(f"🧩 Processing pair {idx+1}/{len(request.distorted_urls)}: UID {uid} 🧩")
             
             uid_start_time = time.time()  # Start time for this UID
-
+            vmaf_threshold = request.vmaf_thresholds[idx]
             
             ref_y4m_path = None
             dist_path = None
