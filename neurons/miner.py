@@ -67,9 +67,9 @@ class Miner(BaseMiner):
 
         payload_url: str = synapse.miner_payload.reference_video_url
         vmaf_threshold: float = synapse.miner_payload.vmaf_threshold
-        target_codec: str = synapse.miner_payload.target_codec
-        codec_mode: str = synapse.miner_payload.codec_mode
-        target_bitrate: float = synapse.miner_payload.target_bitrate
+        target_codec: str = getattr(synapse.miner_payload, 'target_codec', 'av1')
+        codec_mode: str = getattr(synapse.miner_payload, 'codec_mode', 'CRF')
+        target_bitrate: float = getattr(synapse.miner_payload, 'target_bitrate', 10.0)
         validator_uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
 
         logger.info(f"🛜🛜🛜 Receiving CompressionRequest from validator: {synapse.dendrite.hotkey} with uid: {validator_uid} | VMAF: {vmaf_threshold} | Codec: {target_codec} | Mode: {codec_mode} | Bitrate: {target_bitrate} Mbps 🛜🛜🛜")
