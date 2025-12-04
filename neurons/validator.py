@@ -474,7 +474,7 @@ class Validator(base.BaseValidator):
             uids = []
             axons = []
             content_lengths = []
-            for miner in batch:
+            for recent_count, miner in batch:
                 content_lengths.append(upscaling_content_lengths[miner[1]])
                 uids.append(miner[1])
                 axons.append(miner[0])
