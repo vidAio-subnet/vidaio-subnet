@@ -205,6 +205,11 @@ def preprocess_video(inp, outp, min_crop=0.05, max_crop=0.1,
         out_w = _make_multiple_of_8(out_w)
         out_h = _make_multiple_of_8(out_h)
 
+        if content_w > out_w or content_h > out_h:
+            fit_ratio = min(out_w / content_w, out_h / content_h) * 0.95
+            content_w = _make_multiple_of_8(int(content_w * fit_ratio))
+            content_h = _make_multiple_of_8(int(content_h * fit_ratio))
+
         v_ratio = rand_between(min_banner, max_banner)
         h_ratio = rand_between(min_banner, max_banner)
         v_w = _make_multiple_of_8(max(8, min(int(content_w * v_ratio), out_w // 4)))
