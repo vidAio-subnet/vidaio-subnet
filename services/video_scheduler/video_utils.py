@@ -168,132 +168,145 @@ def preprocess_video(inp, outp, min_crop=0.05, max_crop=0.1,
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open input video: {inp}")
 
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    if fps <= 1e-3:  # fallback
-        fps = 30.0
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     in_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     in_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    # Target output size
-    target_w = in_w
-    target_h = in_h
-
-    # --- Random small crop ---
+    # ------------------------------------------------------------------
+    # 1. Random crop + slight scale (same as before)
+    # ------------------------------------------------------------------
     max_cx = int(in_w * rand_between(min_crop, max_crop))
     max_cy = int(in_h * rand_between(min_crop, max_crop))
-    l = random.randint(0, max(0, max_cx))
-    r = random.randint(0, max(0, max_cx))
-    t_ = random.randint(0, max(0, max_cy))
-    b = random.randint(0, max(0, max_cy))
+    l = random.randint(0, max_cx)
+    r = random.randint(0, max_cx)
+    t_ = random.randint(0, max_cy)
+    b = random.randint(0, max_cy)
 
     crop_x0 = l
     crop_y0 = t_
-    crop_x1 = max(crop_x0 + 2, in_w - r)  # ensure >=2 px
+    crop_x1 = max(crop_x0 + 2, in_w - r)
     crop_y1 = max(crop_y0 + 2, in_h - b)
 
     base_w = crop_x1 - crop_x0
     base_h = crop_y1 - crop_y0
 
-    # --- Slight rescale after crop ---
     scale = rand_between(min_scale, max_scale)
-    scaled_w = max(2, int(round(base_w * scale)))
-    scaled_h = max(2, int(round(base_h * scale)))
+    content_w = max(2, int(round(base_w * scale)))
+    content_h = max(2, int(round(base_h * scale)))
+    content_w = _make_multiple_of_8(content_w)
+    content_h = _make_multiple_of_8(content_h)
 
-    # Decide final content size
-    # Force multiple of 8 early
-    scaled_w = _make_multiple_of_8(scaled_w)
-    scaled_h = _make_multiple_of_8(scaled_h)
-
+    # ------------------------------------------------------------------
+    # 2. Output size & banner sizes
+    # ------------------------------------------------------------------
     if keep_original_resolution:
-        # We must fit everything into exact input resolution
-        out_w, out_h = target_w, target_h
-        content_w = out_w
-        content_h = out_h
+        out_w, out_h = in_w, in_h
+        out_w = _make_multiple_of_8(out_w)
+        out_h = _make_multiple_of_8(out_h)
 
-        # Compute available space for banners (we'll shrink them if needed)
-        available_v = max(0, out_w - scaled_w)   # room left after placing content
-        available_h = max(0, out_h - scaled_h)
-
-        # Reduce banner size proportionally to fit
         v_ratio = rand_between(min_banner, max_banner)
         h_ratio = rand_between(min_banner, max_banner)
-        desired_v_w = int(scaled_w * v_ratio)
-        desired_h_h = int(scaled_h * h_ratio)
-
-        # Shrink banners to fit within remaining space
-        v_w = min(desired_v_w, available_v)
-        h_h = min(desired_h_h, available_h)
-
-        # If no space, fall back to tiny banners (at least 8px to keep effect)
-        v_w = max(8, _make_multiple_of_8(v_w)) if v_w > 0 else 8
-        h_h = max(8, _make_multiple_of_8(h_h)) if h_h > 0 else 8
-
-        # Final clamp: if still too big, force tiny banners
-        v_w = min(v_w, out_w // 4)
-        h_h = min(h_h, out_h // 4)
-        v_w = _make_multiple_of_8(v_w)
-        h_h = _make_multiple_of_8(h_h)
+        v_w = _make_multiple_of_8(max(8, min(int(content_w * v_ratio), out_w // 4)))
+        h_h = _make_multiple_of_8(max(8, min(int(content_h * h_ratio), out_h // 4)))
     else:
-        # Original behavior: banners add extra size
-        content_w = scaled_w
-        content_h = scaled_h
-        content_w = _make_multiple_of_8(content_w)
-        content_h = _make_multiple_of_8(content_h)
-
         v_ratio = rand_between(min_banner, max_banner)
         h_ratio = rand_between(min_banner, max_banner)
-        v_w = _make_multiple_of_8(max(1, int(round(content_w * v_ratio))))
-        h_h = _make_multiple_of_8(max(1, int(round(content_h * h_ratio))))
+        v_w = _make_multiple_of_8(max(8, int(round(content_w * v_ratio))))
+        h_h = _make_multiple_of_8(max(8, int(round(content_h * h_ratio))))
 
         out_w = _make_multiple_of_8(content_w + v_w)
         out_h = _make_multiple_of_8(content_h + h_h)
 
-    # --- Random banners: one vertical side + one horizontal side ---
+    # ------------------------------------------------------------------
+    # 3. Fixed gradient banners (same style as original)
+    # ------------------------------------------------------------------
     v_side = random.choice(["left", "right"])
     h_side = random.choice(["top", "bottom"])
     c0_v, c1_v = rand_color()
     c0_h, c1_h = rand_color()
-    vert_banner = make_linear_gradient(out_h, v_w, c0_v, c1_v)   # full height, v_w width
-    horiz_banner = make_linear_gradient(h_h, out_w, c0_h, c1_h)  # h_h height, full width
+    vert_banner  = make_linear_gradient(out_h, v_w, c0_v, c1_v)   # (h, v_w, 3)
+    horiz_banner = make_linear_gradient(h_h, out_w, c0_h, c1_h)   # (h_h, w, 3)
 
-    # --- Writer ---
+    # ------------------------------------------------------------------
+    # 4. DVD-bouncing trajectory for the content rectangle
+    # ------------------------------------------------------------------
+    playable_w = out_w - content_w   # how far the top-left corner can move horizontally
+    playable_h = out_h - content_h   # vertically
+
+    if playable_w <= 0 or playable_h <= 0:
+        # Degenerate case – no movement possible (very rare)
+        pos_x = pos_y = 0
+        vel_x = vel_y = 0
+    else:
+        # Starting corner (random but guaranteed inside bounds)
+        pos_x = random.randint(0, max(0, playable_w))
+        pos_y = random.randint(0, max(0, playable_h))
+
+        # Random velocity – tuned so it does ~2–6 full bounces over the video length
+        speed = rand_between(30, 120)          # pixels per second (feels nice)
+        angle = rand_between(0, 2 * np.pi)
+        vel_x = speed * np.cos(angle) / fps
+        vel_y = speed * np.sin(angle) / fps
+
+    # ------------------------------------------------------------------
+    # 5. Video writer
+    # ------------------------------------------------------------------
     fourcc = cv2.VideoWriter_fourcc(*codec)
     os.makedirs(os.path.dirname(outp) or ".", exist_ok=True)
     writer = cv2.VideoWriter(outp, fourcc, fps, (out_w, out_h))
-    if not writer.isOpened():
-        raise RuntimeError("Failed to open VideoWriter. Try different --codec (e.g., avc1, H264, XVID)")
 
-    # Processing loop
+    frame_idx = 0
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
-        # crop
-        frame = frame[crop_y0:crop_y1, crop_x0:crop_x1]
-        frame = cv2.resize(frame, (scaled_w, scaled_h), interpolation=cv2.INTER_AREA)
+        # Crop + resize content (once per frame)
+        cropped = frame[crop_y0:crop_y1, crop_x0:crop_x1]
+        resized = cv2.resize(cropped, (content_w, content_h), interpolation=cv2.INTER_AREA)
 
+        # ------------------------------------------------------------------
+        # Update bouncing position (DVD logic)
+        # ------------------------------------------------------------------
+        if playable_w > 0 and playable_h > 0:
+            pos_x += vel_x
+            pos_y += vel_y
+
+            # Bounce on walls
+            if pos_x <= 0 or pos_x >= playable_w:
+                vel_x = -vel_x
+                pos_x = np.clip(pos_x, 0, playable_w)
+            if pos_y <= 0 or pos_y >= playable_h:
+                vel_y = -vel_y
+                pos_y = np.clip(pos_y, 0, playable_h)
+
+        content_x = int(round(pos_x))
+        content_y = int(round(pos_y))
+
+        # ------------------------------------------------------------------
+        # Compose frame
+        # ------------------------------------------------------------------
         canvas = np.zeros((out_h, out_w, 3), dtype=np.uint8)
 
-        # Place banners
+        # Draw static banners
         if v_side == "left":
             canvas[:, :v_w] = vert_banner
-            content_x = v_w
         else:
             canvas[:, -v_w:] = vert_banner
-            content_x = 0
 
         if h_side == "top":
             canvas[:h_h, :] = horiz_banner
-            content_y = h_h
         else:
             canvas[-h_h:, :] = horiz_banner
-            content_y = 0
 
-        # Place scaled content (may be smaller than canvas if keep_original_resolution)
-        canvas[content_y:content_y + scaled_h, content_x:content_x + scaled_w] = frame
+        # Paste moving content (it can slide under/over the banners for extra DVD flair)
+        y_end = content_y + content_h
+        x_end = content_x + content_w
+        canvas[content_y:y_end, content_x:x_end] = resized
 
         writer.write(canvas)
+        frame_idx += 1
 
     cap.release()
     writer.release()
@@ -304,9 +317,10 @@ def preprocess_video(inp, outp, min_crop=0.05, max_crop=0.1,
         "same_as_input": out_w == in_w and out_h == in_h,
         "crop": (crop_x0, crop_y0, crop_x1, crop_y1),
         "scale": round(scale, 4),
-        "content_size": (scaled_w, scaled_h),
+        "content_size": (content_w, content_h),
         "banner_v": (v_side, v_w),
         "banner_h": (h_side, h_h),
+        "bouncing": playable_w > 0 and playable_h > 0,
         "keep_original_resolution": keep_original_resolution,
         "seed": seed
     })
