@@ -562,6 +562,15 @@ def download_transform_and_trim_downscale_video(
     def process_chunk_from_transformed_video(chunk_info, transformed_source_path, base_video_id, downscale_height, transform_idx=None, use_downscale_video=True):
         i, start_time_clip, end_time_clip, chunk_video_id = chunk_info
         
+
+        if transform_idx is not None:
+            try:
+                selected_filter = VIDEO_TRANSFORMATIONS[transform_idx % len(VIDEO_TRANSFORMATIONS)]
+            except IndexError:
+                selected_filter = get_random_transformation()
+        else:
+            selected_filter = None
+            
         if transform_idx is not None:
             final_video_id = f"{base_video_id}_{transform_idx}_{i}"
         else:
@@ -592,8 +601,18 @@ def download_transform_and_trim_downscale_video(
             "-g", "30",              # Force a keyframe every 30 frames (1 second)
             "-keyint_min", "30",     # Enforce minimum keyframe interval
             "-sc_threshold", "0",    # Disable scene change detection (prevents random I-frames)
-            "-c:v", "libx264", "-preset", "ultrafast", "-an", 
-            str(clipped_path), "-hide_banner", "-loglevel", "error"
+            "-c:v", "libx264", "-preset", "ultrafast", "-an"
+        ]
+
+        # Add the visual filter chain if we have one
+        if selected_filter:
+            # Escape commas and colons that are part of the filter string
+            vf = selected_filter.replace("'", "\\'")
+            trim_cmd += ["-vf", vf]
+
+        trim_cmd += [
+            str(clipped_path),
+            "-hide_banner", "-loglevel", "error"
         ]
         
         scale_cmd = [
