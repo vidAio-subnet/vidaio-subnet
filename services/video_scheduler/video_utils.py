@@ -158,7 +158,8 @@ def _make_multiple_of_8(n: int) -> int:
 def preprocess_video(inp, outp, min_crop=0.05, max_crop=0.1,
                      min_banner=0.08, max_banner=0.15,
                      min_scale=0.9, max_scale=1.1,
-                     codec="mp4v", preset_note=True, seed=None):
+                     codec="mp4v", preset_note=True, seed=None,
+                     keep_original_resolution=False):
     if seed is not None:
         random.seed(seed)
         np.random.seed(seed)
@@ -194,26 +195,38 @@ def preprocess_video(inp, outp, min_crop=0.05, max_crop=0.1,
     scaled_w = max(2, int(round(base_w * scale)))
     scaled_h = max(2, int(round(base_h * scale)))
 
-    # Force to multiple of 8
-    scaled_w = _make_multiple_of_8(scaled_w)
-    scaled_h = _make_multiple_of_8(scaled_h)
+    # Decide final content size
+    if keep_original_resolution:
+        # Force the content area to exactly match input resolution
+        content_w = in_w
+        content_h = in_h
+        # Adjust scale retroactively so that scaled size matches original
+        scale_x = content_w / base_w
+        scale_y = content_h / base_h
+        scale = (scale_x + scale_y) / 2  # average for logging
+    else:
+        content_w = scaled_w
+        content_h = scaled_h
+
+    # Always force content dimensions to multiple of 8 (important for codecs)
+    content_w = _make_multiple_of_8(content_w)
+    content_h = _make_multiple_of_8(content_h)
 
     # --- Random banners: one vertical side + one horizontal side ---
     v_side = random.choice(["left", "right"])
     h_side = random.choice(["top", "bottom"])
     v_ratio = rand_between(min_banner, max_banner)
     h_ratio = rand_between(min_banner, max_banner)
-    v_w = max(1, int(round(scaled_w * v_ratio)))
-    h_h = max(1, int(round(scaled_h * h_ratio)))
+    v_w = max(1, int(round(content_w * v_ratio)))
+    h_h = max(1, int(round(content_h * h_ratio)))
 
     # Force to multiple of 8
     v_w = _make_multiple_of_8(v_w)
     h_h = _make_multiple_of_8(h_h)
 
-    out_w = scaled_w + v_w
-    out_h = scaled_h + h_h
-
-    # Force to multiple of 8 (defensive)
+    # Final output size
+    out_w = content_w + v_w
+    out_h = content_h + h_h
     out_w = _make_multiple_of_8(out_w)
     out_h = _make_multiple_of_8(out_h)
 
@@ -235,7 +248,8 @@ def preprocess_video(inp, outp, min_crop=0.05, max_crop=0.1,
         "input": (in_w, in_h, fps),
         "crop_rect": (crop_x0, crop_y0, crop_x1, crop_y1),
         "scale": round(scale, 4),
-        "scaled": (scaled_w, scaled_h),
+        "content_area": (content_w, content_h),
+        "keep_original_resolution": keep_original_resolution,
         "vertical_banner": {"side": v_side, "width_px": v_w, "colors": (c0_v.tolist(), c1_v.tolist())},
         "horizontal_banner": {"side": h_side, "height_px": h_h, "colors": (c0_h.tolist(), c1_h.tolist())},
         "output": (out_w, out_h),
@@ -251,8 +265,8 @@ def preprocess_video(inp, outp, min_crop=0.05, max_crop=0.1,
         # crop
         frame = frame[crop_y0:crop_y1, crop_x0:crop_x1]
 
-        # rescale
-        frame = cv2.resize(frame, (scaled_w, scaled_h), interpolation=cv2.INTER_AREA)
+        # rescale to exact target content size (original resolution if requested)
+        frame = cv2.resize(frame, (content_w, content_h), interpolation=cv2.INTER_AREA)
 
         # start with black canvas
         canvas = np.zeros((out_h, out_w, 3), dtype=np.uint8)
@@ -274,7 +288,7 @@ def preprocess_video(inp, outp, min_crop=0.05, max_crop=0.1,
             y0 = 0
 
         # place frame
-        canvas[y0:y0 + scaled_h, x0:x0 + scaled_w] = frame
+        canvas[y0:y0 + content_h, x0:x0 + content_w] = frame
 
         writer.write(canvas)
 
@@ -859,7 +873,9 @@ def download_transform_and_trim_downscale_video(
                         except OSError as e:
                             print(f"Warning: Could not clean up existing file {transformed_path}: {e}")
                     
-                    transformed_result = preprocess_video(temp_path, transformed_path)
+                    # keep original resolution for concatenability of chunks in `process_video_permutations` for compression task
+                    keep_original_resolution = True if not use_downscale_video else False 
+                    transformed_result = preprocess_video(temp_path, transformed_path, keep_original_resolution=keep_original_resolution)
 
                     if transformed_result and os.path.exists(transformed_path):
                         transformed_video_paths.append(transformed_path)
