@@ -174,7 +174,11 @@ def preprocess_video(inp, outp, min_crop=0.05, max_crop=0.1,
     in_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     in_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    # --- Random small crop (each side independently, bounded) ---
+    # Target output size
+    target_w = in_w
+    target_h = in_h
+
+    # --- Random small crop ---
     max_cx = int(in_w * rand_between(min_crop, max_crop))
     max_cy = int(in_h * rand_between(min_crop, max_crop))
     l = random.randint(0, max(0, max_cx))
@@ -196,41 +200,57 @@ def preprocess_video(inp, outp, min_crop=0.05, max_crop=0.1,
     scaled_h = max(2, int(round(base_h * scale)))
 
     # Decide final content size
+    # Force multiple of 8 early
+    scaled_w = _make_multiple_of_8(scaled_w)
+    scaled_h = _make_multiple_of_8(scaled_h)
+
     if keep_original_resolution:
-        # Force the content area to exactly match input resolution
-        content_w = in_w
-        content_h = in_h
-        # Adjust scale retroactively so that scaled size matches original
-        scale_x = content_w / base_w
-        scale_y = content_h / base_h
-        scale = (scale_x + scale_y) / 2  # average for logging
+        # We must fit everything into exact input resolution
+        out_w, out_h = target_w, target_h
+        content_w = out_w
+        content_h = out_h
+
+        # Compute available space for banners (we'll shrink them if needed)
+        available_v = max(0, out_w - scaled_w)   # room left after placing content
+        available_h = max(0, out_h - scaled_h)
+
+        # Reduce banner size proportionally to fit
+        v_ratio = rand_between(min_banner, max_banner)
+        h_ratio = rand_between(min_banner, max_banner)
+        desired_v_w = int(scaled_w * v_ratio)
+        desired_h_h = int(scaled_h * h_ratio)
+
+        # Shrink banners to fit within remaining space
+        v_w = min(desired_v_w, available_v)
+        h_h = min(desired_h_h, available_h)
+
+        # If no space, fall back to tiny banners (at least 8px to keep effect)
+        v_w = max(8, _make_multiple_of_8(v_w)) if v_w > 0 else 8
+        h_h = max(8, _make_multiple_of_8(h_h)) if h_h > 0 else 8
+
+        # Final clamp: if still too big, force tiny banners
+        v_w = min(v_w, out_w // 4)
+        h_h = min(h_h, out_h // 4)
+        v_w = _make_multiple_of_8(v_w)
+        h_h = _make_multiple_of_8(h_h)
     else:
+        # Original behavior: banners add extra size
         content_w = scaled_w
         content_h = scaled_h
+        content_w = _make_multiple_of_8(content_w)
+        content_h = _make_multiple_of_8(content_h)
 
-    # Always force content dimensions to multiple of 8 (important for codecs)
-    content_w = _make_multiple_of_8(content_w)
-    content_h = _make_multiple_of_8(content_h)
+        v_ratio = rand_between(min_banner, max_banner)
+        h_ratio = rand_between(min_banner, max_banner)
+        v_w = _make_multiple_of_8(max(1, int(round(content_w * v_ratio))))
+        h_h = _make_multiple_of_8(max(1, int(round(content_h * h_ratio))))
+
+        out_w = _make_multiple_of_8(content_w + v_w)
+        out_h = _make_multiple_of_8(content_h + h_h)
 
     # --- Random banners: one vertical side + one horizontal side ---
     v_side = random.choice(["left", "right"])
     h_side = random.choice(["top", "bottom"])
-    v_ratio = rand_between(min_banner, max_banner)
-    h_ratio = rand_between(min_banner, max_banner)
-    v_w = max(1, int(round(content_w * v_ratio)))
-    h_h = max(1, int(round(content_h * h_ratio)))
-
-    # Force to multiple of 8
-    v_w = _make_multiple_of_8(v_w)
-    h_h = _make_multiple_of_8(h_h)
-
-    # Final output size
-    out_w = content_w + v_w
-    out_h = content_h + h_h
-    out_w = _make_multiple_of_8(out_w)
-    out_h = _make_multiple_of_8(out_h)
-
-    # Pre-generate gradient banners with random color & direction
     c0_v, c1_v = rand_color()
     c0_h, c1_h = rand_color()
     vert_banner = make_linear_gradient(out_h, v_w, c0_v, c1_v)   # full height, v_w width
@@ -243,19 +263,6 @@ def preprocess_video(inp, outp, min_crop=0.05, max_crop=0.1,
     if not writer.isOpened():
         raise RuntimeError("Failed to open VideoWriter. Try different --codec (e.g., avc1, H264, XVID)")
 
-    # Log the transform so you can reproduce/debug
-    print({
-        "input": (in_w, in_h, fps),
-        "crop_rect": (crop_x0, crop_y0, crop_x1, crop_y1),
-        "scale": round(scale, 4),
-        "content_area": (content_w, content_h),
-        "keep_original_resolution": keep_original_resolution,
-        "vertical_banner": {"side": v_side, "width_px": v_w, "colors": (c0_v.tolist(), c1_v.tolist())},
-        "horizontal_banner": {"side": h_side, "height_px": h_h, "colors": (c0_h.tolist(), c1_h.tolist())},
-        "output": (out_w, out_h),
-        "seed": seed
-    })
-
     # Processing loop
     while True:
         ret, frame = cap.read()
@@ -264,36 +271,45 @@ def preprocess_video(inp, outp, min_crop=0.05, max_crop=0.1,
 
         # crop
         frame = frame[crop_y0:crop_y1, crop_x0:crop_x1]
+        frame = cv2.resize(frame, (scaled_w, scaled_h), interpolation=cv2.INTER_AREA)
 
-        # rescale to exact target content size (original resolution if requested)
-        frame = cv2.resize(frame, (content_w, content_h), interpolation=cv2.INTER_AREA)
-
-        # start with black canvas
         canvas = np.zeros((out_h, out_w, 3), dtype=np.uint8)
 
-        # place vertical banner
+        # Place banners
         if v_side == "left":
             canvas[:, :v_w] = vert_banner
-            x0 = v_w
+            content_x = v_w
         else:
             canvas[:, -v_w:] = vert_banner
-            x0 = 0
+            content_x = 0
 
-        # place horizontal banner (must account for vertical banner already placed)
         if h_side == "top":
             canvas[:h_h, :] = horiz_banner
-            y0 = h_h
+            content_y = h_h
         else:
             canvas[-h_h:, :] = horiz_banner
-            y0 = 0
+            content_y = 0
 
-        # place frame
-        canvas[y0:y0 + content_h, x0:x0 + content_w] = frame
+        # Place scaled content (may be smaller than canvas if keep_original_resolution)
+        canvas[content_y:content_y + scaled_h, content_x:content_x + scaled_w] = frame
 
         writer.write(canvas)
 
     cap.release()
     writer.release()
+
+    print({
+        "input": (in_w, in_h),
+        "output_resolution": (out_w, out_h),
+        "same_as_input": out_w == in_w and out_h == in_h,
+        "crop": (crop_x0, crop_y0, crop_x1, crop_y1),
+        "scale": round(scale, 4),
+        "content_size": (scaled_w, scaled_h),
+        "banner_v": (v_side, v_w),
+        "banner_h": (h_side, h_h),
+        "keep_original_resolution": keep_original_resolution,
+        "seed": seed
+    })
 
     return True
 
