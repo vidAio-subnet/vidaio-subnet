@@ -1037,8 +1037,8 @@ def process_video_permutations(
             clip_duration=10,
             redis_conn=redis_conn,
             output_dir=output_dir,
-            transformations_per_video=0,
-            enable_transformations=False,
+            transformations_per_video=1,
+            enable_transformations=True,
             use_downscale_video=False
         )
         
