@@ -362,7 +362,7 @@ def preprocess_video(inp, outp, min_crop=0.05, max_crop=0.1,
         "banner_h": (h_side, h_h),
         "bouncing": playable_w > 0 and playable_h > 0,
         "keep_original_resolution": keep_original_resolution,
-        "seed": seed
+        "seed": seed,
         "mode": "dynamic_velocity"
     })
 
