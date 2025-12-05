@@ -234,7 +234,7 @@ def preprocess_video(inp, outp, min_crop=0.05, max_crop=0.1,
     horiz_banner = make_linear_gradient(h_h, out_w, c0_h, c1_h)   # (h_h, w, 3)
 
     # ------------------------------------------------------------------
-    # 4. DVD-bouncing trajectory for the content rectangle
+    # 4. Trajectory Initialization
     # ------------------------------------------------------------------
     playable_w = out_w - content_w   # how far the top-left corner can move horizontally
     playable_h = out_h - content_h   # vertically
@@ -248,11 +248,16 @@ def preprocess_video(inp, outp, min_crop=0.05, max_crop=0.1,
         pos_x = random.randint(0, max(0, playable_w))
         pos_y = random.randint(0, max(0, playable_h))
 
-        # Random velocity – tuned so it does ~2–6 full bounces over the video length
-        speed = rand_between(30, 120)          # pixels per second (feels nice)
-        angle = rand_between(0, 2 * np.pi)
-        vel_x = speed * np.cos(angle) / fps
-        vel_y = speed * np.sin(angle) / fps
+        # Initial velocity
+        init_speed_pps = rand_between(30, 120)  # pixels per second
+        init_angle = rand_between(0, 2 * np.pi)
+        
+        vel_x = init_speed_pps * np.cos(init_angle) / fps
+        vel_y = init_speed_pps * np.sin(init_angle) / fps
+
+        # Define speed limits (per frame) to prevent it from stopping or teleporting
+        min_speed_per_frame = 20.0 / fps
+        max_speed_per_frame = 250.0 / fps
 
     # ------------------------------------------------------------------
     # 5. Video writer
@@ -272,19 +277,49 @@ def preprocess_video(inp, outp, min_crop=0.05, max_crop=0.1,
         resized = cv2.resize(cropped, (content_w, content_h), interpolation=cv2.INTER_AREA)
 
         # ------------------------------------------------------------------
-        # Update bouncing position (DVD logic)
+        # Dynamic Velocity Update (Function of Time/Noise)
         # ------------------------------------------------------------------
         if playable_w > 0 and playable_h > 0:
+            # 1. Convert Cartesian velocity (x,y) to Polar (speed, angle)
+            curr_speed = np.sqrt(vel_x**2 + vel_y**2)
+            curr_angle = np.arctan2(vel_y, vel_x)
+
+            # 2. Calculate perturbations
+            # 'Wander' force: Smooth sine wave based on time + random jitter
+            # This creates a "swimming" or "drifting" motion
+            angle_wander = np.sin(frame_idx * 0.05) * 0.05 + np.random.uniform(-0.1, 0.1)
+            
+            # Speed fluctuation: Small random acceleration/braking
+            speed_delta = np.random.uniform(-0.5, 0.5)
+
+            # 3. Apply changes
+            new_angle = curr_angle + angle_wander
+            new_speed = np.clip(curr_speed + speed_delta, min_speed_per_frame, max_speed_per_frame)
+
+            # 4. Convert back to Cartesian
+            vel_x = new_speed * np.cos(new_angle)
+            vel_y = new_speed * np.sin(new_angle)
+
+            # ------------------------------------------------------------------
+            # Update Position
+            # ------------------------------------------------------------------
             pos_x += vel_x
             pos_y += vel_y
 
-            # Bounce on walls
-            if pos_x <= 0 or pos_x >= playable_w:
-                vel_x = -vel_x
-                pos_x = np.clip(pos_x, 0, playable_w)
-            if pos_y <= 0 or pos_y >= playable_h:
-                vel_y = -vel_y
-                pos_y = np.clip(pos_y, 0, playable_h)
+            # Bounce on walls (Standard Reflection)
+            if pos_x <= 0:
+                pos_x = 0
+                vel_x = abs(vel_x) # Force positive
+            elif pos_x >= playable_w:
+                pos_x = playable_w
+                vel_x = -abs(vel_x) # Force negative
+            
+            if pos_y <= 0:
+                pos_y = 0
+                vel_y = abs(vel_y)
+            elif pos_y >= playable_h:
+                pos_y = playable_h
+                vel_y = -abs(vel_y)
 
         content_x = int(round(pos_x))
         content_y = int(round(pos_y))
@@ -294,7 +329,7 @@ def preprocess_video(inp, outp, min_crop=0.05, max_crop=0.1,
         # ------------------------------------------------------------------
         canvas = np.zeros((out_h, out_w, 3), dtype=np.uint8)
 
-        # Draw static banners
+        # Draw banners
         if v_side == "left":
             canvas[:, :v_w] = vert_banner
         else:
@@ -305,7 +340,7 @@ def preprocess_video(inp, outp, min_crop=0.05, max_crop=0.1,
         else:
             canvas[-h_h:, :] = horiz_banner
 
-        # Paste moving content (it can slide under/over the banners for extra DVD flair)
+        # Paste content
         y_end = content_y + content_h
         x_end = content_x + content_w
         canvas[content_y:y_end, content_x:x_end] = resized
@@ -328,6 +363,7 @@ def preprocess_video(inp, outp, min_crop=0.05, max_crop=0.1,
         "bouncing": playable_w > 0 and playable_h > 0,
         "keep_original_resolution": keep_original_resolution,
         "seed": seed
+        "mode": "dynamic_velocity"
     })
 
     return True
