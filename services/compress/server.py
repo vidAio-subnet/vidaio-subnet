@@ -23,13 +23,23 @@ from vmaf_calculator import scene_vmaf_calculation
 from validator_merger import validation_and_merging
 from vidaio_subnet_core.utilities import storage_client, download_video
 from vidaio_subnet_core import CONFIG
+from utils.video_utils import get_video_duration, get_video_codec
 
+
+# ============================================================================
+# Configuration Variables
+# ============================================================================
+
+# VMAF threshold to quality level mapping (configurable for miner flow)
+VMAF_THRESHOLD_HIGH = 93.0
+VMAF_THRESHOLD_MEDIUM = 89.0
+VMAF_THRESHOLD_LOW = 85.0
 
 # ============================================================================
 # FastAPI Application Setup
 # ============================================================================
 
-app = FastAPI(title="Video Compression Service", version="1.0.0")
+app = FastAPI(title="Video Compression Service", version="1.1.0")
 
 
 # ============================================================================
@@ -40,7 +50,7 @@ class CompressPayload(BaseModel):
     """Payload for video compression requests."""
     payload_url: str
     vmaf_threshold: float
-    target_quality: str = 'Medium'  # High, Medium, Low
+    target_quality: str = 'Medium'  # High, Medium, Low (legacy, derived from VMAF)
     max_duration: int = 3600  # Maximum allowed video duration in seconds
     output_dir: str = './output'  # Output directory for final files
 
@@ -48,6 +58,69 @@ class CompressPayload(BaseModel):
 class TestCompressPayload(BaseModel):
     """Payload for test compression requests."""
     video_path: str
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+def create_lightweight_metadata(input_file: str, target_quality: str, max_duration: int = 3600) -> Optional[dict]:
+    """
+    Create video metadata without preprocessing (for already-compressed videos).
+    This is a lightweight alternative to pre_processing() that only extracts
+    metadata without re-encoding. Perfect for miner chunks that are already compressed.
+    Args:
+        input_file: Path to input video file
+        target_quality: Target quality level ('High', 'Medium', 'Low')
+        max_duration: Maximum allowed duration
+    Returns:
+        dict: Video metadata or None if validation fails
+    """
+    print(f"\n⚡ === Part 1: Pre-processing (SKIPPED - Lightweight Metadata) ===")
+    print(f"   📏 Extracting metadata from already-compressed video")
+
+    # Map quality to VMAF using configurable thresholds
+    quality_vmaf_mapping = {
+        'High': VMAF_THRESHOLD_HIGH,
+        'Medium': VMAF_THRESHOLD_MEDIUM,
+        'Low': VMAF_THRESHOLD_LOW
+    }
+    target_vmaf = quality_vmaf_mapping.get(target_quality, VMAF_THRESHOLD_MEDIUM)
+
+    # Get video duration
+    duration = get_video_duration(input_file)
+    if duration is None:
+        print("   ❌ Could not determine video duration")
+        return None
+
+    if duration > max_duration:
+        print(f"   ❌ Video duration {duration}s exceeds limit of {max_duration}s")
+        return None
+
+    # Get video codec
+    original_codec = get_video_codec(input_file)
+    if not original_codec:
+        print("   ❌ Could not determine video codec")
+        return None
+
+    print(f"   ✅ Duration: {duration:.1f}s")
+    print(f"   ✅ Codec: {original_codec}")
+    print(f"   🎯 Target: {target_quality} (VMAF: {target_vmaf})")
+    
+    # Return lightweight metadata (same format as pre_processing)
+    return {
+        'path': input_file,
+        'codec': original_codec,
+        'original_codec': original_codec,
+        'duration': duration,
+        'was_reencoded': False,
+        'encoding_time': 0.0,
+        'target_vmaf': target_vmaf,
+        'target_quality': target_quality,
+        'processing_info': {
+            'lossless_conversion': False,
+            'skipped_preprocessing': True
+        }
+    }
 
 
 # ============================================================================
@@ -73,15 +146,18 @@ async def compress_video(video: CompressPayload):
     input_file = Path(input_path)
     vmaf_threshold = video.vmaf_threshold
 
-    # Map VMAF threshold to target quality
-    if vmaf_threshold == 85:
+    # Map VMAF threshold to target quality using configurable thresholds
+    if vmaf_threshold == VMAF_THRESHOLD_LOW:
         target_quality = 'Low'
-    elif vmaf_threshold == 89:
+    elif vmaf_threshold == VMAF_THRESHOLD_MEDIUM:
         target_quality = 'Medium'
-    elif vmaf_threshold == 93:
+    elif vmaf_threshold == VMAF_THRESHOLD_HIGH:
         target_quality = 'High'
     else:
-        raise HTTPException(status_code=400, detail="Invalid VMAF threshold.")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid VMAF threshold. Expected {VMAF_THRESHOLD_LOW}, {VMAF_THRESHOLD_MEDIUM}, or {VMAF_THRESHOLD_HIGH}, got {vmaf_threshold}"
+        )
 
     # Validate input file
     if not input_file.is_file():
@@ -97,7 +173,9 @@ async def compress_video(video: CompressPayload):
             input_file=str(input_file),
             target_quality=target_quality,
             max_duration=video.max_duration,
-            output_dir=str(output_dir)
+            output_dir=str(output_dir),
+            skip_scene_detection=True,  # Skip for miner chunks (already pre-split)
+            skip_preprocessing=True  # Skip for miner chunks (already compressed)
         )
         print(f"compressed_video_path: {compressed_video_path}")
 
@@ -195,7 +273,9 @@ def video_compressor(
     input_file: str, 
     target_quality: str = 'Medium', 
     max_duration: int = 3600, 
-    output_dir: str = './output'
+    output_dir: str = './output',
+    skip_scene_detection: bool = True,
+    skip_preprocessing: bool = True
 ) -> Optional[str]:
     """
     Main video compression pipeline orchestrator.
@@ -205,6 +285,8 @@ def video_compressor(
         target_quality: Target quality level ('High', 'Medium', 'Low')
         max_duration: Maximum allowed video duration in seconds
         output_dir: Output directory for final files
+        skip_scene_detection: If True, treats entire video as single scene (default: True for miner chunks)
+        skip_preprocessing: If True, skips lossless re-encoding (default: True for already-compressed miner chunks)
         
     Returns:
         str: Path to compressed video file, or None if failed
@@ -231,24 +313,52 @@ def video_compressor(
     # Display pipeline information
     _display_pipeline_info(input_file, target_quality, max_duration, output_dir)
 
-    # PART 1: Pre-processing
-    part1_result = _execute_preprocessing(input_file, target_quality, max_duration, output_dir_path)
-    if not part1_result:
-        print("❌ Part 1 failed. Pipeline terminated.")
-        return False
-    
-    part1_time = time.time() - pipeline_start_time
-    _display_preprocessing_results(part1_result, part1_time)
+    # PART 1: Pre-processing (optional - can be skipped for already-compressed videos)
+    if skip_preprocessing:
+        # Skip full preprocessing - use lightweight metadata extraction
+        part1_result = create_lightweight_metadata(input_file, target_quality, max_duration)
+        if not part1_result:
+            print("❌ Part 1 failed. Pipeline terminated.")
+            return False
+        part1_time = time.time() - pipeline_start_time
+        print(f"   ⏱️ Metadata extraction: {part1_time:.2f}s")
+    else:
+        # Run full preprocessing (checks for lossless codecs and re-encodes if needed)
+        part1_result = _execute_preprocessing(input_file, target_quality, max_duration, output_dir_path)
+        if not part1_result:
+            print("❌ Part 1 failed. Pipeline terminated.")
+            return False
+        part1_time = time.time() - pipeline_start_time
+        _display_preprocessing_results(part1_result, part1_time)
 
-    # PART 2: Scene Detection
+    # PART 2: Scene Detection (optional - can be skipped for pre-chunked videos)
     part2_start_time = time.time()
-    scenes_metadata = scene_detection(part1_result)
-    if not scenes_metadata:
-        print("❌ Part 2 failed. Pipeline terminated.")
-        return False
-    
-    part2_time = time.time() - part2_start_time
-    _display_scene_detection_results(scenes_metadata, part2_time)
+
+    if skip_scene_detection:
+        # Skip scene detection - treat entire video as single scene
+        print(f"\n⚡ === Part 2: Scene Detection (SKIPPED) ===")
+        print(f"   📏 Treating entire video as single scene (pre-chunked input)")
+
+        scenes_metadata = [{
+            'path': part1_result['path'],
+            'scene_number': 1,
+            'start_time': 0.0,
+            'end_time': part1_result['duration'],
+            'duration': part1_result['duration'],
+            'original_video_metadata': part1_result
+        }]
+        part2_time = time.time() - part2_start_time
+        print(f"   ⏱️ Scene setup: {part2_time:.2f}s")
+        print(f"   ✅ 1 scene created (0.0s - {part1_result['duration']:.1f}s)")
+    else:
+        # Run normal scene detection
+        scenes_metadata = scene_detection(part1_result)
+        if not scenes_metadata:
+            print("❌ Part 2 failed. Pipeline terminated.")
+            return False
+
+        part2_time = time.time() - part2_start_time
+        _display_scene_detection_results(scenes_metadata, part2_time)
 
     # PART 3: AI Encoding
     part3_result = _execute_ai_encoding(scenes_metadata, config, target_quality)
