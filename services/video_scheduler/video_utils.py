@@ -15,9 +15,11 @@ from tqdm import tqdm
 from pathlib import Path
 import concurrent.futures
 from dotenv import load_dotenv
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 from services.video_scheduler.redis_utils import pop_pexels_video_id
 from vidaio_subnet_core import CONFIG
+import itertools
+import json
 
 load_dotenv()
 
@@ -156,7 +158,8 @@ def _make_multiple_of_8(n: int) -> int:
 def preprocess_video(inp, outp, min_crop=0.05, max_crop=0.1,
                      min_banner=0.08, max_banner=0.15,
                      min_scale=0.9, max_scale=1.1,
-                     codec="mp4v", preset_note=True, seed=None):
+                     codec="mp4v", preset_note=True, seed=None,
+                     keep_original_resolution=False):
     if seed is not None:
         random.seed(seed)
         np.random.seed(seed)
@@ -165,119 +168,203 @@ def preprocess_video(inp, outp, min_crop=0.05, max_crop=0.1,
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open input video: {inp}")
 
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    if fps <= 1e-3:  # fallback
-        fps = 30.0
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     in_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     in_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    # --- Random small crop (each side independently, bounded) ---
+    # ------------------------------------------------------------------
+    # 1. Random crop + slight scale (same as before)
+    # ------------------------------------------------------------------
     max_cx = int(in_w * rand_between(min_crop, max_crop))
     max_cy = int(in_h * rand_between(min_crop, max_crop))
-    l = random.randint(0, max(0, max_cx))
-    r = random.randint(0, max(0, max_cx))
-    t_ = random.randint(0, max(0, max_cy))
-    b = random.randint(0, max(0, max_cy))
+    l = random.randint(0, max_cx)
+    r = random.randint(0, max_cx)
+    t_ = random.randint(0, max_cy)
+    b = random.randint(0, max_cy)
 
     crop_x0 = l
     crop_y0 = t_
-    crop_x1 = max(crop_x0 + 2, in_w - r)  # ensure >=2 px
+    crop_x1 = max(crop_x0 + 2, in_w - r)
     crop_y1 = max(crop_y0 + 2, in_h - b)
 
     base_w = crop_x1 - crop_x0
     base_h = crop_y1 - crop_y0
 
-    # --- Slight rescale after crop ---
     scale = rand_between(min_scale, max_scale)
-    scaled_w = max(2, int(round(base_w * scale)))
-    scaled_h = max(2, int(round(base_h * scale)))
+    content_w = max(2, int(round(base_w * scale)))
+    content_h = max(2, int(round(base_h * scale)))
+    content_w = _make_multiple_of_8(content_w)
+    content_h = _make_multiple_of_8(content_h)
 
-    # Force to multiple of 8
-    scaled_w = _make_multiple_of_8(scaled_w)
-    scaled_h = _make_multiple_of_8(scaled_h)
+    # ------------------------------------------------------------------
+    # 2. Output size & banner sizes
+    # ------------------------------------------------------------------
+    if keep_original_resolution:
+        out_w, out_h = in_w, in_h
+        out_w = _make_multiple_of_8(out_w)
+        out_h = _make_multiple_of_8(out_h)
 
-    # --- Random banners: one vertical side + one horizontal side ---
+        if content_w > out_w or content_h > out_h:
+            fit_ratio = min(out_w / content_w, out_h / content_h) * 0.95
+            content_w = _make_multiple_of_8(int(content_w * fit_ratio))
+            content_h = _make_multiple_of_8(int(content_h * fit_ratio))
+
+        v_ratio = rand_between(min_banner, max_banner)
+        h_ratio = rand_between(min_banner, max_banner)
+        v_w = _make_multiple_of_8(max(8, min(int(content_w * v_ratio), out_w // 4)))
+        h_h = _make_multiple_of_8(max(8, min(int(content_h * h_ratio), out_h // 4)))
+    else:
+        v_ratio = rand_between(min_banner, max_banner)
+        h_ratio = rand_between(min_banner, max_banner)
+        v_w = _make_multiple_of_8(max(8, int(round(content_w * v_ratio))))
+        h_h = _make_multiple_of_8(max(8, int(round(content_h * h_ratio))))
+
+        out_w = _make_multiple_of_8(content_w + v_w)
+        out_h = _make_multiple_of_8(content_h + h_h)
+
+    # ------------------------------------------------------------------
+    # 3. Fixed gradient banners (same style as original)
+    # ------------------------------------------------------------------
     v_side = random.choice(["left", "right"])
     h_side = random.choice(["top", "bottom"])
-    v_ratio = rand_between(min_banner, max_banner)
-    h_ratio = rand_between(min_banner, max_banner)
-    v_w = max(1, int(round(scaled_w * v_ratio)))
-    h_h = max(1, int(round(scaled_h * h_ratio)))
-
-    # Force to multiple of 8
-    v_w = _make_multiple_of_8(v_w)
-    h_h = _make_multiple_of_8(h_h)
-
-    out_w = scaled_w + v_w
-    out_h = scaled_h + h_h
-
-    # Force to multiple of 8 (defensive)
-    out_w = _make_multiple_of_8(out_w)
-    out_h = _make_multiple_of_8(out_h)
-
-    # Pre-generate gradient banners with random color & direction
     c0_v, c1_v = rand_color()
     c0_h, c1_h = rand_color()
-    vert_banner = make_linear_gradient(out_h, v_w, c0_v, c1_v)   # full height, v_w width
-    horiz_banner = make_linear_gradient(h_h, out_w, c0_h, c1_h)  # h_h height, full width
+    vert_banner  = make_linear_gradient(out_h, v_w, c0_v, c1_v)   # (h, v_w, 3)
+    horiz_banner = make_linear_gradient(h_h, out_w, c0_h, c1_h)   # (h_h, w, 3)
 
-    # --- Writer ---
+    # ------------------------------------------------------------------
+    # 4. Trajectory Initialization
+    # ------------------------------------------------------------------
+    playable_w = out_w - content_w   # how far the top-left corner can move horizontally
+    playable_h = out_h - content_h   # vertically
+
+    if playable_w <= 0 or playable_h <= 0:
+        # Degenerate case – no movement possible (very rare)
+        pos_x = pos_y = 0
+        vel_x = vel_y = 0
+    else:
+        # Starting corner (random but guaranteed inside bounds)
+        pos_x = random.randint(0, max(0, playable_w))
+        pos_y = random.randint(0, max(0, playable_h))
+
+        # Initial velocity
+        init_speed_pps = rand_between(30, 120)  # pixels per second
+        init_angle = rand_between(0, 2 * np.pi)
+        
+        vel_x = init_speed_pps * np.cos(init_angle) / fps
+        vel_y = init_speed_pps * np.sin(init_angle) / fps
+
+        # Define speed limits (per frame) to prevent it from stopping or teleporting
+        min_speed_per_frame = 20.0 / fps
+        max_speed_per_frame = 250.0 / fps
+
+    # ------------------------------------------------------------------
+    # 5. Video writer
+    # ------------------------------------------------------------------
     fourcc = cv2.VideoWriter_fourcc(*codec)
     os.makedirs(os.path.dirname(outp) or ".", exist_ok=True)
     writer = cv2.VideoWriter(outp, fourcc, fps, (out_w, out_h))
-    if not writer.isOpened():
-        raise RuntimeError("Failed to open VideoWriter. Try different --codec (e.g., avc1, H264, XVID)")
 
-    # Log the transform so you can reproduce/debug
-    print({
-        "input": (in_w, in_h, fps),
-        "crop_rect": (crop_x0, crop_y0, crop_x1, crop_y1),
-        "scale": round(scale, 4),
-        "scaled": (scaled_w, scaled_h),
-        "vertical_banner": {"side": v_side, "width_px": v_w, "colors": (c0_v.tolist(), c1_v.tolist())},
-        "horizontal_banner": {"side": h_side, "height_px": h_h, "colors": (c0_h.tolist(), c1_h.tolist())},
-        "output": (out_w, out_h),
-        "seed": seed
-    })
-
-    # Processing loop
+    frame_idx = 0
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
-        # crop
-        frame = frame[crop_y0:crop_y1, crop_x0:crop_x1]
+        # Crop + resize content (once per frame)
+        cropped = frame[crop_y0:crop_y1, crop_x0:crop_x1]
+        resized = cv2.resize(cropped, (content_w, content_h), interpolation=cv2.INTER_AREA)
 
-        # rescale
-        frame = cv2.resize(frame, (scaled_w, scaled_h), interpolation=cv2.INTER_AREA)
+        # ------------------------------------------------------------------
+        # Dynamic Velocity Update (Function of Time/Noise)
+        # ------------------------------------------------------------------
+        if playable_w > 0 and playable_h > 0:
+            # 1. Convert Cartesian velocity (x,y) to Polar (speed, angle)
+            curr_speed = np.sqrt(vel_x**2 + vel_y**2)
+            curr_angle = np.arctan2(vel_y, vel_x)
 
-        # start with black canvas
+            # 2. Calculate perturbations
+            # 'Wander' force: Smooth sine wave based on time + random jitter
+            # This creates a "swimming" or "drifting" motion
+            angle_wander = np.sin(frame_idx * 0.05) * 0.05 + np.random.uniform(-0.1, 0.1)
+            
+            # Speed fluctuation: Small random acceleration/braking
+            speed_delta = np.random.uniform(-0.5, 0.5)
+
+            # 3. Apply changes
+            new_angle = curr_angle + angle_wander
+            new_speed = np.clip(curr_speed + speed_delta, min_speed_per_frame, max_speed_per_frame)
+
+            # 4. Convert back to Cartesian
+            vel_x = new_speed * np.cos(new_angle)
+            vel_y = new_speed * np.sin(new_angle)
+
+            # ------------------------------------------------------------------
+            # Update Position
+            # ------------------------------------------------------------------
+            pos_x += vel_x
+            pos_y += vel_y
+
+            # Bounce on walls (Standard Reflection)
+            if pos_x <= 0:
+                pos_x = 0
+                vel_x = abs(vel_x) # Force positive
+            elif pos_x >= playable_w:
+                pos_x = playable_w
+                vel_x = -abs(vel_x) # Force negative
+            
+            if pos_y <= 0:
+                pos_y = 0
+                vel_y = abs(vel_y)
+            elif pos_y >= playable_h:
+                pos_y = playable_h
+                vel_y = -abs(vel_y)
+
+        content_x = int(round(pos_x))
+        content_y = int(round(pos_y))
+
+        # ------------------------------------------------------------------
+        # Compose frame
+        # ------------------------------------------------------------------
         canvas = np.zeros((out_h, out_w, 3), dtype=np.uint8)
 
-        # place vertical banner
+        # Draw banners
         if v_side == "left":
             canvas[:, :v_w] = vert_banner
-            x0 = v_w
         else:
             canvas[:, -v_w:] = vert_banner
-            x0 = 0
 
-        # place horizontal banner (must account for vertical banner already placed)
         if h_side == "top":
             canvas[:h_h, :] = horiz_banner
-            y0 = h_h
         else:
             canvas[-h_h:, :] = horiz_banner
-            y0 = 0
 
-        # place frame
-        canvas[y0:y0 + scaled_h, x0:x0 + scaled_w] = frame
+        # Paste content
+        y_end = content_y + content_h
+        x_end = content_x + content_w
+        canvas[content_y:y_end, content_x:x_end] = resized
 
         writer.write(canvas)
+        frame_idx += 1
 
     cap.release()
     writer.release()
+
+    print({
+        "input": (in_w, in_h),
+        "output_resolution": (out_w, out_h),
+        "same_as_input": out_w == in_w and out_h == in_h,
+        "crop": (crop_x0, crop_y0, crop_x1, crop_y1),
+        "scale": round(scale, 4),
+        "content_size": (content_w, content_h),
+        "banner_v": (v_side, v_w),
+        "banner_h": (h_side, h_h),
+        "bouncing": playable_w > 0 and playable_h > 0,
+        "keep_original_resolution": keep_original_resolution,
+        "seed": seed,
+        "mode": "dynamic_velocity"
+    })
 
     return True
 
@@ -459,9 +546,14 @@ def download_transform_and_trim_downscale_video(
         "HD24K": 1080,
         "4K28K": 2160,
     }
+
+    # synced with `get_pexels_random_vids`
     EXPECTED_RESOLUTIONS = {
+        "HD24K": (3840, 2160),
         "SD2HD": (1920, 1080),
-        "4K28K": (7680, 4320),
+        "SD24K": (3840, 2160),
+        # "4K28K": (7680, 4320),
+        # "HD28K": (7680, 4320),
     }
 
     print_lock = threading.Lock()
@@ -479,7 +571,7 @@ def download_transform_and_trim_downscale_video(
 
     def download_video(video_url, output_path):
         """Download video from URL with progress bar"""
-        print(f"\nDownloading video from Pexels...")
+        print(f"\nDownloading video with url {video_url} from Pexels...")
         response = requests.get(video_url, stream=True)
         total_size = int(response.headers.get('content-length', 0))
         
@@ -511,6 +603,15 @@ def download_transform_and_trim_downscale_video(
     def process_chunk_from_transformed_video(chunk_info, transformed_source_path, base_video_id, downscale_height, transform_idx=None, use_downscale_video=True):
         i, start_time_clip, end_time_clip, chunk_video_id = chunk_info
         
+
+        if transform_idx is not None:
+            try:
+                selected_filter = VIDEO_TRANSFORMATIONS[transform_idx % len(VIDEO_TRANSFORMATIONS)]
+            except IndexError:
+                selected_filter = get_random_transformation()
+        else:
+            selected_filter = None
+            
         if transform_idx is not None:
             final_video_id = f"{base_video_id}_{transform_idx}_{i}"
         else:
@@ -535,8 +636,24 @@ def download_transform_and_trim_downscale_video(
         trim_cmd = [
             "taskset", "-c", "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20",
             "ffmpeg", "-y", "-i", str(transformed_source_path), "-ss", str(start_time_clip), 
-            "-t", str(actual_duration), "-c:v", "libx264", "-preset", "ultrafast",
-            "-an", str(clipped_path), "-hide_banner", "-loglevel", "error"
+            "-t", str(actual_duration), 
+            "-r", "30",                             # Force 30 FPS
+            "-pix_fmt", "yuv420p",                  # Force standard pixel format
+            "-g", "30",              # Force a keyframe every 30 frames (1 second)
+            "-keyint_min", "30",     # Enforce minimum keyframe interval
+            "-sc_threshold", "0",    # Disable scene change detection (prevents random I-frames)
+            "-c:v", "libx264", "-preset", "ultrafast", "-an"
+        ]
+
+        # Add the visual filter chain if we have one
+        if selected_filter:
+            # Escape commas and colons that are part of the filter string
+            vf = selected_filter.replace("'", "\\'")
+            trim_cmd += ["-vf", vf]
+
+        trim_cmd += [
+            str(clipped_path),
+            "-hide_banner", "-loglevel", "error"
         ]
         
         scale_cmd = [
@@ -557,7 +674,7 @@ def download_transform_and_trim_downscale_video(
                 return None
 
             if use_downscale_video:
-                print(f"Downscaling chunk {i+1} to {downscale_height}p")
+                print(f"Downscaling chunk {i+1} to {downscale_height}p with normalized framerate")
                 subprocess.run(scale_cmd, check=True)
                 
                 if not os.path.exists(downscale_path) or os.path.getsize(downscale_path) == 0:
@@ -846,7 +963,9 @@ def download_transform_and_trim_downscale_video(
                         except OSError as e:
                             print(f"Warning: Could not clean up existing file {transformed_path}: {e}")
                     
-                    transformed_result = preprocess_video(temp_path, transformed_path)
+                    # keep original resolution for concatenability of chunks in `process_video_permutations` for compression task
+                    keep_original_resolution = True if not use_downscale_video else False 
+                    transformed_result = preprocess_video(temp_path, transformed_path, keep_original_resolution=keep_original_resolution)
 
                     if transformed_result and os.path.exists(transformed_path):
                         transformed_video_paths.append(transformed_path)
@@ -930,6 +1049,7 @@ def download_transform_and_trim_downscale_video(
                                   for idx, (i, start, end) in enumerate(chunks_info)]
                 
                 results = []
+                
                 with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                     future_to_chunk = {
                         executor.submit(
@@ -938,6 +1058,7 @@ def download_transform_and_trim_downscale_video(
                             temp_path, 
                             base_video_ids[idx],
                             downscale_height,
+                            None, # No transform_idx
                             use_downscale_video
                         ): chunk 
                         for idx, chunk in enumerate(chunks_with_ids)
@@ -987,12 +1108,208 @@ def download_transform_and_trim_downscale_video(
     except Exception as e:
         print(f"Unexpected error: {str(e)}")
         return None, None, None, None
+    
 
+def process_video_permutations(
+        redis_conn, 
+        output_dir: str = "videos", 
+        max_permutations=100
+    ):
+    """
+    Orchestrates the creation of 30s clips by downloading 3 videos, 
+    permuting their 10s chunks, and cleaning up.
+    
+    Returns:
+        Tuple[List[str], List[str]]: (List of video_ids, List of local_file_paths)
+    """
+    
+    # 1. Acquire Video Pools
+    # We aim for 3, but if one fails resolution checks (returns None), 
+    # we might end up with 2. The existing download function returns None 
+    # if resolution doesn't match EXPECTED_RESOLUTIONS, handling the "discard" logic automatically.
+    
+    video_pools = []  # List of lists: [ [chunks_video_A], [chunks_video_B], ... ]
+    source_video_ids = []
+
+    attempts = 0
+    target_video_count = 3
+    
+    print(f"\n--- Starting Batch Permutation (Target: {target_video_count} videos) ---")
+    
+    while len(video_pools) < target_video_count and attempts < 6:
+        # We enforce use_downscale_video=True here to ensure chunks are normalized 
+        # (30fps, yuv420p) for valid concatenation, regardless of external config.
+        _, vid_id_list, chunks, _ = download_transform_and_trim_downscale_video(
+            clip_duration=10,
+            redis_conn=redis_conn,
+            output_dir=output_dir,
+            transformations_per_video=1,
+            enable_transformations=True,
+            use_downscale_video=False
+        )
+        
+        if chunks and len(chunks) > 0:
+            video_pools.append(chunks)
+            # vid_id_list[0] format is usually "PexelsID_ChunkIndex", split to get raw ID
+            raw_id = vid_id_list[0].split('_')[0] if vid_id_list else "unknown"
+            source_video_ids.append(raw_id)
+            print(f"✅ Pool {len(video_pools)} ready ({len(chunks)} chunks) from Video {raw_id}")
+        else:
+            print("⚠️ Video rejected (resolution mismatch or error), retrying...")
+            
+        attempts += 1
+
+    pool_count = len(video_pools)
+
+    if pool_count < 2:
+        print("❌ Not enough matching videos found to create permutations.")
+        return [], []
+
+    # 2. Define Permutation Strategy
+    perm_inputs_list = []
+    if pool_count >= 3:
+        # All 6 pool orders
+        pool_orders = list(itertools.permutations([0, 1, 2]))
+
+        # Choose how many different pool orders to include (1–3 randomly)
+        num_orders = random.randint(1, 3)
+
+        # Pick random unique orders
+        chosen_orders = random.sample(pool_orders, num_orders)
+
+        # Build multiple perm_inputs variants
+        for order in chosen_orders:
+            perm_inputs = [video_pools[i] for i in order]
+            perm_inputs_list.append(perm_inputs)
+
+    elif pool_count == 2:
+        print("ℹ️ Only 2 matching videos found. Using sequence [Video A, Video B, Video A] or [B, A, B]")
+        perm_inputs_list = [
+            [video_pools[0], video_pools[1], video_pools[0]],
+            [video_pools[1], video_pools[0], video_pools[1]],
+        ]
+
+    # 3. Generate permutations from EACH perm_inputs variant
+    raw_combinations = []
+
+    for perm_inputs in perm_inputs_list:
+        combos = list(itertools.product(*perm_inputs))
+        raw_combinations.extend(combos)
+
+    random.shuffle(raw_combinations)
+    selected_combinations = raw_combinations[:max_permutations]
+    
+    # 4. Generate 30s permutations
+    print(f"🧩 Generating {len(selected_combinations)} permuted 30s videos (Limit: {max_permutations})...")
+    
+    final_output_paths = []
+    final_video_ids = []
+    
+    temp_dir = os.path.join(output_dir, "temp_swaps")
+    os.makedirs(temp_dir, exist_ok=True)
+
+    for i, (p1, p2, p3) in enumerate(selected_combinations):
+        # Generate a unique UUID for this specific 30s permutation to serve as the object ID
+        perm_uuid = str(uuid.uuid4())
+        output_path = os.path.join(output_dir, f"permuted_30s_{perm_uuid}.mp4")
+        concat_list_path = os.path.join(temp_dir, f"concat_{perm_uuid}.txt")
+
+        try:
+            # Random split point: 1 to 7 seconds
+            x = random.randint(1, 7)
+            duration_head = x
+            duration_tail = 10.0 - x
+
+            # Temporary files for split segments
+            segments = {}
+
+            # Split p1 (A), p2 (B), p3 (C) at x seconds
+            for label, path in zip(['A', 'B', 'C'], [p1, p2, p3]):
+                head = os.path.join(temp_dir, f"{perm_uuid}_{label}_head.mp4")
+                tail = os.path.join(temp_dir, f"{perm_uuid}_{label}_tail.mp4")
+
+                # Head: 0 to x seconds
+                subprocess.run([
+                    "ffmpeg", "-y",
+                    "-ss", "0", "-i", path,
+                    "-t", str(duration_head),
+                    "-c", "copy",
+                    "-avoid_negative_ts", "make_zero",
+                    head
+                ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+                # Tail: x to end (10 sec)
+                subprocess.run([
+                    "ffmpeg", "-y",
+                    "-ss", str(duration_head), "-i", path,
+                    "-c", "copy",
+                    "-avoid_negative_ts", "make_zero",
+                    tail
+                ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+                segments[f"{label}_head"] = head
+                segments[f"{label}_tail"] = tail
+
+            # NOW PERFORM THE SWAP:
+            # Final order: A_head -> B_tail -> C_head -> A_tail -> B_head -> C_tail
+            # This is maximally confusing: middle video (B) is "injected" with parts from A and C
+            final_segment_order = [
+                segments["A_head"],   # A_head (x sec)
+                segments["B_tail"],   # B_tail (10-x sec)
+                segments["C_head"],   # C_head (x sec)
+                segments["A_tail"],   # A_tail (10-x sec)
+                segments["B_head"],   # B_head (x sec)
+                segments["C_tail"],   # C_tail (10-x sec)
+            ]
+
+            with open(concat_list_path, 'w') as f:
+                for seg in final_segment_order:
+                    f.write(f"file '{os.path.abspath(seg)}'\n")
+
+            cmd = [
+                "ffmpeg", "-y",
+                "-f", "concat", "-safe", "0",
+                "-i", concat_list_path,
+                "-c", "copy",
+                "-an", output_path,
+                "-hide_banner", "-loglevel", "error"
+            ]
+            subprocess.run(cmd, check=True)
+
+            final_output_paths.append(output_path)
+            final_video_ids.append(perm_uuid)
+
+        except Exception as e:
+            print(f"Error creating scrambled permutation {i}: {e}")
+        finally:
+            # Clean up temp segments and concat list
+            if os.path.exists(concat_list_path):
+                os.remove(concat_list_path)
+            for seg_path in segments.values():
+                if os.path.exists(seg_path):
+                    try:
+                        os.remove(seg_path)
+                    except:
+                        pass
+                # After all permutations: remove temp dir
+    # After all permutations: remove temp dir
+    try:
+        import shutil
+        shutil.rmtree(temp_dir)
+    except:
+        pass
+                    
+    print(f"🎉 Batch complete. Generated {len(final_output_paths)} videos. Deleted {len(concat_list_path)} chunks.")
+    
+    return final_video_ids, final_output_paths
 
 def get_trim_video_path(file_id: int, dir_path: str = "videos") -> str:
     """Returns the path of the clipped trim video based on the file ID."""
     return str(Path(dir_path) / f"{file_id}_trim.mp4")
 
+def get_perumted_video_path(file_id: int, dir_path: str = "videos") -> str:
+    """Returns the path of the clipped trim video based on the file ID."""
+    return str(Path(dir_path) / f"permuted_30s_{file_id}.mp4")
 
 def delete_videos_with_fileid(file_id: int, dir_path: str = "videos") -> None:
     """Deletes all video files associated with the given file ID."""
