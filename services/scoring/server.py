@@ -1292,9 +1292,10 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 9. Retrieved distorted video frame count in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-            if dist_total_frames != ref_total_frames:
+            frame_tolerance = 3
+            if abs(dist_total_frames - ref_total_frames) > frame_tolerance:
                 logger.info(
-                    f"Video length mismatch for pair {idx+1}: ref({ref_total_frames}) != dist({dist_total_frames}). Assigning score of 0."
+                    f"Video length mismatch for pair {idx+1}: ref({ref_total_frames}) != dist({dist_total_frames}) & frame_tolerance({frame_tolerance}). Assigning score of 0."
                 )
                 vmaf_scores.append(0.0)
                 pieapp_scores.append(0.0)
@@ -1577,9 +1578,10 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 5. Retrieved distorted video frame count in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-            if dist_total_frames != ref_total_frames:
+            frame_tolerance = 3
+            if abs(dist_total_frames - ref_total_frames) > frame_tolerance:
                 logger.error(
-                    f"Video length mismatch for pair {idx+1}: ref({ref_total_frames}) != dist({dist_total_frames}). Assigning score of 0."
+                    f"Video length mismatch for pair {idx+1}: ref({ref_total_frames}) != dist({dist_total_frames}) & frame_tolerance({frame_tolerance}). Assigning score of 0."
                 )
                 vmaf_scores.append(0.0)
                 compression_rates.append(0.9999)   # No compression achieved
@@ -2223,9 +2225,10 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 5. Retrieved distorted video frame count in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-            if dist_total_frames != ref_total_frames:
+            frame_tolerance = 3
+            if abs(dist_total_frames - ref_total_frames) > frame_tolerance:
                 logger.error(
-                    f"Video length mismatch for pair {idx+1}: ref({ref_total_frames}) != dist({dist_total_frames}). Assigning score of 0."
+                    f"Video length mismatch for pair {idx+1}: ref({ref_total_frames}) != dist({dist_total_frames}) & frame_tolerance({frame_tolerance}). Assigning score of 0."
                 )
                 vmaf_scores.append(0.0)
                 compression_rates.append(0.9999)  # No compression achieved
