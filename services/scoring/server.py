@@ -30,7 +30,7 @@ COMPRESSION_RATE_WEIGHT = 0.7  # w_c
 COMPRESSION_VMAF_WEIGHT = 0.3  # w_vmaf
 SOFT_THRESHOLD_MARGIN = 5.0  # Margin below VMAF threshold for soft scoring zone
 
-FRAME_TOLERANCE = 3
+FRAME_TOLERANCE = 3  # Tolerance in frames for fast ffprobe frame count read
 
 
 app = FastAPI()
@@ -2225,7 +2225,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 5. Retrieved distorted video frame count in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-            if abs(dist_total_frames - ref_total_frames) > frame_tolerance:
+            if abs(dist_total_frames - ref_total_frames) > FRAME_TOLERANCE:
                 logger.error(
                     f"Video length mismatch for pair {idx+1}: ref({ref_total_frames}) != dist({dist_total_frames}) & frame_tolerance({FRAME_TOLERANCE}). Assigning score of 0."
                 )
