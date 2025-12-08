@@ -31,16 +31,15 @@ from utils.video_utils import get_video_duration, get_video_codec
 # ============================================================================
 
 # VMAF threshold to quality level mapping (configurable for miner flow)
-VMAF_THRESHOLD_HIGH = 95.0
-VMAF_THRESHOLD_MEDIUM = 90.0
+VMAF_THRESHOLD_HIGH = 93.0
+VMAF_THRESHOLD_MEDIUM = 89.0
 VMAF_THRESHOLD_LOW = 85.0
-
 
 # ============================================================================
 # FastAPI Application Setup
 # ============================================================================
 
-app = FastAPI(title="Video Compression Service", version="1.0.0")
+app = FastAPI(title="Video Compression Service", version="1.1.0")
 
 
 # ============================================================================
@@ -62,6 +61,69 @@ class CompressPayload(BaseModel):
 class TestCompressPayload(BaseModel):
     """Payload for test compression requests."""
     video_path: str
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+def create_lightweight_metadata(input_file: str, target_quality: str, max_duration: int = 3600) -> Optional[dict]:
+    """
+    Create video metadata without preprocessing (for already-compressed videos).
+    This is a lightweight alternative to pre_processing() that only extracts
+    metadata without re-encoding. Perfect for miner chunks that are already compressed.
+    Args:
+        input_file: Path to input video file
+        target_quality: Target quality level ('High', 'Medium', 'Low')
+        max_duration: Maximum allowed duration
+    Returns:
+        dict: Video metadata or None if validation fails
+    """
+    print(f"\n⚡ === Part 1: Pre-processing (SKIPPED - Lightweight Metadata) ===")
+    print(f"   📏 Extracting metadata from already-compressed video")
+
+    # Map quality to VMAF using configurable thresholds
+    quality_vmaf_mapping = {
+        'High': VMAF_THRESHOLD_HIGH,
+        'Medium': VMAF_THRESHOLD_MEDIUM,
+        'Low': VMAF_THRESHOLD_LOW
+    }
+    target_vmaf = quality_vmaf_mapping.get(target_quality, VMAF_THRESHOLD_MEDIUM)
+
+    # Get video duration
+    duration = get_video_duration(input_file)
+    if duration is None:
+        print("   ❌ Could not determine video duration")
+        return None
+
+    if duration > max_duration:
+        print(f"   ❌ Video duration {duration}s exceeds limit of {max_duration}s")
+        return None
+
+    # Get video codec
+    original_codec = get_video_codec(input_file)
+    if not original_codec:
+        print("   ❌ Could not determine video codec")
+        return None
+
+    print(f"   ✅ Duration: {duration:.1f}s")
+    print(f"   ✅ Codec: {original_codec}")
+    print(f"   🎯 Target: {target_quality} (VMAF: {target_vmaf})")
+    
+    # Return lightweight metadata (same format as pre_processing)
+    return {
+        'path': input_file,
+        'codec': original_codec,
+        'original_codec': original_codec,
+        'duration': duration,
+        'was_reencoded': False,
+        'encoding_time': 0.0,
+        'target_vmaf': target_vmaf,
+        'target_quality': target_quality,
+        'processing_info': {
+            'lossless_conversion': False,
+            'skipped_preprocessing': True
+        }
+    }
 
 
 # ============================================================================
@@ -356,7 +418,6 @@ def video_compressor(
         output_dir: Output directory for final files
         skip_scene_detection: If True, treats entire video as single scene (default: True for miner chunks)
         skip_preprocessing: If True, skips lossless re-encoding (default: True for already-compressed miner chunks)
-
     Returns:
         str: Path to compressed video file, or None if failed
     """
@@ -405,6 +466,32 @@ def video_compressor(
 
     # PART 2: Scene Detection (optional - can be skipped for pre-chunked videos)
     part2_start_time = time.time()
+
+    if skip_scene_detection:
+        # Skip scene detection - treat entire video as single scene
+        print(f"\n⚡ === Part 2: Scene Detection (SKIPPED) ===")
+        print(f"   📏 Treating entire video as single scene (pre-chunked input)")
+
+        scenes_metadata = [{
+            'path': part1_result['path'],
+            'scene_number': 1,
+            'start_time': 0.0,
+            'end_time': part1_result['duration'],
+            'duration': part1_result['duration'],
+            'original_video_metadata': part1_result
+        }]
+        part2_time = time.time() - part2_start_time
+        print(f"   ⏱️ Scene setup: {part2_time:.2f}s")
+        print(f"   ✅ 1 scene created (0.0s - {part1_result['duration']:.1f}s)")
+    else:
+        # Run normal scene detection
+        scenes_metadata = scene_detection(part1_result)
+        if not scenes_metadata:
+            print("❌ Part 2 failed. Pipeline terminated.")
+            return False
+
+        part2_time = time.time() - part2_start_time
+        _display_scene_detection_results(scenes_metadata, part2_time)
 
     if skip_scene_detection:
         # Skip scene detection - treat entire video as single scene
@@ -671,9 +758,9 @@ def _execute_ai_encoding(scenes_metadata: list, config: dict, target_quality: st
     
     # Display CQ ranges for selected quality level
     quality_info = {
-        'High': {'vmaf': 95, 'cq_range': '16-22'},
-        'Medium': {'vmaf': 93, 'cq_range': '19-25'},
-        'Low': {'vmaf': 90, 'cq_range': '22-28'}
+        'High': {'vmaf': 93, 'cq_range': '16-22'},
+        'Medium': {'vmaf': 89, 'cq_range': '19-25'},
+        'Low': {'vmaf': 85, 'cq_range': '22-28'}
     }
     
     if target_quality in quality_info:

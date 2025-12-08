@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from vidaio_subnet_core.utilities.version import get_version
 from vidaio_subnet_core import validating, CONFIG, base, protocol
 from vidaio_subnet_core.utilities.wandb_manager import WandbManager
-from services.video_scheduler.video_utils import get_trim_video_path
+from services.video_scheduler.video_utils import get_trim_video_path, get_perumted_video_path
 from vidaio_subnet_core.utilities.uids import get_organic_forward_uids
 from vidaio_subnet_core.protocol import LengthCheckProtocol, TaskWarrantProtocol, TaskType
 from vidaio_subnet_core.validating.managing.sql_schemas import MinerMetadata, MinerPerformanceHistory, Base
@@ -28,12 +28,14 @@ from services.video_scheduler.redis_utils import (
     set_scheduler_ready
 )
 from typing import List, Tuple, Any
+from enum import IntEnum
 
-VMAF_QUALITY_THRESHOLDS = [
-    85, #Low
-    90, #Medium
-    95, #High
-]
+
+class VMAF_QUALITY_THRESHOLD(IntEnum):
+    LOW = 85
+    MEDIUM = 89
+    HIGH = 93
+
 
 TARGET_CODECS = [
     "av1",    # AV1
@@ -159,6 +161,9 @@ class Validator(base.BaseValidator):
             delete_stmt = delete(MinerPerformanceHistory).where(
                 MinerPerformanceHistory.uid.in_(delete_uids)
             )
+            self.miner_manager.session.execute(delete_stmt)
+
+            delete_stmt = delete(MinerMetadata).where(MinerMetadata.uid.in_(delete_uids))
             self.miner_manager.session.execute(delete_stmt)
 
         self.miner_manager.session.commit()
@@ -315,7 +320,7 @@ class Validator(base.BaseValidator):
         miners: List[Tuple[Any, int]],
         batch_size: int,
         task_type: str = "upscaling",
-    ) -> List[List[Tuple[Any, int]]]:
+    ) -> List[List[Tuple[int, Tuple[Any, int]]]]:
         """
         Build batches of miners for *task_type* (upscaling / compression).
 
@@ -403,7 +408,7 @@ class Validator(base.BaseValidator):
         # 5. Sort & batch
         # ------------------------------------------------------------------- #
         eligible.sort(key=lambda x: x[0])                     # by priority tuple
-        sorted_miners = [miner for _prio, miner in eligible]
+        sorted_miners = [(prio[0], miner) for prio, miner in eligible]
 
         batches = [
             sorted_miners[i : i + batch_size]
@@ -490,7 +495,7 @@ class Validator(base.BaseValidator):
             uids = []
             axons = []
             content_lengths = []
-            for miner in batch:
+            for recent_count, miner in batch:
                 content_lengths.append(upscaling_content_lengths[miner[1]])
                 uids.append(miner[1])
                 axons.append(miner[0])
@@ -542,11 +547,17 @@ class Validator(base.BaseValidator):
             
             uids = []
             axons = []
-            for miner in batch:
+            recent_counts = []
+            for recent_count, miner in batch:
                 uids.append(miner[1])
                 axons.append(miner[0])
+                recent_counts.append(recent_count)
             
-            vmaf_threshold = random.choice(VMAF_QUALITY_THRESHOLDS)
+            vmaf_thresholds = [
+                random.choice(list(VMAF_QUALITY_THRESHOLD)) if recent_count >= CONFIG.score.max_performance_records
+                else random.choice([VMAF_QUALITY_THRESHOLD.LOW, VMAF_QUALITY_THRESHOLD.MEDIUM])
+                for idx, recent_count in enumerate(recent_counts)
+            ]
             target_codec = random.choice(TARGET_CODECS)
             codec_mode = random.choice(CODEC_MODES)
             target_bitrate = random.choice(TARGET_BITRATES)
@@ -556,16 +567,18 @@ class Validator(base.BaseValidator):
             num_miners = len(uids)
 
             payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_compression_protocol(
-                vmaf_threshold, num_miners, version, round_id, target_codec, codec_mode, target_bitrate
+                vmaf_thresholds, num_miners, version, round_id, target_codec, codec_mode, target_bitrate
             )
-            logger.warning(f"Built compression challenge protocol with VMAF threshold {vmaf_threshold}, codec {target_codec}, mode {codec_mode}, bitrate {target_bitrate} Mbps")
+            logger.warning(f"Built compression challenge protocol with VMAF threshold {vmaf_thresholds}, codec {target_codec}, mode {codec_mode}, bitrate {target_bitrate} Mbps")
+            logger.info(f"Built compression challenge protocol: payload URLs: {payload_urls}\nvideo IDs: {video_ids}")
+            logger.debug(f"Built compression challenge protocol")
 
             timestamp = datetime.now(timezone.utc).isoformat()
 
             logger.debug(f"Processing compression UIDs in batch: {uids}")
             
             forward_tasks = [
-                self.call_miner(axon, synapse, uid, timeout=60)
+                self.call_miner(axon, synapse, uid, timeout=90)
                 for uid, axon, synapse in zip(uids, axons, synapses)
             ]
             raw_responses = await asyncio.gather(*forward_tasks)
@@ -575,12 +588,12 @@ class Validator(base.BaseValidator):
 
             reference_video_paths = []
             for video_id in video_ids:
-                reference_video_path = get_trim_video_path(video_id)
+                reference_video_path = get_perumted_video_path(video_id)
                 if not os.path.exists(reference_video_path):
                     logger.warning(f"⚠️ Reference video file missing for video_id {video_id}: {reference_video_path}")
                 reference_video_paths.append(reference_video_path)
             
-            asyncio.create_task(self.score_compressions(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, vmaf_threshold, target_codec, codec_mode, target_bitrate, round_id))
+            asyncio.create_task(self.score_compressions(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, vmaf_thresholds, target_codec, codec_mode, target_bitrate, round_id))
 
             batch_processed_time = time.time() - batch_start_time
             sleep_time = random.uniform(SLEEP_TIME_LOW, SLEEP_TIME_HIGH) - batch_processed_time
@@ -742,7 +755,7 @@ class Validator(base.BaseValidator):
         timestamp: str,
         video_ids: list[str],
         uploaded_object_names: list[str],
-        vmaf_threshold: float,
+        vmaf_thresholds: List[float],
         target_codec: str,
         codec_mode: str,
         target_bitrate: float,
@@ -760,7 +773,7 @@ class Validator(base.BaseValidator):
                 "reference_paths": reference_video_paths,
                 "video_ids": video_ids,
                 "uploaded_object_names": uploaded_object_names,
-                "vmaf_threshold": vmaf_threshold,
+                "vmaf_thresholds": vmaf_thresholds,
                 "target_codec": target_codec,
                 "codec_mode": codec_mode,
                 "target_bitrate": target_bitrate
@@ -784,7 +797,7 @@ class Validator(base.BaseValidator):
         
         accumulate_scores, applied_multipliers = self.miner_manager.step_synthetics_compression(
             round_id, uids, miner_hotkeys, vmaf_scores,
-            final_scores, [10] * len(uids), vmaf_threshold, compression_rates
+            final_scores, [10] * len(uids), vmaf_thresholds, compression_rates
         )
 
         max_length = max(
@@ -802,13 +815,12 @@ class Validator(base.BaseValidator):
         compression_rates.extend([0.5] * (max_length - len(compression_rates)))
         applied_multipliers.extend([0.0] * (max_length - len(applied_multipliers)))
 
-        vmaf_thresholds = [vmaf_threshold] * len(uids)
 
         logger.info(f"Synthetic compression scoring results for {len(uids)} miners")
         logger.info(f"Uids: {uids}")
 
-        for uid, vmaf_score, final_score, reason, compression_rate, applied_multiplier in zip(
-            uids, vmaf_scores, final_scores, reasons, compression_rates, applied_multipliers
+        for uid, vmaf_score, final_score, reason, compression_rate, applied_multiplier, vmaf_threshold in zip(
+            uids, vmaf_scores, final_scores, reasons, compression_rates, applied_multipliers, vmaf_thresholds
         ):
             logger.info(
                 f"{uid} ** VMAF: {vmaf_score:.2f} "

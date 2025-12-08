@@ -25,7 +25,7 @@ def calculate_compression_score(
     Args:
         vmaf_score: VMAF quality score (0-100)
         compression_rate: Size ratio compressed/original (0-1, lower is better)
-        vmaf_threshold: Required VMAF threshold (e.g., 85, 90, 95)
+        vmaf_threshold: Required VMAF threshold (e.g., 85, 89, 93)
         compression_weight: Weight for compression component (default: 0.70)
         quality_weight: Weight for quality component (default: 0.30)
         soft_threshold_margin: Points below threshold before hard cutoff (default: 5.0)

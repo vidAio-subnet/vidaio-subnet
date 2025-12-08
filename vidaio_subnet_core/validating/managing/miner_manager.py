@@ -240,6 +240,7 @@ class MinerManager:
                         performance_tier="New Miner"
                     )
                     session.add(miner)
+                    logger.info(f"New upscaling miner detected for UID {uid}: {hotkey}")
                     is_new_miner = True
                 elif miner.hotkey != hotkey:
                     bt.logging.info(f"Hotkey change detected for UID {uid}: {miner.hotkey} -> {hotkey}")
@@ -372,7 +373,7 @@ class MinerManager:
         vmaf_scores: List[float],
         final_scores: List[float],
         content_lengths: List[float],
-        vmaf_threshold: float,
+        vmaf_thresholds: List[float],
         compression_rates: List[float],
         content_type: str = "video"
     ) -> None:
@@ -409,6 +410,7 @@ class MinerManager:
                         performance_tier="New Miner"
                     )
                     session.add(miner)
+                    logger.info(f"New compression miner detected for UID {uid}: {hotkey}")
                     is_new_miner = True
                 elif miner.hotkey != hotkey:
                     bt.logging.info(f"Hotkey change detected for UID {uid}: {miner.hotkey} -> {hotkey}")
@@ -492,7 +494,7 @@ class MinerManager:
                     success,
                     processed_task_type="compression",
                     compression_rate=compression_rate,
-                    vmaf_threshold=vmaf_threshold
+                    vmaf_threshold=vmaf_thresholds[i]
                 )
                 
                 if not is_new_miner:
