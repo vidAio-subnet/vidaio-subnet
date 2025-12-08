@@ -31,16 +31,15 @@ from utils.video_utils import get_video_duration, get_video_codec
 # ============================================================================
 
 # VMAF threshold to quality level mapping (configurable for miner flow)
-VMAF_THRESHOLD_HIGH = 95.0
-VMAF_THRESHOLD_MEDIUM = 90.0
+VMAF_THRESHOLD_HIGH = 93.0
+VMAF_THRESHOLD_MEDIUM = 89.0
 VMAF_THRESHOLD_LOW = 85.0
-
 
 # ============================================================================
 # FastAPI Application Setup
 # ============================================================================
 
-app = FastAPI(title="Video Compression Service", version="1.0.0")
+app = FastAPI(title="Video Compression Service", version="1.1.0")
 
 
 # ============================================================================
@@ -54,7 +53,7 @@ class CompressPayload(BaseModel):
     target_codec: str = 'av1'  # Target codec: av1, hevc, h264, vp9
     codec_mode: str = 'CRF'  # Codec mode: CRF (Constant Rate Factor), CBR (Constant Bitrate), VBR (Variable Bitrate)
     target_bitrate: float = 10.0  # Target bitrate in Mbps (for CBR/VBR modes)
-    target_quality: str = 'Medium'  # High, Medium, Low (legacy, derived from VMAF)
+    target_quality: str = 'Medium'  # High, Medium, Low (legacy, derived from VMAF) (legacy, derived from VMAF)
     max_duration: int = 3600  # Maximum allowed video duration in seconds
     output_dir: str = './output'  # Output directory for final files
 
@@ -671,9 +670,9 @@ def _execute_ai_encoding(scenes_metadata: list, config: dict, target_quality: st
     
     # Display CQ ranges for selected quality level
     quality_info = {
-        'High': {'vmaf': 95, 'cq_range': '16-22'},
-        'Medium': {'vmaf': 93, 'cq_range': '19-25'},
-        'Low': {'vmaf': 90, 'cq_range': '22-28'}
+        'High': {'vmaf': 93, 'cq_range': '16-22'},
+        'Medium': {'vmaf': 89, 'cq_range': '19-25'},
+        'Low': {'vmaf': 85, 'cq_range': '22-28'}
     }
     
     if target_quality in quality_info:

@@ -23,6 +23,7 @@ wandb/
 IQA-PyTorch/
 MDTVSFA/
 output/
+ignore/
 MANIQA/
 frames/
 tmp/

@@ -30,6 +30,8 @@ COMPRESSION_RATE_WEIGHT = 0.7  # w_c
 COMPRESSION_VMAF_WEIGHT = 0.3  # w_vmaf
 SOFT_THRESHOLD_MARGIN = 5.0  # Margin below VMAF threshold for soft scoring zone
 
+FRAME_TOLERANCE = 3  # Tolerance in frames for fast ffprobe frame count read
+
 
 app = FastAPI()
 fire_requests = FireRequests()
@@ -239,6 +241,197 @@ def extract_frames(video_path, num_frames=3, frame_indices=None):
     
     cap.release()
     return frames
+
+def extract_frames_from_y4m(y4m_path):
+    """
+    Extract frames from Y4M file for color validation.
+    This reuses the Y4M file already created for VMAF calculation,
+    eliminating redundant video processing.
+    
+    Args:
+        y4m_path: Path to Y4M file (output of convert_mp4_to_y4m)
+        
+    Returns:
+        list: List of frames as numpy arrays (BGR format for cv2)
+    """
+    frames = []
+    
+    # Create temporary directory for extracted frames
+    temp_dir = tempfile.mkdtemp()
+    output_pattern = os.path.join(temp_dir, "frame_%04d.png")
+    
+    try:
+        # Extract all frames from Y4M as PNG using FFmpeg
+        # Y4M files already contain only the selected frames, so no filtering needed
+        extract_cmd = [
+            "ffmpeg", "-i", y4m_path,
+            output_pattern,
+            "-y",
+            "-hide_banner", "-loglevel", "error"
+        ]
+        
+        result = subprocess.run(
+            extract_cmd, 
+            capture_output=True, 
+            text=True, 
+            timeout=30
+        )
+        
+        if result.returncode != 0:
+            logger.error(f"FFmpeg Y4M frame extraction failed: {result.stderr}")
+            return frames
+        
+        # Read extracted PNG files in order
+        png_files = sorted(glob.glob(os.path.join(temp_dir, "frame_*.png")))
+        
+        for png_file in png_files:
+            frame = cv2.imread(png_file)
+            if frame is not None:
+                frames.append(frame)
+            else:
+                logger.warning(f"Failed to read extracted frame: {png_file}")
+        
+        logger.debug(f"Successfully extracted {len(frames)} frames from Y4M file")
+        
+    except subprocess.TimeoutExpired:
+        logger.error("FFmpeg Y4M frame extraction timed out")
+    except Exception as e:
+        logger.error(f"Error extracting frames from Y4M: {e}")
+    finally:
+        # Cleanup temporary files
+        try:
+            for png_file in glob.glob(os.path.join(temp_dir, "*.png")):
+                os.remove(png_file)
+            os.rmdir(temp_dir)
+        except Exception as e:
+            logger.warning(f"Failed to cleanup temp frames: {e}")
+    
+    return frames
+
+def validate_color_channels_on_frames(frames):
+    """
+    Validate that frames have color information (not grayscale).
+    Reuses frames already extracted for VMAF calculation.
+
+    Args:
+        frames: List of frames (BGR numpy arrays from cv2)
+
+    Returns:
+        tuple: (is_valid, reason)
+    """
+    try:
+        if not frames:
+            return False, "No frames available for color validation"
+
+        color_threshold = 5.0  # Same threshold as before
+        brightness_threshold = 20.0  # Threshold for detecting black/near-black frames
+
+        for i, frame in enumerate(frames):
+            # Convert BGR to RGB
+            img_array = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            # Extract RGB channels
+            r_channel = img_array[:,:,0].astype(float)
+            g_channel = img_array[:,:,1].astype(float)
+            b_channel = img_array[:,:,2].astype(float)
+
+            # Check if frame is black/near-black (low brightness)
+            avg_brightness = np.mean([r_channel.mean(), g_channel.mean(), b_channel.mean()])
+
+            # Skip validation for black/near-black frames (valid content)
+            if avg_brightness < brightness_threshold:
+                logger.debug(f"Frame {i} is black/near-black (brightness={avg_brightness:.2f}), skipping color validation")
+                continue
+
+            # Calculate average difference between channels
+            rg_diff = np.mean(np.abs(r_channel - g_channel))
+            rb_diff = np.mean(np.abs(r_channel - b_channel))
+            gb_diff = np.mean(np.abs(g_channel - b_channel))
+
+            # If all channels are nearly identical, it's grayscale
+            if rg_diff < color_threshold and rb_diff < color_threshold and gb_diff < color_threshold:
+                logger.warning(
+                    f"Frame {i} appears to be grayscale: "
+                    f"RG diff={rg_diff:.2f}, RB diff={rb_diff:.2f}, GB diff={gb_diff:.2f}"
+                )
+                return False, f"Video has no color information (grayscale). UV channels required. Frame {i} detected as grayscale."
+
+        return True, "Color channels validated"
+
+    except Exception as e:
+        logger.error(f"Error validating color channels: {e}")
+        return False, f"Error validating color: {str(e)}"
+
+def validate_chroma_quality_on_frames(ref_frames, dist_frames, threshold=0.7):
+    """
+    Validate chroma (UV) quality by comparing reference and distorted frames.
+    Reuses frames already extracted for VMAF calculation.
+
+    Args:
+        ref_frames: List of reference frames (BGR numpy arrays)
+        dist_frames: List of distorted frames (BGR numpy arrays)
+        threshold: Minimum acceptable chroma similarity (0.0-1.0)
+
+    Returns:
+        tuple: (is_valid, reason)
+    """
+    try:
+        if len(ref_frames) != len(dist_frames):
+            return False, "Frame count mismatch between reference and distorted"
+
+        if not ref_frames or not dist_frames:
+            return False, "No frames available for chroma validation"
+
+        chroma_ratios = []
+        low_energy_threshold = 1.0  # Minimum chroma energy to consider (filters black/flat frames)
+
+        for i, (ref_frame, dist_frame) in enumerate(zip(ref_frames, dist_frames)):
+            # Convert BGR to YUV
+            ref_yuv = cv2.cvtColor(ref_frame, cv2.COLOR_BGR2YUV)
+            dist_yuv = cv2.cvtColor(dist_frame, cv2.COLOR_BGR2YUV)
+
+            # Extract U and V channels
+            ref_u = ref_yuv[:, :, 1].astype(float)
+            ref_v = ref_yuv[:, :, 2].astype(float)
+            dist_u = dist_yuv[:, :, 1].astype(float)
+            dist_v = dist_yuv[:, :, 2].astype(float)
+
+            # Calculate chroma variance/energy
+            ref_u_variance = np.var(ref_u)
+            ref_v_variance = np.var(ref_v)
+            dist_u_variance = np.var(dist_u)
+            dist_v_variance = np.var(dist_v)
+
+            ref_chroma_energy = ref_u_variance + ref_v_variance
+            dist_chroma_energy = dist_u_variance + dist_v_variance
+
+            # Skip frames with very low chroma energy (black/flat frames - valid content)
+            if ref_chroma_energy < low_energy_threshold:
+                logger.debug(f"Frame {i} has low chroma energy ({ref_chroma_energy:.3f}), skipping")
+                continue
+
+            chroma_ratio = dist_chroma_energy / ref_chroma_energy
+            chroma_ratios.append(chroma_ratio)
+            logger.debug(f"Frame {i} chroma ratio: {chroma_ratio:.3f}")
+
+        # If all frames are low-energy (e.g., all black), consider it valid
+        if not chroma_ratios:
+            logger.info("All frames have low chroma energy (e.g., black frames), skipping chroma validation")
+            return True, "Chroma validation skipped (low-energy content)"
+
+        # Calculate average chroma ratio
+        avg_chroma_ratio = np.mean(chroma_ratios)
+
+        logger.info(f"Average chroma quality ratio: {avg_chroma_ratio:.3f}, Threshold: {threshold}")
+
+        if avg_chroma_ratio < threshold:
+            return False, f"Chroma quality too low: {avg_chroma_ratio:.3f} < {threshold} (UV channels reduced/degraded)"
+
+        return True, f"Chroma quality validated: {avg_chroma_ratio:.3f}"
+
+    except Exception as e:
+        logger.error(f"Error validating chroma quality: {e}")
+        return False, f"Error validating chroma: {str(e)}"
 
 # Calculate ClipIQA+ inspired score
 def calculate_clipiqa_plus_score(frames):
@@ -1192,9 +1385,9 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 9. Retrieved distorted video frame count in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-            if dist_total_frames != ref_total_frames:
+            if abs(dist_total_frames - ref_total_frames) > FRAME_TOLERANCE:
                 logger.info(
-                    f"Video length mismatch for pair {idx+1}: ref({ref_total_frames}) != dist({dist_total_frames}). Assigning score of 0."
+                    f"Video length mismatch for pair {idx+1}: ref({ref_total_frames}) != dist({dist_total_frames}) & frame_tolerance({FRAME_TOLERANCE}). Assigning score of 0."
                 )
                 vmaf_scores.append(0.0)
                 pieapp_scores.append(0.0)
@@ -1364,7 +1557,6 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             detail="Number of UIDs must match number of distorted URLs"
         )
 
-    vmaf_threshold = request.vmaf_threshold
     for idx, (ref_path, dist_url, uid, video_id, uploaded_object_name) in enumerate(zip(
         request.reference_paths, 
         request.distorted_urls, 
@@ -1376,7 +1568,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             logger.info(f"🧩 Processing pair {idx+1}/{len(request.distorted_urls)}: UID {uid} 🧩")
             
             uid_start_time = time.time()  # Start time for this UID
-
+            vmaf_threshold = request.vmaf_thresholds[idx]
             
             ref_y4m_path = None
             dist_path = None
@@ -1485,9 +1677,9 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 5. Retrieved distorted video frame count in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-            if dist_total_frames != ref_total_frames:
+            if abs(dist_total_frames - ref_total_frames) > FRAME_TOLERANCE:
                 logger.error(
-                    f"Video length mismatch for pair {idx+1}: ref({ref_total_frames}) != dist({dist_total_frames}). Assigning score of 0."
+                    f"Video length mismatch for pair {idx+1}: ref({ref_total_frames}) != dist({dist_total_frames}) & frame_tolerance({FRAME_TOLERANCE}). Assigning score of 0."
                 )
                 vmaf_scores.append(0.0)
                 compression_rates.append(0.9999)   # No compression achieved
@@ -2094,9 +2286,9 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 5. Retrieved distorted video frame count in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-            if dist_total_frames != ref_total_frames:
+            if abs(dist_total_frames - ref_total_frames) > FRAME_TOLERANCE:
                 logger.error(
-                    f"Video length mismatch for pair {idx+1}: ref({ref_total_frames}) != dist({dist_total_frames}). Assigning score of 0."
+                    f"Video length mismatch for pair {idx+1}: ref({ref_total_frames}) != dist({dist_total_frames}) & frame_tolerance({FRAME_TOLERANCE}). Assigning score of 0."
                 )
                 vmaf_scores.append(0.0)
                 compression_rates.append(0.9999)  # No compression achieved

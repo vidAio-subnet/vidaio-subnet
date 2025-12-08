@@ -4,6 +4,12 @@ from typing import Tuple, Dict, List
 from ...protocol import VideoUpscalingProtocol, UpscalingMinerPayload, VideoCompressionProtocol, CompressionMinerPayload
 from ...global_config import CONFIG
 from loguru import logger
+from enum import IntEnum
+
+class VMAF_QUALITY_THRESHOLD(IntEnum):
+    LOW = 85
+    MEDIUM = 89
+    HIGH = 93
 
 class Synthesizer:
     def __init__(self):
@@ -201,11 +207,10 @@ class Synthesizer:
         
         # Calculate required chunks (one chunk per miners_per_task protocols)
         num_protocols = num_miners
+        assert len(vmaf_thresholds) == num_protocols
         num_needed = (num_protocols + miners_per_task - 1) // miners_per_task  # Ceiling division
         
-        logger.info(f"Vmaf_threshold: {vmaf_threshold}")
-
-
+        logger.info(f"Vmaf_thresholds: {vmaf_thresholds}")
         logger.info(f"Using {miners_per_task} miners per task")
         logger.info(f"Optimized chunk request: {num_needed} chunks (reduced from {num_protocols} protocols)")
         
@@ -268,7 +273,7 @@ class Synthesizer:
                         synapse = VideoCompressionProtocol(
                             miner_payload=CompressionMinerPayload(
                                 reference_video_url=chunk["sharing_link"],
-                                vmaf_threshold=vmaf_threshold,
+                                vmaf_threshold=vmaf_thresholds[i].value,
                                 target_codec=target_codec,
                                 codec_mode=codec_mode,
                                 target_bitrate=target_bitrate
@@ -390,11 +395,11 @@ class Synthesizer:
                 for chunk in chunks:
                     vmaf_threshold = None
                     if chunk["compression_type"] == "High":
-                        vmaf_threshold = 95
+                        vmaf_threshold = VMAF_QUALITY_THRESHOLD.HIGH.value
                     elif chunk["compression_type"] == "Medium":
-                        vmaf_threshold = 90
+                        vmaf_threshold = VMAF_QUALITY_THRESHOLD.MEDIUM.value
                     elif chunk["compression_type"] == "Low":
-                        vmaf_threshold = 85
+                        vmaf_threshold = VMAF_QUALITY_THRESHOLD.LOW.value
 
                     if vmaf_threshold is None:
                         logger.info(f"Invalid compression type: {chunk['compression_type']}")
