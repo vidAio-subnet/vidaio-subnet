@@ -331,6 +331,11 @@ def encode_video(input_path, output_path, codec, rate=None, preset=None, scene_t
                     print(f"Set NVENC rate control to CBR")
             elif codec.endswith('_qsv'):
                 current_settings['rc'] = 'cbr'
+            elif 'libvpx' in codec:
+                # VP9/VP8 CBR mode
+                current_settings['minrate'] = bitrate_value
+                if logging_enabled:
+                    print(f"Set libvpx rate control to CBR with minrate={bitrate_value}")
 
             if logging_enabled:
                 print(f"CBR mode: bitrate={bitrate_value}, maxrate={bitrate_value}, bufsize={bitrate_kbps * 2}k")
@@ -349,6 +354,11 @@ def encode_video(input_path, output_path, codec, rate=None, preset=None, scene_t
                 current_settings['rc'] = 'vbr'
                 if logging_enabled:
                     print(f"Set rate control to VBR")
+            elif 'libvpx' in codec:
+                # VP9/VP8 VBR mode - set target bitrate for VBR with CRF
+                current_settings['bitrate'] = bitrate_value
+                if logging_enabled:
+                    print(f"Set libvpx VBR mode with target bitrate={bitrate_value}")
 
             if logging_enabled:
                 print(f"VBR mode: maxrate={bitrate_value}, bufsize={bitrate_kbps * 2}k, will apply CQ/CRF for quality")
