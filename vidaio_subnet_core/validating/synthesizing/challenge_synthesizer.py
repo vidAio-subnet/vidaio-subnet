@@ -178,7 +178,7 @@ class Synthesizer:
                     
         raise RuntimeError(f"Failed to get synthetic chunks after {self.max_retries} attempts")
 
-    async def build_compression_protocol(self, vmaf_threshold: float, num_miners: int, version, round_id,
+    async def build_compression_protocol(self, vmaf_thresholds: List[float], num_miners: int, version, round_id,
      target_codec: str = "av1", codec_mode: str = "CRF", target_bitrate: float = 10.0) -> Tuple[list[str], list[str], list[str], list[VideoCompressionProtocol]]:
         """Fetches synthetic video chunks and builds the video compression protocols.
 
