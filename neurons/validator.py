@@ -569,7 +569,7 @@ class Validator(base.BaseValidator):
             num_miners = len(uids)
 
             payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_compression_protocol(
-                vmaf_thresholds, num_miners, version, round_id, recent_counts,target_codec, codec_mode, target_bitrate)
+                vmaf_thresholds, num_miners, version, round_id, target_codec, codec_mode, target_bitrate)
             logger.warning(f"Built compression challenge protocol with VMAF threshold {vmaf_thresholds}, codec {target_codec}, mode {codec_mode}, bitrate {target_bitrate} Mbps")
             timestamp = datetime.now(timezone.utc).isoformat()
 
