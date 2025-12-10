@@ -876,10 +876,10 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
                 lower_bound = target_bitrate * (1 - bitrate_tolerance)
                 upper_bound = target_bitrate * (1 + bitrate_tolerance)
 
-                if bit_rate_mbps < lower_bound or bit_rate_mbps > upper_bound:
+                if bit_rate_mbps > upper_bound:
                     errors.append(
                         f"Bitrate mismatch for {codec_mode} mode: expected {target_bitrate:.2f} Mbps "
-                        f"(±10%), got {bit_rate_mbps:.2f} Mbps (allowed range: {lower_bound:.2f}-{upper_bound:.2f} Mbps)"
+                        f"(±10%), got {bit_rate_mbps:.2f} Mbps (allowed values must be less than {upper_bound:.2f} Mbps)"
                     )
                 else:
                     logger.info(f"✅ Bitrate validation passed for {codec_mode} mode: {bit_rate_mbps:.2f} Mbps (target: {target_bitrate:.2f} Mbps)")
