@@ -87,8 +87,8 @@ class Miner(BaseMiner):
 
             processed_time = time.time() - start_time
 
-            logger.info(f"💜 Returning Response, Processed in {processed_time:.2f} seconds 💜")
-
+            logger.info(f"💜 Returning Response, Processed in {processed_time:.2f} seconds 💜; payload_url: {payload_url}, processed_video_url: {processed_video_url}")
+            
             return synapse
 
         except Exception as e:
