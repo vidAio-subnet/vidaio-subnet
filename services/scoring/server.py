@@ -1004,7 +1004,7 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
         
         color_info = f"space={dist_color_space or 'default'}" if dist_color_space else ""
         encoder_status = "SVT-AV1" if is_svtav1 else "Other AV1"
-        return True, f"Valid encoding ({encoder_status}, {width}x{height}, {color_info}, level {level})"
+        return True, f"Valid encoding ({encoder_status}, {width}x{height}, {color_info}, level {level}, bitrate {bit_rate_mbps} Mbps)"
         
     except subprocess.CalledProcessError as e:
         return False, f"ffprobe failed: {e.stderr}"
@@ -1764,7 +1764,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             logger.info(f"🎯 Final score is {final_score:.4f}")
             compression_rates.append(compression_rate)
             final_scores.append(final_score)
-            reasons.append(reason)
+            reasons.append(f"{reason}; {encoding_msg}")
 
             step_time = time.time() - uid_start_time
             logger.info(f"🛑 Processed one UID in {step_time:.2f} seconds.")
@@ -2404,7 +2404,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             # vmaf_scores.append(vmaf_score)
             compression_rates.append(compression_rate)
             final_scores.append(final_score)
-            reasons.append(reason)
+            reasons.append(f"{reason}; {encoding_msg}")
 
             step_time = time.time() - uid_start_time
             logger.info(f"🛑 Processed one UID in {step_time:.2f} seconds.")
