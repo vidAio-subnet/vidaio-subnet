@@ -1077,10 +1077,10 @@ class MinerManager:
 
     def consume(self, uids: list[int]) -> list[int]:
         logger.info(f"Consuming {len(uids)} UIDs")
-        filtered_uids = [uid for uid in uids if self.serving_counters[uid].increment()]
-        logger.info(f"Filtered to {len(filtered_uids)} UIDs after rate limiting")
+        # filtered_uids = [uid for uid in uids if self.serving_counters[uid].increment()]
+        # logger.info(f"Filtered to {len(filtered_uids)} UIDs after rate limiting")
 
-        return filtered_uids
+        return uids
 
     def get_miner_task_info(self) -> tuple[List[int], List[str], List[float]]:
         """

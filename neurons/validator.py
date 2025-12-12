@@ -39,9 +39,9 @@ class VMAF_QUALITY_THRESHOLD(IntEnum):
 
 TARGET_CODECS = [
     "av1",        # AV1 codec (protocol standard name)
-    # "hevc",       # H.265/HEVC (protocol standard name) 
-    # "h264",       # H.264/AVC (protocol standard name)
-    # "vp9",        # VP9 (protocol standard name)
+    "hevc",       # H.265/HEVC (protocol standard name) 
+    "h264",       # H.264/AVC (protocol standard name)
+    "vp9",        # VP9 (protocol standard name)
 ]
 
 # Codec encoding modes
@@ -252,40 +252,40 @@ class Validator(base.BaseValidator):
         if unknown_task_miners:
             logger.info(f"❓ Unknown task UIDs processed: {unknown_task_miners}")
 
-        if upscaling_miners:
-            logger.info(f"Sending LengthCheckProtocol requests to {len(upscaling_miners)} upscaling miners")
+        # if upscaling_miners:
+        #     logger.info(f"Sending LengthCheckProtocol requests to {len(upscaling_miners)} upscaling miners")
             
-            upscaling_start_time = time.time()
-            upscaling_axons = [miner[0] for miner in upscaling_miners]
-            length_check_synapse = LengthCheckProtocol(version=version)
+        #     upscaling_start_time = time.time()
+        #     upscaling_axons = [miner[0] for miner in upscaling_miners]
+        #     length_check_synapse = LengthCheckProtocol(version=version)
             
-            length_check_responses = await self.dendrite.forward(
-                axons=upscaling_axons, synapse=length_check_synapse, timeout=10
-            )
-            logger.info(f"💊 Received {len(length_check_responses)} responses from upscaling miners for LengthCheckProtocol requests💊")
+        #     length_check_responses = await self.dendrite.forward(
+        #         axons=upscaling_axons, synapse=length_check_synapse, timeout=10
+        #     )
+        #     logger.info(f"💊 Received {len(length_check_responses)} responses from upscaling miners for LengthCheckProtocol requests💊")
 
-            upscaling_content_lengths = []
-            for response in length_check_responses:
-                avail_max_len = response.max_content_length.value
-                if avail_max_len == 10:
-                    upscaling_content_lengths.append(avail_max_len)
-                else:
-                    upscaling_content_lengths.append(5)
+        #     upscaling_content_lengths = []
+        #     for response in length_check_responses:
+        #         avail_max_len = response.max_content_length.value
+        #         if avail_max_len == 10:
+        #             upscaling_content_lengths.append(avail_max_len)
+        #         else:
+        #             upscaling_content_lengths.append(5)
 
-            logger.info(f"Upscaling content lengths: {upscaling_content_lengths}")
+        #     logger.info(f"Upscaling content lengths: {upscaling_content_lengths}")
 
-            upscaling_miners_with_lengths = []
-            for i, (axon, uid) in enumerate(upscaling_miners):
-                content_length = upscaling_content_lengths[i] if i < len(upscaling_content_lengths) else 5
-                upscaling_miners_with_lengths.append((axon, uid, content_length))
+        #     upscaling_miners_with_lengths = []
+        #     for i, (axon, uid) in enumerate(upscaling_miners):
+        #         content_length = upscaling_content_lengths[i] if i < len(upscaling_content_lengths) else 5
+        #         upscaling_miners_with_lengths.append((axon, uid, content_length))
 
-            await self.process_upscaling_miners(upscaling_miners_with_lengths, version)
+        #     await self.process_upscaling_miners(upscaling_miners_with_lengths, version)
 
-            upscaling_processed_time = time.time() - upscaling_start_time
+        #     upscaling_processed_time = time.time() - upscaling_start_time
 
-            logger.info(f"Upscaling tasks processed in {upscaling_processed_time:.2f} seconds")
+        #     logger.info(f"Upscaling tasks processed in {upscaling_processed_time:.2f} seconds")
 
-            await asyncio.sleep(2)
+        #     await asyncio.sleep(2)
 
         if compression_miners:
             logger.info(f"Processing {len(compression_miners)} compression miners")
@@ -386,23 +386,23 @@ class Validator(base.BaseValidator):
             miner_tuple = miner_by_uid[uid]
             rec_cnt, latest_ts = uid_info[uid]
 
-            # ---- Rule 3: skip capped miners with recent performance record ----
-            if rec_cnt >= max_records and latest_ts and latest_ts >= hours_threshold:
-                logger.info(
-                    f"Skipping miner uid={uid}: {rec_cnt} records, last update {latest_ts}"
-                )
-                continue
+            # # ---- Rule 3: skip capped miners with recent performance record ----
+            # if rec_cnt >= max_records and latest_ts and latest_ts >= hours_threshold:
+            #     logger.info(
+            #         f"Skipping miner uid={uid}: {rec_cnt} records, last update {latest_ts}"
+            #     )
+            #     continue
 
             # ---- Rule 2: include if never seen, below capacity or stale ----
-            if rec_cnt < max_records or not latest_ts \
-                or (latest_ts < hours_threshold and random.random() < CONFIG.score.synthetics_select_probability):
-                priority = (
-                    rec_cnt,                                   # fewer records first
-                    latest_ts if latest_ts else datetime.min,  # oldest first
-                )
-                if rec_cnt == 0:
-                    info_new_uids.append(uid) 
-                eligible.append((priority, miner_tuple))
+            # if rec_cnt < max_records or not latest_ts \
+            #     or (latest_ts < hours_threshold and random.random() < CONFIG.score.synthetics_select_probability):
+            priority = (
+                rec_cnt,                                   # fewer records first
+                latest_ts if latest_ts else datetime.min,  # oldest first
+            )
+            if rec_cnt == 0:
+                info_new_uids.append(uid) 
+            eligible.append((priority, miner_tuple))
 
         # ------------------------------------------------------------------- #
         # 5. Sort & batch
@@ -574,7 +574,7 @@ class Validator(base.BaseValidator):
             logger.debug(f"Processing compression UIDs in batch: {uids}")
             
             forward_tasks = [
-                self.call_miner(axon, synapse, uid, timeout=90)
+                self.call_miner(axon, synapse, uid, timeout=240)
                 for uid, axon, synapse in zip(uids, axons, synapses)
             ]
             raw_responses = await asyncio.gather(*forward_tasks)
