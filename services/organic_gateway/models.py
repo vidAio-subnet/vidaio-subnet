@@ -25,12 +25,19 @@ class UpscaleResponse(BaseModel):
     status: TaskStatus
     message: str
 
+TARGET_CODECS = [
+    "av1",        # AV1 codec (protocol standard name)
+    # "hevc",       # H.265/HEVC (protocol standard name) 
+    # "h264",       # H.264/AVC (protocol standard name)
+    # "vp9",        # VP9 (protocol standard name)
+]
+
 class CompressionRequest(BaseModel):
     chunk_id: str
     chunk_url: str
     compression_type: Literal["High", "Medium", "Low"]
-    target_codec: Optional[str] = "av1"  # Default to av1 for best compression
-    codec_mode: Optional[str] = "CRF"  # CBR, VBR, or CRF (default)
+    target_codec: Literal["av1", "hevc", "h264", "vp9"] = "av1"  # Default to av1 for best compression
+    codec_mode: Literal["VBR", "CRF"] = "CRF"  # VBR, or CRF (default)
     target_bitrate: Optional[float] = 10.0  # Target bitrate in Mbps
 
 class CompressionResponse(BaseModel):

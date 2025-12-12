@@ -39,15 +39,14 @@ class VMAF_QUALITY_THRESHOLD(IntEnum):
 
 TARGET_CODECS = [
     "av1",        # AV1 codec (protocol standard name)
-    "hevc",       # H.265/HEVC (protocol standard name)
-    "h264",       # H.264/AVC (protocol standard name)
-    "vp9",        # VP9 (protocol standard name)
+    # "hevc",       # H.265/HEVC (protocol standard name) 
+    # "h264",       # H.264/AVC (protocol standard name)
+    # "vp9",        # VP9 (protocol standard name)
 ]
 
 # Codec encoding modes
 CODEC_MODES = [
     "CRF",        # Constant Rate Factor (quality-based)
-    "CBR",        # Constant Bitrate
     "VBR",        # Variable Bitrate
 ]
 
