@@ -1004,7 +1004,7 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
         
         color_info = f"space={dist_color_space or 'default'}" if dist_color_space else ""
         encoder_status = "SVT-AV1" if is_svtav1 else "Other AV1"
-        return True, f"Valid encoding ({encoder_status}, {width}x{height}, {color_info}, level {level}, bitrate {bit_rate_mbps} Mbps)"
+        return True, f"Valid encoding ({codec}, {width}x{height}, {color_info}, level {level}, bitrate {bit_rate_mbps} Mbps)"
         
     except subprocess.CalledProcessError as e:
         return False, f"ffprobe failed: {e.stderr}"
