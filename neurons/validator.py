@@ -595,9 +595,9 @@ class Validator(base.BaseValidator):
             sleep_time = random.uniform(SLEEP_TIME_LOW, SLEEP_TIME_HIGH) - batch_processed_time
 
             logger.info(f"Completed compression batch within {batch_processed_time:.2f} seconds")
-            logger.info(f"Sleeping for 3-4 minutes before next compression batch")
+            # logger.info(f"Sleeping for 3-4 minutes before next compression batch")
             
-            await asyncio.sleep(sleep_time)
+            # await asyncio.sleep(sleep_time)
 
 
     async def start_organic_loop(self):
