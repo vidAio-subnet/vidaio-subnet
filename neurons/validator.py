@@ -815,12 +815,12 @@ class Validator(base.BaseValidator):
         logger.info(f"Synthetic compression scoring results for {len(uids)} miners")
         logger.info(f"Uids: {uids}")
 
-        for uid, vmaf_score, final_score, reason, compression_rate, applied_multiplier, vmaf_threshold in zip(
-            uids, vmaf_scores, final_scores, reasons, compression_rates, applied_multipliers, vmaf_thresholds
+        for uid, vmaf_score, final_score, reason, compression_rate, applied_multiplier, vmaf_threshold, payload_url, distorted_url in zip(
+            uids, vmaf_scores, final_scores, reasons, compression_rates, applied_multipliers, vmaf_thresholds, payload_urls, distorted_urls
         ):
             logger.info(
                 f"{uid} ** VMAF: {vmaf_score:.2f} "
-                f"** VMAF Threshold: {vmaf_threshold} ** Compression Rate: {compression_rate:.4f} ** Final: {final_score:.4f} || {reason}"
+                f"** VMAF Threshold: {vmaf_threshold} ** Compression Rate: {compression_rate:.4f} ** Final: {final_score:.4f} || {reason} || payload_url: {payload_url} || distorted_url: {distorted_url}"
             )
 
         miner_data = {
