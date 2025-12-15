@@ -550,7 +550,7 @@ def download_transform_and_trim_downscale_video(
     # synced with `get_pexels_random_vids`
     EXPECTED_RESOLUTIONS = {
         "HD24K": (3840, 2160),
-        "SD2HD": (1920, 1080),
+        # "SD2HD": (1920, 1080),
         "SD24K": (3840, 2160),
         # "4K28K": (7680, 4320),
         # "HD28K": (7680, 4320),

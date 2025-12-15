@@ -201,6 +201,16 @@ ensure_config_process "app.config.js" "$proc_name" "true"
 
 check_package_installed "jq"
 
+# 🚀 START THE 4 PM2 PROCESSES
+# pm2 start "PYTHONPATH=. python services/scoring/server.py" --name scoring_endpoint
+# pm2 start "PYTHONPATH=. python services/video_scheduler/worker.py" --name video_scheduler_worker
+# pm2 start "PYTHONPATH=. python services/video_scheduler/server.py" --name video_scheduler_endpoint
+# pm2 start "PYTHONPATH=. python services/dashboard/metagraph_api_server.py" --name metagraph-api
+# pm2 start /usr/bin/bash --name validator -- -c "PYTHONPATH=. python -m neurons.validator --wallet.name default --wallet.hotkey default --subtensor.network finney --netuid 85 --axon.port 27000 --logging.debug"
+# pm2 start "python neurons/validator.py $joined_args" --name video-validator
+# pm2 start "PYTHONPATH=. python services/organic_gateway/server.py" --name organic-gateway
+# pm2 start "PYTHONPATH=. python vidaio_subnet_core/utilities/storage_client.py" --name storage-client-debug #for debugging storage
+
 # 🚀 START THE ADDITIONAL PM2 PROCESSES
 ensure_process "scoring_endpoint" "bash -c 'PYTHONPATH=. python services/scoring/server.py'" "true"
 ensure_process "video_scheduler_worker" "bash -c 'PYTHONPATH=. python services/video_scheduler/worker.py'" "$restart_video_scheduler"
