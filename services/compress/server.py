@@ -50,7 +50,10 @@ class CompressPayload(BaseModel):
     """Payload for video compression requests."""
     payload_url: str
     vmaf_threshold: float
-    target_quality: str = 'Medium'  # High, Medium, Low (legacy, derived from VMAF)
+    target_codec: str = 'av1'  # Target codec: av1, hevc, h264, vp9
+    codec_mode: str = 'CRF'  # Codec mode: CRF (Constant Rate Factor), CBR (Constant Bitrate), VBR (Variable Bitrate)
+    target_bitrate: float = 10.0  # Target bitrate in Mbps (for CBR/VBR modes)
+    target_quality: str = 'Medium'  # High, Medium, Low (legacy, derived from VMAF) (legacy, derived from VMAF)
     max_duration: int = 3600  # Maximum allowed video duration in seconds
     output_dir: str = './output'  # Output directory for final files
 
@@ -59,19 +62,24 @@ class TestCompressPayload(BaseModel):
     """Payload for test compression requests."""
     video_path: str
 
+
 # ============================================================================
 # Helper Functions
 # ============================================================================
 
-def create_lightweight_metadata(input_file: str, target_quality: str, max_duration: int = 3600) -> Optional[dict]:
+def create_lightweight_metadata(input_file: str, target_quality: str, target_codec: str, max_duration: int = 3600) -> Optional[dict]:
     """
     Create video metadata without preprocessing (for already-compressed videos).
+
     This is a lightweight alternative to pre_processing() that only extracts
     metadata without re-encoding. Perfect for miner chunks that are already compressed.
+
     Args:
         input_file: Path to input video file
         target_quality: Target quality level ('High', 'Medium', 'Low')
+        target_codec: Target codec for encoding
         max_duration: Maximum allowed duration
+
     Returns:
         dict: Video metadata or None if validation fails
     """
@@ -105,7 +113,8 @@ def create_lightweight_metadata(input_file: str, target_quality: str, max_durati
     print(f"   ✅ Duration: {duration:.1f}s")
     print(f"   ✅ Codec: {original_codec}")
     print(f"   🎯 Target: {target_quality} (VMAF: {target_vmaf})")
-    
+    print(f"   🎥 Target codec: {target_codec}")
+
     # Return lightweight metadata (same format as pre_processing)
     return {
         'path': input_file,
@@ -116,11 +125,55 @@ def create_lightweight_metadata(input_file: str, target_quality: str, max_durati
         'encoding_time': 0.0,
         'target_vmaf': target_vmaf,
         'target_quality': target_quality,
+        'target_codec': target_codec,
         'processing_info': {
             'lossless_conversion': False,
             'skipped_preprocessing': True
         }
     }
+
+
+# ============================================================================
+# Codec Mapping
+# ============================================================================
+
+def map_codec_name(target_codec: str, prefer_gpu: bool = True) -> str:
+    """
+    Map user-facing codec names (from ffprobe format) to ffmpeg encoder names.
+
+    The protocol uses standard codec names (av1, hevc, h264, vp9) which match
+    ffprobe output, but ffmpeg requires specific encoder names.
+
+    Args:
+        target_codec: Codec name from protocol (av1, hevc, h264, vp9)
+        prefer_gpu: Whether to prefer GPU encoders (NVENC) when available
+
+    Returns:
+        FFmpeg encoder name (e.g., av1_nvenc, libx265, libx264, libvpx-vp9)
+
+    Examples:
+        map_codec_name('av1', prefer_gpu=True) → 'av1_nvenc'
+        map_codec_name('av1', prefer_gpu=False) → 'libsvtav1'
+        map_codec_name('hevc', prefer_gpu=True) → 'hevc_nvenc'
+        map_codec_name('h264', prefer_gpu=False) → 'libx264'
+    """
+    codec_map = {
+        'av1': 'av1_nvenc' if prefer_gpu else 'libsvtav1',
+        'hevc': 'hevc_nvenc' if prefer_gpu else 'libx265',
+        'h264': 'h264_nvenc' if prefer_gpu else 'libx264',
+        'vp9': 'libvpx_vp9',  # No NVENC encoder for VP9
+    }
+
+    # Normalize to lowercase and get mapped codec
+    normalized_codec = target_codec.lower().strip()
+    ffmpeg_codec = codec_map.get(normalized_codec)
+
+    if not ffmpeg_codec:
+        logger.warning(f"Unknown codec '{target_codec}', defaulting to av1_nvenc")
+        return 'av1_nvenc'
+
+    logger.info(f"Mapped codec '{target_codec}' → '{ffmpeg_codec}' (GPU={prefer_gpu})")
+    return ffmpeg_codec
 
 
 # ============================================================================
@@ -140,7 +193,10 @@ async def compress_video(video: CompressPayload):
     """
     print(f"video url: {video.payload_url}")
     print(f"vmaf threshold: {video.vmaf_threshold}")
-    
+    print(f"target codec: {video.target_codec}")
+    print(f"codec mode: {video.codec_mode}")
+    print(f"target bitrate: {video.target_bitrate} Mbps")
+
     # Download video from URL
     input_path = await download_video(video.payload_url)
     input_file = Path(input_path)
@@ -159,6 +215,9 @@ async def compress_video(video: CompressPayload):
             detail=f"Invalid VMAF threshold. Expected {VMAF_THRESHOLD_LOW}, {VMAF_THRESHOLD_MEDIUM}, or {VMAF_THRESHOLD_HIGH}, got {vmaf_threshold}"
         )
 
+    # Map codec name from protocol format to ffmpeg encoder name
+    ffmpeg_codec = map_codec_name(video.target_codec, prefer_gpu=True)
+
     # Validate input file
     if not input_file.is_file():
         raise HTTPException(status_code=400, detail="Input video file does not exist.")
@@ -172,6 +231,9 @@ async def compress_video(video: CompressPayload):
         compressed_video_path = video_compressor(
             input_file=str(input_file),
             target_quality=target_quality,
+            target_codec=ffmpeg_codec,
+            codec_mode=video.codec_mode,
+            target_bitrate=video.target_bitrate,
             max_duration=video.max_duration,
             output_dir=str(output_dir),
             skip_scene_detection=True,  # Skip for miner chunks (already pre-split)
@@ -270,24 +332,30 @@ async def test_compress_video(test_payload: TestCompressPayload):
 # ============================================================================
 
 def video_compressor(
-    input_file: str, 
-    target_quality: str = 'Medium', 
-    max_duration: int = 3600, 
+    input_file: str,
+    target_quality: str = 'Medium',
+    target_codec: str = 'av1_nvenc',
+    codec_mode: str = 'CRF',
+    target_bitrate: float = 10.0,
+    max_duration: int = 3600,
     output_dir: str = './output',
     skip_scene_detection: bool = True,
     skip_preprocessing: bool = True
 ) -> Optional[str]:
     """
     Main video compression pipeline orchestrator.
-    
+
     Args:
         input_file: Path to input video file
         target_quality: Target quality level ('High', 'Medium', 'Low')
+        target_codec: FFmpeg encoder name (e.g., 'av1_nvenc', 'hevc_nvenc', 'libx264')
+        codec_mode: Encoding mode - 'CRF' (Constant Rate Factor), 'CBR' (Constant Bitrate), 'VBR' (Variable Bitrate)
+        target_bitrate: Target bitrate in Mbps (used for CBR/VBR modes)
         max_duration: Maximum allowed video duration in seconds
         output_dir: Output directory for final files
         skip_scene_detection: If True, treats entire video as single scene (default: True for miner chunks)
         skip_preprocessing: If True, skips lossless re-encoding (default: True for already-compressed miner chunks)
-        
+
     Returns:
         str: Path to compressed video file, or None if failed
     """
@@ -305,6 +373,9 @@ def video_compressor(
     if 'video_processing' not in config:
         config['video_processing'] = {}
     config['video_processing']['target_quality'] = target_quality
+    config['video_processing']['target_codec'] = target_codec
+    config['video_processing']['codec_mode'] = codec_mode
+    config['video_processing']['target_bitrate'] = target_bitrate
 
     # Create temp directory
     temp_dir = Path(config['directories']['temp_dir'])
@@ -316,7 +387,7 @@ def video_compressor(
     # PART 1: Pre-processing (optional - can be skipped for already-compressed videos)
     if skip_preprocessing:
         # Skip full preprocessing - use lightweight metadata extraction
-        part1_result = create_lightweight_metadata(input_file, target_quality, max_duration)
+        part1_result = create_lightweight_metadata(input_file, target_quality, target_codec, max_duration)
         if not part1_result:
             print("❌ Part 1 failed. Pipeline terminated.")
             return False
@@ -359,7 +430,7 @@ def video_compressor(
 
         part2_time = time.time() - part2_start_time
         _display_scene_detection_results(scenes_metadata, part2_time)
-
+    
     # PART 3: AI Encoding
     part3_result = _execute_ai_encoding(scenes_metadata, config, target_quality)
     if not part3_result:
@@ -476,7 +547,10 @@ def _get_default_config() -> dict:
         'video_processing': {
             'SHORT_VIDEO_THRESHOLD': 20,
             'target_vmaf': 93.0,
-            'codec': 'auto',
+            'codec': 'auto',  # Legacy parameter, overridden by target_codec
+            'target_codec': 'av1_nvenc',  # Will be overridden by request
+            'codec_mode': 'CRF',  # Will be overridden by request
+            'target_bitrate': 10.0,  # Will be overridden by request
             'size_increase_protection': True,
             'conservative_cq_adjustment': 2,
             'max_output_size_ratio': 1.15,

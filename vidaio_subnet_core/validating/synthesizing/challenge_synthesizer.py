@@ -178,21 +178,26 @@ class Synthesizer:
                     
         raise RuntimeError(f"Failed to get synthetic chunks after {self.max_retries} attempts")
 
-    async def build_compression_protocol(self, vmaf_thresholds: List[float], num_miners: int, version, round_id, recent_counts: List[int]) -> Tuple[list[str], list[str], list[str], list[VideoCompressionProtocol]]:
+    async def build_compression_protocol(self, vmaf_thresholds: List[float], num_miners: int, version, round_id,
+     target_codec: str = "av1", codec_mode: str = "CRF", target_bitrate: float = 10.0) -> Tuple[list[str], list[str], list[str], list[VideoCompressionProtocol]]:
         """Fetches synthetic video chunks and builds the video compression protocols.
-        
+
         Args:
-            vmaf_thresholds: List of VMAF thresholds for compression quality control
+            vmaf_threshold: VMAF threshold for compression quality control
+            num_miners: Number of miners to create protocols for
             version: Version of the protocol to use
             round_id: Unique identifier for this round
-            
+            target_codec: Target codec for compression (default: "av1")
+            codec_mode: Codec mode - CBR, VBR, or CRF (default: "CRF")
+            target_bitrate: Target bitrate in Mbps (default: 10.0)
+
         Returns:
             Tuple containing lists of:
             - payload URLs
             - video IDs
             - uploaded object names
             - VideoCompressionProtocol instances
-        
+
         Raises:
             httpx.HTTPStatusError: If the request to the video scheduler fails
             RuntimeError: If max retries exceeded without valid response
@@ -263,11 +268,15 @@ class Synthesizer:
                         payload_urls.append(chunk["sharing_link"])
                         video_ids.append(chunk["video_id"])
                         uploaded_object_names.append(chunk["uploaded_object_name"])
-                        
+
+                        # Use the provided compression parameters
                         synapse = VideoCompressionProtocol(
                             miner_payload=CompressionMinerPayload(
                                 reference_video_url=chunk["sharing_link"],
-                                vmaf_threshold=vmaf_thresholds[i].value
+                                vmaf_threshold=vmaf_thresholds[i].value,
+                                target_codec=target_codec,
+                                codec_mode=codec_mode,
+                                target_bitrate=target_bitrate
                             ),
                             version=version,
                             round_id=round_id
@@ -396,10 +405,18 @@ class Synthesizer:
                         logger.info(f"Invalid compression type: {chunk['compression_type']}")
                         continue
 
+                    # Get compression parameters from chunk with defaults
+                    target_codec = chunk.get("target_codec", "av1")
+                    codec_mode = chunk.get("codec_mode", "CRF")
+                    target_bitrate = chunk.get("target_bitrate", 10.0)
+
                     synapse = VideoCompressionProtocol(
                         miner_payload=CompressionMinerPayload(
                             reference_video_url=chunk["url"],
-                            vmaf_threshold=vmaf_threshold
+                            vmaf_threshold=vmaf_threshold,
+                            target_codec=target_codec,
+                            codec_mode=codec_mode,
+                            target_bitrate=target_bitrate
                         ),
                     )
                     task_ids.append(chunk["task_id"])
