@@ -376,7 +376,7 @@ def validate_chroma_quality_on_frames(ref_frames, dist_frames, threshold=0.7):
         tuple: (is_valid, reason)
     """
     try:
-        if len(ref_frames) != len(dist_frames):
+        if abs(ref_frames - dist_frames) > FRAME_TOLERANCE:
             return False, "Frame count mismatch between reference and distorted"
 
         if not ref_frames or not dist_frames:
@@ -1739,7 +1739,51 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                     os.unlink(dist_y4m_path)
                 continue
             
+            # Now reuse the Y4M files for color validation (no redundant conversion!)
+            # Extract frames for color validation from Y4M files
+            logger.info(f"Extracting frames from Y4M for color validation (reusing VMAF Y4M files)")
+            dist_frames = extract_frames_from_y4m(dist_y4m_path)
+            step_time = time.time() - uid_start_time
+            logger.info(f"♎️ 8.5. Extracted {len(dist_frames)} frames from Y4M for color validation in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            # Validate color channels (grayscale check)
+            color_valid, color_reason = validate_color_channels_on_frames(dist_frames)
+            if not color_valid:
+                logger.error(f"UID {uid}: {color_reason}")
+                compression_rates.append(0.9999) 
+                final_scores.append(0.0)
+                reasons.append(f"Color validation failed: {color_reason}")
+                if dist_path and os.path.exists(dist_path):
+                    os.unlink(dist_path)
+                if dist_y4m_path and os.path.exists(dist_y4m_path):
+                    os.unlink(dist_y4m_path)
+                continue
             
+            logger.info(f"✅ UID {uid}: Color channels validated - {color_reason}")
+            step_time = time.time() - uid_start_time
+            logger.info(f"♎️ 8.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            # Extract reference frames from Y4M for chroma quality comparison
+            ref_frames = extract_frames_from_y4m(ref_y4m_path)
+            
+            # Validate chroma quality (prevents partial UV reduction)
+            chroma_valid, chroma_reason = validate_chroma_quality_on_frames(
+                ref_frames, dist_frames, threshold=0.7
+            )
+            if not chroma_valid:
+                logger.error(f"UID {uid}: {chroma_reason}")
+                compression_rates.append(0.9999) 
+                final_scores.append(0.0)
+                reasons.append(f"Chroma validation failed: {chroma_reason}")
+                if dist_path and os.path.exists(dist_path):
+                    os.unlink(dist_path)
+                if dist_y4m_path and os.path.exists(dist_y4m_path):
+                    os.unlink(dist_y4m_path)
+                continue
+            
+            logger.info(f"✅ UID {uid}: Chroma quality validated - {chroma_reason}")
+            step_time = time.time() - uid_start_time
+            logger.info(f"♎️ 8.7. Validated chroma quality in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Calculate compression score using the proper formula
             # Check scoring function for details
