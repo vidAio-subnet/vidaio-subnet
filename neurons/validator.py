@@ -37,6 +37,27 @@ class VMAF_QUALITY_THRESHOLD(IntEnum):
     HIGH = 93
 
 
+TARGET_CODECS = [
+    "av1",        # AV1 codec (protocol standard name)
+    # "hevc",       # H.265/HEVC (protocol standard name) 
+    # "h264",       # H.264/AVC (protocol standard name)
+    # "vp9",        # VP9 (protocol standard name)
+]
+
+# Codec encoding modes
+CODEC_MODES = [
+    "CRF",        # Constant Rate Factor (quality-based)
+    "VBR",        # Variable Bitrate
+]
+
+# Target bitrates in Mbps for CBR/VBR modes
+TARGET_BITRATES = [
+    10.0,         # 10 Mbps
+    15.0,         # 15 Mbps
+    20.0,         # 20 Mbps
+]
+
+
 SLEEP_TIME_LOW = 60 * 3 # 3 minutes
 SLEEP_TIME_HIGH = 60 * 4 # 4 minutes
 
@@ -517,7 +538,7 @@ class Validator(base.BaseValidator):
         batch_size = CONFIG.bandwidth.requests_per_synthetic_interval
 
         miner_batches = await self.create_miner_batches(compression_miners, batch_size, task_type="compression")
-        
+
         logger.info(f"Created {len(miner_batches)} compression batches of size {batch_size}")
 
         for batch_idx, batch in enumerate(miner_batches):
@@ -538,14 +559,16 @@ class Validator(base.BaseValidator):
                 for idx, recent_count in enumerate(recent_counts)
             ]
 
+            target_codec = random.choice(TARGET_CODECS)
+            codec_mode = random.choice(CODEC_MODES)
+            target_bitrate = random.choice(TARGET_BITRATES)
             round_id = str(uuid.uuid4())
 
             num_miners = len(uids)
 
-            payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_compression_protocol(vmaf_thresholds, num_miners, version, round_id, recent_counts)
-            logger.info(f"Built compression challenge protocol: payload URLs: {payload_urls}\nvideo IDs: {video_ids}")
-            logger.debug(f"Built compression challenge protocol")
-
+            payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_compression_protocol(
+                vmaf_thresholds, num_miners, version, round_id, target_codec, codec_mode, target_bitrate)
+            logger.warning(f"Built compression challenge protocol with VMAF threshold {vmaf_thresholds}, codec {target_codec}, mode {codec_mode}, bitrate {target_bitrate} Mbps")
             timestamp = datetime.now(timezone.utc).isoformat()
 
             logger.debug(f"Processing compression UIDs in batch: {uids}")
@@ -566,7 +589,7 @@ class Validator(base.BaseValidator):
                     logger.warning(f"⚠️ Reference video file missing for video_id {video_id}: {reference_video_path}")
                 reference_video_paths.append(reference_video_path)
             
-            asyncio.create_task(self.score_compressions(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, vmaf_thresholds, round_id))
+            asyncio.create_task(self.score_compressions(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, vmaf_thresholds, target_codec, codec_mode, target_bitrate, round_id))
 
             batch_processed_time = time.time() - batch_start_time
             sleep_time = random.uniform(SLEEP_TIME_LOW, SLEEP_TIME_HIGH) - batch_processed_time
@@ -720,15 +743,18 @@ class Validator(base.BaseValidator):
             logger.info("Failed to send data to dashboard")
 
     async def score_compressions(
-        self, 
-        uids: list[int], 
-        responses: list[protocol.Synapse], 
-        payload_urls: list[str], 
-        reference_video_paths: list[str], 
-        timestamp: str, 
-        video_ids: list[str], 
-        uploaded_object_names: list[str], 
-        vmaf_thresholds: List[float], 
+        self,
+        uids: list[int],
+        responses: list[protocol.Synapse],
+        payload_urls: list[str],
+        reference_video_paths: list[str],
+        timestamp: str,
+        video_ids: list[str],
+        uploaded_object_names: list[str],
+        vmaf_thresholds: List[float],
+        target_codec: str,
+        codec_mode: str,
+        target_bitrate: float,
         round_id: str
     ):
         distorted_urls = []
@@ -743,7 +769,10 @@ class Validator(base.BaseValidator):
                 "reference_paths": reference_video_paths,
                 "video_ids": video_ids,
                 "uploaded_object_names": uploaded_object_names,
-                "vmaf_thresholds": vmaf_thresholds
+                "vmaf_thresholds": vmaf_thresholds,
+                "target_codec": target_codec,
+                "codec_mode": codec_mode,
+                "target_bitrate": target_bitrate
             },
             timeout=240
         )
@@ -902,21 +931,24 @@ class Validator(base.BaseValidator):
         else:
             logger.info("Failed to send data to dashboard")
 
-    async def score_organics_compression(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: list[str], vmaf_thresholds: list[float], timestamp: str):
+    async def score_organics_compression(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: list[str], vmaf_thresholds: list[float], target_codecs: list[str], codec_modes: list[str], target_bitrates: list[float], timestamp: str):
         """Score organic compression tasks."""
         distorted_urls = [response.miner_response.optimized_video_url for response in responses]
 
-        combined = list(zip(uids, distorted_urls, reference_urls, vmaf_thresholds))
+        combined = list(zip(uids, distorted_urls, reference_urls, vmaf_thresholds, target_codecs, codec_modes, target_bitrates))
         random.shuffle(combined)
-        uids, distorted_urls, reference_urls, vmaf_thresholds = map(list, zip(*combined))
+        uids, distorted_urls, reference_urls, vmaf_thresholds, target_codecs, codec_modes, target_bitrates = map(list, zip(*combined))
 
         num_pairs_to_validate = min(5, len(combined))
         selected_indices = random.sample(range(len(combined)), num_pairs_to_validate)
-        
+
         selected_uids = [uids[i] for i in selected_indices]
         selected_distorted_urls = [distorted_urls[i] for i in selected_indices]
         selected_reference_urls = [reference_urls[i] for i in selected_indices]
         selected_vmaf_thresholds = [vmaf_thresholds[i] for i in selected_indices]
+        selected_target_codecs = [target_codecs[i] for i in selected_indices]
+        selected_codec_modes = [codec_modes[i] for i in selected_indices]
+        selected_target_bitrates = [target_bitrates[i] for i in selected_indices]
 
         logger.info(f"Randomly selected {len(selected_uids)} pairs out of {len(uids)} total pairs for compression validation")
 
@@ -926,7 +958,10 @@ class Validator(base.BaseValidator):
                 "uids": selected_uids,
                 "distorted_urls": selected_distorted_urls,
                 "reference_urls": selected_reference_urls,
-                "vmaf_thresholds": selected_vmaf_thresholds
+                "vmaf_thresholds": selected_vmaf_thresholds,
+                "target_codecs": selected_target_codecs,
+                "codec_modes": selected_codec_modes,
+                "target_bitrates": selected_target_bitrates
             },
             timeout=115
         )
@@ -1108,12 +1143,17 @@ class Validator(base.BaseValidator):
 
         processed_urls = [response.miner_response.optimized_video_url for response in responses]
 
+        # Extract compression parameters from synapses
+        target_codecs = [synapse.miner_payload.target_codec for synapse in synapses]
+        codec_modes = [synapse.miner_payload.codec_mode for synapse in synapses]
+        target_bitrates = [synapse.miner_payload.target_bitrate for synapse in synapses]
+
         logger.info("Updating task status to 'completed' and pushing results for compression")
         for task_id, original_url, processed_url in zip(task_ids, original_urls, processed_urls):
             await self.update_task_status(task_id, original_url, "completed")
             await self.push_result(task_id, original_url, processed_url)
 
-        asyncio.create_task(self.score_organics_compression(forward_uids.tolist(), responses, original_urls, vmaf_thresholds, timestamp))
+        asyncio.create_task(self.score_organics_compression(forward_uids.tolist(), responses, original_urls, vmaf_thresholds, target_codecs, codec_modes, target_bitrates, timestamp))
 
         end_time = time.time()
         total_time = end_time - organic_start_time

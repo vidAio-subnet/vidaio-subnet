@@ -68,6 +68,9 @@ class CompressionScoringRequest(BaseModel):
     video_ids: List[str]
     uploaded_object_names: List[str]
     vmaf_thresholds: List[float]
+    target_codec: Optional[str] = "av1"  # Target codec family (av1, h264, hevc, vp9, etc.)
+    codec_mode: Optional[str] = "CRF"  # Codec mode: CBR, VBR, or CRF
+    target_bitrate: Optional[float] = 10.0  # Target bitrate in Mbps
     fps: Optional[float] = None
     subsample: Optional[int] = 1
     verbose: Optional[bool] = False
@@ -93,6 +96,9 @@ class OrganicsCompressionScoringRequest(BaseModel):
     distorted_urls: List[str]
     reference_urls: List[str]
     vmaf_thresholds: List[float]
+    target_codecs: Optional[List[str]] = None  # List of target codecs (one per video)
+    codec_modes: Optional[List[str]] = None  # List of codec modes (one per video)
+    target_bitrates: Optional[List[float]] = None  # List of target bitrates (one per video)
     uids: List[int]
     fps: Optional[float] = None
     subsample: Optional[int] = 1
@@ -760,20 +766,63 @@ def is_valid_video(video_path):
         logger.error(f"Unexpected error validating {video_path}: {e}")
         return False
 
+def normalize_codec_family(codec_name: str) -> str:
+    """
+    Normalize codec name to its family for comparison.
+    Returns standard ffprobe codec names to match video metadata.
 
+    Args:
+        codec_name: The codec name (e.g., "av1", "hevc", "h265", "h264")
 
-def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str):
+    Returns:
+        Normalized codec family name matching ffprobe output (e.g., "av1", "hevc", "h264", "vp9")
+    """
+    codec_lower = codec_name.lower().strip()
+
+    # AV1 variants
+    if any(variant in codec_lower for variant in ["av1", "libaom", "libsvtav1", "svt-av1"]):
+        return "av1"
+
+    # H.265/HEVC variants (ffprobe returns "hevc", not "h265")
+    if any(variant in codec_lower for variant in ["hevc", "h265", "x265", "libx265"]):
+        return "hevc"
+
+    # H.264/AVC variants
+    if any(variant in codec_lower for variant in ["h264", "avc", "x264", "libx264"]):
+        return "h264"
+
+    # VP9 variants
+    if "vp9" in codec_lower or "libvpx-vp9" in codec_lower:
+        return "vp9"
+
+    # VP8 variants
+    if "vp8" in codec_lower or "libvpx" in codec_lower:
+        return "vp8"
+
+    # Return as-is if no match (for future codecs)
+    return codec_lower
+
+def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, target_codec: str = "av1",
+                                    codec_mode: str = "CRF", target_bitrate: float = 10.0):
     """
     Validate that distorted video uses specific encoding settings.
+
+    Args:
+        dist_path: Path to the distorted video
+        ref_path: Path to the reference video
+        task: Task type ("compression" or "upscaling")
+        target_codec: Target codec family (av1, hevc, h264, etc.)
+        codec_mode: Codec mode (CRF, CBR, or VBR)
+        target_bitrate: Target bitrate in Mbps (only validated for CBR and VBR modes)
     """
     try:
-        # Enhanced ffprobe to capture both stream and format encoder tags
+        # Enhanced ffprobe to capture both stream and format encoder tags, including bitrate
         cmd = [
             "ffprobe",
             "-v", "error",
             "-select_streams", "v:0",
             "-show_entries", "stream=codec_name,profile,level,sample_aspect_ratio,pix_fmt,"
-                           "width,height,r_frame_rate,color_space,color_primaries,color_transfer",
+                           "width,height,r_frame_rate,color_space,color_primaries,color_transfer,bit_rate",
             "-show_entries", "format=tags=encoder",
             "-show_format",
             "-of", "json",
@@ -798,17 +847,46 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str):
         fps_str = video_stream.get("r_frame_rate", "0/1")
         encoder_tag = ""
 
-        
+        # Get bitrate (prefer stream-level, fallback to format-level)
+        bit_rate = video_stream.get("bit_rate") or format_info.get("bit_rate")
+        bit_rate_mbps = None
+        if bit_rate:
+            bit_rate = int(bit_rate)  # Convert to integer (bits per second)
+            bit_rate_mbps = bit_rate / 1_000_000  # Megabits per second
+            logger.info(f"Distorted video bitrate: {bit_rate_mbps:.2f} Mbps")
+
         # Colorspace properties
         dist_color_space = video_stream.get("color_space", None)
         dist_color_primaries = video_stream.get("color_primaries", None)
         dist_color_transfer = video_stream.get("color_transfer", None)
-        
+
         # Check encoder tags
         stream_tags = video_stream.get("tags", {})
         encoder_tag = stream_tags.get("encoder", "").lower() or format_tags.get("encoder", "").lower()
-        
+
         errors = []
+
+        # Validate bitrate for CBR and VBR modes (skip for CRF mode)
+        if codec_mode and codec_mode.upper() in ["CBR", "VBR"]:
+            if bit_rate_mbps is None:
+                errors.append(f"Bitrate information missing for {codec_mode} mode")
+            else:
+                # Allow up to 10% difference between target and actual bitrate
+                bitrate_tolerance = 0.10  # 10%
+                lower_bound = target_bitrate * (1 - bitrate_tolerance)
+                upper_bound = target_bitrate * (1 + bitrate_tolerance)
+
+                if bit_rate_mbps > upper_bound:
+                    errors.append(
+                        f"Bitrate mismatch for {codec_mode} mode: expected {target_bitrate:.2f} Mbps "
+                        f"(±10%), got {bit_rate_mbps:.2f} Mbps (allowed values must be less than {upper_bound:.2f} Mbps)"
+                    )
+                else:
+                    logger.info(f"✅ Bitrate validation passed for {codec_mode} mode: {bit_rate_mbps:.2f} Mbps (target: {target_bitrate:.2f} Mbps)")
+        elif codec_mode and codec_mode.upper() == "CRF":
+            logger.info(f"ℹ️ Bitrate check skipped for CRF mode (quality-based encoding)")
+        else:
+            logger.warning(f"⚠️ Unknown codec mode: {codec_mode}, skipping bitrate validation")
 
         ref_fps_str = get_video_fps(ref_path, original_str=True)
         if fps_str != ref_fps_str:
@@ -820,14 +898,27 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str):
                 errors.append(f"Resolution must be {ref_width}x{ref_height}, got {width}x{height}")
 
         # REQUIRED encoding checks
-        if task == "compression" and codec != "av1" or task == "upscaling" and codec != "hevc":
-            errors.append(f"Codec must be AV1 for compression & hevc for upscaling, got {codec}")
+        # Normalize both the detected codec and target codec to family names
+        detected_codec_family = normalize_codec_family(codec)
+        expected_codec_family = normalize_codec_family(target_codec) if task == "compression" else "hevc"
+
+        if task == "compression":
+            if detected_codec_family != expected_codec_family:
+                errors.append(f"Codec must be {expected_codec_family} (got {codec} which normalizes to {detected_codec_family})")
+        elif task == "upscaling" and detected_codec_family != "hevc":
+            errors.append(f"Codec must be hevc for upscaling, got {codec}")
         if "ivf" in container.lower():
             errors.append("Container must be MP4, got IVF (incompatible for concatenation)")
         if container not in ["mov,mp4,m4a,3gp,3g2,mj2", "mp4", "isom"]:
             errors.append(f"Container must be proper MP4, got {container}")
-        if profile != "Main":
+
+        # Profile validation based on codec family
+        if detected_codec_family == "av1" and profile != "Main":
             errors.append(f"AV1 profile must be 'Main', got {profile}")
+        elif detected_codec_family == "hevc" and profile not in ["Main", "Main 10"]:
+            errors.append(f"HEVC profile must be 'Main' or 'Main 10', got {profile}")
+        elif detected_codec_family == "h264" and profile not in ["Main", "High", "Baseline"]:
+            errors.append(f"H.264 profile must be 'Main', 'High', or 'Baseline', got {profile}")
         if sar != "1:1":
             errors.append(f"Sample aspect ratio must be 1:1, got {sar}")
         if pix_fmt != "yuv420p":
@@ -913,7 +1004,7 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str):
         
         color_info = f"space={dist_color_space or 'default'}" if dist_color_space else ""
         encoder_status = "SVT-AV1" if is_svtav1 else "Other AV1"
-        return True, f"Valid encoding ({encoder_status}, {width}x{height}, {color_info}, level {level})"
+        return True, f"Valid encoding ({codec}, {width}x{height}, {color_info}, level {level}, bitrate {bit_rate_mbps} Mbps)"
         
     except subprocess.CalledProcessError as e:
         return False, f"ffprobe failed: {e.stderr}"
@@ -1557,11 +1648,18 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 4. Validated distorted video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-            # Validate encoding settings (MUST be AV1 in proper MP4 with specific params)
-            is_valid_encoding, encoding_msg = validate_dist_encoding_settings(dist_path, ref_path, task="compression")
+            # Validate encoding settings (codec must match target_codec)
+            target_codec = request.target_codec or "av1"
+            codec_mode = request.codec_mode or "CRF"
+            target_bitrate = request.target_bitrate or 10.0
+
+            is_valid_encoding, encoding_msg = validate_dist_encoding_settings(
+                dist_path, ref_path, task="compression",
+                target_codec=target_codec, codec_mode=codec_mode, target_bitrate=target_bitrate
+            )
             if not is_valid_encoding:
                 logger.error(f"Invalid encoding settings for distorted video {dist_path}: {encoding_msg}")
-                logger.info(f"  Required: AV1 codec, Main profile, yuv420p, MP4 container, 1:1 SAR")
+                logger.info(f"  Required: {target_codec} codec family, proper profile, yuv420p, MP4 container, 1:1 SAR")
                 vmaf_scores.append(0.0)
                 compression_rates.append(0.9999) 
                 final_scores.append(0.0)
@@ -1710,7 +1808,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             logger.info(f"🎯 Final score is {final_score:.4f}")
             compression_rates.append(compression_rate)
             final_scores.append(final_score)
-            reasons.append(reason)
+            reasons.append(f"{reason}; {encoding_msg}")
 
             step_time = time.time() - uid_start_time
             logger.info(f"🛑 Processed one UID in {step_time:.2f} seconds.")
@@ -2122,8 +2220,14 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             logger.error(f"failed to download distorted video: {dist_url}, error: {e}")
             distorted_video_paths.append(None)
 
-    for idx, (ref_url, dist_path, uid, vmaf_threshold) in enumerate(
-        zip(request.reference_urls, distorted_video_paths, request.uids, request.vmaf_thresholds)
+    # Get target_codecs, codec_modes, and target_bitrates lists, defaulting if not provided
+    target_codecs = request.target_codecs if request.target_codecs else ["av1"] * len(request.uids)
+    codec_modes = request.codec_modes if request.codec_modes else ["CRF"] * len(request.uids)
+    target_bitrates = request.target_bitrates if request.target_bitrates else [10.0] * len(request.uids)
+
+    for idx, (ref_url, dist_path, uid, vmaf_threshold, target_codec, codec_mode, target_bitrate) in enumerate(
+        zip(request.reference_urls, distorted_video_paths, request.uids, request.vmaf_thresholds,
+            target_codecs, codec_modes, target_bitrates)
     ):
         logger.info(f"🧩 processing {uid}.... downloading reference video.... 🧩")
         ref_path = None
@@ -2206,10 +2310,13 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 final_scores.append(0.0)  # 0 = miner penalty
                 continue
 
-            is_valid_encoding, encoding_msg = validate_dist_encoding_settings(dist_path, ref_path, task="compression")
+            is_valid_encoding, encoding_msg = validate_dist_encoding_settings(
+                dist_path, ref_path, task="compression",
+                target_codec=target_codec, codec_mode=codec_mode, target_bitrate=target_bitrate
+            )
             if not is_valid_encoding:
                 logger.error(f"Invalid encoding settings for distorted video {dist_path}: {encoding_msg}")
-                logger.info(f"  Required: AV1 codec, Main profile, yuv420p, MP4 container, 1:1 SAR")
+                logger.info(f"  Required: {target_codec} codec family, proper profile, yuv420p, MP4 container, 1:1 SAR, {codec_mode} mode")
                 vmaf_scores.append(0.0)
                 compression_rates.append(0.9999)
                 final_scores.append(0.0)
@@ -2396,7 +2503,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             # vmaf_scores.append(vmaf_score)
             compression_rates.append(compression_rate)
             final_scores.append(final_score)
-            reasons.append(reason)
+            reasons.append(f"{reason}; {encoding_msg}")
 
             step_time = time.time() - uid_start_time
             logger.info(f"🛑 Processed one UID in {step_time:.2f} seconds.")
