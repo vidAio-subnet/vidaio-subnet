@@ -377,7 +377,7 @@ def validate_chroma_quality_on_frames(ref_frames, dist_frames, threshold=0.7):
     """
     try:
         if abs(len(ref_frames) - len(dist_frames)) > FRAME_TOLERANCE:
-            return False, "Frame count mismatch between reference and distorted"
+            return False, "Frame count mismatch between reference and distorted: {} vs {}".format(len(ref_frames), len(dist_frames))
 
         if not ref_frames or not dist_frames:
             return False, "No frames available for chroma validation"
