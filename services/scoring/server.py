@@ -1652,7 +1652,6 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             color_valid, color_reason = validate_color_channels_on_frames(dist_frames)
             if not color_valid:
                 logger.error(f"UID {uid}: {color_reason}")
-                vmaf_scores.append(0.0)
                 compression_rates.append(0.9999) 
                 final_scores.append(0.0)
                 reasons.append(f"Color validation failed: {color_reason}")
@@ -1675,7 +1674,6 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             )
             if not chroma_valid:
                 logger.error(f"UID {uid}: {chroma_reason}")
-                vmaf_scores.append(0.0)
                 compression_rates.append(0.9999) 
                 final_scores.append(0.0)
                 reasons.append(f"Chroma validation failed: {chroma_reason}")
