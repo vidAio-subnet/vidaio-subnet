@@ -370,7 +370,7 @@ def validate_chroma_quality_on_frames(ref_frames, dist_frames, threshold=0.7):
         tuple: (is_valid, reason)
     """
     try:
-        if len(ref_frames) != len(dist_frames):
+        if abs(len(ref_frames) - len(dist_frames)) > FRAME_TOLERANCE:
             return False, "Frame count mismatch between reference and distorted"
 
         if not ref_frames or not dist_frames:
@@ -1652,7 +1652,6 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             color_valid, color_reason = validate_color_channels_on_frames(dist_frames)
             if not color_valid:
                 logger.error(f"UID {uid}: {color_reason}")
-                vmaf_scores.append(0.0)
                 compression_rates.append(0.9999) 
                 final_scores.append(0.0)
                 reasons.append(f"Color validation failed: {color_reason}")
@@ -1675,7 +1674,6 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             )
             if not chroma_valid:
                 logger.error(f"UID {uid}: {chroma_reason}")
-                vmaf_scores.append(0.0)
                 compression_rates.append(0.9999) 
                 final_scores.append(0.0)
                 reasons.append(f"Chroma validation failed: {chroma_reason}")
@@ -2329,7 +2327,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             color_valid, color_reason = validate_color_channels_on_frames(dist_clip_frames)
             if not color_valid:
                 logger.error(f"UID {uid}: {color_reason}")
-                vmaf_scores.append(0.0)
+                # vmaf_scores.append(0.0)
                 compression_rates.append(0.9999) 
                 final_scores.append(0.0)
                 reasons.append(f"Color validation failed: {color_reason}")
@@ -2356,7 +2354,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             )
             if not chroma_valid:
                 logger.error(f"UID {uid}: {chroma_reason}")
-                vmaf_scores.append(0.0)
+                # vmaf_scores.append(0.0)
                 compression_rates.append(0.9999) 
                 final_scores.append(0.0)
                 reasons.append(f"Chroma validation failed: {chroma_reason}")
