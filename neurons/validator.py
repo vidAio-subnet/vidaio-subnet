@@ -52,9 +52,9 @@ CODEC_MODES = [
 
 # Target bitrates in Mbps for CBR/VBR modes
 TARGET_BITRATES = [
-    10.0,         # 10 Mbps
-    15.0,         # 15 Mbps
     20.0,         # 20 Mbps
+    25.0,         # 25 Mbps
+    30.0,         # 30 Mbps
 ]
 
 
