@@ -1,4 +1,9 @@
 import math
+from services.scoring.codec_aware_scoring import (
+    calculate_normalized_compression_score,
+    apply_codec_aware_scoring,
+    normalize_codec_family_scoring
+)
 
 
 def calculate_compression_score(
@@ -7,21 +12,25 @@ def calculate_compression_score(
     vmaf_threshold: float,
     compression_weight: float = 0.70,
     quality_weight: float = 0.30,
-    soft_threshold_margin: float = 5.0) -> tuple[float, float, float, str]:
+    soft_threshold_margin: float = 5.0,
+    target_codec: str = "av1",
+    codec_mode: str = "CRF",
+    target_bitrate: float = 10.0) -> tuple[float, float, float, str]:
     """
     Calculate compression score that rewards hitting VMAF threshold with good compression.
-    
+
     Scoring Philosophy:
-    - Compression is primary goal (70% weight by default)
+    - Compression is primary goal (70% weight by default for CRF mode)
     - VMAF at/above threshold is rewarded with diminishing returns (30% weight)
-    - 15x compression ratio = 1.0 compression component
+    - 15x compression ratio = 1.0 compression component for AV1 CRF (baseline)
+    - Codec-aware normalization adjusts expectations based on codec efficiency and mode difficulty
     - Exceeding VMAF threshold gives modest bonus (not penalty)
-    
+
     Three scoring zones:
     1. Below hard cutoff (threshold - 5): Score = 0
     2. Soft zone (threshold - 5 to threshold): Gradual recovery
-    3. Above threshold: Full scoring with quality bonus
-    
+    3. Above threshold: Full scoring with quality bonus and codec-aware adjustments
+
     Args:
         vmaf_score: VMAF quality score (0-100)
         compression_rate: Size ratio compressed/original (0-1, lower is better)
@@ -29,7 +38,10 @@ def calculate_compression_score(
         compression_weight: Weight for compression component (default: 0.70)
         quality_weight: Weight for quality component (default: 0.30)
         soft_threshold_margin: Points below threshold before hard cutoff (default: 5.0)
-    
+        target_codec: Target codec (av1, hevc, h264, vp9) for codec-aware scoring
+        codec_mode: Encoding mode (CRF, VBR, CBR) for difficulty adjustment
+        target_bitrate: Target bitrate in Mbps for bitrate difficulty calculation
+
     Returns:
         Tuple of (final_score, compression_component, quality_component, reason)
         where final_score is in range [0.0, 1.0]
@@ -128,81 +140,71 @@ def calculate_compression_score(
         return min(1.0, final_score), compression_component, quality_factor, f"VMAF {vmaf_score:.2f} in soft zone (quality factor: {quality_factor:.2f})"
     
     # ========================================================================
-    # CASE 3: Above Threshold - Full Scoring with Quality Bonus
+    # CASE 3: Above Threshold - Full Scoring with Codec-Aware Adjustments
     # ========================================================================
     else:
         # Calculate how much VMAF exceeds threshold
         vmaf_excess = vmaf_score - vmaf_threshold
         max_vmaf_excess = 100 - vmaf_threshold  # Maximum possible excess to VMAF 100
-        
+
         """
         Quality component rewards exceeding threshold with linear interpolation:
         f(x) = 0.7 + 0.3 * (x / max_excess)
-        
+
         Where x is VMAF points above threshold:
         - At threshold (x=0): component = 0.7
         - At threshold + 25% of range: component = 0.775
         - At threshold + 50% of range: component = 0.85
         - At threshold + 75% of range: component = 0.925
         - At VMAF 100: component = 1.0
-        
+
         Example with threshold=85:
         - At 85: 0.7 + 0.3 * (0/15) = 0.7
         - At 90: 0.7 + 0.3 * (5/15) = 0.8
         - At 95: 0.7 + 0.3 * (10/15) = 0.9
         - At 100: 0.7 + 0.3 * (15/15) = 1.0
-        
+
         This provides steady linear growth from 0.7 to 1.0 as VMAF approaches perfect quality.
         """
         quality_component = 0.7 + 0.3 * min(1.0, vmaf_excess / max_vmaf_excess)
-        
-        # Calculate compression component (compression_rate < 0.80 guaranteed by CASE 0)
-        compression_ratio = 1 / compression_rate
-        
-        if compression_ratio <= 20:
-            """
-            Good compression scoring (1.25x to 20x):
-            f(r) = ((r - 1.25) / 18.75) ^ 1.2
-            
-            Starting from 1.25x to give smooth transition from poor zone:
-            - At 1.25x: component = 0.025
-            - At 2x: component ≈ 0.24
-            - At 5x: component ≈ 0.64
-            - At 10x: component ≈ 0.88
-            - At 15x: component ≈ 0.96
-            - At 20x: component = 1.0
-            
-            The exponent 1.2 provides balanced reward curve.
-            """
-            compression_component = ((compression_ratio - 1.25) / 18.75) ** 1.2 + 0.025
-        else:
-            """
-            Exceptional compression bonus (>20x):
-            f(r) = 1.0 + 0.3 * ln(r / 20)
-            
-            Logarithmic bonus up to 1.3 cap:
-            - At 20x: component = 1.0 (continuous at boundary)
-            - At 30x: component ≈ 1.12
-            - At 40x: component ≈ 1.21
-            - At 60x: component ≈ 1.30 (capped)
-            
-            Natural log ensures smooth transition from power region.
-            """
-            compression_component = 1.0 + 0.3 * math.log(compression_ratio / 20)
-        
-        compression_component = min(1.3, compression_component)
+
+        # Use codec-aware normalized compression scoring
+        # This adjusts expectations based on codec efficiency and mode difficulty
+        normalized_score, total_difficulty, explanation = calculate_normalized_compression_score(
+            actual_compression_rate=compression_rate,
+            codec=target_codec,
+            mode=codec_mode,
+            target_bitrate=target_bitrate,
+            optimal_bitrate=None  # Will use default expectations
+        )
+
+        # The normalized score is already in the 0-1.3 range
+        compression_component = normalized_score
+
+        compression_ratio = 1 / compression_rate if compression_rate > 0 else 1.0
         reason_suffix = "" if compression_ratio < 10 else " (excellent compression)"
-        
+
         """
-        Final score is weighted combination:
-        final_score = w_c * compression_component + w_q * quality_component
-        
-        Default: 70% compression + 30% quality
-        Capped at 1.0 to maintain normalized scoring
+        Apply codec-aware weight adjustments and difficulty bonuses:
+        - For CBR/VBR modes: shifts weight toward quality (harder to compress)
+        - For less efficient codecs (H.264): slightly boosts quality importance
+        - Adds difficulty bonus for harder codec/mode combinations
+
+        This ensures miners with harder tasks (H.264 CBR) get fair scores
+        compared to easier tasks (AV1 CRF) when both perform equally well.
         """
-        final_score = (compression_weight * compression_component + 
-                      quality_weight * quality_component)
-        
+        final_score, adjustment_explanation = apply_codec_aware_scoring(
+            base_compression_component=compression_component,
+            base_quality_component=quality_component,
+            codec=target_codec,
+            mode=codec_mode,
+            compression_weight=compression_weight,
+            quality_weight=quality_weight
+        )
+
         final_score = min(1.0, final_score)
 
-        return final_score, compression_component, quality_component, f"success{reason_suffix}"
+        codec_norm = normalize_codec_family_scoring(target_codec)
+        reason = f"success{reason_suffix} [{codec_norm.upper()}/{codec_mode.upper()}] {adjustment_explanation}"
+
+        return final_score, compression_component, quality_component, reason

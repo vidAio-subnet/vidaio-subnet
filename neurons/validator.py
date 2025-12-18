@@ -29,6 +29,13 @@ from services.video_scheduler.redis_utils import (
 )
 from typing import List, Tuple, Any
 from enum import IntEnum
+from vidaio_subnet_core.validating.codec_feasibility import (
+    validate_compression_parameters,
+    get_minimum_bitrate,
+    adjust_parameters_to_feasible,
+    select_smart_bitrate,
+    get_video_resolution_from_url
+)
 
 
 class VMAF_QUALITY_THRESHOLD(IntEnum):
@@ -561,13 +568,79 @@ class Validator(base.BaseValidator):
 
             target_codec = random.choice(TARGET_CODECS)
             codec_mode = random.choice(CODEC_MODES)
-            target_bitrate = random.choice(TARGET_BITRATES)
-            round_id = str(uuid.uuid4())
 
+            # Get a representative VMAF threshold for validation (use first miner's threshold)
+            representative_vmaf = vmaf_thresholds[0].value if vmaf_thresholds else 89.0
+
+            round_id = str(uuid.uuid4())
             num_miners = len(uids)
 
+            # Build protocol to get video URLs (needed for resolution extraction)
             payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_compression_protocol(
-                vmaf_thresholds, num_miners, version, round_id, target_codec, codec_mode, target_bitrate)
+                vmaf_thresholds, num_miners, version, round_id, target_codec, codec_mode, 10.0)  # Temporary bitrate
+
+            # Extract resolution from first video URL for smart bitrate selection
+            video_width, video_height = None, None
+            if payload_urls:
+                video_width, video_height = get_video_resolution_from_url(payload_urls[0])
+
+            # Use extracted resolution or default to 1080p
+            if video_width and video_height:
+                logger.info(f"📐 Using actual video resolution: {video_width}x{video_height}")
+            else:
+                video_width, video_height = 1920, 1080
+                logger.info(f"📐 Using default resolution: {video_width}x{video_height}")
+
+            # Smart bitrate selection based on actual video resolution
+            target_bitrate = select_smart_bitrate(
+                codec=target_codec,
+                resolution_width=video_width,
+                resolution_height=video_height,
+                vmaf_threshold=representative_vmaf,
+                codec_mode=codec_mode,
+                preference="variable"  # Random within optimal range for testing variety
+            )
+            logger.info(f"🎯 Smart bitrate selection: {target_bitrate:.1f} Mbps for {target_codec}/{codec_mode}")
+
+            # Validate parameters with actual resolution
+            is_valid, reason, suggested_bitrate = validate_compression_parameters(
+                codec=target_codec,
+                resolution_width=video_width,
+                resolution_height=video_height,
+                vmaf_threshold=representative_vmaf,
+                codec_mode=codec_mode,
+                target_bitrate=target_bitrate,
+                safety_margin=1.05  # 5% safety margin (smart selection already includes margin)
+            )
+
+            if not is_valid:
+                logger.warning(f"⚠️ Parameter validation failed: {reason}")
+                # Adjust parameters to be feasible
+                adjusted_vmaf, adjusted_bitrate, adjust_reason = adjust_parameters_to_feasible(
+                    codec=target_codec,
+                    resolution_width=video_width,
+                    resolution_height=video_height,
+                    vmaf_threshold=representative_vmaf,
+                    codec_mode=codec_mode,
+                    target_bitrate=target_bitrate
+                )
+                logger.warning(f"🔧 Adjusted parameters: {adjust_reason}")
+
+                # Update parameters
+                target_bitrate = adjusted_bitrate
+                # Update VMAF thresholds for all miners in batch
+                if adjusted_vmaf != representative_vmaf:
+                    vmaf_thresholds = [VMAF_QUALITY_THRESHOLD(int(adjusted_vmaf))] * len(vmaf_thresholds)
+                    logger.warning(f"📊 Updated VMAF thresholds to {adjusted_vmaf} for entire batch")
+
+                # Rebuild protocol with adjusted parameters
+                payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_compression_protocol(
+                    vmaf_thresholds, num_miners, version, round_id, target_codec, codec_mode, target_bitrate)
+            else:
+                logger.info(f"✅ Parameters validated: {reason}")
+                # Update synapse bitrates with smart-selected bitrate
+                for synapse in synapses:
+                    synapse.miner_payload.target_bitrate = target_bitrate
             logger.warning(f"Built compression challenge protocol with VMAF threshold {vmaf_thresholds}, codec {target_codec}, mode {codec_mode}, bitrate {target_bitrate} Mbps")
             timestamp = datetime.now(timezone.utc).isoformat()
 

@@ -1787,6 +1787,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
 
             # Calculate compression score using the proper formula
             # Check scoring function for details
+            # Now includes codec-aware scoring to normalize based on task difficulty
 
             final_score, compression_component, quality_component, reason = calculate_compression_score(
                 vmaf_score=vmaf_score,
@@ -1794,7 +1795,10 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 vmaf_threshold=vmaf_threshold,
                 compression_weight=COMPRESSION_RATE_WEIGHT,
                 quality_weight=COMPRESSION_VMAF_WEIGHT,
-                soft_threshold_margin=SOFT_THRESHOLD_MARGIN
+                soft_threshold_margin=SOFT_THRESHOLD_MARGIN,
+                target_codec=target_codec,
+                codec_mode=codec_mode,
+                target_bitrate=target_bitrate
             )
            
 
@@ -2481,6 +2485,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
 
             # Calculate compression score using the proper formula
             # Check scoring function for details
+            # Now includes codec-aware scoring to normalize based on task difficulty
 
             final_score, compression_component, quality_component, reason = calculate_compression_score(
                 vmaf_score=vmaf_score,
@@ -2488,7 +2493,10 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 vmaf_threshold=vmaf_threshold,
                 compression_weight=COMPRESSION_RATE_WEIGHT,
                 quality_weight=COMPRESSION_VMAF_WEIGHT,
-                soft_threshold_margin=SOFT_THRESHOLD_MARGIN
+                soft_threshold_margin=SOFT_THRESHOLD_MARGIN,
+                target_codec=target_codec,
+                codec_mode=codec_mode,
+                target_bitrate=target_bitrate
             )
 
 
