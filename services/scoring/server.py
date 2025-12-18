@@ -308,55 +308,51 @@ def extract_frames_from_y4m(y4m_path):
     
     return frames
 
-def validate_color_channels_on_frames(frames):
+def validate_color_channels_on_frames(ref_frames, dist_frames):
     """
-    Validate that frames have color information (not grayscale).
-    Reuses frames already extracted for VMAF calculation.
-
+    Validate color information. If the reference has color, the distorted frame 
+    must also have color. If reference is grayscale, distorted is allowed to be grayscale.
     Args:
-        frames: List of frames (BGR numpy arrays from cv2)
+        ref_frames: List of reference frames (BGR numpy arrays from cv2)
+        dist_frames: List of distorted frames (BGR numpy arrays from cv2)
 
     Returns:
         tuple: (is_valid, reason)
     """
     try:
-        if not frames:
+        if not dist_frames or not ref_frames:
             return False, "No frames available for color validation"
 
-        color_threshold = 5.0  # Same threshold as before
+        color_threshold = 5.0  
         brightness_threshold = 20.0  # Threshold for detecting black/near-black frames
 
-        for i, frame in enumerate(frames):
-            # Convert BGR to RGB
-            img_array = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        for i, (ref_frame, dist_frame) in enumerate(zip(ref_frames, dist_frames)):
+            # Convert both to RGB
+            ref_rgb = cv2.cvtColor(ref_frame, cv2.COLOR_BGR2RGB).astype(float)
+            dist_rgb = cv2.cvtColor(dist_frame, cv2.COLOR_BGR2RGB).astype(float)
 
-            # Extract RGB channels
-            r_channel = img_array[:,:,0].astype(float)
-            g_channel = img_array[:,:,1].astype(float)
-            b_channel = img_array[:,:,2].astype(float)
-
-            # Check if frame is black/near-black (low brightness)
-            avg_brightness = np.mean([r_channel.mean(), g_channel.mean(), b_channel.mean()])
-
-            # Skip validation for black/near-black frames (valid content)
-            if avg_brightness < brightness_threshold:
-                logger.debug(f"Frame {i} is black/near-black (brightness={avg_brightness:.2f}), skipping color validation")
+            # Check reference brightness
+            avg_ref_br = np.mean(ref_rgb)
+            if avg_ref_br < brightness_threshold:
+                logger.info(f"Frame {i} is black/near-black (brightness={avg_ref_br:.2f}), skipping color validation")
                 continue
 
-            # Calculate average difference between channels
-            rg_diff = np.mean(np.abs(r_channel - g_channel))
-            rb_diff = np.mean(np.abs(r_channel - b_channel))
-            gb_diff = np.mean(np.abs(g_channel - b_channel))
+            # Calculate channel differences for Reference
+            ref_diff = max(np.mean(np.abs(ref_rgb[:,:,0] - ref_rgb[:,:,1])),
+                          np.mean(np.abs(ref_rgb[:,:,0] - ref_rgb[:,:,2])),
+                          np.mean(np.abs(ref_rgb[:,:,1] - ref_rgb[:,:,2])))
 
-            # If all channels are nearly identical, it's grayscale
-            if rg_diff < color_threshold and rb_diff < color_threshold and gb_diff < color_threshold:
-                logger.warning(
-                    f"Frame {i} appears to be grayscale: "
-                    f"RG diff={rg_diff:.2f}, RB diff={rb_diff:.2f}, GB diff={gb_diff:.2f}"
-                )
-                return False, f"Video has no color information (grayscale). UV channels required. Frame {i} detected as grayscale."
+            # Calculate channel differences for Distorted
+            dist_diff = max(np.mean(np.abs(dist_rgb[:,:,0] - dist_rgb[:,:,1])),
+                           np.mean(np.abs(dist_rgb[:,:,0] - dist_rgb[:,:,2])),
+                           np.mean(np.abs(dist_rgb[:,:,1] - dist_rgb[:,:,2])))
 
-        return True, "Color channels validated"
+            # If reference has color but distorted does not, reject
+            if ref_diff >= color_threshold and dist_diff < color_threshold:
+                logger.warning(f"Frame {i}: Reference has color ({ref_diff:.2f}), but Distorted is grayscale ({dist_diff:.2f})")
+                return False, f"Color loss detected: Reference is color, but Frame {i} is grayscale."
+
+        return True, "Color channels validated (relative to reference)"
 
     except Exception as e:
         logger.error(f"Error validating color channels: {e}")
@@ -1746,8 +1742,11 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 8.5. Extracted {len(dist_frames)} frames from Y4M for color validation in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
+            # Extract reference frames from Y4M for chroma quality comparison
+            ref_frames = extract_frames_from_y4m(ref_y4m_path)
+
             # Validate color channels (grayscale check)
-            color_valid, color_reason = validate_color_channels_on_frames(dist_frames)
+            color_valid, color_reason = validate_color_channels_on_frames(ref_frames, dist_frames)
             if not color_valid:
                 logger.error(f"UID {uid}: {color_reason}")
                 compression_rates.append(0.9999) 
@@ -1763,9 +1762,6 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 8.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-            # Extract reference frames from Y4M for chroma quality comparison
-            ref_frames = extract_frames_from_y4m(ref_y4m_path)
-            
             # Validate chroma quality (prevents partial UV reduction)
             chroma_valid, chroma_reason = validate_chroma_quality_on_frames(
                 ref_frames, dist_frames, threshold=0.7
@@ -2430,8 +2426,11 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 10.5. Extracted {len(dist_clip_frames)} frames from Y4M for color validation in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
+            # Extract reference frames from Y4M for chroma quality comparison
+            ref_clip_frames_data = extract_frames_from_y4m(ref_y4m_path)
+
             # Validate color channels (grayscale check)
-            color_valid, color_reason = validate_color_channels_on_frames(dist_clip_frames)
+            color_valid, color_reason = validate_color_channels_on_frames(ref_clip_frames_data, dist_clip_frames)
             if not color_valid:
                 logger.error(f"UID {uid}: {color_reason}")
                 # vmaf_scores.append(0.0)
@@ -2452,8 +2451,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 10.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-            # Extract reference frames from Y4M for chroma quality comparison
-            ref_clip_frames_data = extract_frames_from_y4m(ref_y4m_path)
+            
             
             # Validate chroma quality (prevents partial UV reduction)
             chroma_valid, chroma_reason = validate_chroma_quality_on_frames(
