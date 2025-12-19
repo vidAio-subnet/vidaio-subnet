@@ -28,7 +28,7 @@ class MinerManager:
 
         self.config = config
         self.subtensor = bt.subtensor(config=self.config)
-        self.burn_proportion = float(2/3)   # 2/3 of miner emissions burnt
+        self.burn_proportion = float(1/2)   # 1/2 of miner emissions burnt
 
         self.metagraph = metagraph
         self.config_url = CONFIG.sql.url
