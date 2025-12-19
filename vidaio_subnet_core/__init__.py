@@ -12,7 +12,7 @@ __all__ = [
     "CONFIG",
 ]
 
-__version__ = "2.1.21"
+__version__ = "2.1.22"
 
 version_split = __version__.split(".")
 __spec_version__ = (
