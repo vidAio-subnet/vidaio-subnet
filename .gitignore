@@ -33,3 +33,4 @@ services/upscaling/models/
 test.py
 ignore/
 test_outputs/
+unit_tests/
