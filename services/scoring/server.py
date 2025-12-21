@@ -1011,7 +1011,7 @@ def get_video_dimensions(video_path):
     """
     Get video dimensions (width, height) using ffprobe.
     This avoids OpenCV's AV1 decoder warnings.
-    
+
     Returns:
         tuple: (width, height) or (None, None) if failed
     """
@@ -1025,7 +1025,15 @@ def get_video_dimensions(video_path):
             video_path
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=5)
-        width, height = map(int, result.stdout.strip().split(','))
+
+        # Filter out empty strings from split (handles trailing commas like "1920,1080,")
+        dimensions = [x for x in result.stdout.strip().split(',') if x]
+
+        if len(dimensions) != 2:
+            logger.warning(f"ffprobe returned unexpected format for {video_path}: '{result.stdout.strip()}'")
+            return None, None
+
+        width, height = map(int, dimensions)
         return width, height
     except Exception as e:
         logger.warning(f"ffprobe dimension check failed for {video_path}: {e}")
