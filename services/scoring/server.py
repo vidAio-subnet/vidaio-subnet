@@ -1857,21 +1857,21 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             ref_frames = extract_frames_from_y4m(ref_y4m_path)
 
             # Validate color channels (grayscale check)
-            # color_valid, color_reason = validate_color_channels_on_frames(ref_frames, dist_frames)
-            # if not color_valid:
-            #     logger.error(f"UID {uid}: {color_reason}")
-            #     compression_rates.append(0.9999) 
-            #     final_scores.append(0.0)
-            #     reasons.append(f"Color validation failed: {color_reason}")
-            #     if dist_path and os.path.exists(dist_path):
-            #         os.unlink(dist_path)
-            #     if dist_y4m_path and os.path.exists(dist_y4m_path):
-            #         os.unlink(dist_y4m_path)
-            #     continue
+            color_valid, color_reason = validate_color_channels_on_frames(ref_frames, dist_frames)
+            if not color_valid:
+                logger.error(f"UID {uid}: {color_reason}")
+                compression_rates.append(0.9999) 
+                final_scores.append(0.0)
+                reasons.append(f"Color validation failed: {color_reason}")
+                if dist_path and os.path.exists(dist_path):
+                    os.unlink(dist_path)
+                if dist_y4m_path and os.path.exists(dist_y4m_path):
+                    os.unlink(dist_y4m_path)
+                continue
             
-            # logger.info(f"✅ UID {uid}: Color channels validated - {color_reason}")
-            # step_time = time.time() - uid_start_time
-            # logger.info(f"♎️ 8.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            logger.info(f"✅ UID {uid}: Color channels validated - {color_reason}")
+            step_time = time.time() - uid_start_time
+            logger.info(f"♎️ 8.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Validate chroma quality (prevents partial UV reduction)
             chroma_valid, chroma_reason = validate_chroma_quality_on_frames(
@@ -1890,7 +1890,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             
             logger.info(f"✅ UID {uid}: Chroma quality validated - {chroma_reason}")
             step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 8.6. Validated chroma quality in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            logger.info(f"♎️ 8.7. Validated chroma quality in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Calculate compression score using the proper formula
             # Check scoring function for details
@@ -2541,26 +2541,26 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             ref_clip_frames_data = extract_frames_from_y4m(ref_y4m_path)
 
             # Validate color channels (grayscale check)
-            # color_valid, color_reason = validate_color_channels_on_frames(ref_clip_frames_data, dist_clip_frames)
-            # if not color_valid:
-            #     logger.error(f"UID {uid}: {color_reason}")
-            #     # vmaf_scores.append(0.0)
-            #     compression_rates.append(0.9999) 
-            #     final_scores.append(0.0)
-            #     reasons.append(f"Color validation failed: {color_reason}")
-            #     if dist_path and os.path.exists(dist_path):
-            #         os.unlink(dist_path)
-            #     if ref_clip_path and os.path.exists(ref_clip_path):
-            #         os.unlink(ref_clip_path)
-            #     if dist_clip_path and os.path.exists(dist_clip_path):
-            #         os.unlink(dist_clip_path)
-            #     if dist_y4m_path and os.path.exists(dist_y4m_path):
-            #         os.unlink(dist_y4m_path)
-            #     continue
+            color_valid, color_reason = validate_color_channels_on_frames(ref_clip_frames_data, dist_clip_frames)
+            if not color_valid:
+                logger.error(f"UID {uid}: {color_reason}")
+                # vmaf_scores.append(0.0)
+                compression_rates.append(0.9999) 
+                final_scores.append(0.0)
+                reasons.append(f"Color validation failed: {color_reason}")
+                if dist_path and os.path.exists(dist_path):
+                    os.unlink(dist_path)
+                if ref_clip_path and os.path.exists(ref_clip_path):
+                    os.unlink(ref_clip_path)
+                if dist_clip_path and os.path.exists(dist_clip_path):
+                    os.unlink(dist_clip_path)
+                if dist_y4m_path and os.path.exists(dist_y4m_path):
+                    os.unlink(dist_y4m_path)
+                continue
             
-            # logger.info(f"✅ UID {uid}: Color channels validated - {color_reason}")
-            # step_time = time.time() - uid_start_time
-            # logger.info(f"♎️ 10.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            logger.info(f"✅ UID {uid}: Color channels validated - {color_reason}")
+            step_time = time.time() - uid_start_time
+            logger.info(f"♎️ 10.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             
             
@@ -2586,7 +2586,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             
             logger.info(f"✅ UID {uid}: Chroma quality validated - {chroma_reason}")
             step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 10.6. Validated chroma quality in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            logger.info(f"♎️ 10.7. Validated chroma quality in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Calculate compression score using the proper formula
             # Check scoring function for details
