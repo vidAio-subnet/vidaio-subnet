@@ -308,55 +308,166 @@ def extract_frames_from_y4m(y4m_path):
     
     return frames
 
-def validate_color_channels_on_frames(ref_frames, dist_frames):
+import numpy as np
+import cv2
+
+import numpy as np
+import cv2
+
+def validate_color_channels_on_frames(
+    ref_frames,
+    dist_frames,
+    max_gray_ratio=0.50,
+    brightness_threshold=20.0,
+    ref_color_threshold=6.0,
+    dist_gray_threshold=4.0,
+    min_checked_frames=30,
+    debug_collect_indices=False,
+):
     """
-    Validate color information. If the reference has color, the distorted frame 
-    must also have color. If reference is grayscale, distorted is allowed to be grayscale.
+    Validate color preservation between a reference and a distorted video sequence.
+
+    The function compares per-frame color information using a simple RGB channel
+    difference heuristic and evaluates color consistency over time rather than
+    on a single-frame basis.
+
+    Design principles:
+      - Frames that are very dark or nearly grayscale in the reference are ignored,
+        as they do not provide reliable evidence of color content.
+      - Only frames with clear color presence in the reference are evaluated.
+      - A limited fraction of frames with reduced chroma in the distorted sequence
+        is tolerated to account for natural content variation and encoding effects.
+
     Args:
-        ref_frames: List of reference frames (BGR numpy arrays from cv2)
-        dist_frames: List of distorted frames (BGR numpy arrays from cv2)
+        ref_frames (List[np.ndarray]):
+            Reference video frames (BGR format, as returned by OpenCV).
+        dist_frames (List[np.ndarray]):
+            Distorted/processed video frames (BGR format, as returned by OpenCV).
+        max_gray_ratio (float):
+            Maximum allowed fraction (0.0–1.0) of evaluated frames that may exhibit
+            reduced color variation in the distorted video.
+        brightness_threshold (float):
+            Minimum average brightness of a reference frame required for evaluation.
+        ref_color_threshold (float):
+            Minimum RGB channel-difference value for a reference frame to be
+            considered as having meaningful color content.
+        dist_gray_threshold (float):
+            Maximum RGB channel-difference value below which a distorted frame is
+            considered to have low color variation.
+        min_checked_frames (int):
+            Minimum number of evaluated frames required before applying strict
+            ratio-based validation.
+        debug_collect_indices (bool):
+            If True, frame indices contributing to validation failures are included
+            in the returned message for diagnostic purposes.
 
     Returns:
-        tuple: (is_valid, reason)
+        Tuple[bool, str]:
+            A tuple containing:
+              - is_valid (bool): True if color preservation is acceptable.
+              - reason (str): Human-readable explanation of the validation result.
     """
     try:
-        if not dist_frames or not ref_frames:
+        if not ref_frames or not dist_frames:
             return False, "No frames available for color validation"
 
-        color_threshold = 5.0  
-        brightness_threshold = 20.0  # Threshold for detecting black/near-black frames
+        checked_frames = 0
+        low_color_frames = 0
+        low_color_indices = []
 
         for i, (ref_frame, dist_frame) in enumerate(zip(ref_frames, dist_frames)):
-            # Convert both to RGB
-            ref_rgb = cv2.cvtColor(ref_frame, cv2.COLOR_BGR2RGB).astype(float)
-            dist_rgb = cv2.cvtColor(dist_frame, cv2.COLOR_BGR2RGB).astype(float)
+            # Convert from BGR (OpenCV default) to RGB for channel comparison
+            ref_rgb = cv2.cvtColor(ref_frame, cv2.COLOR_BGR2RGB).astype(np.float32)
+            dist_rgb = cv2.cvtColor(dist_frame, cv2.COLOR_BGR2RGB).astype(np.float32)
 
-            # Check reference brightness
-            avg_ref_br = np.mean(ref_rgb)
-            if avg_ref_br < brightness_threshold:
-                logger.info(f"Frame {i} is black/near-black (brightness={avg_ref_br:.2f}), skipping color validation")
+            # Skip very dark reference frames
+            avg_ref_brightness = float(np.mean(ref_rgb))
+            if avg_ref_brightness < brightness_threshold:
                 continue
 
-            # Calculate channel differences for Reference
-            ref_diff = max(np.mean(np.abs(ref_rgb[:,:,0] - ref_rgb[:,:,1])),
-                          np.mean(np.abs(ref_rgb[:,:,0] - ref_rgb[:,:,2])),
-                          np.mean(np.abs(ref_rgb[:,:,1] - ref_rgb[:,:,2])))
+            # Estimate color variation in the reference frame
+            ref_color_diff = max(
+                float(np.mean(np.abs(ref_rgb[:, :, 0] - ref_rgb[:, :, 1]))),
+                float(np.mean(np.abs(ref_rgb[:, :, 0] - ref_rgb[:, :, 2]))),
+                float(np.mean(np.abs(ref_rgb[:, :, 1] - ref_rgb[:, :, 2]))),
+            )
 
-            # Calculate channel differences for Distorted
-            dist_diff = max(np.mean(np.abs(dist_rgb[:,:,0] - dist_rgb[:,:,1])),
-                           np.mean(np.abs(dist_rgb[:,:,0] - dist_rgb[:,:,2])),
-                           np.mean(np.abs(dist_rgb[:,:,1] - dist_rgb[:,:,2])))
+            # Only evaluate frames with sufficient color information in the reference
+            if ref_color_diff < ref_color_threshold:
+                continue
 
-            # If reference has color but distorted does not, reject
-            if ref_diff >= color_threshold and dist_diff < color_threshold:
-                logger.warning(f"Frame {i}: Reference has color ({ref_diff:.2f}), but Distorted is grayscale ({dist_diff:.2f})")
-                return False, f"Color loss detected: Reference is color, but Frame {i} is grayscale."
+            checked_frames += 1
 
-        return True, "Color channels validated (relative to reference)"
+            # Estimate color variation in the distorted frame
+            dist_color_diff = max(
+                float(np.mean(np.abs(dist_rgb[:, :, 0] - dist_rgb[:, :, 1]))),
+                float(np.mean(np.abs(dist_rgb[:, :, 0] - dist_rgb[:, :, 2]))),
+                float(np.mean(np.abs(dist_rgb[:, :, 1] - dist_rgb[:, :, 2]))),
+            )
+
+            # Count frames with noticeably reduced color variation
+            if dist_color_diff < dist_gray_threshold:
+                low_color_frames += 1
+                if debug_collect_indices:
+                    low_color_indices.append(i)
+
+                logger.debug(
+                    f"Frame {i}: reduced color variation detected "
+                    f"(ref_diff={ref_color_diff:.2f}, dist_diff={dist_color_diff:.2f})"
+                )
+
+        if checked_frames == 0:
+            return True, (
+                "No reference frames with sufficient color information were found; "
+                "color validation was skipped"
+            )
+
+        low_color_ratio = low_color_frames / checked_frames
+
+        logger.info(
+            "Color validation summary: "
+            f"{low_color_frames}/{checked_frames} frames with reduced color variation "
+            f"({low_color_ratio:.2%}); allowed maximum {max_gray_ratio:.2%}"
+        )
+
+        # Handle small sample sizes conservatively
+        if checked_frames < min_checked_frames:
+            if low_color_ratio > max_gray_ratio:
+                return False, (
+                    f"Color preservation check failed on a small sample: "
+                    f"{low_color_ratio:.1%} of evaluated frames show reduced color variation "
+                    f"(>{max_gray_ratio:.0%} allowed)"
+                )
+            return True, (
+                f"Color preservation validated on a small sample: "
+                f"{low_color_ratio:.1%} of frames show reduced color variation"
+            )
+
+        # Standard ratio-based decision
+        if low_color_ratio > max_gray_ratio:
+            if debug_collect_indices and low_color_indices:
+                preview = ", ".join(map(str, low_color_indices[:20]))
+                extra = "" if len(low_color_indices) <= 20 else f" ...(+{len(low_color_indices) - 20} more)"
+                return False, (
+                    f"Color preservation failed: {low_color_ratio:.1%} of evaluated frames "
+                    f"exhibit reduced color variation (>{max_gray_ratio:.0%} allowed). "
+                    f"Example frame indices: [{preview}{extra}]"
+                )
+
+            return False, (
+                f"Color preservation failed: {low_color_ratio:.1%} of evaluated frames "
+                f"exhibit reduced color variation (>{max_gray_ratio:.0%} allowed)"
+            )
+
+        return True, (
+            f"Color preservation validated: {low_color_ratio:.1%} of evaluated frames "
+            f"exhibit reduced color variation (≤{max_gray_ratio:.0%} allowed)"
+        )
 
     except Exception as e:
-        logger.error(f"Error validating color channels: {e}")
-        return False, f"Error validating color: {str(e)}"
+        logger.error(f"Error during color channel validation: {e}")
+        return False, f"Error during color validation: {str(e)}"
+
 
 def validate_chroma_quality_on_frames(ref_frames, dist_frames, threshold=0.7):
     """
@@ -1754,21 +1865,21 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             ref_frames = extract_frames_from_y4m(ref_y4m_path)
 
             # Validate color channels (grayscale check)
-            # color_valid, color_reason = validate_color_channels_on_frames(ref_frames, dist_frames)
-            # if not color_valid:
-            #     logger.error(f"UID {uid}: {color_reason}")
-            #     compression_rates.append(0.9999) 
-            #     final_scores.append(0.0)
-            #     reasons.append(f"Color validation failed: {color_reason}")
-            #     if dist_path and os.path.exists(dist_path):
-            #         os.unlink(dist_path)
-            #     if dist_y4m_path and os.path.exists(dist_y4m_path):
-            #         os.unlink(dist_y4m_path)
-            #     continue
+            color_valid, color_reason = validate_color_channels_on_frames(ref_frames, dist_frames)
+            if not color_valid:
+                logger.error(f"UID {uid}: {color_reason}")
+                compression_rates.append(0.9999) 
+                final_scores.append(0.0)
+                reasons.append(f"Color validation failed: {color_reason}")
+                if dist_path and os.path.exists(dist_path):
+                    os.unlink(dist_path)
+                if dist_y4m_path and os.path.exists(dist_y4m_path):
+                    os.unlink(dist_y4m_path)
+                continue
             
-            # logger.info(f"✅ UID {uid}: Color channels validated - {color_reason}")
-            # step_time = time.time() - uid_start_time
-            # logger.info(f"♎️ 8.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            logger.info(f"✅ UID {uid}: Color channels validated - {color_reason}")
+            step_time = time.time() - uid_start_time
+            logger.info(f"♎️ 8.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Validate chroma quality (prevents partial UV reduction)
             chroma_valid, chroma_reason = validate_chroma_quality_on_frames(
@@ -1787,7 +1898,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             
             logger.info(f"✅ UID {uid}: Chroma quality validated - {chroma_reason}")
             step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 8.6. Validated chroma quality in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            logger.info(f"♎️ 8.7. Validated chroma quality in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Calculate compression score using the proper formula
             # Check scoring function for details
@@ -2438,26 +2549,26 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             ref_clip_frames_data = extract_frames_from_y4m(ref_y4m_path)
 
             # Validate color channels (grayscale check)
-            # color_valid, color_reason = validate_color_channels_on_frames(ref_clip_frames_data, dist_clip_frames)
-            # if not color_valid:
-            #     logger.error(f"UID {uid}: {color_reason}")
-            #     # vmaf_scores.append(0.0)
-            #     compression_rates.append(0.9999) 
-            #     final_scores.append(0.0)
-            #     reasons.append(f"Color validation failed: {color_reason}")
-            #     if dist_path and os.path.exists(dist_path):
-            #         os.unlink(dist_path)
-            #     if ref_clip_path and os.path.exists(ref_clip_path):
-            #         os.unlink(ref_clip_path)
-            #     if dist_clip_path and os.path.exists(dist_clip_path):
-            #         os.unlink(dist_clip_path)
-            #     if dist_y4m_path and os.path.exists(dist_y4m_path):
-            #         os.unlink(dist_y4m_path)
-            #     continue
+            color_valid, color_reason = validate_color_channels_on_frames(ref_clip_frames_data, dist_clip_frames)
+            if not color_valid:
+                logger.error(f"UID {uid}: {color_reason}")
+                # vmaf_scores.append(0.0)
+                compression_rates.append(0.9999) 
+                final_scores.append(0.0)
+                reasons.append(f"Color validation failed: {color_reason}")
+                if dist_path and os.path.exists(dist_path):
+                    os.unlink(dist_path)
+                if ref_clip_path and os.path.exists(ref_clip_path):
+                    os.unlink(ref_clip_path)
+                if dist_clip_path and os.path.exists(dist_clip_path):
+                    os.unlink(dist_clip_path)
+                if dist_y4m_path and os.path.exists(dist_y4m_path):
+                    os.unlink(dist_y4m_path)
+                continue
             
-            # logger.info(f"✅ UID {uid}: Color channels validated - {color_reason}")
-            # step_time = time.time() - uid_start_time
-            # logger.info(f"♎️ 10.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            logger.info(f"✅ UID {uid}: Color channels validated - {color_reason}")
+            step_time = time.time() - uid_start_time
+            logger.info(f"♎️ 10.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             
             
@@ -2483,7 +2594,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             
             logger.info(f"✅ UID {uid}: Chroma quality validated - {chroma_reason}")
             step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 10.6. Validated chroma quality in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            logger.info(f"♎️ 10.7. Validated chroma quality in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Calculate compression score using the proper formula
             # Check scoring function for details
