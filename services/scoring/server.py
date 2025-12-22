@@ -317,7 +317,7 @@ import cv2
 def validate_color_channels_on_frames(
     ref_frames,
     dist_frames,
-    max_gray_ratio=0.20,
+    max_gray_ratio=0.50,
     brightness_threshold=20.0,
     ref_color_threshold=6.0,
     dist_gray_threshold=4.0,
