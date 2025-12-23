@@ -957,10 +957,20 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
         # Get bitrate (prefer stream-level, fallback to format-level)
         bit_rate = video_stream.get("bit_rate") or format_info.get("bit_rate")
         bit_rate_mbps = None
+        dist_bpp = None
         if bit_rate:
             bit_rate = int(bit_rate)  # Convert to integer (bits per second)
             bit_rate_mbps = bit_rate / 1_000_000  # Megabits per second
             logger.info(f"Distorted video bitrate: {bit_rate_mbps:.2f} Mbps")
+
+        # Bits-per-pixel for distorted video (requires bitrate, fps, width, height)
+        try:
+            num, denom = fps_str.split('/')
+            fps_val = float(num) / float(denom) if float(denom) != 0 else 0.0
+            if bit_rate and fps_val > 0 and width and height:
+                dist_bpp = bit_rate / (fps_val * width * height)
+        except Exception:
+            pass
 
         # Colorspace properties
         dist_color_space = video_stream.get("color_space", None)
@@ -1031,13 +1041,16 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
         if pix_fmt != "yuv420p":
             errors.append(f"Pixel format must be yuv420p, got {pix_fmt}")
 
+        ref_bpp = None
+
         # Colorspace validation
         if ref_path and os.path.exists(ref_path):
+            ref_bit_rate = None
             try:
                 # Get reference colorspace
                 ref_cmd = [
                     "ffprobe", "-v", "error", "-select_streams", "v:0",
-                    "-show_entries", "stream=color_space,color_primaries,color_transfer",
+                    "-show_entries", "stream=color_space,color_primaries,color_transfer,width,height,r_frame_rate,bit_rate",
                     "-of", "json", ref_path
                 ]
                 ref_result = subprocess.run(ref_cmd, capture_output=True, text=True, 
@@ -1048,6 +1061,10 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
                 ref_color_space = ref_stream.get("color_space", None)
                 ref_color_primaries = ref_stream.get("color_primaries", None)
                 ref_color_transfer = ref_stream.get("color_transfer", None)
+                ref_width = ref_stream.get("width")
+                ref_height = ref_stream.get("height")
+                ref_fps_raw = ref_stream.get("r_frame_rate")
+                ref_bit_rate = ref_stream.get("bit_rate") or ref_info.get("format", {}).get("bit_rate")
                 
                 # Colorspace - mismatch affects color accuracy
                 if (ref_color_space and dist_color_space and 
@@ -1067,6 +1084,16 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
                 logger.warning(f"  Ref: space={ref_color_space}, primaries={ref_color_primaries}, transfer={ref_color_transfer}")
                 logger.warning(f"  Dist: space={dist_color_space}, primaries={dist_color_primaries}, transfer={dist_color_transfer}")
                     # NOT a hard fail - allows innovation in HDR/Dolby Vision/etc.
+
+                # Bits-per-pixel for reference video
+                try:
+                    if ref_bit_rate and ref_fps_raw and ref_width and ref_height:
+                        num, denom = ref_fps_raw.split('/')
+                        ref_fps_val = float(num) / float(denom) if float(denom) != 0 else 0.0
+                        if ref_fps_val > 0:
+                            ref_bpp = int(ref_bit_rate) / (ref_fps_val * ref_width * ref_height)
+                except Exception:
+                    pass
                 
             except subprocess.CalledProcessError:
                 logger.warning("Could not read reference colorspace info")
@@ -1111,7 +1138,18 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
         
         color_info = f"space={dist_color_space or 'default'}" if dist_color_space else ""
         encoder_status = "SVT-AV1" if is_svtav1 else "Other AV1"
-        return True, f"Valid encoding ({codec}, {width}x{height}, {color_info}, level {level}, bitrate {bit_rate_mbps} Mbps)"
+
+        bit_rate_display = f"{bit_rate_mbps:.2f}" if bit_rate_mbps is not None else "unknown"
+        status_parts = [f"Valid encoding ({codec}, {width}x{height}, {color_info}, level {level}, fps {fps_str}, bitrate {bit_rate_display} Mbps)"]
+        if codec_mode:
+            status_parts.append(f"mode={codec_mode}")
+        if target_bitrate is not None:
+            status_parts.append(f"target_bitrate={target_bitrate} Mbps")
+        if dist_bpp is not None:
+            status_parts.append(f"dist_bpp={dist_bpp:.4f}")
+        if ref_bpp is not None:
+            status_parts.append(f"ref_bpp={ref_bpp:.4f}")
+        return True, "; ".join(status_parts)
         
     except subprocess.CalledProcessError as e:
         return False, f"ffprobe failed: {e.stderr}"
