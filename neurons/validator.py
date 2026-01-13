@@ -58,8 +58,8 @@ TARGET_BITRATES = [
 ]
 
 
-SLEEP_TIME_LOW = 60 * 3 # 3 minutes
-SLEEP_TIME_HIGH = 60 * 4 # 4 minutes
+SLEEP_TIME_LOW = 60 * 5 # 5 minutes
+SLEEP_TIME_HIGH = 60 * 6 # 6 minutes
 
 class Validator(base.BaseValidator):
     def __init__(self):
@@ -529,7 +529,7 @@ class Validator(base.BaseValidator):
             
             sleep_time = random.uniform(SLEEP_TIME_LOW, SLEEP_TIME_HIGH) - batch_processed_time
             logger.info(f"Completed upscaling batch within {batch_processed_time:.2f} seconds")
-            logger.info(f"Sleeping for 3-4 minutes before next upscaling batch")
+            logger.info(f"Sleeping for 5-6 minutes before next upscaling batch")
             
             await asyncio.sleep(sleep_time)
 
@@ -595,7 +595,7 @@ class Validator(base.BaseValidator):
             sleep_time = random.uniform(SLEEP_TIME_LOW, SLEEP_TIME_HIGH) - batch_processed_time
 
             logger.info(f"Completed compression batch within {batch_processed_time:.2f} seconds")
-            logger.info(f"Sleeping for 3-4 minutes before next compression batch")
+            logger.info(f"Sleeping for 5-6 minutes before next compression batch")
             
             await asyncio.sleep(sleep_time)
 
@@ -663,7 +663,7 @@ class Validator(base.BaseValidator):
                 "content_lengths": content_lengths,
                 "task_types": task_types
             },
-            timeout=240
+            timeout=300
         )
 
         response_data = score_response.json()
@@ -774,7 +774,7 @@ class Validator(base.BaseValidator):
                 "codec_mode": codec_mode,
                 "target_bitrate": target_bitrate
             },
-            timeout=240
+            timeout=300
         )
 
         response_data = score_response.json()
