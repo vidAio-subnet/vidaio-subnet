@@ -15,6 +15,7 @@ import asyncio
 import secrets
 import uuid
 import base64
+import time
 from typing import Optional, Dict, Any, List, Tuple
 from dataclasses import dataclass
 from pathlib import Path
@@ -168,7 +169,7 @@ class ValidatorTEEHelper:
             session_key_id=result["session_key_id"],
             session_key=base64.b64decode(result["encrypted_session_key"]),
             enclave_report=EnclaveReport.from_dict(result["enclave_report"]) if result.get("enclave_report") else None,
-            attestation_time=asyncio.get_event_loop().time(),
+            attestation_time=time.time(),
             is_valid=True,
         )
         
@@ -461,7 +462,7 @@ class ValidatorTEEHelper:
         Returns:
             Number of sessions cleaned up
         """
-        current_time = asyncio.get_event_loop().time()
+        current_time = time.time()
         expired = []
         
         for miner_uid, session in self.miner_sessions.items():
