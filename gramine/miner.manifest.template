@@ -90,6 +90,15 @@ isvsvn = 1
 # Enable remote attestation (DCAP)
 remote_attestation = "dcap"
 
+# Performance optimizations for video processing:
+# Use exitless syscalls to reduce enclave exit/entry overhead (~5-10x faster I/O)
+# This is critical for high-throughput video processing where many reads/writes occur
+insecure__use_exitless_syscalls = true
+
+# Enable asynchronous page swapping if EPC is exceeded
+# Reduces latency spikes during memory pressure
+insecure__use_async_paging = true
+
 # Trusted files (integrity verified at load time)
 # These files must be measured and their hashes included in MRENCLAVE
 trusted_files = [
