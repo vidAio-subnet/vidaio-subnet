@@ -1,0 +1,144 @@
+# Gramine Manifest for vidaio-subnet Miner TEE
+#
+# This manifest configures the miner to run inside an Intel SGX enclave
+# using Gramine. It defines the enclave properties, file system mounts,
+# and security settings.
+#
+# Build with:
+#   gramine-manifest -Dlog_level=error miner.manifest.template miner.manifest
+#   gramine-sgx-sign --manifest miner.manifest --output miner.manifest.sgx
+#
+# Run with:
+#   gramine-sgx miner
+
+################################################################################
+# Gramine LibOS Configuration
+################################################################################
+
+[libos]
+entrypoint = "{{ python_path }}"
+
+[loader]
+entrypoint = "file:{{ gramine.libos }}"
+log_level = "{{ log_level }}"
+
+# Arguments for Python interpreter
+argv = ["python3", "-m", "neurons.miner_tee", "--tee-mode"]
+
+[loader.env]
+LD_LIBRARY_PATH = "/lib:/lib/x86_64-linux-gnu:/usr/lib:/usr/lib/x86_64-linux-gnu:{{ arch_libdir }}"
+PYTHONPATH = "/app"
+HOME = "/home/user"
+PATH = "/usr/bin:/bin"
+# Environment variables for TEE mode
+TEE_ENABLED = "true"
+# Disable Python bytecode caching (not needed in enclave)
+PYTHONDONTWRITEBYTECODE = "1"
+
+################################################################################
+# File System Configuration
+################################################################################
+
+[fs]
+# Mount the root filesystem
+mounts = [
+    # System libraries
+    { path = "/lib", uri = "file:{{ gramine.runtimedir }}" },
+    { path = "/lib/x86_64-linux-gnu", uri = "file:/lib/x86_64-linux-gnu" },
+    { path = "/usr/lib", uri = "file:/usr/lib" },
+    { path = "/usr/lib/x86_64-linux-gnu", uri = "file:/usr/lib/x86_64-linux-gnu" },
+    
+    # Python installation
+    { path = "{{ python_stdlib }}", uri = "file:{{ python_stdlib }}" },
+    { path = "{{ python_distlib }}", uri = "file:{{ python_distlib }}" },
+    
+    # Application code (read-only)
+    { path = "/app", uri = "file:/app" },
+    
+    # Temporary files (inside enclave)
+    { path = "/tmp", uri = "file:/tmp", type = "tmpfs" },
+    
+    # Video processing workspace (encrypted)
+    { path = "/videos", uri = "file:/tmp/videos", type = "encrypted", key_name = "video_key" },
+    
+    # Configuration
+    { path = "/etc", uri = "file:/etc" },
+    
+    # Required for attestation
+    { path = "/dev/attestation", uri = "dev:/dev/attestation" },
+]
+
+################################################################################
+# SGX-specific Settings
+################################################################################
+
+[sgx]
+# Enable debug mode during development (set to false for production)
+debug = {{ 'true' if debug_mode else 'false' }}
+
+# Enclave size - must be power of 2
+# 8GB should be sufficient for video processing
+enclave_size = "8G"
+
+# Number of threads the enclave can run concurrently
+thread_num = 64
+
+# Enable ISV Product ID for versioning
+isvprodid = 1
+isvsvn = 1
+
+# Enable remote attestation (DCAP)
+remote_attestation = "dcap"
+
+# Trusted files (integrity verified at load time)
+# These files must be measured and their hashes included in MRENCLAVE
+trusted_files = [
+    "file:{{ gramine.libos }}",
+    "file:{{ gramine.runtimedir }}/",
+    "file:{{ python_path }}",
+    "file:{{ python_stdlib }}/",
+    "file:{{ python_distlib }}/",
+    "file:/app/",
+]
+
+# Allowed files (not integrity-verified, but accessible)
+allowed_files = [
+    "file:/etc/resolv.conf",
+    "file:/etc/hosts",
+    "file:/etc/nsswitch.conf",
+    "file:/etc/ssl/certs/",
+    "file:/tmp/",
+]
+
+# CPU features required
+# AVX/AVX2 needed for optimized video processing
+cpu_features = [
+    "avx",
+    "avx2",
+]
+
+################################################################################
+# Encrypted Files Configuration
+################################################################################
+
+# Key for encrypting video files inside the enclave
+# In production, this key would be provisioned via Secret Provisioning
+[fs.keys]
+video_key = { size = 256, provider = "gramine" }
+
+################################################################################
+# System Configuration
+################################################################################
+
+[sys]
+# Increase file descriptor limit for video processing
+fds.max_num = 65536
+
+# Stack size per thread
+stack.size = "4M"
+
+# Disable insecure features
+insecure__allow_eventfd = false
+
+# Enable external SIGTERM for graceful shutdown
+insecure__allow_sigterm_injection = true

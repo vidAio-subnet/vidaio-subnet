@@ -1,0 +1,136 @@
+# Dockerfile for TEE-enabled Miner (Intel SGX with Gramine)
+#
+# This Dockerfile builds a miner that runs inside an Intel SGX enclave
+# using Gramine. It includes:
+# - Gramine with SGX support
+# - Intel RAISR for CPU-based upscaling
+# - SVT-AV1 for CPU-based compression
+# - All necessary Python dependencies
+#
+# Build:
+#   docker build -f docker/Dockerfile.miner-tee -t vidaio-miner-tee .
+#
+# Run:
+#   docker run --device /dev/sgx_enclave --device /dev/sgx_provision \
+#     -v /var/run/aesmd:/var/run/aesmd \
+#     vidaio-miner-tee
+
+FROM gramineproject/gramine:v1.6.2-jammy
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV TEE_ENABLED=true
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    python3-dev \
+    ffmpeg \
+    git \
+    curl \
+    wget \
+    build-essential \
+    cmake \
+    nasm \
+    yasm \
+    pkg-config \
+    libssl-dev \
+    libffi-dev \
+    # SVT-AV1 dependencies
+    libsvtav1enc-dev \
+    libsvtav1dec-dev \
+    # x265 and x264 for fallback encoding
+    libx265-dev \
+    libx264-dev \
+    # Video processing libraries
+    libavcodec-dev \
+    libavformat-dev \
+    libavutil-dev \
+    libswscale-dev \
+    # Networking
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install SVT-AV1 from source for latest version
+RUN git clone --depth 1 --branch v1.8.0 https://gitlab.com/AOMediaCodec/SVT-AV1.git /tmp/svt-av1 \
+    && cd /tmp/svt-av1/Build \
+    && cmake .. -G"Unix Makefiles" -DCMAKE_BUILD_TYPE=Release \
+    && make -j$(nproc) \
+    && make install \
+    && ldconfig \
+    && rm -rf /tmp/svt-av1
+
+# Build ffmpeg with SVT-AV1 and other codecs
+RUN git clone --depth 1 --branch n6.1 https://github.com/FFmpeg/FFmpeg.git /tmp/ffmpeg \
+    && cd /tmp/ffmpeg \
+    && ./configure \
+    --enable-gpl \
+    --enable-nonfree \
+    --enable-libsvtav1 \
+    --enable-libx264 \
+    --enable-libx265 \
+    --enable-openssl \
+    --disable-debug \
+    --disable-doc \
+    && make -j$(nproc) \
+    && make install \
+    && rm -rf /tmp/ffmpeg
+
+# Install Intel RAISR (Video Super Resolution Library)
+# Note: This builds the RAISR filter for ffmpeg
+RUN git clone --depth 1 https://github.com/OpenVisualCloud/Video-Super-Resolution-Library.git /tmp/raisr \
+    && cd /tmp/raisr \
+    && mkdir build && cd build \
+    && cmake .. -DCMAKE_BUILD_TYPE=Release \
+    && make -j$(nproc) \
+    && make install \
+    && ldconfig \
+    && rm -rf /tmp/raisr
+
+# Create application directory
+WORKDIR /app
+
+# Copy requirements first for caching
+COPY requirements.txt /app/
+RUN pip3 install --no-cache-dir -r requirements.txt
+
+# Install additional TEE/crypto dependencies
+RUN pip3 install --no-cache-dir \
+    cryptography>=41.0.0 \
+    aiohttp>=3.9.0 \
+    boto3>=1.34.0 \
+    loguru>=0.7.0
+
+# Copy application code
+COPY . /app/
+
+# Copy Gramine manifests
+COPY gramine/ /app/gramine/
+
+# Generate Gramine signing key and build manifest
+WORKDIR /app/gramine
+RUN gramine-sgx-gen-private-key \
+    && make DEBUG_MODE=0 LOG_LEVEL=error
+
+# Extract and display MRENCLAVE
+RUN echo "=== MRENCLAVE ===" \
+    && gramine-sgx-sigstruct-view miner.sig | grep mr_enclave
+
+# Set working directory back to app
+WORKDIR /app
+
+# Expose axon port
+EXPOSE 8091
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python3 -c "import socket; s=socket.socket(); s.connect(('localhost', 8091)); s.close()" || exit 1
+
+# Entry point - run miner inside SGX enclave
+ENTRYPOINT ["gramine-sgx", "/app/gramine/miner"]
+
+# Alternative entry point for direct mode (debugging without SGX)
+# ENTRYPOINT ["gramine-direct", "/app/gramine/miner"]

@@ -1,0 +1,99 @@
+# Docker Compose for TEE-enabled Miner
+#
+# This configuration runs the miner inside an Intel SGX enclave.
+#
+# Requirements:
+# - Intel SGX-enabled CPU
+# - Intel SGX driver installed (/dev/sgx_enclave, /dev/sgx_provision)
+# - Intel AESM service running
+#
+# Usage:
+#   docker-compose -f docker/docker-compose-miner-tee.yml up -d
+
+version: '3.9'
+
+services:
+  miner-tee:
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile.miner-tee
+    container_name: vidaio-miner-tee
+    restart: unless-stopped
+    
+    # SGX device access
+    devices:
+      - /dev/sgx_enclave:/dev/sgx_enclave
+      - /dev/sgx_provision:/dev/sgx_provision
+    
+    # Required for SGX
+    volumes:
+      # AESM socket for attestation
+      - /var/run/aesmd:/var/run/aesmd
+      # Alternative SGX device path (some systems)
+      - /dev/sgx:/dev/sgx:rw
+      # Wallet (read-only)
+      - ~/.bittensor:/root/.bittensor:ro
+      # Logs (optional)
+      - ./logs/miner-tee:/app/logs
+    
+    # SGX environment
+    environment:
+      - SGX_AESM_ADDR=1
+      - TEE_ENABLED=true
+      - WALLET_NAME=${WALLET_NAME:-miner}
+      - WALLET_HOTKEY=${WALLET_HOTKEY:-default}
+      - SUBTENSOR_NETWORK=${SUBTENSOR_NETWORK:-finney}
+      - NETUID=${NETUID:-1}
+    
+    # Network
+    ports:
+      - "8091:8091"
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 16G  # Enclave needs significant memory
+        reservations:
+          memory: 8G
+    
+    # Security settings
+    security_opt:
+      - seccomp:unconfined  # Required for SGX
+    
+    # Capabilities
+    cap_add:
+      - SYS_RAWIO  # Required for SGX
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket; s=socket.socket(); s.connect(('localhost', 8091)); s.close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+  # AESM service (if not running on host)
+  # Uncomment if you need to run AESM in Docker
+  # aesmd:
+  #   image: fortanix/aesmd:latest
+  #   container_name: aesmd
+  #   restart: unless-stopped
+  #   devices:
+  #     - /dev/sgx_enclave:/dev/sgx_enclave
+  #     - /dev/sgx_provision:/dev/sgx_provision
+  #   volumes:
+  #     - /var/run/aesmd:/var/run/aesmd
+  #   environment:
+  #     - AESM_PATH=/opt/intel/sgx-aesm-service/aesm
+
+networks:
+  default:
+    name: vidaio-tee-network

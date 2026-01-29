@@ -193,3 +193,203 @@ class TaskWarrantProtocol(Synapse):
         description="Type of task miner can handle: COMPRESSION or UPSCALING",
         default=None
     )
+
+
+# =============================================================================
+# TEE (Trusted Execution Environment) Protocol Definitions
+# =============================================================================
+# These protocols enable secure video processing where miners cannot see
+# video URLs, content, or storage locations. All sensitive data is encrypted
+# and only decrypted inside Intel SGX enclaves.
+
+
+class EncryptedTaskPayload(BaseModel):
+    """
+    Fully encrypted task payload for TEE-protected video processing.
+    
+    This payload is encrypted by the validator and can only be decrypted
+    inside the miner's SGX enclave. It contains:
+    - The video URL to process
+    - Storage credentials for uploading results
+    - Task parameters (upscaling/compression settings)
+    - Result object key (where to upload the processed video)
+    
+    The miner never sees any of this data in plaintext.
+    """
+    encrypted_blob: str = Field(
+        description="Base64-encoded AES-GCM encrypted JSON containing all task data",
+        default="",
+    )
+    nonce: str = Field(
+        description="Base64-encoded nonce for AES-GCM decryption",
+        default="",
+    )
+    session_key_id: str = Field(
+        description="Identifier for the session key established during attestation",
+        default="",
+    )
+
+
+class TEEMinerResponse(BaseModel):
+    """
+    Miner response for TEE-protected operations.
+    
+    Unlike regular MinerResponse, this does NOT contain any video URLs.
+    The miner only reports success/failure and processing statistics.
+    The validator retrieves results directly from storage using the
+    result_object_key it specified in the encrypted payload.
+    """
+    success: bool = Field(
+        description="Whether the video processing completed successfully",
+        default=False,
+    )
+    processing_time_seconds: float = Field(
+        description="Time taken to process the video in seconds",
+        default=0.0,
+        ge=0.0,
+    )
+    error_message: Optional[str] = Field(
+        description="Error details if processing failed",
+        default=None,
+    )
+    result_checksum: str = Field(
+        description="SHA-256 checksum of the uploaded result for verification",
+        default="",
+    )
+
+
+class TEECapabilities(BaseModel):
+    """
+    TEE capabilities reported by the miner.
+    
+    Used during attestation to communicate what the miner's enclave supports.
+    """
+    sgx_supported: bool = Field(
+        description="Whether Intel SGX is available and functional",
+        default=False,
+    )
+    attestation_type: str = Field(
+        description="Type of attestation supported: 'dcap', 'epid', or 'none'",
+        default="none",
+    )
+    enclave_version: str = Field(
+        description="Version of the miner enclave code",
+        default="",
+    )
+    max_enclave_memory_mb: int = Field(
+        description="Maximum enclave memory available in MB",
+        default=0,
+    )
+
+
+class TEEAttestationProtocol(Synapse):
+    """
+    Protocol for SGX attestation exchange between validator and miner.
+    
+    Flow:
+    1. Validator sends challenge to miner
+    2. Miner generates SGX Quote embedding the challenge
+    3. Miner returns quote and capabilities
+    4. Validator verifies quote and provisions session key
+    
+    This establishes trust that the miner is running inside a genuine
+    SGX enclave with the expected code (MRENCLAVE).
+    """
+    
+    version: Optional[Version] = None
+    
+    # Validator -> Miner: Random challenge
+    challenge: str = Field(
+        description="Base64-encoded random challenge from validator (32 bytes)",
+        default="",
+    )
+    
+    # Miner -> Validator: SGX Quote
+    sgx_quote: str = Field(
+        description="Base64-encoded SGX Quote proving enclave identity",
+        default="",
+    )
+    
+    # Miner -> Validator: Enclave capabilities
+    capabilities: TEECapabilities = Field(
+        description="TEE capabilities of the miner",
+        default_factory=TEECapabilities,
+    )
+    
+    # Validator -> Miner: Encrypted session key (after verification)
+    encrypted_session_key: str = Field(
+        description="Base64-encoded encrypted session key (set after quote verification)",
+        default="",
+    )
+    session_key_id: str = Field(
+        description="Identifier for the provisioned session key",
+        default="",
+    )
+    
+    # Attestation result
+    attestation_success: bool = Field(
+        description="Whether attestation was successful",
+        default=False,
+    )
+    attestation_error: Optional[str] = Field(
+        description="Error message if attestation failed",
+        default=None,
+    )
+
+
+class TEEVideoUpscalingProtocol(Synapse):
+    """
+    TEE-protected protocol for video upscaling operations.
+    
+    Unlike VideoUpscalingProtocol, all sensitive data (video URL, storage
+    credentials, result location) is encrypted and only decrypted inside
+    the miner's SGX enclave. The miner never sees the video URL or content.
+    
+    The response contains only success/failure status and a checksum -
+    no video URLs are exposed to the miner.
+    """
+    
+    version: Optional[Version] = None
+    round_id: Optional[str] = None
+    
+    # Encrypted payload containing all task data
+    encrypted_payload: EncryptedTaskPayload = Field(
+        description="Encrypted task payload (URL, credentials, params) - decrypted only in enclave",
+        default_factory=EncryptedTaskPayload,
+        frozen=True,
+    )
+    
+    # Miner response with NO URLs
+    miner_response: TEEMinerResponse = Field(
+        description="Response from miner containing only status and checksum",
+        default_factory=TEEMinerResponse,
+    )
+
+
+class TEEVideoCompressionProtocol(Synapse):
+    """
+    TEE-protected protocol for video compression operations.
+    
+    Unlike VideoCompressionProtocol, all sensitive data (video URL, storage
+    credentials, result location, compression parameters) is encrypted and
+    only decrypted inside the miner's SGX enclave.
+    
+    The response contains only success/failure status and a checksum -
+    no video URLs are exposed to the miner.
+    """
+    
+    version: Optional[Version] = None
+    round_id: Optional[str] = None
+    
+    # Encrypted payload containing all task data
+    encrypted_payload: EncryptedTaskPayload = Field(
+        description="Encrypted task payload (URL, credentials, params) - decrypted only in enclave",
+        default_factory=EncryptedTaskPayload,
+        frozen=True,
+    )
+    
+    # Miner response with NO URLs
+    miner_response: TEEMinerResponse = Field(
+        description="Response from miner containing only status and checksum",
+        default_factory=TEEMinerResponse,
+    )
