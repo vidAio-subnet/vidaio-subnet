@@ -642,6 +642,7 @@ def download_transform_and_trim_downscale_video(
             "-g", "30",              # Force a keyframe every 30 frames (1 second)
             "-keyint_min", "30",     # Enforce minimum keyframe interval
             "-sc_threshold", "0",    # Disable scene change detection (prevents random I-frames)
+            "-video_track_timescale", "90000",   # Enforce standard timebase to prevent jitter
             "-c:v", "libx264", "-preset", "ultrafast", "-an"
         ]
 
@@ -1271,6 +1272,8 @@ def process_video_permutations(
                 "-f", "concat", "-safe", "0",
                 "-i", concat_list_path,
                 "-c", "copy",
+                "-video_track_timescale", "90000", # Enforce timebase
+                "-ignore_editlist", "1",           # Prevent edit list issues
                 "-an", output_path,
                 "-hide_banner", "-loglevel", "error"
             ]
