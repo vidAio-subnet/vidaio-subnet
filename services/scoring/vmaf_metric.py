@@ -1,6 +1,7 @@
 import subprocess
 import xml.etree.ElementTree as ET
 import os
+import time
 from moviepy.editor import VideoFileClip
 from loguru import logger
 
@@ -53,15 +54,13 @@ def trim_video(video_path, start_time, trim_duration=1, reencode=True):
             # Build command dynamically
             cmd = ["ffmpeg", "-y"]
             
-            # FIX: Only add -ss if we are actually seeking. 
-            # -ss 0.0 with -c copy can sometimes corrupt the bitstream start.
             if start_time > 0:
                 cmd.extend(["-ss", str(start_time)])
             
             cmd.extend([
                 "-i", video_path,
                 "-t", str(actual_duration),
-                "-map", "0:v",          # Fix: Only copy video stream (prevents audio errors)
+                "-map", "0:v",          # Fix: Only copy video stream
                 "-c", "copy",
                 "-avoid_negative_ts", "make_zero",
                 output_path
@@ -80,18 +79,15 @@ def vmaf_metric(ref_path, dist_path, output_file="vmaf_output.xml", neg_model=Fa
     """
     Calculate VMAF score using FFmpeg's libvmaf filter (No Y4M conversion needed).
     """
-    # Configure model string for libvmaf
     if neg_model:
         model_cfg = "model=version=vmaf_v0.6.1neg"
     else:
         model_cfg = "model=version=vmaf_v0.6.1"
     
-    # Construct FFmpeg command with libvmaf
-    # We map both inputs and pass them into the libvmaf filter
     command = [
         "ffmpeg",
-        "-i", dist_path, # Input 0: Distorted
-        "-i", ref_path,  # Input 1: Reference
+        "-i", dist_path, 
+        "-i", ref_path,  
         "-filter_complex", 
         f"[0:v][1:v]libvmaf={model_cfg}:log_path={output_file}:log_fmt=xml",
         "-f", "null", 
@@ -99,30 +95,21 @@ def vmaf_metric(ref_path, dist_path, output_file="vmaf_output.xml", neg_model=Fa
     ]
     
     try:
-        # Run FFmpeg
         result = subprocess.run(command, capture_output=True, text=True)
         
-        # Note: FFmpeg writes log to stderr, but VMAF XML is written to log_path
         if not os.path.exists(output_file):
-             # Fallback: Sometimes libvmaf fails if inputs are different resolutions/framerates.
-             # Check stderr for hints if needed.
             raise FileNotFoundError(f"VMAF output file '{output_file}' not generated. FFmpeg stderr:\n{result.stderr[-500:]}")
         
         tree = ET.parse(output_file)
         root = tree.getroot()
         
-        # libvmaf XML output usually puts the aggregate score in <aggregate metrics="..."/>
-        # We look for any 'metric' tag with name='vmaf'
         vmaf_node = root.find(".//metric[@name='vmaf']")
-        
         if vmaf_node is None:
-            # Fallback for different XML structures
             vmaf_node = root.find(".//aggregate/metric[@name='vmaf']")
             
         if vmaf_node is None:
             raise ValueError("VMAF metric not found in the output XML.")
             
-        # libvmaf often uses 'mean' or 'harmonic_mean' depending on version
         score = vmaf_node.attrib.get('harmonic_mean') or vmaf_node.attrib.get('mean')
         return float(score)
     
@@ -135,10 +122,8 @@ def calculate_vmaf(ref_path, dist_path, neg_model=False):
     Wrapper for VMAF calculation. Accepts MP4 paths directly.
     """
     try:
-        # Pass MP4s directly to FFmpeg/libvmaf
         score = vmaf_metric(ref_path, dist_path, neg_model=neg_model)
         return score
-        
     except Exception as e:
         print(f"Failed to calculate VMAF: {e}")
         return None
@@ -159,37 +144,53 @@ if __name__ == "__main__":
         temp_files = []
 
         try:
-            # --- SCENARIO A: WITH Re-encoding on BOTH ---
-            print(f"\n[SCENARIO A] Trimming BOTH with Re-encoding (libx264)...")
+            # --- SCENARIO A: WITH Re-encoding ---
+            print(f"\n[SCENARIO A] Trimming with Re-encoding (libx264)...")
+            t0 = time.perf_counter()
             
+            # Trim
             ref_A = trim_video(ref_video, TRIM_START, TRIM_DURATION, reencode=True)
             dist_A = trim_video(dist_video, TRIM_START, TRIM_DURATION, reencode=True)
             temp_files.extend([ref_A, dist_A])
-
-            # Calculate Score (Direct MP4 comparison)
-            score_a = calculate_vmaf(ref_A, dist_A, neg_model=True)
-            print(f"   >>> VMAF Score A (Both Re-encoded): {score_a}")
-
-
-            # --- SCENARIO B: WITHOUT Re-encoding on BOTH ---
-            print(f"\n[SCENARIO B] Trimming BOTH with Stream Copy (No Re-encode)...")
             
+            # Score
+            score_a = calculate_vmaf(ref_A, dist_A, neg_model=True)
+            
+            t1 = time.perf_counter()
+            duration_a = t1 - t0
+            print(f"   >>> Score A: {score_a}")
+            print(f"   >>> Time A:  {duration_a:.4f} seconds")
+
+
+            # --- SCENARIO B: WITHOUT Re-encoding ---
+            print(f"\n[SCENARIO B] Trimming with Stream Copy (No Re-encode)...")
+            t2 = time.perf_counter()
+            
+            # Trim
             ref_B = trim_video(ref_video, TRIM_START, TRIM_DURATION, reencode=False)
             dist_B = trim_video(dist_video, TRIM_START, TRIM_DURATION, reencode=False)
             temp_files.extend([ref_B, dist_B])
-
-            # Calculate Score (Direct MP4 comparison)
+            
+            # Score
             score_b = calculate_vmaf(ref_B, dist_B, neg_model=True)
-            print(f"   >>> VMAF Score B (Both Copied): {score_b}")
+            
+            t3 = time.perf_counter()
+            duration_b = t3 - t2
+            print(f"   >>> Score B: {score_b}")
+            print(f"   >>> Time B:  {duration_b:.4f} seconds")
 
 
             # --- SUMMARY ---
             print(f"\n--- FINAL RESULTS ---")
-            print(f"Score A (Re-encoded): {score_a}")
-            print(f"Score B (Stream Copy): {score_b}")
+            print(f"{'Metric':<15} | {'Scenario A (Re-encode)':<25} | {'Scenario B (Stream Copy)':<25}")
+            print("-" * 70)
+            print(f"{'VMAF Score':<15} | {score_a:<25} | {score_b:<25}")
+            print(f"{'Total Time':<15} | {duration_a:.4f}s{'':<19} | {duration_b:.4f}s")
+            
             if score_b and score_a:
-                diff = score_b - score_a
-                print(f"Difference: {diff:.4f} (Positive means Stream Copy was higher quality)")
+                print("-" * 70)
+                time_diff = duration_a - duration_b
+                print(f"Stream Copy was {time_diff:.4f}s faster.")
 
         except Exception as e:
             logger.exception(f"Test Execution Failed: {e}")
