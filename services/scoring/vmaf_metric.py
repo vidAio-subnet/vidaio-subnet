@@ -53,7 +53,7 @@ def trim_video(video_path, start_time, trim_duration=1, reencode=True):
             # Build command dynamically
             cmd = ["ffmpeg", "-y"]
             
-            # Crucial Fix: Only add -ss if we are actually seeking. 
+            # FIX: Only add -ss if we are actually seeking. 
             # -ss 0.0 with -c copy can sometimes corrupt the bitstream start.
             if start_time > 0:
                 cmd.extend(["-ss", str(start_time)])
@@ -76,114 +76,83 @@ def trim_video(video_path, start_time, trim_duration=1, reencode=True):
 
     return output_path
 
-def convert_mp4_to_y4m(input_path, random_frames, upscale_factor=1):
-    """
-    Converts an MP4 video file to Y4M format using FFmpeg and upscales selected frames.
-    """
-    if not input_path.lower().endswith(".mp4"):
-        raise ValueError("Input file must be an MP4 file.")
-
-    output_path = os.path.splitext(input_path)[0] + ".y4m"
-
-    try:
-        select_expr = "+".join([f"eq(n\\,{f})" for f in random_frames])
-        
-        if upscale_factor >= 2:
-            scale_width = f"iw*{upscale_factor}"
-            scale_height = f"ih*{upscale_factor}"
-            vf_filter = f"select='{select_expr}',scale={scale_width}:{scale_height}"
-        else:
-            vf_filter = f"select='{select_expr}'"
-
-        subprocess.run([
-            "ffmpeg",
-            "-i", input_path,
-            "-vf", vf_filter,
-            "-pix_fmt", "yuv420p",
-            "-vsync", "vfr",
-            output_path,
-            "-y"
-        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-
-        return output_path
-
-    except Exception as e:
-        print(f"Error in convert_mp4_to_y4m: {e}")
-        raise
-
 def vmaf_metric(ref_path, dist_path, output_file="vmaf_output.xml", neg_model=False):
     """
-    Calculate VMAF score using the VMAF tool.
+    Calculate VMAF score using FFmpeg's libvmaf filter (No Y4M conversion needed).
     """
+    # Configure model string for libvmaf
     if neg_model:
-        model_version = "version=vmaf_v0.6.1neg"
+        model_cfg = "model=version=vmaf_v0.6.1neg"
     else:
-        model_version = "version=vmaf_v0.6.1"
-        
+        model_cfg = "model=version=vmaf_v0.6.1"
+    
+    # Construct FFmpeg command with libvmaf
+    # We map both inputs and pass them into the libvmaf filter
     command = [
-        "vmaf",  
-        "-r", ref_path,
-        "-d", dist_path,
-        "--model", model_version,
-        "-out-fmt", "xml",
-        "-o", output_file  
+        "ffmpeg",
+        "-i", dist_path, # Input 0: Distorted
+        "-i", ref_path,  # Input 1: Reference
+        "-filter_complex", 
+        f"[0:v][1:v]libvmaf={model_cfg}:log_path={output_file}:log_fmt=xml",
+        "-f", "null", 
+        "-"
     ]
     
     try:
-        # Run VMAF
+        # Run FFmpeg
         result = subprocess.run(command, capture_output=True, text=True)
         
-        if result.returncode != 0:
-            raise Exception(f"Error calculating VMAF: {result.stderr.strip()}")
-        
+        # Note: FFmpeg writes log to stderr, but VMAF XML is written to log_path
         if not os.path.exists(output_file):
-            raise FileNotFoundError(f"Expected output file '{output_file}' not found.")
+             # Fallback: Sometimes libvmaf fails if inputs are different resolutions/framerates.
+             # Check stderr for hints if needed.
+            raise FileNotFoundError(f"VMAF output file '{output_file}' not generated. FFmpeg stderr:\n{result.stderr[-500:]}")
         
         tree = ET.parse(output_file)
         root = tree.getroot()
         
+        # libvmaf XML output usually puts the aggregate score in <aggregate metrics="..."/>
+        # We look for any 'metric' tag with name='vmaf'
         vmaf_node = root.find(".//metric[@name='vmaf']")
+        
+        if vmaf_node is None:
+            # Fallback for different XML structures
+            vmaf_node = root.find(".//aggregate/metric[@name='vmaf']")
+            
         if vmaf_node is None:
             raise ValueError("VMAF metric not found in the output XML.")
-        
-        return float(vmaf_node.attrib['harmonic_mean'])
+            
+        # libvmaf often uses 'mean' or 'harmonic_mean' depending on version
+        score = vmaf_node.attrib.get('harmonic_mean') or vmaf_node.attrib.get('mean')
+        return float(score)
     
     except Exception as e:
         print(f"Error in vmaf_metric: {e}")
         raise
 
-def calculate_vmaf(ref_y4m_path, dist_mp4_path, random_frames, neg_model=False):
+def calculate_vmaf(ref_path, dist_path, neg_model=False):
     """
-    Calculates VMAF given a Reference Y4M and a Distorted MP4.
+    Wrapper for VMAF calculation. Accepts MP4 paths directly.
     """
-    dist_y4m_path = None
     try:
-        dist_y4m_path = convert_mp4_to_y4m(dist_mp4_path, random_frames)
-        score = vmaf_metric(ref_y4m_path, dist_y4m_path, neg_model=neg_model)
+        # Pass MP4s directly to FFmpeg/libvmaf
+        score = vmaf_metric(ref_path, dist_path, neg_model=neg_model)
         return score
         
     except Exception as e:
         print(f"Failed to calculate VMAF: {e}")
         return None
 
-    finally:
-        if dist_y4m_path and os.path.exists(dist_y4m_path):
-            try:
-                os.remove(dist_y4m_path)
-            except:
-                pass
-
 if __name__ == "__main__":
     # --- TEST CONFIGURATION ---
     ref_video = "reference.mp4"    
     dist_video = "distorted.mp4"   
     
-    frames_to_test = [0, 10, 20, 30] 
     TRIM_START = 0.0 
     TRIM_DURATION = 5
 
     if os.path.exists(ref_video) and os.path.exists(dist_video):
-        print(f"--- VMAF Re-encode Impact Test ---")
+        print(f"--- VMAF Re-encode Impact Test (Direct MP4 Mode) ---")
         print(f"Reference File: {ref_video}")
         print(f"Distorted File: {dist_video}")
         
@@ -197,11 +166,8 @@ if __name__ == "__main__":
             dist_A = trim_video(dist_video, TRIM_START, TRIM_DURATION, reencode=True)
             temp_files.extend([ref_A, dist_A])
 
-            ref_A_y4m = convert_mp4_to_y4m(ref_A, frames_to_test)
-            temp_files.append(ref_A_y4m)
-
-            # 3. Calculate Score
-            score_a = calculate_vmaf(ref_A_y4m, dist_A, frames_to_test, neg_model=True)
+            # Calculate Score (Direct MP4 comparison)
+            score_a = calculate_vmaf(ref_A, dist_A, neg_model=True)
             print(f"   >>> VMAF Score A (Both Re-encoded): {score_a}")
 
 
@@ -212,11 +178,8 @@ if __name__ == "__main__":
             dist_B = trim_video(dist_video, TRIM_START, TRIM_DURATION, reencode=False)
             temp_files.extend([ref_B, dist_B])
 
-            ref_B_y4m = convert_mp4_to_y4m(ref_B, frames_to_test)
-            temp_files.append(ref_B_y4m)
-
-            # 3. Calculate Score
-            score_b = calculate_vmaf(ref_B_y4m, dist_B, frames_to_test, neg_model=True)
+            # Calculate Score (Direct MP4 comparison)
+            score_b = calculate_vmaf(ref_B, dist_B, neg_model=True)
             print(f"   >>> VMAF Score B (Both Copied): {score_b}")
 
 
