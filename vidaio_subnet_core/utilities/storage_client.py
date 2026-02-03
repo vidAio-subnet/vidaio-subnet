@@ -603,7 +603,7 @@ class HippiusClient:
         """
         loop = asyncio.get_event_loop()
         url = await loop.run_in_executor(
-            self.executor, self.client.presigned_get_object, self.bucket_name, object_name, timedelta(seconds=expires)
+            self.executor, self.client.presigned_get_object, self.bucket_name, object_name, datetime.timedelta(seconds=expires)
         )
         return url
 
