@@ -144,6 +144,24 @@ if __name__ == "__main__":
         temp_files = []
 
         try:
+            # --- SCENARIO A: WITH Re-encoding ---
+            print(f"\n[SCENARIO A] Trimming with Re-encoding (libx264)...")
+            t0 = time.perf_counter()
+            
+            # Trim
+            ref_A = trim_video(ref_video, TRIM_START, TRIM_DURATION, reencode=True)
+            dist_A = trim_video(dist_video, TRIM_START, TRIM_DURATION, reencode=True)
+            temp_files.extend([ref_A, dist_A])
+            
+            # Score
+            score_a = calculate_vmaf(ref_A, dist_A, neg_model=True)
+            
+            t1 = time.perf_counter()
+            duration_a = t1 - t0
+            print(f"   >>> Score A: {score_a}")
+            print(f"   >>> Time A:  {duration_a:.4f} seconds")
+
+
             # --- SCENARIO B: WITHOUT Re-encoding ---
             print(f"\n[SCENARIO B] Trimming with Stream Copy (No Re-encode)...")
             t2 = time.perf_counter()
@@ -161,22 +179,6 @@ if __name__ == "__main__":
             print(f"   >>> Score B: {score_b}")
             print(f"   >>> Time B:  {duration_b:.4f} seconds")
 
-            # --- SCENARIO A: WITH Re-encoding ---
-            print(f"\n[SCENARIO A] Trimming with Re-encoding (libx264)...")
-            t0 = time.perf_counter()
-            
-            # Trim
-            ref_A = trim_video(ref_video, TRIM_START, TRIM_DURATION, reencode=True)
-            dist_A = trim_video(dist_video, TRIM_START, TRIM_DURATION, reencode=True)
-            temp_files.extend([ref_A, dist_A])
-            
-            # Score
-            score_a = calculate_vmaf(ref_A, dist_A, neg_model=True)
-            
-            t1 = time.perf_counter()
-            duration_a = t1 - t0
-            print(f"   >>> Score A: {score_a}")
-            print(f"   >>> Time A:  {duration_a:.4f} seconds")
 
             # --- SUMMARY ---
             print(f"\n--- FINAL RESULTS ---")
