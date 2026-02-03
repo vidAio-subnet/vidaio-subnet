@@ -23,6 +23,7 @@ def trim_video(video_path, start_time, trim_duration=1, reencode=True):
     output_path = video_path.replace(".mp4", f"_trimmed_{start_time:.2f}_{mode_suffix}.mp4")
 
     # 1. Check Duration using MoviePy (lightweight check)
+    # 1. Check Duration using MoviePy
     with VideoFileClip(video_path) as video_clip:
         video_duration = video_clip.duration
         
@@ -52,21 +53,21 @@ def trim_video(video_path, start_time, trim_duration=1, reencode=True):
             # --- METHOD B: Stream Copy (FFmpeg) ---
             print(f"   [Trim] Mode: Stream Copy (Original Codec) on {os.path.basename(video_path)}")
             
-            # Note: -ss before -i is faster, but -ss after -i is more accurate.
-            # However, with -c copy, it must snap to keyframes regardless.
-            # We put -ss before -i for standard trimming behavior.
-            cmd = [
-                "ffmpeg",
-                "-y",                   # Overwrite output
-                "-ss", str(start_time), # Seek start
-                "-i", video_path,       # Input
-                "-t", str(actual_duration), # Duration
-                "-c", "copy",           # Stream copy (NO RE-ENCODING)
-                "-avoid_negative_ts", "make_zero", # Reset timestamps
-                output_path
-            ]
+            # Build command dynamically to avoid issues with -ss 0.0 on stream copy
+            cmd = ["ffmpeg", "-y"]
             
-            # Suppress FFmpeg output unless error
+            if start_time > 0:
+                cmd.extend(["-ss", str(start_time)])
+            
+            cmd.extend([
+                "-i", video_path,
+                "-t", str(actual_duration),
+                "-map", "0",            # Ensure all streams are mapped
+                "-c", "copy",
+                "-avoid_negative_ts", "make_zero",
+                output_path
+            ])
+            
             subprocess.run(
                 cmd, 
                 check=True, 
@@ -178,8 +179,8 @@ def calculate_vmaf(ref_y4m_path, dist_mp4_path, random_frames, neg_model=False):
 
 if __name__ == "__main__":
     # --- TEST CONFIGURATION ---
-    ref_video = "reference.mp4"    # Your high quality source
-    dist_video = "distorted.mp4"   # Your compressed/processed version
+    ref_video = "reference.mp4"    
+    dist_video = "distorted.mp4"   
     
     frames_to_test = [0, 10, 20, 30] 
     TRIM_START = 0.0 
