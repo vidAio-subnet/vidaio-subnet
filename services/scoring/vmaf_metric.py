@@ -5,7 +5,7 @@ import time
 from moviepy.editor import VideoFileClip
 from loguru import logger
 
-def trim_video(video_path, start_time, trim_duration=1, reencode=True):
+def trim_video(video_path, start_time, trim_duration=1, reencode=False):
     """
     Trims a video. Can either re-encode (MoviePy) or stream copy (FFmpeg).
 
