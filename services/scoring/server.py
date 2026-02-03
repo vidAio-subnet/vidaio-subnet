@@ -1719,8 +1719,6 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
         finally:
             # Clean up resources for this pair
             # ref_cap is released immediately after use for frame extraction
-            if ref_path and os.path.exists(ref_path):
-                os.unlink(ref_path)
             if dist_path and os.path.exists(dist_path):
                 os.unlink(dist_path)
             if ref_clip_path and os.path.exists(ref_clip_path):
@@ -2057,8 +2055,6 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             # ref_cap is not used in this endpoint (using ffprobe instead)
             if dist_path and os.path.exists(dist_path):
                 os.unlink(dist_path)
-            if ref_path and os.path.exists(ref_path):
-                os.unlink(ref_path)
             if ref_clip_path and os.path.exists(ref_clip_path):
                 os.unlink(ref_clip_path)
             if dist_clip_path and os.path.exists(dist_clip_path):
@@ -2393,9 +2389,6 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
 
         finally:
             # Clean up resources
-            
-            if ref_path and os.path.exists(ref_path):
-                os.unlink(ref_path)
             if dist_path and os.path.exists(dist_path):
                 os.unlink(dist_path)
             if ref_upscaled_y4m_path and os.path.exists(ref_upscaled_y4m_path):
@@ -2660,8 +2653,6 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 reasons.append(f"Color validation failed: {color_reason}")
                 if dist_path and os.path.exists(dist_path):
                     os.unlink(dist_path)
-                if ref_path and os.path.exists(ref_path):
-                    os.unlink(ref_path)
                 if ref_clip_path and os.path.exists(ref_clip_path):
                     os.unlink(ref_clip_path)
                 if dist_clip_path and os.path.exists(dist_clip_path):
@@ -2737,8 +2728,6 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             # Clean up resources for this pair
             # ref_cap is not used in this endpoint (using ffprobe instead)
             # dist_cap is not used in this endpoint (using ffprobe instead)
-            if ref_path and os.path.exists(ref_path):
-                os.unlink(ref_path)
             if dist_path and os.path.exists(dist_path):
                 os.unlink(dist_path)
             # Clean up chunked video files
