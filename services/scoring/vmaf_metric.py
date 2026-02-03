@@ -18,16 +18,13 @@ def trim_video(video_path, start_time, trim_duration=1, reencode=True):
     Returns:
         str: Path to the trimmed video.
     """
-    # suffix helps distinguish files
     mode_suffix = "reenc" if reencode else "copy"
     output_path = video_path.replace(".mp4", f"_trimmed_{start_time:.2f}_{mode_suffix}.mp4")
 
-    # 1. Check Duration using MoviePy (lightweight check)
     # 1. Check Duration using MoviePy
     with VideoFileClip(video_path) as video_clip:
         video_duration = video_clip.duration
         
-        # Determine actual end time
         if video_duration < trim_duration:
             actual_duration = video_duration
             actual_end = video_duration
@@ -53,16 +50,18 @@ def trim_video(video_path, start_time, trim_duration=1, reencode=True):
             # --- METHOD B: Stream Copy (FFmpeg) ---
             print(f"   [Trim] Mode: Stream Copy (Original Codec) on {os.path.basename(video_path)}")
             
-            # Build command dynamically to avoid issues with -ss 0.0 on stream copy
+            # Build command dynamically
             cmd = ["ffmpeg", "-y"]
             
+            # Crucial Fix: Only add -ss if we are actually seeking. 
+            # -ss 0.0 with -c copy can sometimes corrupt the bitstream start.
             if start_time > 0:
                 cmd.extend(["-ss", str(start_time)])
             
             cmd.extend([
                 "-i", video_path,
                 "-t", str(actual_duration),
-                "-map", "0",            # Ensure all streams are mapped
+                "-map", "0:v",          # Fix: Only copy video stream (prevents audio errors)
                 "-c", "copy",
                 "-avoid_negative_ts", "make_zero",
                 output_path
@@ -159,10 +158,7 @@ def calculate_vmaf(ref_y4m_path, dist_mp4_path, random_frames, neg_model=False):
     """
     dist_y4m_path = None
     try:
-        # print(f"   Converting dist to Y4M: {dist_mp4_path}...")
         dist_y4m_path = convert_mp4_to_y4m(dist_mp4_path, random_frames)
-        
-        # print("   Running VMAF binary...")
         score = vmaf_metric(ref_y4m_path, dist_y4m_path, neg_model=neg_model)
         return score
         
@@ -191,19 +187,16 @@ if __name__ == "__main__":
         print(f"Reference File: {ref_video}")
         print(f"Distorted File: {dist_video}")
         
-        # Track files for cleanup
         temp_files = []
 
         try:
             # --- SCENARIO A: WITH Re-encoding on BOTH ---
             print(f"\n[SCENARIO A] Trimming BOTH with Re-encoding (libx264)...")
             
-            # 1. Trim both inputs with re-encoding
             ref_A = trim_video(ref_video, TRIM_START, TRIM_DURATION, reencode=True)
             dist_A = trim_video(dist_video, TRIM_START, TRIM_DURATION, reencode=True)
             temp_files.extend([ref_A, dist_A])
 
-            # 2. Convert Reference A to Y4M (Required for VMAF func)
             ref_A_y4m = convert_mp4_to_y4m(ref_A, frames_to_test)
             temp_files.append(ref_A_y4m)
 
@@ -215,12 +208,10 @@ if __name__ == "__main__":
             # --- SCENARIO B: WITHOUT Re-encoding on BOTH ---
             print(f"\n[SCENARIO B] Trimming BOTH with Stream Copy (No Re-encode)...")
             
-            # 1. Trim both inputs using stream copy
             ref_B = trim_video(ref_video, TRIM_START, TRIM_DURATION, reencode=False)
             dist_B = trim_video(dist_video, TRIM_START, TRIM_DURATION, reencode=False)
             temp_files.extend([ref_B, dist_B])
 
-            # 2. Convert Reference B to Y4M
             ref_B_y4m = convert_mp4_to_y4m(ref_B, frames_to_test)
             temp_files.append(ref_B_y4m)
 
@@ -241,7 +232,6 @@ if __name__ == "__main__":
             logger.exception(f"Test Execution Failed: {e}")
             
         finally:
-            # Cleanup all intermediate files
             print("\nCleaning up...")
             for f in temp_files:
                 if f and os.path.exists(f):
