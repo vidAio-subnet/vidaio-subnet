@@ -1984,6 +1984,8 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             max_start_time = max(0, ref_duration - clip_duration)
             start_time = random.uniform(0, max_start_time)
 
+            start_time = 0
+
             # Create 0.5-second reference clip
             ref_clip_path = trim_video(ref_path, start_time, clip_duration)
             logger.info(f"Created reference clip: {ref_clip_path} with start time: {start_time}")
