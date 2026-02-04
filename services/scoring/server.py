@@ -293,7 +293,43 @@ def extract_frames_from_mp4(mp4_path, fps_filter=None):
         
         if result.returncode != 0:
             logger.error(f"FFmpeg MP4 extraction failed: {result.stderr}")
-            return frames
+            logger.info("Attempting fallback to OpenCV for frame extraction...")
+            
+            try:
+                cap = cv2.VideoCapture(mp4_path)
+                if not cap.isOpened():
+                    logger.error(f"OpenCV failed to open video: {mp4_path}")
+                    return frames
+                
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                vid_fps = cap.get(cv2.CAP_PROP_FPS)
+                if vid_fps <= 0 or math.isnan(vid_fps):
+                    vid_fps = 30.0 # Default assumption
+                    
+                # Calculate frame interval for the requested fps_filter
+                step = 1
+                if fps_filter:
+                    step = max(1, int(round(vid_fps / fps_filter)))
+                
+                logger.debug(f"OpenCV fallback: extracting every {step} frames (Total: {total_frames}, FPS: {vid_fps})")
+                
+                count = 0
+                while True:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                        
+                    if count % step == 0:
+                        frames.append(frame)
+                    count += 1
+                
+                cap.release()
+                logger.debug(f"OpenCV extracted {len(frames)} frames")
+                return frames
+                
+            except Exception as e:
+                logger.error(f"OpenCV fallback failed: {e}")
+                return frames
         
         # Read and collect images
         png_files = sorted(glob.glob(os.path.join(temp_dir, "frame_*.png")))
