@@ -293,43 +293,106 @@ def extract_frames_from_mp4(mp4_path, fps_filter=None):
         
         if result.returncode != 0:
             logger.error(f"FFmpeg MP4 extraction failed: {result.stderr}")
-            logger.info("Attempting fallback to OpenCV for frame extraction...")
+            
+            # --- Fallback 1: Sanitize Video (Remux) ---
+            # "Missing Sequence Header" or similar container issues might be fixed by a stream copy remux.
+            # This aligns with why 'trim_video' (which does stream copy) produces decodable clips for VMAF.
+            logger.info("Attempting fallback: Sanitizing video via remux (ffmpeg -c copy)...")
+            sanitized_path = os.path.join(temp_dir, "sanitized.mp4")
             
             try:
-                cap = cv2.VideoCapture(mp4_path)
-                if not cap.isOpened():
-                    logger.error(f"OpenCV failed to open video: {mp4_path}")
-                    return frames
+                remux_cmd = [
+                    "ffmpeg", "-y", 
+                    "-i", mp4_path,
+                    "-c", "copy",
+                    sanitized_path,
+                    "-hide_banner", "-loglevel", "error"
+                ]
                 
-                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                vid_fps = cap.get(cv2.CAP_PROP_FPS)
-                if vid_fps <= 0 or math.isnan(vid_fps):
-                    vid_fps = 30.0 # Default assumption
+                # Run remux (no decoding needed, so HW issues shouldn't apply, but keep env just in case)
+                remux_result = subprocess.run(
+                    remux_cmd, capture_output=True, text=True, env=env, timeout=30
+                )
+                
+                if remux_result.returncode == 0 and os.path.exists(sanitized_path):
+                    # Retry extraction on sanitized file
+                    retry_cmd = list(extract_cmd)
+                    # Replace input file path in command: ... -i <old> ... -> ... -i <new> ...
+                    # Find index of "-i" and replace next element
+                    try:
+                        input_idx = retry_cmd.index("-i")
+                        retry_cmd[input_idx + 1] = sanitized_path
+                    except ValueError:
+                        # Should not happen given construction, but safety reconstruction:
+                        retry_cmd = ["ffmpeg", "-hwaccel", "none", "-i", sanitized_path]
+                        if fps_filter:
+                            retry_cmd.extend(["-vf", f"fps={fps_filter}"])
+                        retry_cmd.extend([output_pattern, "-y", "-hide_banner", "-loglevel", "error"])
+
+                    logger.debug(f"Retrying extraction on sanitized file: {sanitized_path}")
+                    retry_result = subprocess.run(
+                        retry_cmd, capture_output=True, text=True, env=env, timeout=60
+                    )
                     
-                # Calculate frame interval for the requested fps_filter
-                step = 1
-                if fps_filter:
-                    step = max(1, int(round(vid_fps / fps_filter)))
-                
-                logger.debug(f"OpenCV fallback: extracting every {step} frames (Total: {total_frames}, FPS: {vid_fps})")
-                
-                count = 0
-                while True:
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
-                        
-                    if count % step == 0:
-                        frames.append(frame)
-                    count += 1
-                
-                cap.release()
-                logger.debug(f"OpenCV extracted {len(frames)} frames")
-                return frames
-                
+                    if retry_result.returncode == 0:
+                        logger.info("Extraction successful on sanitized video.")
+                        # Proceed to read frames
+                    else:
+                        logger.error(f"Sanitized extraction failed: {retry_result.stderr}")
+                        # Fall through to OpenCV
+                else:
+                    logger.error(f"Remux failed: {remux_result.stderr}")
             except Exception as e:
-                logger.error(f"OpenCV fallback failed: {e}")
-                return frames
+                logger.error(f"Sanitization fallback error: {e}")
+
+            # --- Fallback 2: OpenCV ---
+            # If sanitization didn't produce frames (checked later by glob), or failed, try OpenCV
+            if not glob.glob(os.path.join(temp_dir, "frame_*.png")):
+                logger.info("Attempting fallback to OpenCV for frame extraction...")
+                try:
+                    # Try opening the sanitized file if it exists, otherwise original
+                    target_for_cv = sanitized_path if os.path.exists(os.path.join(temp_dir, "sanitized.mp4")) else mp4_path
+                    logger.debug(f"OpenCV opening: {target_for_cv}")
+                    
+                    cap = cv2.VideoCapture(target_for_cv)
+                    if not cap.isOpened():
+                         # If sanitized failed to open, try original as last resort
+                        if target_for_cv != mp4_path:
+                             cap = cv2.VideoCapture(mp4_path)
+                        
+                        if not cap.isOpened():
+                            logger.error(f"OpenCV failed to open video: {mp4_path}")
+                            return frames
+                    
+                    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                    vid_fps = cap.get(cv2.CAP_PROP_FPS)
+                    if vid_fps <= 0 or math.isnan(vid_fps):
+                        vid_fps = 30.0 # Default assumption
+                        
+                    # Calculate frame interval for the requested fps_filter
+                    step = 1
+                    if fps_filter:
+                        step = max(1, int(round(vid_fps / fps_filter)))
+                    
+                    logger.debug(f"OpenCV fallback: extracting every {step} frames (Total: {total_frames}, FPS: {vid_fps})")
+                    
+                    count = 0
+                    while True:
+                        ret, frame = cap.read()
+                        if not ret:
+                            break
+                            
+                        if count % step == 0:
+                            frames.append(frame)
+                        count += 1
+                    
+                    cap.release()
+                    logger.debug(f"OpenCV extracted {len(frames)} frames")
+                    return frames
+                    
+                except Exception as e:
+                    logger.error(f"OpenCV fallback failed: {e}")
+                    return frames
         
         # Read and collect images
         png_files = sorted(glob.glob(os.path.join(temp_dir, "frame_*.png")))
