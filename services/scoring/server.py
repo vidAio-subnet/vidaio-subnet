@@ -1658,7 +1658,7 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
 
             # Create 0.5-second reference clip
             ref_clip_path = trim_video(ref_path, start_time, clip_duration)
-            logger.info(f"Created reference clip: {ref_clip_path}")
+            logger.info(f"Created reference clip: {ref_clip_path} with start time: {start_time}")
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 6. Created reference video clip in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
@@ -1986,7 +1986,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
 
             # Create 0.5-second reference clip
             ref_clip_path = trim_video(ref_path, start_time, clip_duration)
-            logger.info(f"Created reference clip: {ref_clip_path}")
+            logger.info(f"Created reference clip: {ref_clip_path} with start time: {start_time}")
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 6. Created reference video clip in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
@@ -2357,7 +2357,7 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             
             # Create 0.5-second reference clip
             ref_clip_path = trim_video(ref_path, start_time, clip_duration)
-            logger.info(f"Created reference clip: {ref_clip_path}")
+            logger.info(f"Created reference clip: {ref_clip_path} with start time {start_time:.2f}")
             
             # Create 0.5-second distorted clip
             dist_clip_path = trim_video(dist_path, start_time, clip_duration)
@@ -2641,7 +2641,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
 
             # Create 0.5-second reference clip
             ref_clip_path = trim_video(ref_path, start_time, clip_duration)
-            logger.info(f"Created reference clip: {ref_clip_path}")
+            logger.info(f"Created reference clip: {ref_clip_path} with start time {start_time}")
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 7. Created reference video clip in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
