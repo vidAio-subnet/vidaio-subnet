@@ -89,7 +89,7 @@ def vmaf_metric(ref_path, dist_path, output_file="vmaf_output.xml", neg_model=Fa
         "-i", dist_path, 
         "-i", ref_path,  
         "-filter_complex", 
-        f"[0:v][1:v]libvmaf={model_cfg}:log_path={output_file}:log_fmt=xml",
+        f"[0:v]setpts=PTS-STARTPTS[dist];[1:v]setpts=PTS-STARTPTS[ref];[dist][ref]libvmaf={model_cfg}:log_path={output_file}:log_fmt=xml",
         "-f", "null", 
         "-"
     ]
