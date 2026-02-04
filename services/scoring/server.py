@@ -262,7 +262,11 @@ def extract_frames_from_mp4(mp4_path, fps_filter=None):
         # Base FFmpeg command
         # disable hwaccel to avoid "Your platform doesn't support hardware accelerated AV1 decoding" 
         # errors on some platforms
-        extract_cmd = ["ffmpeg", "-hwaccel", "none", "-i", mp4_path]
+        # Base FFmpeg command
+        # disable hwaccel to avoid "Your platform doesn't support hardware accelerated AV1 decoding" 
+        # errors on some platforms
+        # Force the native "av1" decoder explicitly and single-thread to avoid race/HW-probe crashes
+        extract_cmd = ["ffmpeg", "-hwaccel", "none", "-c:v", "av1", "-threads", "1", "-i", mp4_path]
         
         # Add frame rate filter if requested (useful for long videos)
         if fps_filter:
