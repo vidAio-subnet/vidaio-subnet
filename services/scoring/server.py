@@ -350,9 +350,13 @@ def extract_frames_from_mp4(mp4_path, fps_filter=None):
                 logger.error(f"Sanitization fallback error: {e}")
 
             # --- Fallback 2: OpenCV ---
-            # If sanitization didn't produce frames (checked later by glob), or failed, try OpenCV
-            if not glob.glob(os.path.join(temp_dir, "frame_*.png")):
                 logger.info("Attempting fallback to OpenCV for frame extraction...")
+                
+                # Temporarily hide GPU from OpenCV to force software decoding
+                # internal libraries usually check env vars at runtime or init
+                original_cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+                os.environ["CUDA_VISIBLE_DEVICES"] = ""
+                
                 try:
                     # Try opening the sanitized file if it exists, otherwise original
                     target_for_cv = sanitized_path if os.path.exists(os.path.join(temp_dir, "sanitized.mp4")) else mp4_path
@@ -397,6 +401,12 @@ def extract_frames_from_mp4(mp4_path, fps_filter=None):
                 except Exception as e:
                     logger.error(f"OpenCV fallback failed: {e}")
                     return frames
+                finally:
+                    # Restore environment
+                    if original_cuda_visible is not None:
+                        os.environ["CUDA_VISIBLE_DEVICES"] = original_cuda_visible
+                    else:
+                        del os.environ["CUDA_VISIBLE_DEVICES"]
         
         # Read and collect images
         png_files = sorted(glob.glob(os.path.join(temp_dir, "frame_*.png")))
