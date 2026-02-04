@@ -275,10 +275,19 @@ def extract_frames_from_mp4(mp4_path, fps_filter=None):
             "-loglevel", "error"
         ])
         
+
+
+        # Force software decoding by hiding GPU devices
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = ""
+        
+        logger.debug(f"Running extract command: {' '.join(extract_cmd)}")
+        
         result = subprocess.run(
             extract_cmd, 
             capture_output=True, 
             text=True, 
+            env=env,
             timeout=60 # MP4s can take longer to decode than Y4M
         )
         
