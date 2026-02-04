@@ -349,7 +349,18 @@ def extract_frames_from_mp4(mp4_path, fps_filter=None):
             except Exception as e:
                 logger.error(f"Sanitization fallback error: {e}")
 
-            # --- Fallback 2: OpenCV ---
+            # Try to read whatever FFmpeg might have produced first
+            png_files = sorted(glob.glob(os.path.join(temp_dir, "frame_*.png")))
+            for png_file in png_files:
+                frame = cv2.imread(png_file)
+                if frame is not None:
+                    frames.append(frame)
+            
+            # If no frames were extracted (either FFmpeg failed completely, or produced garbage), use OpenCV
+            if not frames:
+                logger.debug("No frames extracted by FFmpeg (or garbage files), attempting OpenCV fallback...")
+                
+                # --- Fallback 2: OpenCV ---
                 logger.info("Attempting fallback to OpenCV for frame extraction...")
                 
                 # Temporarily hide GPU from OpenCV to force software decoding
