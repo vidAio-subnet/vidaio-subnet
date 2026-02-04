@@ -298,24 +298,27 @@ def extract_frames_from_mp4(mp4_path, fps_filter=None):
         if result.returncode != 0:
             logger.error(f"FFmpeg MP4 extraction failed: {result.stderr}")
             
-            # --- Fallback 1: Sanitize Video (Remux) ---
-            # "Missing Sequence Header" or similar container issues might be fixed by a stream copy remux.
-            # This aligns with why 'trim_video' (which does stream copy) produces decodable clips for VMAF.
-            logger.info("Attempting fallback: Sanitizing video via remux (ffmpeg -c copy)...")
+            # --- Fallback 1: Sanitize Video (Transcode) ---
+            # "Missing Sequence Header" / bitstream errors require re-encoding to fix.
+            # Convert to H.264 (libx264) which is robust and ubiquitous.
+            logger.info("Attempting fallback: Sanitizing video via transcode (libx264)...")
             sanitized_path = os.path.join(temp_dir, "sanitized.mp4")
             
             try:
                 remux_cmd = [
                     "ffmpeg", "-y", 
+                    "-err_detect", "ignore_err", # Ignore decoding errors
+                    "-hwaccel", "none", "-threads", "1", # Force SW decode
                     "-i", mp4_path,
-                    "-c", "copy",
+                    "-map", "0:v", # Video only
+                    "-c:v", "libx264", "-preset", "ultrafast", # Fast transcode
                     sanitized_path,
                     "-hide_banner", "-loglevel", "error"
                 ]
                 
-                # Run remux (no decoding needed, so HW issues shouldn't apply, but keep env just in case)
+                # Run transcode with GPU hidden
                 remux_result = subprocess.run(
-                    remux_cmd, capture_output=True, text=True, env=env, timeout=30
+                    remux_cmd, capture_output=True, text=True, env=env, timeout=60
                 )
                 
                 if remux_result.returncode == 0 and os.path.exists(sanitized_path):
