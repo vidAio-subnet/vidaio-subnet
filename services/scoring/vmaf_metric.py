@@ -65,7 +65,7 @@ def convert_mp4_to_y4m(input_path, random_frames, upscale_factor=1):
     # if upscale_factor >= 2:
     #     vf_filters.append(f"scale=iw*{upscale_factor}:ih*{upscale_factor}")
 
-    filter_string = ",".join(vf_filters)
+    # filter_string = ",".join(vf_filters)
 
     try:
         subprocess.run([
