@@ -2561,8 +2561,22 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             # Calculate VMAF on chunked videos and get Y4M paths for validation
             dist_y4m_path = None
             try:
+                # Calculate corresponding frames for distorted clip based on frame count ratio
+                dist_clip_frames = get_frame_count(dist_clip_path)
+                logger.info(f"Distorted clip has {dist_clip_frames} frames.")
+                
+                if dist_clip_frames > 0 and ref_clip_frames > 0:
+                    scale_ratio = dist_clip_frames / ref_clip_frames
+                    dist_random_frames = sorted([int(f * scale_ratio) for f in random_frames])
+                    # Ensure indices are within bounds
+                    dist_random_frames = [min(f, dist_clip_frames - 1) for f in dist_random_frames]
+                    logger.info(f"Scaled random frames for distorted clip: {dist_random_frames}")
+                else:
+                    dist_random_frames = random_frames
+
                 vmaf_start = time.time()
-                vmaf_score, dist_y4m_path = calculate_vmaf(ref_y4m_path, dist_clip_path, random_frames, neg_model=True, return_y4m_path=True)
+                # Pass dist_random_frames for the distorted video extraction
+                vmaf_score, dist_y4m_path = calculate_vmaf(ref_y4m_path, dist_clip_path, dist_random_frames, neg_model=True, return_y4m_path=True)
                 vmaf_calc_time = time.time() - vmaf_start
                 logger.info(f"☣️☣️ VMAF calculation took {vmaf_calc_time:.2f} seconds.")
 
