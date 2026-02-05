@@ -579,16 +579,24 @@ class HippiusClient:
         )
 
     async def delete_all_items(self):
-        """
-        Deletes all items in the Hippius bucket.
-        """
-        objects = await self.list_objects()
-        if objects:
-            object_names = [obj.object_name for obj in objects]
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
-                self.executor, lambda: list(self.client.remove_objects(self.bucket_name, object_names))
-            )
+        """Deletes all items in the S3 bucket."""
+        print(f"Deleting all items in bucket: {self.bucket_name}")
+        try:
+            # List all objects in the bucket
+            objects = await self.list_objects()
+            if not objects:
+                print("No objects to delete.")
+                return
+
+            count = 0
+            # Delete each object
+            for obj in objects:
+                print(f"Deleting object: {obj.object_name}")
+                await self.delete_file(obj.object_name)
+                count += 1
+            print(f"All {count} objects deleted successfully.")
+        except Exception as e:
+            print(f"Error deleting all items in bucket: {e}")
 
     async def get_presigned_url(self, object_name, expires=604800):
         """
@@ -603,7 +611,7 @@ class HippiusClient:
         """
         loop = asyncio.get_event_loop()
         url = await loop.run_in_executor(
-            self.executor, self.client.presigned_get_object, self.bucket_name, object_name, timedelta(seconds=expires)
+            self.executor, self.client.presigned_get_object, self.bucket_name, object_name, datetime.timedelta(seconds=expires)
         )
         return url
 
