@@ -54,6 +54,27 @@ def trim_video(video_path, start_time, trim_duration=1):
 
     return output_path
 
+def get_video_fps(video_path):
+    """
+    Get the frame rate of a video using ffprobe.
+    """
+    cmd = [
+        "ffprobe",
+        "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=r_frame_rate",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        video_path
+    ]
+    try:
+        output = subprocess.check_output(cmd).decode().strip()
+        num, den = map(int, output.split('/'))
+        return num / den
+    except Exception as e:
+        print(f"Error getting FPS for {video_path}: {e}")
+        # Fallback to 30 fps if detection fails, though this might cause drift
+        return 30.0
+
 def convert_mp4_to_y4m(input_path, random_frames, upscale_factor=1):
     """
     Converts an MP4 video file to Y4M format using FFmpeg and upscales selected frames.
@@ -74,44 +95,53 @@ def convert_mp4_to_y4m(input_path, random_frames, upscale_factor=1):
     temp_dir = tempfile.mkdtemp()
     
     try:
-        # 1. Extract specific frames as high-quality PNGs
-        # We use -start_number 0 to ensure sequential naming for the next step
-        # print(f"DEBUG: random_frames: {random_frames}")
+        # 1. Extract specific frames using fast seek (-ss)
         
-        # Use simple eq(n,f) without extra escaping
-        select_expr = "+".join([f"eq(n,{f})" for f in random_frames])
-        # print(f"DEBUG: select_expr: {select_expr}")
+        # Get FPS to calculate timestamps
+        fps = get_video_fps(input_path)
+        print(f"DEBUG: Video FPS: {fps}")
         
-        extract_cmd = [
-            "ffmpeg", "-i", input_path,
-            "-vf", f"select='{select_expr}',scale=iw*{upscale_factor}:ih*{upscale_factor}",
-            "-vsync", "0",
-            "-pix_fmt", "rgb24",
-            "-start_number", "0",
-            os.path.join(temp_dir, "frame_%05d.png"),
-            "-y"
-        ]
-        # print(f"DEBUG: Extract command: {extract_cmd}")
-        extract_result = subprocess.run(extract_cmd, check=True, capture_output=True)
+        extracted_frames_count = 0
+        
+        for i, frame_idx in enumerate(random_frames):
+            timestamp = frame_idx / fps
+            frame_output = os.path.join(temp_dir, f"frame_{i:05d}.png")
+            
+            # Construct fast seek command
+            # -ss before -i is fast seek (keyframe spacing)
+            # -vsync 0 prevents frame duplication/drop logic messing with single frame extraction
+            extract_cmd = [
+                "ffmpeg", 
+                "-ss", f"{timestamp:.6f}",
+                "-i", input_path,
+                "-vf", f"scale=iw*{upscale_factor}:ih*{upscale_factor}",
+                "-frames:v", "1",
+                "-vsync", "0",
+                "-pix_fmt", "rgb24",
+                frame_output,
+                "-y"
+            ]
+            
+            # print(f"DEBUG: Extracting frame {frame_idx} at {timestamp:.6f}s")
+            try:
+                subprocess.run(
+                    extract_cmd, 
+                    check=True, 
+                    capture_output=True
+                )
+                if os.path.exists(frame_output):
+                    extracted_frames_count += 1
+            except subprocess.CalledProcessError as e:
+                print(f"Warning: Failed to extract frame {frame_idx} at {timestamp}s: {e}")
+                # We continue to try other frames even if one fails
         
         # Check if frames were actually generated
-        generated_files = os.listdir(temp_dir)
+        generated_files = sorted(os.listdir(temp_dir))
         if not generated_files:
-            # If no frames extracted, this is likely an index out of bounds error vs the video length
-            # We will try to get the frame count for a better error message
-            try:
-                probe_cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=nb_frames", "-of", "default=noprint_wrappers=1:nokey=1", input_path]
-                nb_frames = subprocess.check_output(probe_cmd).decode().strip()
-                print(f"ERROR: Video has {nb_frames} frames, but requested indices were: {random_frames}")
-            except:
-                pass
-                
             print("ERROR: No frames were extracted!")
-            print(f"Extraction Stdout: {extract_result.stdout.decode(errors='ignore')}")
-            print(f"Extraction Stderr: {extract_result.stderr.decode(errors='ignore')}")
             raise RuntimeError("FFmpeg extraction produced no frames.")
         
-        # print(f"DEBUG: Extracted {len(generated_files)} frames.")
+        print(f"DEBUG: Extracted {len(generated_files)} frames using seek.")
 
         # 2. Re-assemble PNGs into a Y4M
         # We use '-f image2' to read the sequential images as a video stream
