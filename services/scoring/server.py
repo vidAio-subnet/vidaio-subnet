@@ -929,7 +929,7 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
             "-v", "error",
             "-select_streams", "v:0",
             "-show_entries", "stream=codec_name,profile,level,sample_aspect_ratio,pix_fmt,"
-                           "width,height,r_frame_rate,color_space,color_primaries,color_transfer,bit_rate",
+                            "width,height,r_frame_rate,avg_frame_rate,color_space,color_primaries,color_transfer,bit_rate",
             "-show_entries", "format=tags=encoder",
             "-show_format",
             "-of", "json",
@@ -954,6 +954,17 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
         fps_str = video_stream.get("r_frame_rate", "0/1")
         encoder_tag = ""
 
+        def parse_fps(fps_str):
+            try:
+                num, denom = map(float, fps_str.split('/'))
+                return num / denom if denom != 0 else 0.0
+            except (ValueError, ZeroDivisionError):
+                return 0.0
+
+        # Extract both
+        r_fps = parse_fps(video_stream.get("r_frame_rate", "0/1"))
+        avg_fps = parse_fps(video_stream.get("avg_frame_rate", "0/1"))
+
         # Get bitrate (prefer stream-level, fallback to format-level)
         bit_rate = video_stream.get("bit_rate") or format_info.get("bit_rate")
         bit_rate_mbps = None
@@ -965,10 +976,8 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
 
         # Bits-per-pixel for distorted video (requires bitrate, fps, width, height)
         try:
-            num, denom = fps_str.split('/')
-            fps_val = float(num) / float(denom) if float(denom) != 0 else 0.0
-            if bit_rate and fps_val > 0 and width and height:
-                dist_bpp = bit_rate / (fps_val * width * height)
+            if bit_rate and avg_fps > 0 and width and height:
+                dist_bpp = bit_rate / (avg_fps * width * height)
         except Exception:
             pass
 
@@ -1005,9 +1014,9 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
         else:
             logger.warning(f"⚠️ Unknown codec mode: {codec_mode}, skipping bitrate validation")
 
-        ref_fps_str = get_video_fps(ref_path, original_str=True)
-        if fps_str != ref_fps_str:
-            errors.append(f"FPS must be {ref_fps_str}, got {fps_str}")
+        ref_fps = get_video_fps(ref_path, original_str=True)
+        if abs(avg_fps - ref_fps) > 0.01:
+            errors.append(f"FPS must be {ref_fps}, got {fps_str}")
 
         if task == "compression":
             ref_width, ref_height = get_video_dimensions(ref_path)
@@ -1201,12 +1210,12 @@ def get_video_fps(video_path, original_str=False):
             "ffprobe",
             "-v", "error",
             "-select_streams", "v:0",
-            "-show_entries", "stream=r_frame_rate",
+            "-show_entries", "stream=avg_frame_rate",
             "-of", "default=noprint_wrappers=1:nokey=1",
             video_path
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=5)
-        # r_frame_rate returns format like "30000/1001" or "30/1"
+        # avg_frame_rate returns format like "30000/1001" or "30/1"
         fps_str = result.stdout.strip()
         if original_str:
             return fps_str
