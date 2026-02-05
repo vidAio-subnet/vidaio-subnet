@@ -4,38 +4,40 @@ import os
 from moviepy.editor import VideoFileClip
 from loguru import logger
 
-def trim_video(video_path, start_time, trim_duration=1):
-    """
-    Trims a video at a specific start point for a given duration, or uses the whole video if it's shorter than the trim duration.
 
+def trim_video(input_path, start_time, trim_duration=1, target_crf=18):
+    """
+    Trims a video and re-encodes it to H.264 with minimal quality loss.
+    
     Args:
-        video_path (str): Path to the video to be trimmed.
-        start_time (float): The start time for trimming.
-        trim_duration (int): Duration of the clip to be extracted in seconds.
-
-    Returns:
-        str: Path to the trimmed video.
+        input_path (str): Path to the source (AV1, HEVC, etc.)
+        start_time (float): Start point in seconds
+        trim_duration (int): Duration in seconds
+        target_crf (int): Quality level (17-18 for visually transparent)
     """
-    # Load the video file
-    video_clip = VideoFileClip(video_path)
-    video_duration = video_clip.duration
-
-    # If the video is shorter than the trim duration, use the whole video
-    if video_duration < trim_duration:
-        # Use the whole video
-        trimmed_clip = video_clip
-    else:
-        # Create the subclip from the specified start time
-        trimmed_clip = video_clip.subclip(start_time, start_time + trim_duration)
+    filename, ext = os.path.splitext(input_path)
+    output_path = f"{filename}_trimmed_{start_time:.2f}.mp4"
     
-    # Define the output path for the trimmed video
-    output_path = video_path.replace(".mp4", f"_trimmed_{start_time:.2f}.mp4")
+    cmd = [
+        "ffmpeg",
+        "-y",                  # Overwrite if exists
+        "-ss", str(start_time),
+        "-t", str(trim_duration),
+        "-i", input_path,
+        "-c:v", "libx264",     # Ensure H.264 output
+        "-preset", "slow",     # Better compression efficiency
+        "-crf", str(target_crf),# High quality setting
+        "-c:a", "aac",         # Standard audio codec for MP4
+        "-b:a", "192k",        # Good audio bitrate
+        output_path
+    ]
     
-    # Write the trimmed video
-    trimmed_clip.write_videofile(output_path, codec="libx264", verbose=False, logger=None)
-
-    # Return the path to the trimmed video
-    return output_path
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+        return output_path
+    except subprocess.CalledProcessError as e:
+        print(f"Error: {e.stderr.decode()}")
+        return None
 
 def convert_mp4_to_y4m(input_path, random_frames, upscale_factor=1):
     """
