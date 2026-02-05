@@ -68,10 +68,11 @@ def convert_mp4_to_y4m(input_path, random_frames, upscale_factor=1):
             "-vf", f"select='{select_expr}',scale=iw*{upscale_factor}:ih*{upscale_factor}",
             "-vsync", "0",
             "-pix_fmt", "rgb24",
+            "-start_number", "0",
             os.path.join(temp_dir, "frame_%05d.png"),
             "-y"
         ]
-        subprocess.run(extract_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        subprocess.run(extract_cmd, check=True, capture_output=True)
 
         # 2. Re-assemble PNGs into a Y4M
         # We use '-f image2' to read the sequential images as a video stream
@@ -83,10 +84,25 @@ def convert_mp4_to_y4m(input_path, random_frames, upscale_factor=1):
             output_path,
             "-y"
         ]
-        subprocess.run(assemble_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        subprocess.run(assemble_cmd, check=True, capture_output=True)
 
         return output_path
 
+    except subprocess.CalledProcessError as e:
+        print(f"FFmpeg command failed with exit code {e.returncode}")
+        print(f"Command: {e.cmd}")
+        if e.stdout:
+            print(f"Stdout: {e.stdout.decode(errors='ignore')}")
+        if e.stderr:
+            print(f"Stderr: {e.stderr.decode(errors='ignore')}")
+        
+        # List contents of temp directory to check if frames were generated
+        if os.path.exists(temp_dir):
+            print(f"Contents of {temp_dir}: {os.listdir(temp_dir)}")
+        else:
+            print(f"Temp dir {temp_dir} does not exist.")
+            
+        raise
     except Exception as e:
         print(f"Nuclear extraction failed: {e}")
         raise
