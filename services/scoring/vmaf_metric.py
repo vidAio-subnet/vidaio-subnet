@@ -3,6 +3,8 @@ import xml.etree.ElementTree as ET
 import os
 from moviepy.editor import VideoFileClip
 from loguru import logger
+import tempfile
+import shutil
 
 def trim_video(video_path, start_time, trim_duration=1):
     """
@@ -53,44 +55,44 @@ def convert_mp4_to_y4m(input_path, random_frames, upscale_factor=1):
         raise ValueError("Input file must be an MP4 file.")
 
     output_path = os.path.splitext(input_path)[0] + ".y4m"
-    select_expr = "+".join([f"eq(n\\,{f})" for f in random_frames])
-
-    # Build the filter chain
-    # 1. select the frames
-    # 2. setpts=N/TB: Resets timestamps to be sequential indices (0, 1, 2...)
-    #    This ignores the "240fps" buggy container timing.
-    # 3. scale: if needed
-    # vf_filters = [f"select='{select_expr}'", "setpts=N/TB"]
     
-    # if upscale_factor >= 2:
-    #     vf_filters.append(f"scale=iw*{upscale_factor}:ih*{upscale_factor}")
-
-    # filter_string = ",".join(vf_filters)
-
+    temp_dir = tempfile.mkdtemp()
+    
     try:
-        subprocess.run([
+        # 1. Extract specific frames as high-quality PNGs
+        # We use -start_number 0 to ensure sequential naming for the next step
+        select_expr = "+".join([f"eq(n\\,{f})" for f in random_frames])
+        
+        extract_cmd = [
+            "ffmpeg", "-i", input_path,
+            "-vf", f"select='{select_expr}',scale=iw*{upscale_factor}:ih*{upscale_factor}",
+            "-vsync", "0",
+            "-pix_fmt", "rgb24",
+            os.path.join(temp_dir, "frame_%05d.png"),
+            "-y"
+        ]
+        subprocess.run(extract_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+
+        # 2. Re-assemble PNGs into a Y4M
+        # We use '-f image2' to read the sequential images as a video stream
+        assemble_cmd = [
             "ffmpeg",
-            # 1. Force the decoder to ignore the "broken" container FPS
-            "-bitexact", 
-            "-i", input_path,
-            "-vf", (
-                f"select='{select_expr}'," # Select the frames
-                "setpts=N/TB,"             # Reset timestamps to be sequential
-                f"scale=iw*{upscale_factor}:ih*{upscale_factor}," # Scale if needed
-                "format=yuv420p"           # Ensure pixel format inside filtergraph
-            ),
-            "-pix_fmt", "yuv420p",
-            "-vsync", "passthrough",       # Stop FFmpeg from trying to "fix" the timing
-            "-an",                         # Drop audio to prevent sync-based dropping
+            "-framerate", "30", # We set a 'sane' rate for the Y4M header
+            "-i", os.path.join(temp_dir, "frame_%05d.png"),
+            "-pix_fmt", "yuv420p", # Convert back to target pix_fmt
             output_path,
             "-y"
-        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        ]
+        subprocess.run(assemble_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
         return output_path
 
     except Exception as e:
-        print(f"Error in vmaf_metric_batch: {e}")
+        print(f"Nuclear extraction failed: {e}")
         raise
+    finally:
+        # Cleanup the image bridge
+        shutil.rmtree(temp_dir)
 
 
 def vmaf_metric(ref_path, dist_path, output_file="vmaf_output.xml", neg_model=False):
