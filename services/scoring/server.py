@@ -242,7 +242,7 @@ def extract_frames(video_path, num_frames=3, frame_indices=None):
     cap.release()
     return frames
 
-def extract_frames_from_mp4(mp4_path, fps_filter=None):
+def extract_frames_from_mp4(mp4_path, fps_filter=None, frames_idxs=None):
     """
     Extract frames from an MP4 file for color validation.
     
@@ -250,6 +250,8 @@ def extract_frames_from_mp4(mp4_path, fps_filter=None):
         mp4_path: Path to the source MP4 file.
         fps_filter: Optional; numeric value to extract frames at a specific rate 
                     (e.g., 1 extracts one frame per second).
+        frames_idxs: Optional; list of specific frame indices to extract (0-based).
+                     Mutually exclusive with fps_filter.
         
     Returns:
         list: List of frames as numpy arrays (BGR format for cv2).
@@ -264,9 +266,18 @@ def extract_frames_from_mp4(mp4_path, fps_filter=None):
         # If this fails (e.g. no GPU support for codec), the fallback logic below will handle it.
         extract_cmd = ["ffmpeg", "-hwaccel", "cuda", "-i", mp4_path]
         
-        # Add frame rate filter if requested (useful for long videos)
+        # Add frame rate filter or specific frame selection
+        if fps_filter and frames_idxs:
+            raise ValueError("Cannot provide both fps_filter and frames_idxs")
+
         if fps_filter:
             extract_cmd.extend(["-vf", f"fps={fps_filter}"])
+        elif frames_idxs:
+            # Construct select filter: select='eq(n,idx1)+eq(n,idx2)+...'
+            # timestamps are preserved but we want to output exactly selected frames
+            select_expr = "+".join([f"eq(n,{i})" for i in sorted(frames_idxs)])
+            # Use select filter and vsync 0 (passthrough) to drop non-selected frames
+            extract_cmd.extend(["-vf", f"select='{select_expr}'", "-vsync", "0"])
             
         extract_cmd.extend([
             output_pattern,
@@ -324,6 +335,9 @@ def extract_frames_from_mp4(mp4_path, fps_filter=None):
                         retry_cmd = ["ffmpeg", "-hwaccel", "none", "-i", sanitized_path]
                         if fps_filter:
                             retry_cmd.extend(["-vf", f"fps={fps_filter}"])
+                        elif frames_idxs:
+                            select_expr = "+".join([f"eq(n,{i})" for i in sorted(frames_idxs)])
+                            retry_cmd.extend(["-vf", f"select='{select_expr}'", "-vsync", "0"])
                         retry_cmd.extend([output_pattern, "-y", "-hide_banner", "-loglevel", "error"])
 
                     logger.debug(f"Retrying extraction on sanitized file: {sanitized_path}")
@@ -386,15 +400,27 @@ def extract_frames_from_mp4(mp4_path, fps_filter=None):
                     if fps_filter:
                         step = max(1, int(round(vid_fps / fps_filter)))
                     
-                    logger.debug(f"OpenCV fallback: extracting every {step} frames (Total: {total_frames}, FPS: {vid_fps})")
+                    logger.debug(f"OpenCV fallback: extracting frames (Total: {total_frames}, FPS: {vid_fps})")
                     
                     count = 0
+                    
+                    # Prepare set of indices if needed for O(1) lookup
+                    target_indices = set(frames_idxs) if frames_idxs else None
+                    
                     while True:
                         ret, frame = cap.read()
                         if not ret:
                             break
                             
-                        if count % step == 0:
+                        should_extract = False
+                        if fps_filter:
+                            if count % step == 0:
+                                should_extract = True
+                        elif target_indices:
+                            if count in target_indices:
+                                should_extract = True
+                        
+                        if should_extract:
                             frames.append(frame)
                         count += 1
                     
