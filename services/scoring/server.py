@@ -1014,7 +1014,7 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
         else:
             logger.warning(f"⚠️ Unknown codec mode: {codec_mode}, skipping bitrate validation")
 
-        ref_fps = get_video_fps(ref_path, original_str=True)
+        ref_fps = get_video_fps(ref_path)
         if abs(avg_fps - ref_fps) > 0.01:
             errors.append(f"FPS must be {ref_fps}, got {fps_str}")
 
