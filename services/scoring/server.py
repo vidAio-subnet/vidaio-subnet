@@ -2091,8 +2091,6 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             max_start_time = max(0, ref_duration - clip_duration)
             start_time = random.uniform(0, max_start_time)
 
-            start_time = 0
-
             # Create 0.5-second reference clip
             ref_clip_path = trim_video(ref_path, start_time, clip_duration)
             logger.info(f"Created reference clip: {ref_clip_path} with start time: {start_time}")
@@ -2129,14 +2127,17 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 logger.error(f"Error calculating VMAF score: {e}")
                 continue
             
+            # Select frame indicies for color validation
+            random_frame_indices = random.sample(range(ref_total_frames), 10)
+
             # Extract frames for color validation from mp4 files
             logger.info(f"Extracting frames from mp4 for color validation (reusing VMAF mp4 files)")
-            dist_frames = extract_frames_from_mp4(dist_path, fps_filter=1)
+            dist_frames = extract_frames_from_mp4(dist_path, frames_idxs=random_frame_indices)
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 8.5. Extracted {len(dist_frames)} frames from mp4 for color validation in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Extract reference frames from mp4 for chroma quality comparison
-            ref_frames = extract_frames_from_mp4(ref_path, fps_filter=1)
+            ref_frames = extract_frames_from_mp4(ref_path, frames_idxs=random_frame_indices)
 
             # Validate color channels (grayscale check)
             color_valid, color_reason = validate_color_channels_on_frames(ref_frames, dist_frames)
@@ -2789,15 +2790,17 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 logger.error(f"Error calculating VMAF score: {e}")
                 continue
             
-            # Now reuse the Y4M files for color validation (no redundant conversion!)
+            # Select frame indicies for color validation
+            random_frame_indices = random.sample(range(ref_total_frames), 10)
+
             # Extract frames for color validation from Y4M files
             logger.info(f"Extracting frames from Y4M for color validation from clip (reusing VMAF Y4M files)")
-            dist_clip_frames = extract_frames_from_mp4(dist_path, fps_filter=1)
+            dist_clip_frames = extract_frames_from_mp4(dist_path, frames_idxs=random_frame_indices)
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 10.5. Extracted {len(dist_clip_frames)} frames from Y4M for color validation in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Extract reference frames from Y4M for chroma quality comparison
-            ref_clip_frames_data = extract_frames_from_mp4(ref_path, fps_filter=1)
+            ref_clip_frames_data = extract_frames_from_mp4(ref_path, frames_idxs=random_frame_indices)
 
             # Validate color channels (grayscale check)
             color_valid, color_reason = validate_color_channels_on_frames(ref_clip_frames_data, dist_clip_frames)
