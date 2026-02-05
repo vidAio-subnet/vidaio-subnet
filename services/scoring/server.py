@@ -1058,7 +1058,7 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
                 # Get reference colorspace
                 ref_cmd = [
                     "ffprobe", "-v", "error", "-select_streams", "v:0",
-                    "-show_entries", "stream=color_space,color_primaries,color_transfer,width,height,r_frame_rate,bit_rate",
+                    "-show_entries", "stream=color_space,color_primaries,color_transfer,width,height,r_frame_rate,avg_frame_rate,bit_rate",
                     "-of", "json", ref_path
                 ]
                 ref_result = subprocess.run(ref_cmd, capture_output=True, text=True, 
@@ -1072,6 +1072,7 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
                 ref_width = ref_stream.get("width")
                 ref_height = ref_stream.get("height")
                 ref_fps_raw = ref_stream.get("r_frame_rate")
+                ref_avg_fps_raw = ref_stream.get("avg_frame_rate")
                 ref_bit_rate = ref_stream.get("bit_rate") or ref_info.get("format", {}).get("bit_rate")
                 
                 # Colorspace - mismatch affects color accuracy
@@ -1095,8 +1096,8 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
 
                 # Bits-per-pixel for reference video
                 try:
-                    if ref_bit_rate and ref_fps_raw and ref_width and ref_height:
-                        num, denom = ref_fps_raw.split('/')
+                    if ref_bit_rate and ref_avg_fps_raw and ref_width and ref_height:
+                        num, denom = ref_avg_fps_raw.split('/')
                         ref_fps_val = float(num) / float(denom) if float(denom) != 0 else 0.0
                         if ref_fps_val > 0:
                             ref_bpp = int(ref_bit_rate) / (ref_fps_val * ref_width * ref_height)
