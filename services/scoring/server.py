@@ -260,13 +260,9 @@ def extract_frames_from_mp4(mp4_path, fps_filter=None):
     
     try:
         # Base FFmpeg command
-        # disable hwaccel to avoid "Your platform doesn't support hardware accelerated AV1 decoding" 
-        # errors on some platforms
-        # Base FFmpeg command
-        # disable hwaccel to avoid "Your platform doesn't support hardware accelerated AV1 decoding" 
-        # errors on some platforms
-        # Single-thread to avoid race/HW-probe crashes, but allow auto-codec detection
-        extract_cmd = ["ffmpeg", "-hwaccel", "none", "-threads", "1", "-i", mp4_path]
+        # Enable hardware acceleration (CUDA) as requested.
+        # If this fails (e.g. no GPU support for codec), the fallback logic below will handle it.
+        extract_cmd = ["ffmpeg", "-hwaccel", "cuda", "-i", mp4_path]
         
         # Add frame rate filter if requested (useful for long videos)
         if fps_filter:
@@ -279,19 +275,13 @@ def extract_frames_from_mp4(mp4_path, fps_filter=None):
             "-loglevel", "error"
         ])
         
-
-
-        # Force software decoding by hiding GPU devices
-        env = os.environ.copy()
-        env["CUDA_VISIBLE_DEVICES"] = ""
-        
         logger.debug(f"Running extract command: {' '.join(extract_cmd)}")
         
+        # Run with full environment (GPU visible)
         result = subprocess.run(
             extract_cmd, 
             capture_output=True, 
             text=True, 
-            env=env,
             timeout=60 # MP4s can take longer to decode than Y4M
         )
         
