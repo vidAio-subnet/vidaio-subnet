@@ -951,7 +951,6 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
         width = video_stream.get("width", 0)
         height = video_stream.get("height", 0)
         container = format_info.get("format_name", "")
-        fps_str = video_stream.get("r_frame_rate", "0/1")
         encoder_tag = ""
 
         def parse_fps(fps_str):
@@ -1138,7 +1137,7 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
         else:
             logger.warning("⚠️ No encoder tag found")
         
-        logger.debug(f"Video analysis: {width}x{height}@{fps_str}, {codec}/{profile}, "
+        logger.debug(f"Video analysis: {width}x{height}@{avg_fps}, {codec}/{profile}, "
                     f"container={container}, color_space={dist_color_space}, "
                     f"SVT-AV1={is_svtav1}")
         
@@ -1149,7 +1148,7 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
         encoder_status = "SVT-AV1" if is_svtav1 else "Other AV1"
 
         bit_rate_display = f"{bit_rate_mbps:.2f}" if bit_rate_mbps is not None else "unknown"
-        status_parts = [f"Valid encoding ({codec}, {width}x{height}, {color_info}, level {level}, fps {fps_str}, bitrate {bit_rate_display} Mbps)"]
+        status_parts = [f"Valid encoding ({codec}, {width}x{height}, {color_info}, level {level}, fps {avg_fps}, bitrate {bit_rate_display} Mbps)"]
         if codec_mode:
             status_parts.append(f"mode={codec_mode}")
         if target_bitrate is not None:
