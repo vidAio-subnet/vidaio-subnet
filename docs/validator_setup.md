@@ -118,106 +118,37 @@ For more details, refer to the [FFMPEG Documentation](https://www.ffmpeg.org/dow
 
 ---
 
-## Install VMAF
+## Install VMAF (Docker with CUDA)
 
-To enable video quality validation, install **VMAF** by following the steps below to set up a clean virtual environment, install dependencies, and compile the tool.
+To enable CUDA-accelerated VMAF calculation, we use a Dockerized setup. This avoids the need for complex local compilation.
 
----
+### Prerequisites
+- **Docker**: Installed and running.
+- **NVIDIA Container Toolkit**: Installed to enable GPU support in Docker (`--gpus all`). 
+  [Installation Guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+  - Alternatively, run `sudo -E ./bootstrap.sh`
 
-Clone the VMAF repository into the working root directory of your `vidaio-subnet` package. If the `vidaio-subnet` virtual environment is currently active, deactivate it first:
+### Build Instructions
+
+Run the following commands to clone the repository and build the Docker images:
 
 ```bash
-git clone https://github.com/vidAio-subnet/vmaf.git
+git clone https://github.com/Netflix/vmaf
 cd vmaf
+docker build -t vmaf .
+docker build -t vmaf_ffmpeg:latest -f Dockerfile.ffmpeg .
 ```
 
----
+This will create the `vmaf_ffmpeg:latest` image, which the validator uses for CUDA-accelerated VMAF calculation.
 
-### Step 1: Set Up a Virtual Environment in VMAF directory
-
-1. Install `venv` if it’s not already installed:
-   ```bash
-   python3 -m venv vmaf-venv
-   ```
-
-2. Activate the virtual environment:
-   ```bash
-   source vmaf-venv/bin/activate
-   ```
-
----
-
-### Step 2: Install Dependencies
-
-1. Install `meson`:
-   ```bash
-   pip install meson
-   ```
-
-2. Install system dependencies:
-   ```bash
-   sudo apt-get update
-   sudo apt-get install nasm ninja-build doxygen xxd
-   ```
-   For Ninja, verify whether the package name is `ninja` or `ninja-build` before running the install command.
-
----
-
-### Step 3: Compile VMAF
-
-
-1. Set up the build environment:
-   ```bash
-   cd libvmaf
-   meson setup build --buildtype release -Denable_avx512=true
-   ```
-
-2. Optional flags:
-   - Use `-Denable_float=true` to enable floating-point feature extractors.
-   - Use `-Denable_avx512=true` to enable AVX-512 SIMD instructions for faster processing on supported CPUs.  
-   - Use `-Denable_cuda=true` to build with CUDA support (requires `nvcc` and CUDA >= 11).  
-     **Note:** To enable CUDA successfully, ensure `nvcc` and the CUDA driver are installed. Refer to the [CUDA and NVCC setup guide](miner_setup.md#step-2-install-cuda-and-nvcc).
-   - Use `-Denable_nvtx=true` to enable NVTX marker support for profiling with Nsight Systems.
-   - **Recommendation:**
-   We recommend adding `-Denable_avx512=true` to enhance validation speed. If CUDA is available, include the flag `-Denable_cuda=true` But At present, VMAF does not include support for CUDA integration.
-
-3. Build the project:
-   ```bash
-   ninja -vC build
-   ```
-
----
-
-### Step 4: Test the Build
-
-Run tests to verify the build:
+### Verify Installation
+You can verify the image was created successfully:
 ```bash
-ninja -vC build test
+docker images | grep vmaf_ffmpeg
 ```
 
----
-
-### Step 5: Install VMAF
-
-Install the library, headers, and the command-line tool:
+After building, return to the project root:
 ```bash
-ninja -vC build install
-```
-
----
-
-### Step 6: Generate Documentation
-
-Generate HTML documentation:
-```bash
-ninja -vC build doc/html
-```
-
-### Step 7: Deactivate vmaf-venv, activate project venv
-
-```bash
-deactivate
-cd ..
 cd ..
 source venv/bin/activate
 ```

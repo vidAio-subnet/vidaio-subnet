@@ -75,47 +75,93 @@ def trim_video(video_path, start_time, trim_duration=1, reencode=False):
 
     return output_path
 
-def vmaf_metric(ref_path, dist_path, output_file="vmaf_output.xml", neg_model=False):
+import json
+
+def vmaf_metric(ref_path, dist_path, output_file="vmaf_output.json", neg_model=False):
     """
-    Calculate VMAF score using FFmpeg's libvmaf filter (No Y4M conversion needed).
+    Calculate VMAF score using Dockerized FFmpeg with CUDA acceleration (libvmaf_cuda).
     """
     if neg_model:
-        model_cfg = "model=version=vmaf_v0.6.1neg"
+        model_version = "vmaf_v0.6.1neg"
     else:
-        model_cfg = "model=version=vmaf_v0.6.1"
+        model_version = "vmaf_v0.6.1"
+    
+    # Ensure absolute paths for mounting
+    ref_path = os.path.abspath(ref_path)
+    dist_path = os.path.abspath(dist_path)
+    output_file = os.path.abspath(output_file.replace(".xml", ".json")) # Ensure JSON extension
+    
+    # Construct paths inside the container (mounting host root to /host_root)
+    # We strip the leading slash from the absolute path to append to /host_root
+    # e.g. /tmp/video.mp4 -> /host_root/tmp/video.mp4
+    def container_path(p):
+        return f"/host_root{p}"
+
+    # Verify input files exist
+    if not os.path.exists(ref_path):
+        raise FileNotFoundError(f"Reference file not found: {ref_path}")
+    if not os.path.exists(dist_path):
+        raise FileNotFoundError(f"Distorted file not found: {dist_path}")
+
+    # Remove existing output file if it exists
+    if os.path.exists(output_file):
+        os.remove(output_file)
+
+    # Docker command
+    # Using --rm to clean up container after run
+    # Mounting / to /host_root to handle any absolute path
+    # Using specific filter_complex for CUDA acceleration (hwupload -> scale_cuda -> libvmaf_cuda)
     
     command = [
-        "ffmpeg",
-        "-i", dist_path, 
-        "-i", ref_path,  
-        "-filter_complex", 
-        f"[0:v]setpts=PTS-STARTPTS[dist];[1:v]setpts=PTS-STARTPTS[ref];[dist][ref]libvmaf={model_cfg}:log_path={output_file}:log_fmt=xml",
-        "-f", "null", 
+        "docker", "run", "--rm", "--gpus", "all",
+        "-e", "NVIDIA_DRIVER_CAPABILITIES=compute,video,utility",
+        "-v", "/:/host_root",
+        "vmaf_ffmpeg:latest",
+        "-init_hw_device", "cuda=gpu", "-filter_hw_device", "gpu",
+        "-i", container_path(dist_path),
+        "-i", container_path(ref_path),
+        "-filter_complex",
+        f"[0:v]format=yuv420p,hwupload,scale_cuda=format=yuv420p[dis];[1:v]format=yuv420p,hwupload,scale_cuda=format=yuv420p[ref];[dis][ref]libvmaf_cuda=model=version={model_version}:pool=harmonic_mean:log_fmt=json:log_path={container_path(output_file)}",
+        "-f", "null",
         "-"
     ]
     
     try:
+        logger.info(f"Running VMAF (CUDA/Docker) on {os.path.basename(dist_path)}")
+        
         result = subprocess.run(command, capture_output=True, text=True)
         
+        if result.returncode != 0:
+            logger.error(f"Docker VMAF execution failed: {result.stderr}")
+            raise subprocess.CalledProcessError(result.returncode, command, result.output, result.stderr)
+        
         if not os.path.exists(output_file):
-            raise FileNotFoundError(f"VMAF output file '{output_file}' not generated. FFmpeg stderr:\n{result.stderr[-500:]}")
+            raise FileNotFoundError(f"VMAF output file '{output_file}' not generated. Docker stderr:\n{result.stderr[-500:]}")
         
-        tree = ET.parse(output_file)
-        root = tree.getroot()
-        
-        vmaf_node = root.find(".//metric[@name='vmaf']")
-        if vmaf_node is None:
-            vmaf_node = root.find(".//aggregate/metric[@name='vmaf']")
+        # Parse JSON output
+        with open(output_file, 'r') as f:
+            data = json.load(f)
             
-        if vmaf_node is None:
-            raise ValueError("VMAF metric not found in the output XML.")
-            
-        score = vmaf_node.attrib.get('harmonic_mean') or vmaf_node.attrib.get('mean')
-        return float(score)
-    
+        # Extract Harmonic Mean VMAF score
+        # Structure: { "version": "...", "frames": [...], "pooled_metrics": { "vmaf": { "min": ..., "max": ..., "mean": ..., "harmonic_mean": ... } } }
+        try:
+            score = data['pooled_metrics']['vmaf']['harmonic_mean']
+            return float(score)
+        except KeyError:
+            # Fallback to mean if harmonic_mean is missing (unlikely with this pool config)
+            score = data['pooled_metrics']['vmaf']['mean']
+            return float(score)
+
     except Exception as e:
-        print(f"Error in vmaf_metric: {e}")
+        logger.exception(f"Error in vmaf_metric: {e}")
         raise
+    finally:
+        # Cleanup output file
+        if os.path.exists(output_file):
+            try:
+                os.remove(output_file)
+            except:
+                pass
 
 def calculate_vmaf(ref_path, dist_path, neg_model=False):
     """
