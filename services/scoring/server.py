@@ -30,7 +30,7 @@ COMPRESSION_RATE_WEIGHT = 0.7  # w_c
 COMPRESSION_VMAF_WEIGHT = 0.3  # w_vmaf
 SOFT_THRESHOLD_MARGIN = 5.0  # Margin below VMAF threshold for soft scoring zone
 
-FRAME_TOLERANCE = 3  # Tolerance in frames for fast ffprobe frame count read
+FRAME_TOLERANCE = 5  # Tolerance in frames for fast ffprobe frame count read
 
 
 app = FastAPI()
