@@ -666,6 +666,10 @@ class Validator(base.BaseValidator):
             timeout=300
         )
 
+        # cleanup reference videos not cleaned up during scoring due to `miners_per_task` != 1
+        for path in reference_video_paths:
+            os.remove(path)
+
         response_data = score_response.json()
 
         quality_scores = response_data.get("quality_scores", [])
@@ -776,6 +780,10 @@ class Validator(base.BaseValidator):
             },
             timeout=300
         )
+
+        # cleanup reference videos not cleaned up during scoring due to `miners_per_task` != 1
+        for path in reference_video_paths:
+            os.remove(path)
 
         response_data = score_response.json()
 
