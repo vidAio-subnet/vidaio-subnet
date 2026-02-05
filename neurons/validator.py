@@ -668,7 +668,8 @@ class Validator(base.BaseValidator):
 
         # cleanup reference videos not cleaned up during scoring due to `miners_per_task` != 1
         for path in reference_video_paths:
-            os.remove(path)
+            if os.path.exists(path):
+                os.remove(path)
 
         response_data = score_response.json()
 
@@ -783,7 +784,8 @@ class Validator(base.BaseValidator):
 
         # cleanup reference videos not cleaned up during scoring due to `miners_per_task` != 1
         for path in reference_video_paths:
-            os.remove(path)
+            if os.path.exists(path):
+                os.remove(path)
 
         response_data = score_response.json()
 

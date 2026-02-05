@@ -126,7 +126,7 @@ To enable CUDA-accelerated VMAF calculation, we use a Dockerized setup. This avo
 - **Docker**: Installed and running.
 - **NVIDIA Container Toolkit**: Installed to enable GPU support in Docker (`--gpus all`). 
   [Installation Guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
-  - Alternatively, run `sudo -E ./bootstrap.sh`
+  - Alternatively, run `sudo -E ./bootstrap.sh` (tested on minimal Ubuntu 24.04 instance)
 
 ### Build Instructions
 
