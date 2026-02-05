@@ -61,7 +61,9 @@ def convert_mp4_to_y4m(input_path, random_frames, upscale_factor=1):
     try:
         # 1. Extract specific frames as high-quality PNGs
         # We use -start_number 0 to ensure sequential naming for the next step
-        select_expr = "+".join([f"eq(n\\,{f})" for f in random_frames])
+        print(f"DEBUG: random_frames: {random_frames}")
+        select_expr = "+".join([f"eq(n,{f})" for f in random_frames])
+        print(f"DEBUG: select_expr: {select_expr}")
         
         extract_cmd = [
             "ffmpeg", "-i", input_path,
@@ -72,7 +74,18 @@ def convert_mp4_to_y4m(input_path, random_frames, upscale_factor=1):
             os.path.join(temp_dir, "frame_%05d.png"),
             "-y"
         ]
-        subprocess.run(extract_cmd, check=True, capture_output=True)
+        print(f"DEBUG: Extract command: {extract_cmd}")
+        extract_result = subprocess.run(extract_cmd, check=True, capture_output=True)
+        
+        # Check if frames were actually generated
+        generated_files = os.listdir(temp_dir)
+        if not generated_files:
+            print("ERROR: No frames were extracted!")
+            print(f"Extraction Stdout: {extract_result.stdout.decode(errors='ignore')}")
+            print(f"Extraction Stderr: {extract_result.stderr.decode(errors='ignore')}")
+            raise RuntimeError("FFmpeg extraction produced no frames.")
+        
+        print(f"DEBUG: Extracted {len(generated_files)} frames.")
 
         # 2. Re-assemble PNGs into a Y4M
         # We use '-f image2' to read the sequential images as a video stream
