@@ -1016,7 +1016,7 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
 
         ref_fps = get_video_fps(ref_path)
         if abs(avg_fps - ref_fps) > 0.01:
-            errors.append(f"FPS must be {ref_fps}, got {fps_str}")
+            errors.append(f"FPS must be {ref_fps}, got {avg_fps}")
 
         if task == "compression":
             ref_width, ref_height = get_video_dimensions(ref_path)
