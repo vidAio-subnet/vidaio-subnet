@@ -6,53 +6,40 @@ from loguru import logger
 import tempfile
 import shutil
 
-def trim_video(video_path, start_time, trim_duration=1):
-    """
-    Trims a video at a specific start point for a given duration
 
+def trim_video(input_path, start_time, trim_duration=1, target_crf=18):
+    """
+    Trims a video and re-encodes it to H.264 with minimal quality loss.
+    
     Args:
-        video_path (str): Path to the video to be trimmed.
-        start_time (float): The start time for trimming.
-        trim_duration (int): Duration of the clip to be extracted in seconds.
-
-    Returns:
-        str: Path to the trimmed video.
+        input_path (str): Path to the source (AV1, HEVC, etc.)
+        start_time (float): Start point in seconds
+        trim_duration (int): Duration in seconds
+        target_crf (int): Quality level (17-18 for visually transparent)
     """
-    output_path = video_path.replace(".mp4", f"_trimmed_{start_time:.2f}.mp4")
-
-    with VideoFileClip(video_path) as video_clip:
-        video_duration = video_clip.duration
-        
-        if video_duration < trim_duration:
-            actual_duration = video_duration
-            actual_end = video_duration
-        else:
-            actual_duration = trim_duration
-            actual_end = start_time + trim_duration
-        
-        # Build command dynamically
-        cmd = ["ffmpeg", "-y"]
-        
-        if start_time > 0:
-            cmd.extend(["-ss", str(start_time)])
-        
-        cmd.extend([
-            "-i", video_path,
-            "-t", str(actual_duration),
-            "-map", "0:v",
-            "-c", "copy",
-            "-avoid_negative_ts", "make_zero",
-            output_path
-        ])
-        
-        subprocess.run(
-            cmd, 
-            check=True, 
-            stdout=subprocess.DEVNULL, 
-            stderr=subprocess.STDOUT
-        )
-
-    return output_path
+    filename, ext = os.path.splitext(input_path)
+    output_path = f"{filename}_trimmed_{start_time:.2f}.mp4"
+    
+    cmd = [
+        "ffmpeg",
+        "-y",                  # Overwrite if exists
+        "-ss", str(start_time),
+        "-t", str(trim_duration),
+        "-i", input_path,
+        "-c:v", "libx264",     # Ensure H.264 output
+        "-preset", "slow",     # Better compression efficiency
+        "-crf", str(target_crf),# High quality setting
+        "-c:a", "aac",         # Standard audio codec for MP4
+        "-b:a", "192k",        # Good audio bitrate
+        output_path
+    ]
+    
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+        return output_path
+    except subprocess.CalledProcessError as e:
+        print(f"Error: {e.stderr.decode()}")
+        return None
 
 def get_video_fps(video_path):
     """
