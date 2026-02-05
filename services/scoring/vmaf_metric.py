@@ -61,18 +61,15 @@ def convert_mp4_to_y4m(input_path, random_frames, upscale_factor=1):
     try:
         # 1. Extract specific frames as high-quality PNGs
         # We use -start_number 0 to ensure sequential naming for the next step
-        # Since we're dealing with potentially VFR (Variable Frame Rate) clips that might have
-        # fewer frames than the reference, we can't reliably select specific frame indices
-        # that were calculated from the reference clip.
-        # Instead, we'll extract the first N frames, where N is the sample count.
+        print(f"DEBUG: random_frames: {random_frames}")
         
-        num_frames_to_extract = len(random_frames)
-        print(f"DEBUG: Extracting first {num_frames_to_extract} frames sequentially.")
+        # Use simple eq(n,f) without extra escaping
+        select_expr = "+".join([f"eq(n,{f})" for f in random_frames])
+        print(f"DEBUG: select_expr: {select_expr}")
         
         extract_cmd = [
             "ffmpeg", "-i", input_path,
-            "-vf", f"scale=iw*{upscale_factor}:ih*{upscale_factor}",
-            "-vframes", str(num_frames_to_extract),
+            "-vf", f"select='{select_expr}',scale=iw*{upscale_factor}:ih*{upscale_factor}",
             "-vsync", "0",
             "-pix_fmt", "rgb24",
             "-start_number", "0",
