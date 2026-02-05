@@ -2524,13 +2524,15 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             logger.info(f"♎️ 6. Selected random start time for video chunks in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Create 0.5-second reference clip
-            ref_clip_path = trim_video(ref_path, start_time, clip_duration)
+            # ref_clip_path = trim_video(ref_path, start_time, clip_duration)
+            ref_clip_path = ref_path
             logger.info(f"Created reference clip: {ref_clip_path}")
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 7. Created reference video clip in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Create 0.5-second distorted clip
-            dist_clip_path = trim_video(dist_path, start_time, clip_duration)
+            # dist_clip_path = trim_video(dist_path, start_time, clip_duration)
+            dist_clip_path = dist_path
             logger.info(f"Created distorted clip: {dist_clip_path}")
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 8. Created distorted video clip in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
