@@ -52,37 +52,31 @@ def convert_mp4_to_y4m(input_path, random_frames, upscale_factor=1):
     if not input_path.lower().endswith(".mp4"):
         raise ValueError("Input file must be an MP4 file.")
 
-    # Change extension to .y4m and keep it in the same directory
     output_path = os.path.splitext(input_path)[0] + ".y4m"
+    select_expr = "+".join([f"eq(n\\,{f})" for f in random_frames])
+
+    # Build the filter chain
+    # 1. select the frames
+    # 2. setpts=N/TB: Resets timestamps to be sequential indices (0, 1, 2...)
+    #    This ignores the "240fps" buggy container timing.
+    # 3. scale: if needed
+    vf_filters = [f"select='{select_expr}'", "setpts=N/TB"]
+    
+    if upscale_factor >= 2:
+        vf_filters.append(f"scale=iw*{upscale_factor}:ih*{upscale_factor}")
+
+    filter_string = ",".join(vf_filters)
 
     try:
-        select_expr = "+".join([f"eq(n\\,{f})" for f in random_frames])
-        
-        if upscale_factor >= 2:
-
-            scale_width = f"iw*{upscale_factor}"
-            scale_height = f"ih*{upscale_factor}"
-
-            subprocess.run([
-                "ffmpeg",
-                "-i", input_path,
-                "-vf", f"select='{select_expr}',scale={scale_width}:{scale_height}",
-                "-pix_fmt", "yuv420p",
-                "-vsync", "vfr",
-                output_path,
-                "-y"
-            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-
-        else:
-            subprocess.run([
-                "ffmpeg",
-                "-i", input_path,
-                "-vf", f"select='{select_expr}'",
-                "-pix_fmt", "yuv420p",
-                "-vsync", "vfr",
-                output_path,
-                "-y"
-            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        subprocess.run([
+            "ffmpeg",
+            "-i", input_path,
+            "-vf", filter_string,
+            "-pix_fmt", "yuv420p",
+            "-vsync", "0", 
+            output_path,
+            "-y"
+        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
         return output_path
 
