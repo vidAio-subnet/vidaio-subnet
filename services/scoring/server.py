@@ -262,9 +262,9 @@ def extract_frames_from_mp4(mp4_path, fps_filter=None, frames_idxs=None):
     
     try:
         # Base FFmpeg command
-        # Enable hardware acceleration (CUDA) as requested.
-        # If this fails (e.g. no GPU support for codec), the fallback logic below will handle it.
-        extract_cmd = ["ffmpeg", "-hwaccel", "cuda", "-i", mp4_path]
+        # Disable NVDEC (hardware decoding) to ensure compatibility with A100 (no AV1 decode supports)
+        # Using software decoding (libdav1d) which is fast on CPU.
+        extract_cmd = ["ffmpeg", "-hwaccel", "none", "-i", mp4_path]
         
         # Add frame rate filter or specific frame selection
         if fps_filter and frames_idxs:
