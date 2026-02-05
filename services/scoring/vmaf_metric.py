@@ -60,28 +60,20 @@ def convert_mp4_to_y4m(input_path, random_frames, upscale_factor=1):
     # 2. setpts=N/TB: Resets timestamps to be sequential indices (0, 1, 2...)
     #    This ignores the "240fps" buggy container timing.
     # 3. scale: if needed
-    # vf_filters = [f"select='{select_expr}'", "setpts=N/TB"]
+    vf_filters = [f"select='{select_expr}'", "setpts=N/TB"]
     
-    # if upscale_factor >= 2:
-    #     vf_filters.append(f"scale=iw*{upscale_factor}:ih*{upscale_factor}")
+    if upscale_factor >= 2:
+        vf_filters.append(f"scale=iw*{upscale_factor}:ih*{upscale_factor}")
 
-    # filter_string = ",".join(vf_filters)
+    filter_string = ",".join(vf_filters)
 
     try:
         subprocess.run([
             "ffmpeg",
-            # 1. Force the decoder to ignore the "broken" container FPS
-            "-bitexact", 
             "-i", input_path,
-            "-vf", (
-                f"select='{select_expr}'," # Select the frames
-                "setpts=N/TB,"             # Reset timestamps to be sequential
-                f"scale=iw*{upscale_factor}:ih*{upscale_factor}," # Scale if needed
-                "format=yuv420p"           # Ensure pixel format inside filtergraph
-            ),
+            "-vf", filter_string,
             "-pix_fmt", "yuv420p",
-            "-vsync", "passthrough",       # Stop FFmpeg from trying to "fix" the timing
-            "-an",                         # Drop audio to prevent sync-based dropping
+            "-vsync", "0", 
             output_path,
             "-y"
         ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
