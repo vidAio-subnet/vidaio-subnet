@@ -6,7 +6,7 @@ from loguru import logger
 
 def trim_video(video_path, start_time, trim_duration=1):
     """
-    Trims a video at a specific start point for a given duration
+    Trims a video at a specific start point for a given duration, or uses the whole video if it's shorter than the trim duration.
 
     Args:
         video_path (str): Path to the video to be trimmed.
@@ -16,40 +16,25 @@ def trim_video(video_path, start_time, trim_duration=1):
     Returns:
         str: Path to the trimmed video.
     """
+    # Load the video file
+    video_clip = VideoFileClip(video_path)
+    video_duration = video_clip.duration
+
+    # If the video is shorter than the trim duration, use the whole video
+    if video_duration < trim_duration:
+        # Use the whole video
+        trimmed_clip = video_clip
+    else:
+        # Create the subclip from the specified start time
+        trimmed_clip = video_clip.subclip(start_time, start_time + trim_duration)
+    
+    # Define the output path for the trimmed video
     output_path = video_path.replace(".mp4", f"_trimmed_{start_time:.2f}.mp4")
+    
+    # Write the trimmed video
+    trimmed_clip.write_videofile(output_path, codec="libx264", verbose=False, logger=None)
 
-    with VideoFileClip(video_path) as video_clip:
-        video_duration = video_clip.duration
-        
-        if video_duration < trim_duration:
-            actual_duration = video_duration
-            actual_end = video_duration
-        else:
-            actual_duration = trim_duration
-            actual_end = start_time + trim_duration
-        
-        # Build command dynamically
-        cmd = ["ffmpeg", "-y"]
-        
-        if start_time > 0:
-            cmd.extend(["-ss", str(start_time)])
-        
-        cmd.extend([
-            "-i", video_path,
-            "-t", str(actual_duration),
-            "-map", "0:v",
-            "-c", "copy",
-            "-avoid_negative_ts", "make_zero",
-            output_path
-        ])
-        
-        subprocess.run(
-            cmd, 
-            check=True, 
-            stdout=subprocess.DEVNULL, 
-            stderr=subprocess.STDOUT
-        )
-
+    # Return the path to the trimmed video
     return output_path
 
 def convert_mp4_to_y4m(input_path, random_frames, upscale_factor=1):
