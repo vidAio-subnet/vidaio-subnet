@@ -27,7 +27,7 @@ def trim_video(input_path, start_time, trim_duration=1, target_crf=18):
         "-t", str(trim_duration),
         "-i", input_path,
         "-c:v", "libx264",     # Ensure H.264 output
-        "-preset", "slow",     # Better compression efficiency
+        "-preset", "medium",     # Better compression efficiency
         "-crf", str(target_crf),# High quality setting
         "-c:a", "aac",         # Standard audio codec for MP4
         "-b:a", "192k",        # Good audio bitrate
