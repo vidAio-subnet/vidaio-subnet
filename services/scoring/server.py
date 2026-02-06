@@ -1517,7 +1517,7 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 5. Validated encoding settings ({encoding_msg}) in {step_time:.2f} seconds.")
 
-            random_frames = sorted(random.sample(range(ref_total_frames), VMAF_SAMPLE_COUNT))
+            random_frames = sorted(random.sample(range(ref_total_frames), min(ref_total_frames, VMAF_SAMPLE_COUNT)))
             logger.info(f"Randomly selected {VMAF_SAMPLE_COUNT} frames for VMAF score: frame list: {random_frames}")
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 6. Selected random frames for VMAF in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
@@ -1864,7 +1864,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 logger.info("Reference file size is 0 or distorted file size >= reference, setting compression rate to 1.0")
 
             # Sample frames for VMAF calculation
-            random_frames = sorted(random.sample(range(ref_total_frames), VMAF_SAMPLE_COUNT))
+            random_frames = sorted(random.sample(range(ref_total_frames), min(ref_total_frames, VMAF_SAMPLE_COUNT)))
             logger.info(f"Randomly selected {VMAF_SAMPLE_COUNT} frames for VMAF score: frame list: {random_frames}")
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 6. Selected random frames for VMAF in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
@@ -2268,7 +2268,7 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             # Get the number of frames in the clips for Y4M conversion using ffprobe
             ref_clip_frames = get_frame_count(ref_upscaled_clip_path)
 
-            random_frames = sorted(random.sample(range(ref_clip_frames), VMAF_SAMPLE_COUNT))
+            random_frames = sorted(random.sample(range(ref_clip_frames), min(ref_clip_frames, VMAF_SAMPLE_COUNT)))
             
             ref_y4m_path = convert_mp4_to_y4m(ref_upscaled_clip_path, random_frames)
             
@@ -2556,8 +2556,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             
             
             # Ensure we don't sample more frames than available
-            sample_count = min(VMAF_SAMPLE_COUNT, ref_clip_frames)
-            random_frames = sorted(random.sample(range(ref_clip_frames), sample_count))
+            random_frames = sorted(random.sample(range(ref_clip_frames), min(VMAF_SAMPLE_COUNT, ref_clip_frames)))
             ref_y4m_path = convert_mp4_to_y4m(ref_clip_path, random_frames)
             logger.info("The reference video clip has been successfully converted to Y4M format.")
             step_time = time.time() - uid_start_time
