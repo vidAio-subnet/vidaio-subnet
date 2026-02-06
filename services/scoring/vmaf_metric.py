@@ -104,7 +104,7 @@ def convert_mp4_to_y4m(input_path, random_frames, upscale_factor=1):
                 "-vf", f"scale=iw*{upscale_factor}:ih*{upscale_factor}",
                 "-frames:v", "1",
                 "-vsync", "0",
-                "-pix_fmt", "rgb24",
+                "-pix_fmt", "yuv420p",
                 frame_output,
                 "-y"
             ]
