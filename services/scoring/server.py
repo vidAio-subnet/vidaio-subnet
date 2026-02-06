@@ -30,7 +30,7 @@ COMPRESSION_RATE_WEIGHT = 0.7  # w_c
 COMPRESSION_VMAF_WEIGHT = 0.3  # w_vmaf
 SOFT_THRESHOLD_MARGIN = 5.0  # Margin below VMAF threshold for soft scoring zone
 
-FRAME_TOLERANCE = 3  # Tolerance in frames for fast ffprobe frame count read
+FRAME_TOLERANCE = 5  # Tolerance in frames for fast ffprobe frame count read
 
 
 app = FastAPI()
@@ -929,7 +929,7 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
             "-v", "error",
             "-select_streams", "v:0",
             "-show_entries", "stream=codec_name,profile,level,sample_aspect_ratio,pix_fmt,"
-                           "width,height,r_frame_rate,color_space,color_primaries,color_transfer,bit_rate",
+                            "width,height,r_frame_rate,avg_frame_rate,color_space,color_primaries,color_transfer,bit_rate",
             "-show_entries", "format=tags=encoder",
             "-show_format",
             "-of", "json",
@@ -951,8 +951,18 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
         width = video_stream.get("width", 0)
         height = video_stream.get("height", 0)
         container = format_info.get("format_name", "")
-        fps_str = video_stream.get("r_frame_rate", "0/1")
         encoder_tag = ""
+
+        def parse_fps(fps_str):
+            try:
+                num, denom = map(float, fps_str.split('/'))
+                return num / denom if denom != 0 else 0.0
+            except (ValueError, ZeroDivisionError):
+                return 0.0
+
+        # Extract both
+        r_fps = parse_fps(video_stream.get("r_frame_rate", "0/1"))
+        avg_fps = parse_fps(video_stream.get("avg_frame_rate", "0/1"))
 
         # Get bitrate (prefer stream-level, fallback to format-level)
         bit_rate = video_stream.get("bit_rate") or format_info.get("bit_rate")
@@ -965,10 +975,8 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
 
         # Bits-per-pixel for distorted video (requires bitrate, fps, width, height)
         try:
-            num, denom = fps_str.split('/')
-            fps_val = float(num) / float(denom) if float(denom) != 0 else 0.0
-            if bit_rate and fps_val > 0 and width and height:
-                dist_bpp = bit_rate / (fps_val * width * height)
+            if bit_rate and avg_fps > 0 and width and height:
+                dist_bpp = bit_rate / (avg_fps * width * height)
         except Exception:
             pass
 
@@ -1005,9 +1013,9 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
         else:
             logger.warning(f"⚠️ Unknown codec mode: {codec_mode}, skipping bitrate validation")
 
-        ref_fps_str = get_video_fps(ref_path, original_str=True)
-        if fps_str != ref_fps_str:
-            errors.append(f"FPS must be {ref_fps_str}, got {fps_str}")
+        ref_fps = get_video_fps(ref_path)
+        if abs(avg_fps - ref_fps) > 0.3:
+            errors.append(f"FPS must be {ref_fps}, got {avg_fps}")
 
         if task == "compression":
             ref_width, ref_height = get_video_dimensions(ref_path)
@@ -1050,7 +1058,7 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
                 # Get reference colorspace
                 ref_cmd = [
                     "ffprobe", "-v", "error", "-select_streams", "v:0",
-                    "-show_entries", "stream=color_space,color_primaries,color_transfer,width,height,r_frame_rate,bit_rate",
+                    "-show_entries", "stream=color_space,color_primaries,color_transfer,width,height,r_frame_rate,avg_frame_rate,bit_rate",
                     "-of", "json", ref_path
                 ]
                 ref_result = subprocess.run(ref_cmd, capture_output=True, text=True, 
@@ -1064,6 +1072,7 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
                 ref_width = ref_stream.get("width")
                 ref_height = ref_stream.get("height")
                 ref_fps_raw = ref_stream.get("r_frame_rate")
+                ref_avg_fps_raw = ref_stream.get("avg_frame_rate")
                 ref_bit_rate = ref_stream.get("bit_rate") or ref_info.get("format", {}).get("bit_rate")
                 
                 # Colorspace - mismatch affects color accuracy
@@ -1087,8 +1096,8 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
 
                 # Bits-per-pixel for reference video
                 try:
-                    if ref_bit_rate and ref_fps_raw and ref_width and ref_height:
-                        num, denom = ref_fps_raw.split('/')
+                    if ref_bit_rate and ref_avg_fps_raw and ref_width and ref_height:
+                        num, denom = ref_avg_fps_raw.split('/')
                         ref_fps_val = float(num) / float(denom) if float(denom) != 0 else 0.0
                         if ref_fps_val > 0:
                             ref_bpp = int(ref_bit_rate) / (ref_fps_val * ref_width * ref_height)
@@ -1129,7 +1138,7 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
         else:
             logger.warning("⚠️ No encoder tag found")
         
-        logger.debug(f"Video analysis: {width}x{height}@{fps_str}, {codec}/{profile}, "
+        logger.debug(f"Video analysis: {width}x{height}@{avg_fps}, {codec}/{profile}, "
                     f"container={container}, color_space={dist_color_space}, "
                     f"SVT-AV1={is_svtav1}")
         
@@ -1140,7 +1149,7 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
         encoder_status = "SVT-AV1" if is_svtav1 else "Other AV1"
 
         bit_rate_display = f"{bit_rate_mbps:.2f}" if bit_rate_mbps is not None else "unknown"
-        status_parts = [f"Valid encoding ({codec}, {width}x{height}, {color_info}, level {level}, fps {fps_str}, bitrate {bit_rate_display} Mbps)"]
+        status_parts = [f"Valid encoding ({codec}, {width}x{height}, {color_info}, level {level}, fps {avg_fps}, bitrate {bit_rate_display} Mbps)"]
         if codec_mode:
             status_parts.append(f"mode={codec_mode}")
         if target_bitrate is not None:
@@ -1201,12 +1210,12 @@ def get_video_fps(video_path, original_str=False):
             "ffprobe",
             "-v", "error",
             "-select_streams", "v:0",
-            "-show_entries", "stream=r_frame_rate",
+            "-show_entries", "stream=avg_frame_rate",
             "-of", "default=noprint_wrappers=1:nokey=1",
             video_path
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=5)
-        # r_frame_rate returns format like "30000/1001" or "30/1"
+        # avg_frame_rate returns format like "30000/1001" or "30/1"
         fps_str = result.stdout.strip()
         if original_str:
             return fps_str
@@ -1508,7 +1517,7 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 5. Validated encoding settings ({encoding_msg}) in {step_time:.2f} seconds.")
 
-            random_frames = sorted(random.sample(range(ref_total_frames), VMAF_SAMPLE_COUNT))
+            random_frames = sorted(random.sample(range(ref_total_frames), min(ref_total_frames, VMAF_SAMPLE_COUNT)))
             logger.info(f"Randomly selected {VMAF_SAMPLE_COUNT} frames for VMAF score: frame list: {random_frames}")
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 6. Selected random frames for VMAF in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
@@ -1855,7 +1864,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 logger.info("Reference file size is 0 or distorted file size >= reference, setting compression rate to 1.0")
 
             # Sample frames for VMAF calculation
-            random_frames = sorted(random.sample(range(ref_total_frames), VMAF_SAMPLE_COUNT))
+            random_frames = sorted(random.sample(range(ref_total_frames), min(ref_total_frames, VMAF_SAMPLE_COUNT)))
             logger.info(f"Randomly selected {VMAF_SAMPLE_COUNT} frames for VMAF score: frame list: {random_frames}")
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 6. Selected random frames for VMAF in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
@@ -2259,7 +2268,7 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             # Get the number of frames in the clips for Y4M conversion using ffprobe
             ref_clip_frames = get_frame_count(ref_upscaled_clip_path)
 
-            random_frames = sorted(random.sample(range(ref_clip_frames), VMAF_SAMPLE_COUNT))
+            random_frames = sorted(random.sample(range(ref_clip_frames), min(ref_clip_frames, VMAF_SAMPLE_COUNT)))
             
             ref_y4m_path = convert_mp4_to_y4m(ref_upscaled_clip_path, random_frames)
             
@@ -2541,13 +2550,13 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
 
             # Get the number of frames in the clips for Y4M conversion
             
-            ref_clip_frames = get_frame_count(ref_clip_path)
+            # ref_clip_frames = get_frame_count(ref_clip_path)
+            ref_clip_frames = ref_total_frames
             logger.info(f"Reference clip has {ref_clip_frames} frames.")
             
             
             # Ensure we don't sample more frames than available
-            sample_count = min(VMAF_SAMPLE_COUNT, ref_clip_frames)
-            random_frames = sorted(random.sample(range(ref_clip_frames), sample_count))
+            random_frames = sorted(random.sample(range(ref_clip_frames), min(VMAF_SAMPLE_COUNT, ref_clip_frames)))
             ref_y4m_path = convert_mp4_to_y4m(ref_clip_path, random_frames)
             logger.info("The reference video clip has been successfully converted to Y4M format.")
             step_time = time.time() - uid_start_time
