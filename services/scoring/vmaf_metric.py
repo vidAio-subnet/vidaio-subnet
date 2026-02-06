@@ -77,96 +77,44 @@ def convert_mp4_to_y4m(input_path, random_frames, upscale_factor=1):
     if not input_path.lower().endswith(".mp4"):
         raise ValueError("Input file must be an MP4 file.")
 
+    # Change extension to .y4m and keep it in the same directory
     output_path = os.path.splitext(input_path)[0] + ".y4m"
-    
-    temp_dir = tempfile.mkdtemp()
-    
-    try:
-        # 1. Extract specific frames using fast seek (-ss)
-        
-        # Get FPS to calculate timestamps
-        fps = get_video_fps(input_path)
-        print(f"DEBUG: Video FPS: {fps}")
-        
-        extracted_frames_count = 0
-        
-        for i, frame_idx in enumerate(random_frames):
-            timestamp = frame_idx / fps
-            frame_output = os.path.join(temp_dir, f"frame_{i:05d}.png")
-            
-            # Construct fast seek command
-            # -ss before -i is fast seek (keyframe spacing)
-            # -vsync 0 prevents frame duplication/drop logic messing with single frame extraction
-            extract_cmd = [
-                "ffmpeg", 
-                "-ss", f"{timestamp:.6f}",
-                "-i", input_path,
-                "-vf", f"scale=iw*{upscale_factor}:ih*{upscale_factor}",
-                "-frames:v", "1",
-                "-vsync", "0",
-                "-pix_fmt", "yuv420p",
-                frame_output,
-                "-y"
-            ]
-            
-            # print(f"DEBUG: Extracting frame {frame_idx} at {timestamp:.6f}s")
-            try:
-                subprocess.run(
-                    extract_cmd, 
-                    check=True, 
-                    capture_output=True
-                )
-                if os.path.exists(frame_output):
-                    extracted_frames_count += 1
-            except subprocess.CalledProcessError as e:
-                print(f"Warning: Failed to extract frame {frame_idx} at {timestamp}s: {e}")
-                # We continue to try other frames even if one fails
-        
-        # Check if frames were actually generated
-        generated_files = sorted(os.listdir(temp_dir))
-        if not generated_files:
-            print("ERROR: No frames were extracted!")
-            raise RuntimeError("FFmpeg extraction produced no frames.")
-        
-        print(f"DEBUG: Extracted {len(generated_files)} frames using seek.")
 
-        # 2. Re-assemble PNGs into a Y4M
-        # We use '-f image2' to read the sequential images as a video stream
-        assemble_cmd = [
-            "ffmpeg",
-            "-framerate", "30", # We set a 'sane' rate for the Y4M header
-            "-i", os.path.join(temp_dir, "frame_%05d.png"),
-            "-pix_fmt", "yuv420p", # Convert back to target pix_fmt
-            output_path,
-            "-y"
-        ]
-        subprocess.run(assemble_cmd, check=True, capture_output=True)
+    try:
+        select_expr = "+".join([f"eq(n\\,{f})" for f in random_frames])
+        
+        if upscale_factor >= 2:
+
+            scale_width = f"iw*{upscale_factor}"
+            scale_height = f"ih*{upscale_factor}"
+
+            subprocess.run([
+                "ffmpeg",
+                "-i", input_path,
+                "-vf", f"select='{select_expr}',scale={scale_width}:{scale_height}",
+                "-pix_fmt", "yuv420p",
+                "-vsync", "vfr",
+                output_path,
+                "-y"
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+
+        else:
+            subprocess.run([
+                "ffmpeg",
+                "-i", input_path,
+                "-vf", f"select='{select_expr}'",
+                "-pix_fmt", "yuv420p",
+                "-vsync", "vfr",
+                output_path,
+                "-y"
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
         return output_path
 
-    except subprocess.CalledProcessError as e:
-        print(f"FFmpeg command failed with exit code {e.returncode}")
-        print(f"Command: {e.cmd}")
-        if e.stdout:
-            print(f"Stdout: {e.stdout.decode(errors='ignore')}")
-        if e.stderr:
-            print(f"Stderr: {e.stderr.decode(errors='ignore')}")
-        
-        # List contents of temp directory to check if frames were generated
-        if os.path.exists(temp_dir):
-            print(f"Contents of {temp_dir}: {os.listdir(temp_dir)}")
-        else:
-            print(f"Temp dir {temp_dir} does not exist.")
-            
-        raise
     except Exception as e:
-        print(f"Nuclear extraction failed: {e}")
+        print(f"Error in vmaf_metric_batch: {e}")
         raise
-    finally:
-        # Cleanup the image bridge
-        shutil.rmtree(temp_dir)
-
-
+    
 def vmaf_metric(ref_path, dist_path, output_file="vmaf_output.xml", neg_model=False):
     """
     Calculate VMAF score using the VMAF tool and parse the harmonic mean value from the output.
