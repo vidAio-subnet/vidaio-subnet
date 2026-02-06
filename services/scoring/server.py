@@ -2258,12 +2258,14 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             logger.info("Creating Y4M files for VMAF calculation...")
             # Get the number of frames in the clips for Y4M conversion using ffprobe
             ref_clip_frames = get_frame_count(ref_upscaled_clip_path)
+
+            random_frames = sorted(random.sample(range(ref_clip_frames), VMAF_SAMPLE_COUNT))
             
-            ref_y4m_path = convert_mp4_to_y4m(ref_upscaled_clip_path, list(range(ref_clip_frames)))
+            ref_y4m_path = convert_mp4_to_y4m(ref_upscaled_clip_path, random_frames)
             
             # Calculate VMAF score
             logger.info("Calculating VMAF score...")
-            vmaf_score = calculate_vmaf(ref_y4m_path, dist_clip_path, list(range(ref_clip_frames)), neg_model=False)
+            vmaf_score = calculate_vmaf(ref_y4m_path, dist_clip_path, random_frames, neg_model=False)
             
             if vmaf_score is None:
                 vmaf_score = 0.0
@@ -2524,13 +2526,15 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             logger.info(f"♎️ 6. Selected random start time for video chunks in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Create 0.5-second reference clip
-            ref_clip_path = trim_video(ref_path, start_time, clip_duration)
+            # ref_clip_path = trim_video(ref_path, start_time, clip_duration)
+            ref_clip_path = ref_path
             logger.info(f"Created reference clip: {ref_clip_path}")
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 7. Created reference video clip in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Create 0.5-second distorted clip
-            dist_clip_path = trim_video(dist_path, start_time, clip_duration)
+            # dist_clip_path = trim_video(dist_path, start_time, clip_duration)
+            dist_clip_path = dist_path
             logger.info(f"Created distorted clip: {dist_clip_path}")
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 8. Created distorted video clip in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
