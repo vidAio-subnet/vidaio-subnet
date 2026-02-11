@@ -124,7 +124,7 @@ def calculate_compression_score(
         # In soft zone, both compression AND quality factor matter
         # If you're below threshold, you need good compression to recover
         # Normalization factor based on max theoretical score at 100x compression
-        normalization_factor = 1.34
+        normalization_factor = 1.12
         final_score = (compression_component * quality_factor) / normalization_factor
         
         return min(1.0, final_score), compression_component, quality_factor, f"VMAF {vmaf_score:.2f} in soft zone (quality factor: {quality_factor:.2f})"
@@ -164,33 +164,27 @@ def calculate_compression_score(
         if compression_ratio <= 20:
             """
             Good compression scoring (1.25x to 20x):
-            f(r) = ((r - 1.25) / 18.75) ^ 1.2
+            f(r) = ((r - 1.25) / 18.75) ^ 0.9
             
             Starting from 1.25x to give smooth transition from poor zone:
             - At 1.25x: component = 0.025
-            - At 2x: component ≈ 0.24
-            - At 5x: component ≈ 0.64
-            - At 10x: component ≈ 0.88
-            - At 15x: component ≈ 0.96
-            - At 20x: component = 1.0
-            
-            The exponent 1.2 provides balanced reward curve.
+            - At 2x: component ≈ 0.22
+            - At 5x: component ≈ 0.47
             """
-            compression_component = ((compression_ratio - 1.25) / 18.75) ** 1.2 + 0.025
+            compression_component = ((compression_ratio - 1.25) / 18.75) ** 0.9 + 0.025
         else:
             """
             Exceptional compression bonus (>20x):
-            f(r) = 1.0 + 0.3 * ln(r / 20)
+            f(r) = 1.0 + 0.1 * ln(r / 20)
             
-            Logarithmic bonus up to 1.3 cap:
-            - At 20x: component = 1.0 (continuous at boundary)
-            - At 30x: component ≈ 1.12
-            - At 40x: component ≈ 1.21
-            - At 60x: component ≈ 1.30 (capped)
+            Logarithmic bonus:
+            - At 20x: component = 1.0
+            - At 50x: component ≈ 1.09
+            - At 100x: component ≈ 1.16
             
-            Natural log ensures smooth transition from power region.
+            Reduced multiplier compresses the dynamic range.
             """
-            compression_component = 1.0 + 0.3 * math.log(compression_ratio / 20)
+            compression_component = 1.0 + 0.1 * math.log(compression_ratio / 20)
         
         # compression_component = min(1.3, compression_component)
         reason_suffix = "" if compression_ratio < 10 else " (excellent compression)"
@@ -203,7 +197,7 @@ def calculate_compression_score(
         Capped at 1.0 to maintain normalized scoring
         """
         # Normalization factor based on max theoretical score at 100x compression
-        normalization_factor = 1.34
+        normalization_factor = 1.12
         final_score = (compression_weight * compression_component + 
                       quality_weight * quality_component) / normalization_factor
         
