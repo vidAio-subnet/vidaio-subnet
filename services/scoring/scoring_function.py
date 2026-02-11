@@ -202,6 +202,7 @@ def calculate_compression_score(
         Default: 70% compression + 30% quality
         Capped at 1.0 to maintain normalized scoring
         """
+        # Normalization factor based on max theoretical score at 100x compression
         normalization_factor = 1.34
         final_score = (compression_weight * compression_component + 
                       quality_weight * quality_component) / normalization_factor
