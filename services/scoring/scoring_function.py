@@ -14,7 +14,7 @@ def calculate_compression_score(
     Scoring Philosophy:
     - Compression is primary goal (70% weight by default)
     - VMAF at/above threshold is rewarded with diminishing returns (30% weight)
-    - 100x compression ratio = 1.0 compression component
+    - 15x compression ratio = 1.0 compression component
     - Exceeding VMAF threshold gives modest bonus (not penalty)
     
     Three scoring zones:
@@ -88,38 +88,38 @@ def calculate_compression_score(
         if compression_ratio <= 20:
             """
             Compression scoring for 1x to 20x:
-            f(r) = 0.7 * sqrt((r - 1) / 19)
+            f(r) = ((r - 1) / 19) ^ 1.5
             
             Where r is compression ratio (e.g., 5 for 5x compression)
             - At 1x: component = 0
-            - At 2x: component ≈ 0.16
-            - At 5x: component ≈ 0.32
-            - At 10x: component ≈ 0.48
-            - At 15x: component ≈ 0.60
-            - At 20x: component = 0.70
+            - At 2x: component ≈ 0.23
+            - At 5x: component ≈ 0.65
+            - At 10x: component ≈ 0.89
+            - At 15x: component ≈ 0.97
+            - At 20x: component = 1.0
             
-            Square root provides concave growth rewarding early compression.
-            Reaches 0.70 at 20x, leaving room for 20-100x incentives.
+            The exponent 1.5 provides:
+            - Slow growth initially (encouraging minimum viable compression)
+            - Steeper growth in practical range (5-15x)
+            - Reaches 1.0 exactly at 20x
             """
-            compression_component = 0.7 * math.sqrt((compression_ratio - 1) / 19)
-        elif compression_ratio <= 100:
-            """
-            Extended compression scoring for 20x to 100x:
-            f(r) = 0.7 + 0.3 * sqrt((r - 20) / 80)
-            
-            Continuous at 20x boundary (0.70), reaching 1.0 at 100x:
-            - At 20x: component = 0.70
-            - At 30x: component ≈ 0.81
-            - At 50x: component ≈ 0.88
-            - At 75x: component ≈ 0.95
-            - At 100x: component = 1.00
-            
-            Square root ensures meaningful incentive throughout 20-100x range.
-            """
-            compression_component = 0.7 + 0.3 * math.sqrt((compression_ratio - 20) / 80)
+            compression_component = ((compression_ratio - 1) / 19) ** 1.5
         else:
-            # Beyond 100x: cap at 1.0 to prevent extreme over-compression
-            compression_component = 1.0
+            """
+            Bonus for exceptional compression (>20x):
+            f(r) = 1.0 + 0.3 * ln(r / 20)
+            
+            Logarithmic bonus rewards exceptional performance:
+            - At 20x: component = 1.0 (continuous at boundary)
+            - At 30x: component ≈ 1.12
+            - At 40x: component ≈ 1.21
+            - At 60x: component ≈ 1.30 (capped)
+            
+            Natural log ensures smooth transition from linear region.
+            """
+            compression_component = 1.0 + 0.3 * math.log(compression_ratio / 20)
+        
+        compression_component = min(1.3, compression_component)
         
         # In soft zone, both compression AND quality factor matter
         # If you're below threshold, you need good compression to recover
@@ -161,47 +161,44 @@ def calculate_compression_score(
         
         if compression_ratio <= 20:
             """
-            Compression scoring for 1.25x to 20x:
-            f(r) = 0.7 * sqrt((r - 1) / 19)
+            Good compression scoring (1.25x to 20x):
+            f(r) = ((r - 1.25) / 18.75) ^ 1.2
             
-            - At 1.25x: component ≈ 0.08
-            - At 2x: component ≈ 0.16
-            - At 5x: component ≈ 0.32
-            - At 10x: component ≈ 0.48
-            - At 15x: component ≈ 0.60
-            - At 20x: component = 0.70
+            Starting from 1.25x to give smooth transition from poor zone:
+            - At 1.25x: component = 0.025
+            - At 2x: component ≈ 0.24
+            - At 5x: component ≈ 0.64
+            - At 10x: component ≈ 0.88
+            - At 15x: component ≈ 0.96
+            - At 20x: component = 1.0
             
-            Square root provides concave growth rewarding early compression.
-            Reaches 0.70 at 20x, leaving room for 20-100x incentives.
+            The exponent 1.2 provides balanced reward curve.
             """
-            compression_component = 0.7 * math.sqrt((compression_ratio - 1) / 19)
-        elif compression_ratio <= 100:
-            """
-            Extended compression scoring for 20x to 100x:
-            f(r) = 0.7 + 0.3 * sqrt((r - 20) / 80)
-            
-            Continuous at 20x boundary (0.70), reaching 1.0 at 100x:
-            - At 20x: component = 0.70
-            - At 30x: component ≈ 0.81
-            - At 50x: component ≈ 0.88
-            - At 75x: component ≈ 0.95
-            - At 100x: component = 1.00
-            
-            Square root ensures meaningful incentive throughout 20-100x range.
-            """
-            compression_component = 0.7 + 0.3 * math.sqrt((compression_ratio - 20) / 80)
+            compression_component = ((compression_ratio - 1.25) / 18.75) ** 1.2 + 0.025
         else:
-            # Beyond 100x: cap at 1.0 to prevent extreme over-compression
-            compression_component = 1.0
+            """
+            Exceptional compression bonus (>20x):
+            f(r) = 1.0 + 0.3 * ln(r / 20)
+            
+            Logarithmic bonus up to 1.3 cap:
+            - At 20x: component = 1.0 (continuous at boundary)
+            - At 30x: component ≈ 1.12
+            - At 40x: component ≈ 1.21
+            - At 60x: component ≈ 1.30 (capped)
+            
+            Natural log ensures smooth transition from power region.
+            """
+            compression_component = 1.0 + 0.3 * math.log(compression_ratio / 20)
         
-        reason_suffix = "" if compression_ratio < 50 else " (excellent compression)"
+        compression_component = min(1.3, compression_component)
+        reason_suffix = "" if compression_ratio < 10 else " (excellent compression)"
         
         """
         Final score is weighted combination:
         final_score = w_c * compression_component + w_q * quality_component
         
         Default: 70% compression + 30% quality
-        Capped at 1.0 — only achievable with ~100x compression AND perfect VMAF
+        Capped at 1.0 to maintain normalized scoring
         """
         final_score = (compression_weight * compression_component + 
                       quality_weight * quality_component)
@@ -209,65 +206,3 @@ def calculate_compression_score(
         final_score = min(1.0, final_score)
 
         return final_score, compression_component, quality_component, f"success{reason_suffix}"
-
-
-if __name__ == "__main__":
-    import numpy as np
-    import matplotlib.pyplot as plt
-
-    VMAF_THRESHOLD = 85.0
-
-    # ── Plot 1: final_score vs compression ratio for different VMAF values ──
-    ratios = np.linspace(1.3, 150, 500)
-    vmaf_values = [80, 82, 85, 90, 95, 100]
-
-    fig, axes = plt.subplots(1, 2, figsize=(18, 7))
-
-    ax1 = axes[0]
-    for vmaf in vmaf_values:
-        scores = []
-        for r in ratios:
-            rate = 1.0 / r
-            s, _, _, _ = calculate_compression_score(vmaf, rate, VMAF_THRESHOLD)
-            scores.append(s)
-        ax1.plot(ratios, scores, label=f"VMAF={vmaf}")
-
-    ax1.set_xlabel("Compression Ratio (x)")
-    ax1.set_ylabel("Final Score")
-    ax1.set_title("Final Score vs Compression Ratio\n(across VMAF values, threshold=85)")
-    ax1.legend()
-    ax1.set_xlim(1, 150)
-    ax1.set_ylim(-0.02, 1.05)
-    ax1.axhline(y=1.0, color="gray", linestyle="--", alpha=0.4)
-    ax1.axvline(x=20, color="gray", linestyle=":", alpha=0.4, label="20x")
-    ax1.axvline(x=100, color="gray", linestyle=":", alpha=0.4, label="100x")
-    ax1.grid(True, alpha=0.3)
-
-    # ── Plot 2: final_score vs VMAF for different compression ratios ──
-    vmafs = np.linspace(75, 100, 500)
-    ratio_values = [2, 5, 10, 20, 50, 100]
-
-    ax2 = axes[1]
-    for r in ratio_values:
-        scores = []
-        rate = 1.0 / r
-        for v in vmafs:
-            s, _, _, _ = calculate_compression_score(v, rate, VMAF_THRESHOLD)
-            scores.append(s)
-        ax2.plot(vmafs, scores, label=f"Ratio={r}x")
-
-    ax2.set_xlabel("VMAF Score")
-    ax2.set_ylabel("Final Score")
-    ax2.set_title("Final Score vs VMAF\n(across compression ratios, threshold=85)")
-    ax2.legend()
-    ax2.set_xlim(75, 100)
-    ax2.set_ylim(-0.02, 1.05)
-    ax2.axhline(y=1.0, color="gray", linestyle="--", alpha=0.4)
-    ax2.axvline(x=VMAF_THRESHOLD, color="red", linestyle=":", alpha=0.4, label="threshold")
-    ax2.axvline(x=VMAF_THRESHOLD - 5, color="orange", linestyle=":", alpha=0.4, label="hard cutoff")
-    ax2.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    plt.savefig("scoring_curve.png", dpi=150)
-    print("Saved scoring_curve.png")
-    plt.show()
