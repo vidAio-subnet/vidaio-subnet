@@ -119,11 +119,13 @@ def calculate_compression_score(
             """
             compression_component = 1.0 + 0.3 * math.log(compression_ratio / 20)
         
-        compression_component = min(1.3, compression_component)
+        # compression_component = min(1.3, compression_component)
         
         # In soft zone, both compression AND quality factor matter
         # If you're below threshold, you need good compression to recover
-        final_score = compression_component * quality_factor
+        # Normalization factor based on max theoretical score at 100x compression
+        normalization_factor = 1.34
+        final_score = (compression_component * quality_factor) / normalization_factor
         
         return min(1.0, final_score), compression_component, quality_factor, f"VMAF {vmaf_score:.2f} in soft zone (quality factor: {quality_factor:.2f})"
     
@@ -190,7 +192,7 @@ def calculate_compression_score(
             """
             compression_component = 1.0 + 0.3 * math.log(compression_ratio / 20)
         
-        compression_component = min(1.3, compression_component)
+        # compression_component = min(1.3, compression_component)
         reason_suffix = "" if compression_ratio < 10 else " (excellent compression)"
         
         """
@@ -200,9 +202,78 @@ def calculate_compression_score(
         Default: 70% compression + 30% quality
         Capped at 1.0 to maintain normalized scoring
         """
+        normalization_factor = 1.34
         final_score = (compression_weight * compression_component + 
-                      quality_weight * quality_component)
+                      quality_weight * quality_component) / normalization_factor
         
         final_score = min(1.0, final_score)
 
         return final_score, compression_component, quality_component, f"success{reason_suffix}"
+
+
+if __name__ == "__main__":
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
+    # --- Configuration ---
+    vmaf_thresholds = [85, 89, 93]
+    vmaf_values = np.linspace(75, 100, 200)
+    compression_ratios = np.linspace(1.0, 100.0, 200)  # 1x to 100x
+
+    fig, axes = plt.subplots(
+        2, len(vmaf_thresholds),
+        figsize=(6 * len(vmaf_thresholds), 11),
+        gridspec_kw={"height_ratios": [1, 1.2]},
+    )
+
+    for col, threshold in enumerate(vmaf_thresholds):
+        # Build score grid  (VMAF on Y, compression ratio on X)
+        scores = np.zeros((len(vmaf_values), len(compression_ratios)))
+        for i, vmaf in enumerate(vmaf_values):
+            for j, cr in enumerate(compression_ratios):
+                rate = 1.0 / cr  # compression_rate = 1 / ratio
+                final_score, *_ = calculate_compression_score(
+                    vmaf_score=vmaf,
+                    compression_rate=rate,
+                    vmaf_threshold=threshold,
+                )
+                scores[i, j] = final_score
+
+        # ---- Row 0: Heatmap ----
+        ax_heat = axes[0, col]
+        cr_extent = [compression_ratios[0], compression_ratios[-1]]
+        vmaf_extent = [vmaf_values[0], vmaf_values[-1]]
+        im = ax_heat.imshow(
+            scores,
+            aspect="auto",
+            origin="lower",
+            extent=cr_extent + vmaf_extent,
+            cmap="viridis",
+            # vmin=0,
+            # vmax=1,
+        )
+        ax_heat.set_xlabel("Compression Ratio (x)")
+        ax_heat.set_ylabel("VMAF Score")
+        ax_heat.set_title(f"Threshold = {threshold}")
+        fig.colorbar(im, ax=ax_heat, label="Final Score")
+
+        # ---- Row 1: 3D Surface ----
+        ax_3d = fig.add_subplot(2, len(vmaf_thresholds), len(vmaf_thresholds) + col + 1, projection="3d")
+        axes[1, col].set_visible(False)  # hide the flat axes placeholder
+
+        CR, VMAF = np.meshgrid(compression_ratios, vmaf_values)
+        ax_3d.plot_surface(CR, VMAF, scores, cmap="viridis", edgecolor="none", alpha=0.9)
+        ax_3d.set_xlabel("Comp. Ratio (x)")
+        ax_3d.set_ylabel("VMAF")
+        ax_3d.set_zlabel("Score")
+        ax_3d.set_title(f"Threshold = {threshold}")
+        ax_3d.view_init(elev=30, azim=-135)
+
+    fig.suptitle("Final Score vs VMAF & Compression Ratio", fontsize=15, y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+
+    import os
+    out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scoring_plot.png")
+    plt.savefig(out_path, dpi=200, bbox_inches="tight")
+    print(f"Plot saved to {out_path}")
