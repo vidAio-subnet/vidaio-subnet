@@ -171,7 +171,7 @@ def calculate_compression_score(
             - At 2x: component ≈ 0.22
             - At 5x: component ≈ 0.47
             """
-            compression_component = ((compression_ratio - 1.25) / 18.75) ** 0.9 + 0.025
+            compression_component = ((compression_ratio - 1.25) / 18.75) ** 0.9
         else:
             """
             Exceptional compression bonus (>20x):
