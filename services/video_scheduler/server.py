@@ -198,30 +198,34 @@ def retrieve_chunk_with_retry(redis_conn, content_length: int, max_retries: int 
     chunk_name, pop_function = chunk_type_map[content_length]
     
     for attempt in range(1, max_retries + 1):
-        raw_chunk = pop_function(redis_conn)
-        
-        if raw_chunk:
+        # Keep popping while we find content, even if expired
+        while True:
+            raw_chunk = pop_function(redis_conn)
+            
+            if not raw_chunk:
+                # Queue is empty, break inner loop to wait/retry
+                break
+            
             # Parse JSON to access the sharing_link
             try:
                 chunk_data = json.loads(raw_chunk)
                 url = chunk_data.get("sharing_link", "")
 
                 if is_url_expired(url, buffer_minutes=10):
-                    print(f"Found {chunk_name} chunk, but URL is expired or expiring within 10m. Discarding.")
-                    # We continue the loop to try and pop the NEXT item in the same attempt
-                    # Or you could just treat this as a failed attempt. 
-                    # Here we continue to find a fresh one:
+                    print(f"Found {chunk_name} chunk, but URL is expired or expiring within 10m. Discarding and trying next immediately.")
+                    # Continue inner loop to pop the NEXT item immediately
                     continue 
 
                 print(f"Retrieved valid {chunk_name} chunk on attempt {attempt}")
-                return chunk_data # Return the dict instead of raw string for convenience
+                return chunk_data # Return the dict instead of raw string
             
             except json.JSONDecodeError:
                 print("Failed to decode chunk JSON.")
                 continue
 
+        # If we break the inner loop, it means raw_chunk was None (queue empty)
         if attempt < max_retries:
-            print(f"{chunk_name} chunk unavailable or all expired, retry {attempt}/{max_retries} after {retry_delay}s")
+            print(f"{chunk_name} chunk unavailable, retry {attempt}/{max_retries} after {retry_delay}s")
             time.sleep(retry_delay)
         else:
             print(f"Failed to retrieve valid {chunk_name} chunk after {max_retries} attempts")
