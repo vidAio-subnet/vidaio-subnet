@@ -5,7 +5,6 @@ from typing import Dict, List, Optional
 
 REDIS_CONFIG = CONFIG.redis
 REDIS_TTL = REDIS_CONFIG.redis_ttl #TTL in seconds
-PRESIGNED_URL_TTL = REDIS_CONFIG.presigned_url_ttl #TTL in seconds
 
 def get_redis_connection() -> redis.Redis:
     """
@@ -46,25 +45,21 @@ def push_organic_compression_chunk(r: redis.Redis, data: Dict[str, str]) -> None
 def push_5s_chunks(r: redis.Redis, data_list: List[Dict[str, str]]) -> None:
 
     r.rpush(REDIS_CONFIG.synthetic_5s_clip_queue_key, *[json.dumps(data) for data in data_list])
-    r.expire(REDIS_CONFIG.organic_compression_queue_key, PRESIGNED_URL_TTL)
     print("Pushed all URLs correctly in the Redis queue")
 
 def push_10s_chunks(r: redis.Redis, data_list: List[Dict[str, str]]) -> None:
 
     r.rpush(REDIS_CONFIG.synthetic_10s_clip_queue_key, *[json.dumps(data) for data in data_list])
-    r.expire(REDIS_CONFIG.organic_compression_queue_key, PRESIGNED_URL_TTL)
     print("Pushed all URLs correctly in the Redis queue")
 
 def push_20s_chunks(r: redis.Redis, data_list: List[Dict[str, str]]) -> None:
 
     r.rpush(REDIS_CONFIG.synthetic_20s_clip_queue_key, *[json.dumps(data) for data in data_list])
-    r.expire(REDIS_CONFIG.organic_compression_queue_key, PRESIGNED_URL_TTL)
     print("Pushed all URLs correctly in the Redis queue")
 
 def push_compression_chunks(r: redis.Redis, data_list: List[Dict[str, str]]) -> None:
 
     r.rpush(REDIS_CONFIG.synthetic_compression_queue_key, *[json.dumps(data) for data in data_list])
-    r.expire(REDIS_CONFIG.organic_compression_queue_key, PRESIGNED_URL_TTL)
     print("Pushed all compression chunks correctly in the Redis queue")
 
 def pop_organic_upscaling_chunk(r: redis.Redis) -> Optional[Dict[str, str]]:
