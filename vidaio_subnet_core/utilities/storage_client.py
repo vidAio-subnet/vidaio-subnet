@@ -10,6 +10,8 @@ from concurrent.futures import ThreadPoolExecutor
 from vidaio_subnet_core.global_config import CONFIG
 
 
+REDIS_CONFIG = CONFIG.redis
+PRESIGNED_URL_TTL = REDIS_CONFIG.presigned_url_ttl #TTL in seconds
 class BackblazeClient:
     def __init__(self, endpoint, access_key, secret_key, bucket_name, secure=True, region="us-east-1"):
         self.endpoint = endpoint
@@ -102,7 +104,7 @@ class BackblazeClient:
         except Exception as e:
             print(f"Error deleting all items in bucket: {e}")
 
-    async def get_presigned_url(self, object_name, expires=604800):
+    async def get_presigned_url(self, object_name, expires=PRESIGNED_URL_TTL):
         expires_duration = datetime.timedelta(seconds=expires)
         func = self.client.presigned_get_object
         args = (self.bucket_name, object_name, expires_duration)
@@ -270,7 +272,7 @@ class AmazonS3Client:
         except Exception as e:
             print(f"Error deleting all items in bucket: {e}")
 
-    async def get_presigned_url(self, object_name, expires=604800):
+    async def get_presigned_url(self, object_name, expires=PRESIGNED_URL_TTL):
         loop = asyncio.get_running_loop()
         
         def generate_url():
@@ -431,7 +433,7 @@ class CloudflareR2Client:
         except Exception as e:
             print(f"Error deleting all items in R2 bucket: {e}")
 
-    async def get_presigned_url(self, object_name, expires=604800):
+    async def get_presigned_url(self, object_name, expires=PRESIGNED_URL_TTL):
         loop = asyncio.get_running_loop()
         
         def generate_url():
@@ -598,7 +600,7 @@ class HippiusClient:
         except Exception as e:
             print(f"Error deleting all items in bucket: {e}")
 
-    async def get_presigned_url(self, object_name, expires=604800):
+    async def get_presigned_url(self, object_name, expires=PRESIGNED_URL_TTL):
         """
         Generate a presigned URL for an object.
         
