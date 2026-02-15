@@ -205,23 +205,17 @@ def retrieve_chunk_with_retry(redis_conn, content_length: int, max_retries: int 
             if not raw_chunk:
                 # Queue is empty, break inner loop to wait/retry
                 break
-            
-            # Parse JSON to access the sharing_link
-            try:
-                chunk_data = json.loads(raw_chunk)
-                url = chunk_data.get("sharing_link", "")
+            # raw_chunk is already a dict (decoded in redis_utils)
+            chunk_data = raw_chunk
+            url = chunk_data.get("sharing_link", "")
 
-                if is_url_expired(url, buffer_minutes=10):
-                    print(f"Found {chunk_name} chunk, but URL is expired or expiring within 10m. Discarding and trying next immediately.")
-                    # Continue inner loop to pop the NEXT item immediately
-                    continue 
+            if is_url_expired(url, buffer_minutes=10):
+                print(f"Found {chunk_name} chunk, but URL is expired or expiring within 10m. Discarding and trying next immediately.")
+                # Continue inner loop to pop the NEXT item immediately
+                continue 
 
-                print(f"Retrieved valid {chunk_name} chunk on attempt {attempt}")
-                return chunk_data # Return the dict instead of raw string
-            
-            except json.JSONDecodeError:
-                print("Failed to decode chunk JSON.")
-                continue
+            print(f"Retrieved valid {chunk_name} chunk on attempt {attempt}")
+            return chunk_data
 
         # If we break the inner loop, it means raw_chunk was None (queue empty)
         if attempt < max_retries:
