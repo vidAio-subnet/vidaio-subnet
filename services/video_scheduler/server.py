@@ -23,7 +23,7 @@ from redis_utils import (
     pop_10s_chunk,
     pop_20s_chunk,
     is_scheduler_ready,
-    pop_compression_chunk,
+    pop_compression_chunk
 )
 
 app = FastAPI()
@@ -143,7 +143,7 @@ def api_get_compression_chunks(request_data: CompressionChunkRequest):
     chunks = []
 
     for i in range(request_data.num_needed):
-        chunk = pop_compression_chunk(redis_conn)
+        chunk = retrieve_compression_chunk_with_retry(redis_conn)
         chunks.append(chunk)
     
     valid_chunks = [chunk for chunk in chunks if chunk is not None]
@@ -226,6 +226,40 @@ def retrieve_chunk_with_retry(redis_conn, content_length: int, max_retries: int 
     
     return None
 
+
+def retrieve_compression_chunk_with_retry(redis_conn, max_retries: int = 3, retry_delay: int = 20):
+    
+    chunk_name = "compression"
+    pop_function = pop_compression_chunk
+    
+    for attempt in range(1, max_retries + 1):
+        # Keep popping while we find content, even if expired
+        while True:
+            raw_chunk = pop_function(redis_conn)
+            
+            if not raw_chunk:
+                # Queue is empty, break inner loop to wait/retry
+                break
+            # raw_chunk is already a dict (decoded in redis_utils)
+            chunk_data = raw_chunk
+            url = chunk_data.get("sharing_link", "")
+
+            if is_url_expired(url, buffer_minutes=10):
+                print(f"Found {chunk_name} chunk, but URL is expired or expiring within 10m. Discarding and trying next immediately.")
+                # Continue inner loop to pop the NEXT item immediately
+                continue 
+
+            print(f"Retrieved valid {chunk_name} chunk on attempt {attempt}")
+            return chunk_data
+
+        # If we break the inner loop, it means raw_chunk was None (queue empty)
+        if attempt < max_retries:
+            print(f"{chunk_name} chunk unavailable, retry {attempt}/{max_retries} after {retry_delay}s")
+            time.sleep(retry_delay)
+        else:
+            print(f"Failed to retrieve valid {chunk_name} chunk after {max_retries} attempts")
+    
+    return None
 
 @app.get("/api/get_organic_upscaling_chunks")
 def api_get_organic_upscaling_chunks(needed: int):
