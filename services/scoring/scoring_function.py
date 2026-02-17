@@ -167,9 +167,12 @@ def calculate_compression_score(
             f(r) = ((r - 1.25) / 18.75) ^ 0.9
             
             Starting from 1.25x to give smooth transition from poor zone:
-            - At 1.25x: component = 0.025
-            - At 2x: component ≈ 0.22
-            - At 5x: component ≈ 0.47
+            - At 1.25x: component = ((1.25 - 1.25) / 18.75) ^ 0.9 = 0.0
+            - At 2x: component = ((2 - 1.25) / 18.75) ^ 0.9 = 0.04 ^ 0.9 = 0.055
+            - At 5x: component = ((5 - 1.25) / 18.75) ^ 0.9 = 0.235
+            - At 10x: component = ((10 - 1.25) / 18.75) ^ 0.9 = 0.504
+            - At 15x: component = ((15 - 1.25) / 18.75) ^ 0.9 = 0.756
+            - At 20x: component = ((20 - 1.25) / 18.75) ^ 0.9 = 1.0
             """
             compression_component = ((compression_ratio - 1.25) / 18.75) ** 0.9
         else:
