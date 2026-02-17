@@ -4,6 +4,9 @@ from pydantic import BaseModel
 from vidaio_subnet_core import CONFIG
 from typing import Optional, List
 from fastapi.responses import JSONResponse
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse, parse_qs
+import json
     
 from redis_utils import (
     get_redis_connection,
@@ -20,7 +23,7 @@ from redis_utils import (
     pop_10s_chunk,
     pop_20s_chunk,
     is_scheduler_ready,
-    pop_compression_chunk,
+    pop_compression_chunk
 )
 
 app = FastAPI()
@@ -140,7 +143,7 @@ def api_get_compression_chunks(request_data: CompressionChunkRequest):
     chunks = []
 
     for i in range(request_data.num_needed):
-        chunk = pop_compression_chunk(redis_conn)
+        chunk = retrieve_compression_chunk_with_retry(redis_conn)
         chunks.append(chunk)
     
     valid_chunks = [chunk for chunk in chunks if chunk is not None]
@@ -155,8 +158,33 @@ def api_get_compression_chunks(request_data: CompressionChunkRequest):
     print(f"Successfully retrieved {len(valid_chunks)} chunks")
     return {"chunks": valid_chunks, "status": "success"}
 
+def is_url_expired(sharing_link: str, buffer_minutes: int = 10) -> bool:
+    """Checks if the S3 presigned URL is expired or will expire soon."""
+    try:
+        parsed_url = urlparse(sharing_link)
+        params = parse_qs(parsed_url.query)
+
+        # 1. Extract the creation date (Format: 20260215T091707Z)
+        amz_date_str = params.get('X-Amz-Date', [None])[0]
+        # 2. Extract the duration (in seconds)
+        amz_expires_delta = int(params.get('X-Amz-Expires', [0])[0])
+
+        if not amz_date_str:
+            return True # Assume expired if we can't find metadata
+
+        # Convert X-Amz-Date to a timezone-aware datetime object
+        created_at = datetime.strptime(amz_date_str, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        expiry_time = created_at + timedelta(seconds=amz_expires_delta)
+        
+        # Check if current time + buffer is past expiry
+        now = datetime.now(timezone.utc)
+        return now + timedelta(minutes=buffer_minutes) > expiry_time
+
+    except Exception as e:
+        print(f"Error parsing URL expiration: {e}")
+        return True
+    
 def retrieve_chunk_with_retry(redis_conn, content_length: int, max_retries: int = 3, retry_delay: int = 20):
-   
     chunk_type_map = {
         5: ("5-second", pop_5s_chunk),
         10: ("10-second", pop_10s_chunk),
@@ -170,20 +198,68 @@ def retrieve_chunk_with_retry(redis_conn, content_length: int, max_retries: int 
     chunk_name, pop_function = chunk_type_map[content_length]
     
     for attempt in range(1, max_retries + 1):
-        chunk = pop_function(redis_conn)
-        
-        if chunk:
-            print(f"Retrieved {chunk_name} chunk on attempt {attempt}")
-            return chunk
-        
+        # Keep popping while we find content, even if expired
+        while True:
+            raw_chunk = pop_function(redis_conn)
+            
+            if not raw_chunk:
+                # Queue is empty, break inner loop to wait/retry
+                break
+            # raw_chunk is already a dict (decoded in redis_utils)
+            chunk_data = raw_chunk
+            url = chunk_data.get("sharing_link", "")
+
+            if is_url_expired(url, buffer_minutes=10):
+                print(f"Found {chunk_name} chunk, but URL is expired or expiring within 10m. Discarding and trying next immediately.")
+                # Continue inner loop to pop the NEXT item immediately
+                continue 
+
+            print(f"Retrieved valid {chunk_name} chunk on attempt {attempt}")
+            return chunk_data
+
+        # If we break the inner loop, it means raw_chunk was None (queue empty)
         if attempt < max_retries:
             print(f"{chunk_name} chunk unavailable, retry {attempt}/{max_retries} after {retry_delay}s")
             time.sleep(retry_delay)
         else:
-            print(f"Failed to retrieve {chunk_name} chunk after {max_retries} attempts")
+            print(f"Failed to retrieve valid {chunk_name} chunk after {max_retries} attempts")
     
     return None
 
+
+def retrieve_compression_chunk_with_retry(redis_conn, max_retries: int = 3, retry_delay: int = 20):
+    
+    chunk_name = "compression"
+    pop_function = pop_compression_chunk
+    
+    for attempt in range(1, max_retries + 1):
+        # Keep popping while we find content, even if expired
+        while True:
+            raw_chunk = pop_function(redis_conn)
+            
+            if not raw_chunk:
+                # Queue is empty, break inner loop to wait/retry
+                break
+            # raw_chunk is already a dict (decoded in redis_utils)
+            chunk_data = raw_chunk
+            url = chunk_data.get("sharing_link", "")
+
+            if is_url_expired(url, buffer_minutes=10):
+                print(f"Found {chunk_name} chunk, but URL is expired or expiring within 10m. Discarding and trying next immediately.")
+                # Continue inner loop to pop the NEXT item immediately
+                continue 
+
+            print(f"Retrieved valid {chunk_name} chunk on attempt {attempt}")
+            return chunk_data
+
+        # If we break the inner loop, it means raw_chunk was None (queue empty)
+        if attempt < max_retries:
+            print(f"{chunk_name} chunk unavailable, retry {attempt}/{max_retries} after {retry_delay}s")
+            time.sleep(retry_delay)
+        else:
+            print(f"Failed to retrieve valid {chunk_name} chunk after {max_retries} attempts")
+    
+    return None
 
 @app.get("/api/get_organic_upscaling_chunks")
 def api_get_organic_upscaling_chunks(needed: int):
