@@ -51,32 +51,47 @@ def is_vmaf_ffmpeg_available(docker_image="vmaf_ffmpeg"):
         return False
 
 
-def trim_video(input_path, start_time, trim_duration=1, target_crf=18):
+def trim_video(input_path, start_time, trim_duration=1, target_crf=18, reencode=False):
     """
-    Trims a video and re-encodes it to H.264 with minimal quality loss.
+    Trims a video segment. By default uses stream copy (no re-encoding) for
+    lossless, fast trimming. Set reencode=True to re-encode to H.264, which
+    is needed when the output must be in a standard codec (e.g. for upscale_video).
     
     Args:
         input_path (str): Path to the source (AV1, HEVC, etc.)
         start_time (float): Start point in seconds
         trim_duration (int): Duration in seconds
-        target_crf (int): Quality level (17-18 for visually transparent)
+        target_crf (int): Quality level (17-18 for visually transparent), only used when reencode=True
+        reencode (bool): If True, re-encode to H.264. If False, use stream copy (default).
     """
     filename, ext = os.path.splitext(input_path)
     output_path = f"{filename}_trimmed_{start_time:.2f}.mp4"
     
-    cmd = [
-        "ffmpeg",
-        "-y",                  # Overwrite if exists
-        "-ss", str(start_time),
-        "-t", str(trim_duration),
-        "-i", input_path,
-        "-c:v", "libx264",     # Ensure H.264 output
-        "-preset", "fast",     # Better compression efficiency
-        "-crf", str(target_crf),# High quality setting
-        "-c:a", "aac",         # Standard audio codec for MP4
-        "-b:a", "192k",        # Good audio bitrate
-        output_path
-    ]
+    if reencode:
+        cmd = [
+            "ffmpeg",
+            "-y",                  # Overwrite if exists
+            "-ss", str(start_time),
+            "-t", str(trim_duration),
+            "-i", input_path,
+            "-c:v", "libx264",     # Ensure H.264 output
+            "-preset", "fast",     # Better compression efficiency
+            "-crf", str(target_crf),# High quality setting
+            "-c:a", "aac",         # Standard audio codec for MP4
+            "-b:a", "192k",        # Good audio bitrate
+            output_path
+        ]
+    else:
+        cmd = [
+            "ffmpeg",
+            "-y",                  # Overwrite if exists
+            "-ss", str(start_time),
+            "-t", str(trim_duration),
+            "-i", input_path,
+            "-c:v", "copy",        # Stream copy — no re-encoding
+            "-c:a", "copy",        # Stream copy audio
+            output_path
+        ]
     
     try:
         subprocess.run(cmd, check=True, capture_output=True)

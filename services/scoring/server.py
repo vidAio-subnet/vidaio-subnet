@@ -2312,8 +2312,8 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             
             logger.info(f"Creating 0.25-second clips starting from {start_time:.2f} seconds")
             
-            # Create 0.25-second reference clip
-            ref_clip_path = trim_video(ref_path, start_time, clip_duration)
+            # Create 0.25-second reference clip (re-encode needed for upscale_video compatibility)
+            ref_clip_path = trim_video(ref_path, start_time, clip_duration, reencode=True)
             logger.info(f"Created reference clip: {ref_clip_path}")
             
             # Create 0.25-second distorted clip
