@@ -911,7 +911,7 @@ class MinerManager:
                     organic_s_l = 0.5   # Moderate length score
                     success = False
 
-                    panelty_percentage = 0.05
+                    panelty_percentage = 0.01  # Deduct 1% of current score
                     panelty_amount = current_score * panelty_percentage
                     acc_score = current_score - panelty_amount
 
