@@ -544,7 +544,7 @@ def validate_chroma_quality_on_frames(ref_frames, dist_frames, threshold=0.7):
         return False, f"Error validating chroma: {str(e)}"
 
 
-def _get_signalstats(video_path, n_subsample=1):
+def _get_signalstats(video_path, n_subsample=1, start_time=None, duration=None, max_frames=30):
     """
     Run ffmpeg signalstats filter on a video and return per-frame statistics.
     Extracts YAVG (luma average) and SATAVG (saturation average) per frame
@@ -554,9 +554,16 @@ def _get_signalstats(video_path, n_subsample=1):
     CPU if GPU decode fails. Uses metadata=mode=print to ensure stats are
     printed to stderr.
 
+    FFmpeg processing is bounded by max_frames — FFmpeg stops decoding after
+    max_frames frames, so even hour-long videos are fast.
+
     Args:
         video_path: Path to input video
         n_subsample: Analyze every Nth frame (1 = all frames, 5 = every 5th frame)
+        start_time: Optional start time in seconds (analyze from this point)
+        duration: Optional duration in seconds (analyze this many seconds)
+        max_frames: Maximum number of frames FFmpeg will decode (default 30).
+                    FFmpeg stops after this many frames via -frames:v.
 
     Returns:
         list of dicts, each with at least 'YAVG' and 'SATAVG' keys.
@@ -567,12 +574,24 @@ def _get_signalstats(video_path, n_subsample=1):
     else:
         vf = "signalstats,metadata=mode=print"
 
+    # Build seek/duration args (placed before -i for fast input seeking)
+    seek_args = []
+    if start_time is not None:
+        seek_args += ["-ss", str(start_time)]
+    if duration is not None:
+        seek_args += ["-t", str(duration)]
+
+    # -frames:v tells FFmpeg to stop after processing this many frames
+    frame_limit_args = ["-frames:v", str(max_frames)] if max_frames else []
+
     # Try GPU-accelerated decoding first (NVDEC)
     cmd_gpu = [
         "ffmpeg",
         "-hwaccel", "cuda",
+    ] + seek_args + [
         "-i", video_path,
         "-vf", vf,
+    ] + frame_limit_args + [
         "-f", "null", "-",
         "-hide_banner", "-loglevel", "info",
     ]
@@ -584,8 +603,10 @@ def _get_signalstats(video_path, n_subsample=1):
         logger.info(f"GPU decode failed for signalstats, falling back to CPU decode")
         cmd_cpu = [
             "ffmpeg",
+        ] + seek_args + [
             "-i", video_path,
             "-vf", vf,
+        ] + frame_limit_args + [
             "-f", "null", "-",
             "-hide_banner", "-loglevel", "info",
         ]
@@ -624,6 +645,8 @@ def _get_signalstats(video_path, n_subsample=1):
             f"signalstats returned 0 frames for {video_path}. "
             f"FFmpeg returncode={result.returncode}, stderr length={len(result.stderr)}"
         )
+    else:
+        logger.info(f"signalstats collected {len(frames)} frames for {os.path.basename(video_path)}")
 
     return frames
 
@@ -2208,55 +2231,46 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                     os.unlink(dist_y4m_path)
                 continue
             finally:
-                # Clean up trimmed VMAF clips only if we're NOT using them for FFmpeg validation
-                # If Docker was used, we still need the clips for signalstats validation below
-                if not used_docker_vmaf:
-                    if ref_clip_vmaf_path and os.path.exists(ref_clip_vmaf_path):
-                        os.unlink(ref_clip_vmaf_path)
-                    if dist_clip_vmaf_path and os.path.exists(dist_clip_vmaf_path):
-                        os.unlink(dist_clip_vmaf_path)
+                # Clean up trimmed VMAF clips — signalstats runs on originals, not clips
+                if ref_clip_vmaf_path and os.path.exists(ref_clip_vmaf_path):
+                    os.unlink(ref_clip_vmaf_path)
+                if dist_clip_vmaf_path and os.path.exists(dist_clip_vmaf_path):
+                    os.unlink(dist_clip_vmaf_path)
 
             # === COLOR / CHROMA VALIDATION ===
             if used_docker_vmaf:
-                # Docker path: use FFmpeg signalstats directly on trimmed clips (no Y4M needed)
+                # Docker path: use FFmpeg signalstats on original videos with time bounds (no Y4M needed)
                 logger.info("Using FFmpeg signalstats for color/chroma validation (no Y4M conversion)")
 
-                try:
-                    # Compute signalstats once for both validations
-                    ref_signal_stats = _get_signalstats(ref_clip_vmaf_path)
-                    dist_signal_stats = _get_signalstats(dist_clip_vmaf_path)
+                # Compute signalstats once on original videos (not trimmed clips — avoids keyframe issues)
+                ref_signal_stats = _get_signalstats(ref_path, start_time=vmaf_start_time, duration=vmaf_clip_duration)
+                dist_signal_stats = _get_signalstats(dist_path, start_time=vmaf_start_time, duration=vmaf_clip_duration)
 
-                    # Color validation (grayscale detection)
-                    color_valid, color_reason = validate_color_channels_ffmpeg(ref_signal_stats, dist_signal_stats)
-                    if not color_valid:
-                        logger.error(f"UID {uid}: {color_reason}")
-                        compression_rates.append(0.9999)
-                        final_scores.append(0.0)
-                        reasons.append(f"Color validation failed: {color_reason}")
-                        continue
+                # Color validation (grayscale detection)
+                color_valid, color_reason = validate_color_channels_ffmpeg(ref_signal_stats, dist_signal_stats)
+                if not color_valid:
+                    logger.error(f"UID {uid}: {color_reason}")
+                    compression_rates.append(0.9999)
+                    final_scores.append(0.0)
+                    reasons.append(f"Color validation failed: {color_reason}")
+                    continue
 
-                    logger.info(f"✅ UID {uid}: Color channels validated (ffmpeg) - {color_reason}")
-                    step_time = time.time() - uid_start_time
-                    logger.info(f"♎️ 8.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+                logger.info(f"✅ UID {uid}: Color channels validated (ffmpeg) - {color_reason}")
+                step_time = time.time() - uid_start_time
+                logger.info(f"♎️ 8.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-                    # Chroma validation (UV reduction detection)
-                    chroma_valid, chroma_reason = validate_chroma_quality_ffmpeg(ref_signal_stats, dist_signal_stats, threshold=0.7)
-                    if not chroma_valid:
-                        logger.error(f"UID {uid}: {chroma_reason}")
-                        compression_rates.append(0.9999)
-                        final_scores.append(0.0)
-                        reasons.append(f"Chroma validation failed: {chroma_reason}")
-                        continue
+                # Chroma validation (UV reduction detection)
+                chroma_valid, chroma_reason = validate_chroma_quality_ffmpeg(ref_signal_stats, dist_signal_stats, threshold=0.7)
+                if not chroma_valid:
+                    logger.error(f"UID {uid}: {chroma_reason}")
+                    compression_rates.append(0.9999)
+                    final_scores.append(0.0)
+                    reasons.append(f"Chroma validation failed: {chroma_reason}")
+                    continue
 
-                    logger.info(f"✅ UID {uid}: Chroma quality validated (ffmpeg) - {chroma_reason}")
-                    step_time = time.time() - uid_start_time
-                    logger.info(f"♎️ 8.7. Validated chroma quality in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-                finally:
-                    # Clean up trimmed clips after FFmpeg validation
-                    if ref_clip_vmaf_path and os.path.exists(ref_clip_vmaf_path):
-                        os.unlink(ref_clip_vmaf_path)
-                    if dist_clip_vmaf_path and os.path.exists(dist_clip_vmaf_path):
-                        os.unlink(dist_clip_vmaf_path)
+                logger.info(f"✅ UID {uid}: Chroma quality validated (ffmpeg) - {chroma_reason}")
+                step_time = time.time() - uid_start_time
+                logger.info(f"♎️ 8.7. Validated chroma quality in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
             else:
                 # Fallback path: use Y4M-based validation (existing approach)
                 logger.info("Extracting frames from Y4M for color validation (reusing VMAF Y4M files)")
@@ -2974,12 +2988,12 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
 
             # === COLOR / CHROMA VALIDATION ===
             if used_docker_vmaf:
-                # Docker path: use FFmpeg signalstats directly on trimmed clips (no Y4M needed)
+                # Docker path: use FFmpeg signalstats on original videos with time bounds (no Y4M needed)
                 logger.info("Using FFmpeg signalstats for color/chroma validation (no Y4M conversion)")
 
-                # Compute signalstats once for both validations
-                ref_signal_stats = _get_signalstats(ref_clip_path)
-                dist_signal_stats = _get_signalstats(dist_clip_path)
+                # Compute signalstats once on original videos (not trimmed clips — avoids keyframe issues)
+                ref_signal_stats = _get_signalstats(ref_path, start_time=start_time, duration=clip_duration)
+                dist_signal_stats = _get_signalstats(dist_path, start_time=start_time, duration=clip_duration)
 
                 # Color validation (grayscale detection)
                 color_valid, color_reason = validate_color_channels_ffmpeg(ref_signal_stats, dist_signal_stats)
