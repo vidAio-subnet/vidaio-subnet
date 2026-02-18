@@ -8,6 +8,49 @@ import tempfile
 import shutil
 
 
+_vmaf_ffmpeg_available = None  # cached result
+
+def is_vmaf_ffmpeg_available(docker_image="vmaf_ffmpeg"):
+    """
+    Check whether the vmaf_ffmpeg Docker image is available locally and
+    its FFmpeg build supports the libvmaf_cuda filter.
+    The result is cached so the check only runs once per process.
+    """
+    global _vmaf_ffmpeg_available
+    if _vmaf_ffmpeg_available is not None:
+        return _vmaf_ffmpeg_available
+
+    try:
+        # 1. Check if Docker image exists
+        result = subprocess.run(
+            ["docker", "images", "-q", docker_image],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            logger.info(f"vmaf_ffmpeg Docker image '{docker_image}' not found locally.")
+            _vmaf_ffmpeg_available = False
+            return False
+
+        # 2. Check if FFmpeg in the image supports libvmaf_cuda
+        result = subprocess.run(
+            ["docker", "run", "--rm", docker_image, "-filters"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if "libvmaf_cuda" not in (result.stdout + result.stderr):
+            logger.info(f"vmaf_ffmpeg Docker image does not support libvmaf_cuda filter.")
+            _vmaf_ffmpeg_available = False
+            return False
+
+        logger.info("vmaf_ffmpeg Docker image with libvmaf_cuda support detected ✅")
+        _vmaf_ffmpeg_available = True
+        return True
+
+    except Exception as e:
+        logger.warning(f"Error checking vmaf_ffmpeg availability: {e}")
+        _vmaf_ffmpeg_available = False
+        return False
+
+
 def trim_video(input_path, start_time, trim_duration=1, target_crf=18):
     """
     Trims a video and re-encodes it to H.264 with minimal quality loss.

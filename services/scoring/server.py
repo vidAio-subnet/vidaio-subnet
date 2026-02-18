@@ -21,7 +21,7 @@ from fastapi import FastAPI, HTTPException
 import torchvision.transforms as transforms
 from pieapp_metric import calculate_pieapp_score
 from vidaio_subnet_core.utilities.storage_client import storage_client
-from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video
+from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video, vmaf_metric_ffmpeg, is_vmaf_ffmpeg_available
 from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
 from scoring_function import calculate_compression_score
 
@@ -40,6 +40,9 @@ VMAF_THRESHOLD = CONFIG.score.vmaf_threshold
 PIEAPP_SAMPLE_COUNT = CONFIG.score.pieapp_sample_count
 PIEAPP_THRESHOLD = CONFIG.score.pieapp_threshold
 VMAF_SAMPLE_COUNT = CONFIG.score.vmaf_sample_count
+
+# Check if vmaf_ffmpeg Docker image with libvmaf_cuda is available
+VMAF_FFMPEG_AVAILABLE = is_vmaf_ffmpeg_available()
 
 class UpscalingScoringRequest(BaseModel):
     """
@@ -1517,16 +1520,6 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 5. Validated encoding settings ({encoding_msg}) in {step_time:.2f} seconds.")
 
-            random_frames = sorted(random.sample(range(ref_total_frames), min(ref_total_frames, VMAF_SAMPLE_COUNT)))
-            logger.info(f"Randomly selected {VMAF_SAMPLE_COUNT} frames for VMAF score: frame list: {random_frames}")
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 6. Selected random frames for VMAF in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
-            ref_y4m_path = convert_mp4_to_y4m(ref_path, random_frames)
-            logger.info("The reference video has been successfully converted to Y4M format.")
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 7. Converted reference video to Y4M in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
             if len(dist_url) < 10:
                 logger.info(f"Wrong dist download URL: {dist_url}. Assigning score of 0.")
                 vmaf_scores.append(0.0)
@@ -1538,14 +1531,14 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 continue
 
             step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 8. Validated distorted video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            logger.info(f"♎️ 6. Validated distorted video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Get frame count using ffprobe (no AV1 warnings)
             dist_total_frames = get_frame_count(dist_path)
 
             logger.info(f"Distorted video has {dist_total_frames} frames.")
             step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 9. Retrieved distorted video frame count in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            logger.info(f"♎️ 7. Retrieved distorted video frame count in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             if abs(dist_total_frames - ref_total_frames) > FRAME_TOLERANCE:
                 logger.info(
@@ -1561,15 +1554,49 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                     os.unlink(dist_path)
                 continue
 
-            # Calculate VMAF
+            # Calculate VMAF — Docker-first with Y4M fallback
+            ref_clip_vmaf_path = None
+            dist_clip_vmaf_path = None
             try:
                 vmaf_start = time.time()
-                vmaf_score = calculate_vmaf(ref_y4m_path, dist_path, random_frames, neg_model=False)
+
+                # Trim 1-second clips for VMAF calculation
+                ref_fps = get_video_fps(ref_path) or 30.0
+                ref_duration = ref_total_frames / ref_fps
+                vmaf_clip_duration = 1  # seconds
+                max_start = max(0, ref_duration - vmaf_clip_duration)
+                vmaf_start_time = random.uniform(0, max_start)
+
+                ref_clip_vmaf_path = trim_video(ref_path, vmaf_start_time, vmaf_clip_duration)
+                dist_clip_vmaf_path = trim_video(dist_path, vmaf_start_time, vmaf_clip_duration)
+                logger.info(f"Trimmed 1s clips at {vmaf_start_time:.2f}s for VMAF calculation")
+
+                if VMAF_FFMPEG_AVAILABLE and ref_clip_vmaf_path and dist_clip_vmaf_path:
+                    try:
+                        logger.info("Attempting Docker-based VMAF calculation (libvmaf_cuda)...")
+                        vmaf_score = vmaf_metric_ffmpeg(
+                            dist_path=dist_clip_vmaf_path,
+                            ref_path=ref_clip_vmaf_path,
+                            skip_frames=0,
+                            n_subsample=1,
+                        )
+                        logger.info(f"Docker VMAF calculation succeeded: {vmaf_score}")
+                    except Exception as docker_err:
+                        logger.warning(f"Docker VMAF failed, falling back to Y4M: {docker_err}")
+                        vmaf_score = None  # trigger fallback below
+
+                if not VMAF_FFMPEG_AVAILABLE or vmaf_score is None:
+                    # Fallback: Y4M-based VMAF calculation
+                    logger.info("Using Y4M-based VMAF calculation (fallback)...")
+                    random_frames = sorted(random.sample(range(ref_total_frames), min(ref_total_frames, VMAF_SAMPLE_COUNT)))
+                    ref_y4m_path = convert_mp4_to_y4m(ref_path, random_frames)
+                    vmaf_score = calculate_vmaf(ref_y4m_path, dist_path, random_frames, neg_model=False)
+
                 vmaf_calc_time = time.time() - vmaf_start
                 logger.info(f"☣️☣️ VMAF calculation took {vmaf_calc_time:.2f} seconds.")
 
                 step_time = time.time() - uid_start_time
-                logger.info(f"♎️ 10. Completed VMAF calculation in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+                logger.info(f"♎️ 8. Completed VMAF calculation in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
                 if vmaf_score is not None:
                     vmaf_scores.append(vmaf_score)
@@ -1586,6 +1613,12 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 reasons.append("failed to calculate VMAF score due to video dimension mismatch")
                 logger.error(f"Error calculating VMAF score: {e}")
                 continue
+            finally:
+                # Clean up trimmed VMAF clips
+                if ref_clip_vmaf_path and os.path.exists(ref_clip_vmaf_path):
+                    os.unlink(ref_clip_vmaf_path)
+                if dist_clip_vmaf_path and os.path.exists(dist_clip_vmaf_path):
+                    os.unlink(dist_clip_vmaf_path)
 
             if vmaf_score / 100 < VMAF_THRESHOLD:
                 logger.info(f"VMAF score is too low, giving zero score, current VMAF score: {vmaf_score}")
@@ -1863,22 +1896,54 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 compression_rate = 1.0
                 logger.info("Reference file size is 0 or distorted file size >= reference, setting compression rate to 1.0")
 
-            # Sample frames for VMAF calculation
-            random_frames = sorted(random.sample(range(ref_total_frames), min(ref_total_frames, VMAF_SAMPLE_COUNT)))
-            logger.info(f"Randomly selected {VMAF_SAMPLE_COUNT} frames for VMAF score: frame list: {random_frames}")
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 6. Selected random frames for VMAF in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
-            ref_y4m_path = convert_mp4_to_y4m(ref_path, random_frames)
-            logger.info("The reference video has been successfully converted to Y4M format.")
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 7. Converted reference video to Y4M in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
-            # Calculate VMAF and get Y4M paths for validation
+            # Calculate VMAF — Docker-first with Y4M fallback
+            # Color/chroma validation still needs Y4M frames, generated separately
+            ref_clip_vmaf_path = None
+            dist_clip_vmaf_path = None
             dist_y4m_path = None
             try:
                 vmaf_start = time.time()
-                vmaf_score, dist_y4m_path = calculate_vmaf(ref_y4m_path, dist_path, random_frames, neg_model=True, return_y4m_path=True)
+                vmaf_score = None
+
+                # Trim 1-second clips for Docker VMAF
+                ref_fps_val = get_video_fps(ref_path) or 30.0
+                ref_duration = ref_total_frames / ref_fps_val
+                vmaf_clip_duration = 1  # seconds
+                max_start = max(0, ref_duration - vmaf_clip_duration)
+                vmaf_start_time = random.uniform(0, max_start)
+
+                ref_clip_vmaf_path = trim_video(ref_path, vmaf_start_time, vmaf_clip_duration)
+                dist_clip_vmaf_path = trim_video(dist_path, vmaf_start_time, vmaf_clip_duration)
+                logger.info(f"Trimmed 1s clips at {vmaf_start_time:.2f}s for VMAF calculation")
+
+                if VMAF_FFMPEG_AVAILABLE and ref_clip_vmaf_path and dist_clip_vmaf_path:
+                    try:
+                        logger.info("Attempting Docker-based VMAF calculation (libvmaf_cuda)...")
+                        vmaf_score = vmaf_metric_ffmpeg(
+                            dist_path=dist_clip_vmaf_path,
+                            ref_path=ref_clip_vmaf_path,
+                            skip_frames=0,
+                            n_subsample=1,
+                        )
+                        logger.info(f"Docker VMAF calculation succeeded: {vmaf_score}")
+                    except Exception as docker_err:
+                        logger.warning(f"Docker VMAF failed, falling back to Y4M: {docker_err}")
+                        vmaf_score = None
+
+                # Y4M-based VMAF calculation is always needed for color validation
+                # and as VMAF fallback
+                random_frames = sorted(random.sample(range(ref_total_frames), min(ref_total_frames, VMAF_SAMPLE_COUNT)))
+                ref_y4m_path = convert_mp4_to_y4m(ref_path, random_frames)
+                logger.info("The reference video has been successfully converted to Y4M format.")
+
+                if vmaf_score is None:
+                    # Fallback: Y4M-based VMAF calculation
+                    logger.info("Using Y4M-based VMAF calculation (fallback)...")
+                    vmaf_score, dist_y4m_path = calculate_vmaf(ref_y4m_path, dist_path, random_frames, neg_model=True, return_y4m_path=True)
+                else:
+                    # Docker succeeded, but still generate dist Y4M for color validation
+                    dist_y4m_path = convert_mp4_to_y4m(dist_path, random_frames)
+
                 vmaf_calc_time = time.time() - vmaf_start
                 logger.info(f"☣️☣️ VMAF calculation took {vmaf_calc_time:.2f} seconds.")
 
@@ -1900,6 +1965,12 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 if dist_y4m_path and os.path.exists(dist_y4m_path):
                     os.unlink(dist_y4m_path)
                 continue
+            finally:
+                # Clean up trimmed VMAF clips
+                if ref_clip_vmaf_path and os.path.exists(ref_clip_vmaf_path):
+                    os.unlink(ref_clip_vmaf_path)
+                if dist_clip_vmaf_path and os.path.exists(dist_clip_vmaf_path):
+                    os.unlink(dist_clip_vmaf_path)
             
             # Now reuse the Y4M files for color validation (no redundant conversion!)
             # Extract frames for color validation from Y4M files
@@ -2231,7 +2302,7 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
 
         # === MAIN SCORING LOGIC ===
         try:
-            # Calculate 0.5 second clip duration
+            # Calculate 0.25 second clip duration
             clip_duration = 0.25  # seconds
             
             # Calculate maximum start time to ensure we don't exceed video length
@@ -2239,13 +2310,13 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             max_start_time = max(0, ref_duration - clip_duration)
             start_time = random.uniform(0, max_start_time)
             
-            logger.info(f"Creating 0.5-second clips starting from {start_time:.2f} seconds")
+            logger.info(f"Creating 0.25-second clips starting from {start_time:.2f} seconds")
             
-            # Create 0.5-second reference clip
+            # Create 0.25-second reference clip
             ref_clip_path = trim_video(ref_path, start_time, clip_duration)
             logger.info(f"Created reference clip: {ref_clip_path}")
             
-            # Create 0.5-second distorted clip
+            # Create 0.25-second distorted clip
             dist_clip_path = trim_video(dist_path, start_time, clip_duration)
             logger.info(f"Created distorted clip: {dist_clip_path}")
             
@@ -2263,18 +2334,31 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             logger.info(f"Distorted ClipIQ score: {dist_clipiqa_score:.4f}")
             logger.info(f"Upscaled reference ClipIQ score: {ref_upscaled_clipiqa_score:.4f}")
             
-            # Create Y4M files for VMAF calculation
-            logger.info("Creating Y4M files for VMAF calculation...")
-            # Get the number of frames in the clips for Y4M conversion using ffprobe
-            ref_clip_frames = get_frame_count(ref_upscaled_clip_path)
-
-            random_frames = sorted(random.sample(range(ref_clip_frames), min(ref_clip_frames, VMAF_SAMPLE_COUNT)))
-            
-            ref_y4m_path = convert_mp4_to_y4m(ref_upscaled_clip_path, random_frames)
-            
-            # Calculate VMAF score
+            # Calculate VMAF — Docker-first with Y4M fallback
             logger.info("Calculating VMAF score...")
-            vmaf_score = calculate_vmaf(ref_y4m_path, dist_clip_path, random_frames, neg_model=False)
+            vmaf_score = None
+
+            if VMAF_FFMPEG_AVAILABLE and ref_upscaled_clip_path and dist_clip_path:
+                try:
+                    logger.info("Attempting Docker-based VMAF calculation (libvmaf_cuda)...")
+                    vmaf_score = vmaf_metric_ffmpeg(
+                        dist_path=dist_clip_path,
+                        ref_path=ref_upscaled_clip_path,
+                        skip_frames=0,
+                        n_subsample=1,
+                    )
+                    logger.info(f"Docker VMAF calculation succeeded: {vmaf_score}")
+                except Exception as docker_err:
+                    logger.warning(f"Docker VMAF failed, falling back to Y4M: {docker_err}")
+                    vmaf_score = None
+
+            if vmaf_score is None:
+                # Fallback: Y4M-based VMAF calculation
+                logger.info("Using Y4M-based VMAF calculation (fallback)...")
+                ref_clip_frames = get_frame_count(ref_upscaled_clip_path)
+                random_frames = sorted(random.sample(range(ref_clip_frames), min(ref_clip_frames, VMAF_SAMPLE_COUNT)))
+                ref_y4m_path = convert_mp4_to_y4m(ref_upscaled_clip_path, random_frames)
+                vmaf_score = calculate_vmaf(ref_y4m_path, dist_clip_path, random_frames, neg_model=False)
             
             if vmaf_score is None:
                 vmaf_score = 0.0
@@ -2535,38 +2619,55 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             logger.info(f"♎️ 6. Selected random start time for video chunks in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Create 0.5-second reference clip
-            # ref_clip_path = trim_video(ref_path, start_time, clip_duration)
-            ref_clip_path = ref_path
+            ref_clip_path = trim_video(ref_path, start_time, clip_duration)
             logger.info(f"Created reference clip: {ref_clip_path}")
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 7. Created reference video clip in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Create 0.5-second distorted clip
-            # dist_clip_path = trim_video(dist_path, start_time, clip_duration)
-            dist_clip_path = dist_path
+            dist_clip_path = trim_video(dist_path, start_time, clip_duration)
             logger.info(f"Created distorted clip: {dist_clip_path}")
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 8. Created distorted video clip in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-            # Get the number of frames in the clips for Y4M conversion
-            
-            # ref_clip_frames = get_frame_count(ref_clip_path)
-            ref_clip_frames = ref_total_frames
-            logger.info(f"Reference clip has {ref_clip_frames} frames.")
-            
-            
-            # Ensure we don't sample more frames than available
-            random_frames = sorted(random.sample(range(ref_clip_frames), min(VMAF_SAMPLE_COUNT, ref_clip_frames)))
-            ref_y4m_path = convert_mp4_to_y4m(ref_clip_path, random_frames)
-            logger.info("The reference video clip has been successfully converted to Y4M format.")
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 9. Converted reference video clip to Y4M in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
-            # Calculate VMAF on chunked videos and get Y4M paths for validation
+            # Calculate VMAF — Docker-first with Y4M fallback
+            # Color/chroma validation still needs Y4M frames, generated after VMAF
             dist_y4m_path = None
             try:
                 vmaf_start = time.time()
-                vmaf_score, dist_y4m_path = calculate_vmaf(ref_y4m_path, dist_clip_path, random_frames, neg_model=True, return_y4m_path=True)
+                vmaf_score = None
+
+                if VMAF_FFMPEG_AVAILABLE and ref_clip_path and dist_clip_path:
+                    try:
+                        logger.info("Attempting Docker-based VMAF calculation (libvmaf_cuda)...")
+                        vmaf_score = vmaf_metric_ffmpeg(
+                            dist_path=dist_clip_path,
+                            ref_path=ref_clip_path,
+                            skip_frames=0,
+                            n_subsample=1,
+                        )
+                        logger.info(f"Docker VMAF calculation succeeded: {vmaf_score}")
+                    except Exception as docker_err:
+                        logger.warning(f"Docker VMAF failed, falling back to Y4M: {docker_err}")
+                        vmaf_score = None
+
+                # Y4M conversion is always needed for color validation
+                ref_clip_frames = get_frame_count(ref_clip_path)
+                logger.info(f"Reference clip has {ref_clip_frames} frames.")
+                random_frames = sorted(random.sample(range(ref_clip_frames), min(VMAF_SAMPLE_COUNT, ref_clip_frames)))
+                ref_y4m_path = convert_mp4_to_y4m(ref_clip_path, random_frames)
+                logger.info("The reference video clip has been successfully converted to Y4M format.")
+                step_time = time.time() - uid_start_time
+                logger.info(f"♎️ 9. Converted reference video clip to Y4M in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+                if vmaf_score is None:
+                    # Fallback: Y4M-based VMAF calculation
+                    logger.info("Using Y4M-based VMAF calculation (fallback)...")
+                    vmaf_score, dist_y4m_path = calculate_vmaf(ref_y4m_path, dist_clip_path, random_frames, neg_model=True, return_y4m_path=True)
+                else:
+                    # Docker succeeded, but still generate dist Y4M for color validation
+                    dist_y4m_path = convert_mp4_to_y4m(dist_clip_path, random_frames)
+
                 vmaf_calc_time = time.time() - vmaf_start
                 logger.info(f"☣️☣️ VMAF calculation took {vmaf_calc_time:.2f} seconds.")
 
