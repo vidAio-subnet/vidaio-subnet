@@ -618,8 +618,9 @@ def _get_signalstats(video_path, n_subsample=1, start_time=None, duration=None, 
     for line in result.stderr.split('\n'):
         line = line.strip()
 
-        # New frame boundary: "frame:N ..." line
-        if line.startswith('frame:'):
+        # New frame boundary: "[Parsed_metadata_1 @ 0x...] frame:N pts:M ..."
+        # Lines are prefixed by FFmpeg, so we can't use startswith('frame:')
+        if 'frame:' in line and 'pts:' in line:
             # Save the previous frame if it has the keys we need
             if current_frame and 'SATAVG' in current_frame and 'YAVG' in current_frame:
                 frames.append(current_frame)
