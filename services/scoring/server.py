@@ -629,8 +629,8 @@ def _get_signalstats(video_path, n_subsample=1):
 
 
 def validate_color_channels_ffmpeg(
-    ref_path,
-    dist_path,
+    ref_stats,
+    dist_stats,
     max_gray_ratio=0.50,
     brightness_threshold=20.0,
     ref_sat_threshold=6.0,
@@ -638,7 +638,7 @@ def validate_color_channels_ffmpeg(
     min_checked_frames=3,
 ):
     """
-    FFmpeg-based color validation using signalstats SATAVG.
+    FFmpeg-based color validation using pre-computed signalstats.
     Detects grayscale conversion by comparing per-frame saturation.
 
     Uses the same logic as validate_color_channels_on_frames:
@@ -648,8 +648,8 @@ def validate_color_channels_ffmpeg(
       - Fail if too many distorted frames lost color
 
     Args:
-        ref_path: Path to reference video (MP4)
-        dist_path: Path to distorted video (MP4)
+        ref_stats: Pre-computed signalstats for reference video (from _get_signalstats)
+        dist_stats: Pre-computed signalstats for distorted video (from _get_signalstats)
         max_gray_ratio: Max fraction of frames allowed with reduced color
         brightness_threshold: Min YAVG to consider a ref frame
         ref_sat_threshold: Min ref SATAVG to consider frame as colorful
@@ -660,8 +660,6 @@ def validate_color_channels_ffmpeg(
         tuple: (is_valid, reason)
     """
     try:
-        ref_stats = _get_signalstats(ref_path)
-        dist_stats = _get_signalstats(dist_path)
 
         if not ref_stats or not dist_stats:
             return False, "No frames available for color validation (signalstats)"
@@ -722,9 +720,9 @@ def validate_color_channels_ffmpeg(
         return False, f"Error during color validation: {str(e)}"
 
 
-def validate_chroma_quality_ffmpeg(ref_path, dist_path, threshold=0.7):
+def validate_chroma_quality_ffmpeg(ref_stats, dist_stats, threshold=0.7):
     """
-    FFmpeg-based chroma validation using signalstats SATAVG.
+    FFmpeg-based chroma validation using pre-computed signalstats.
     Detects partial UV channel reduction by comparing saturation energy.
 
     Uses SATAVG² as a proxy for chroma energy (var(U) + var(V)),
@@ -735,17 +733,14 @@ def validate_chroma_quality_ffmpeg(ref_path, dist_path, threshold=0.7):
       - If all frames are low-energy, validation passes (content is valid B&W)
 
     Args:
-        ref_path: Path to reference video (MP4)
-        dist_path: Path to distorted video (MP4)
+        ref_stats: Pre-computed signalstats for reference video (from _get_signalstats)
+        dist_stats: Pre-computed signalstats for distorted video (from _get_signalstats)
         threshold: Minimum acceptable chroma energy ratio (0.0-1.0)
 
     Returns:
         tuple: (is_valid, reason)
     """
     try:
-        ref_stats = _get_signalstats(ref_path)
-        dist_stats = _get_signalstats(dist_path)
-
         if not ref_stats or not dist_stats:
             return False, "No frames available for chroma validation (signalstats)"
 
@@ -2227,8 +2222,12 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 logger.info("Using FFmpeg signalstats for color/chroma validation (no Y4M conversion)")
 
                 try:
+                    # Compute signalstats once for both validations
+                    ref_signal_stats = _get_signalstats(ref_clip_vmaf_path)
+                    dist_signal_stats = _get_signalstats(dist_clip_vmaf_path)
+
                     # Color validation (grayscale detection)
-                    color_valid, color_reason = validate_color_channels_ffmpeg(ref_clip_vmaf_path, dist_clip_vmaf_path)
+                    color_valid, color_reason = validate_color_channels_ffmpeg(ref_signal_stats, dist_signal_stats)
                     if not color_valid:
                         logger.error(f"UID {uid}: {color_reason}")
                         compression_rates.append(0.9999)
@@ -2241,7 +2240,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                     logger.info(f"♎️ 8.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
                     # Chroma validation (UV reduction detection)
-                    chroma_valid, chroma_reason = validate_chroma_quality_ffmpeg(ref_clip_vmaf_path, dist_clip_vmaf_path, threshold=0.7)
+                    chroma_valid, chroma_reason = validate_chroma_quality_ffmpeg(ref_signal_stats, dist_signal_stats, threshold=0.7)
                     if not chroma_valid:
                         logger.error(f"UID {uid}: {chroma_reason}")
                         compression_rates.append(0.9999)
@@ -2978,8 +2977,12 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 # Docker path: use FFmpeg signalstats directly on trimmed clips (no Y4M needed)
                 logger.info("Using FFmpeg signalstats for color/chroma validation (no Y4M conversion)")
 
+                # Compute signalstats once for both validations
+                ref_signal_stats = _get_signalstats(ref_clip_path)
+                dist_signal_stats = _get_signalstats(dist_clip_path)
+
                 # Color validation (grayscale detection)
-                color_valid, color_reason = validate_color_channels_ffmpeg(ref_clip_path, dist_clip_path)
+                color_valid, color_reason = validate_color_channels_ffmpeg(ref_signal_stats, dist_signal_stats)
                 if not color_valid:
                     logger.error(f"UID {uid}: {color_reason}")
                     compression_rates.append(0.9999)
@@ -2998,7 +3001,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 logger.info(f"♎️ 10.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
                 # Chroma validation (UV reduction detection)
-                chroma_valid, chroma_reason = validate_chroma_quality_ffmpeg(ref_clip_path, dist_clip_path, threshold=0.7)
+                chroma_valid, chroma_reason = validate_chroma_quality_ffmpeg(ref_signal_stats, dist_signal_stats, threshold=0.7)
                 if not chroma_valid:
                     logger.error(f"UID {uid}: {chroma_reason}")
                     compression_rates.append(0.9999)
