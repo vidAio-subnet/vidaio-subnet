@@ -550,34 +550,55 @@ def _get_signalstats(video_path):
     Extracts YAVG (luma average) and SATAVG (saturation average) per frame
     directly from the MP4 — no Y4M conversion needed.
 
+    Uses metadata=mode=print to ensure stats are printed to stderr in the
+    format: lavfi.signalstats.KEY=VALUE
+
     Returns:
         list of dicts, each with at least 'YAVG' and 'SATAVG' keys.
     """
     cmd = [
         "ffmpeg",
         "-i", video_path,
-        "-vf", "signalstats",
+        "-vf", "signalstats,metadata=mode=print",
         "-f", "null", "-",
-        "-hide_banner",
+        "-hide_banner", "-loglevel", "info",
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 
     frames = []
+    current_frame = {}
+
     for line in result.stderr.split('\n'):
-        if 'Parsed_signalstats' not in line:
-            continue
-        stats = {}
-        for token in line.split():
-            if ':' not in token:
-                continue
-            key, _, val = token.partition(':')
-            try:
-                stats[key] = float(val)
-            except ValueError:
-                pass
-        if 'SATAVG' in stats and 'YAVG' in stats:
-            frames.append(stats)
+        line = line.strip()
+
+        # New frame boundary: "frame:N ..." line
+        if line.startswith('frame:'):
+            # Save the previous frame if it has the keys we need
+            if current_frame and 'SATAVG' in current_frame and 'YAVG' in current_frame:
+                frames.append(current_frame)
+            current_frame = {}
+        elif 'lavfi.signalstats.' in line:
+            # Parse: "lavfi.signalstats.SATAVG=29.800000"
+            parts = line.split('lavfi.signalstats.', 1)
+            if len(parts) == 2:
+                key_val = parts[1]
+                if '=' in key_val:
+                    key, val = key_val.split('=', 1)
+                    try:
+                        current_frame[key] = float(val)
+                    except ValueError:
+                        pass
+
+    # Don't forget the last frame
+    if current_frame and 'SATAVG' in current_frame and 'YAVG' in current_frame:
+        frames.append(current_frame)
+
+    if not frames:
+        logger.warning(
+            f"signalstats returned 0 frames for {video_path}. "
+            f"FFmpeg returncode={result.returncode}, stderr length={len(result.stderr)}"
+        )
 
     return frames
 
