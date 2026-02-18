@@ -12,6 +12,33 @@ To achieve optimal results, we recommend the following setup:
 
 ---
 
+## Bootstrap System Dependencies
+
+The `bootstrap.sh` script at the repository root automates the installation of core system-level dependencies:
+
+- **NVIDIA GPU drivers** (default version 535)
+- **Docker** and the **NVIDIA Container Toolkit**
+- **Python 3.11**
+- Base utilities (git, curl, wget, etc.)
+
+Run the script **as root** with the `-E` flag to preserve environment variables:
+
+```bash
+sudo -E ./bootstrap.sh
+```
+
+> **Note:** If you encounter `dpkg` lock issues (common on platforms like TensorDock), wait ~15 minutes and re-run the script. The script will **automatically reboot** the machine if a new NVIDIA driver was installed.
+
+#### Optional environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `NVIDIA_DRIVER_VERSION` | `535` | NVIDIA driver version to install |
+
+Once the bootstrap completes (and any reboot finishes), proceed with the rest of this guide.
+
+---
+
 ## Install PM2 (Process Manager)
 
 **PM2** is used to manage and monitor the validator process. If you haven’t installed PM2 yet, follow these steps:
