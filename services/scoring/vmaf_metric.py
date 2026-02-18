@@ -1,5 +1,6 @@
 import subprocess
 import xml.etree.ElementTree as ET
+import json
 import os
 from moviepy.editor import VideoFileClip
 from loguru import logger
@@ -165,6 +166,130 @@ def vmaf_metric(ref_path, dist_path, output_file="vmaf_output.xml", neg_model=Fa
     except Exception as e:
         print(f"Error in calculate_vmaf: {e}")
         raise
+
+
+def vmaf_metric_ffmpeg(
+    dist_path,
+    ref_path,
+    skip_frames=0,
+    n_subsample=1,
+    docker_image="vmaf_ffmpeg",
+):
+    """
+    Calculate VMAF score using the vmaf_ffmpeg Docker container with GPU-accelerated
+    libvmaf_cuda, operating directly on MP4 inputs.
+
+    The libvmaf_cuda filter expects: distorted first, reference second.
+    This matches FFmpeg's convention where the first -i is the distorted video
+    and the second -i is the reference video.
+
+    Args:
+        dist_path (str): Absolute path to the distorted MP4 video.
+        ref_path (str): Absolute path to the reference MP4 video.
+        skip_frames (int): Number of leading frames to skip (e.g. 51 to
+            drop the first 51 frames from both streams).
+        n_subsample (int): Subsample every N-th frame for faster scoring.
+        docker_image (str): Name of the Docker image (default "vmaf_ffmpeg").
+
+    Returns:
+        float: The VMAF harmonic mean score.
+    """
+    dist_path = os.path.abspath(dist_path)
+    ref_path = os.path.abspath(ref_path)
+
+    # Collect unique directories that need to be mounted
+    dist_dir = os.path.dirname(dist_path)
+    ref_dir = os.path.dirname(ref_path)
+
+    # Use a temporary directory for the JSON output
+    tmp_dir = tempfile.mkdtemp(prefix="vmaf_ffmpeg_")
+    output_json = os.path.join(tmp_dir, "vmaf_output.json")
+
+    try:
+        # Build volume mounts – map each host dir to the same path inside the
+        # container so that absolute paths work unchanged.
+        volumes = set()
+        volumes.add(dist_dir)
+        volumes.add(ref_dir)
+        volumes.add(tmp_dir)
+
+        vol_args = []
+        for vol in volumes:
+            vol_args.extend(["-v", f"{vol}:{vol}"])
+
+        # Build the filter_complex string
+        # skip_frames: select frames with index > skip_frames (i.e. drop first skip_frames+1 frames)
+        if skip_frames > 0:
+            select_filter = f"select=gt(n\\,{skip_frames}),"
+        else:
+            select_filter = ""
+
+        filter_complex = (
+            f"[0:v]{select_filter}format=yuv420p,hwupload_cuda[dis];"
+            f"[1:v]{select_filter}format=yuv420p,hwupload_cuda[ref];"
+            f"[dis][ref]libvmaf_cuda=n_subsample={n_subsample}"
+            f":log_fmt=json:log_path={output_json}"
+        )
+
+        # Assemble the full docker command
+        # Entrypoint of the image is "ffmpeg", so we only pass ffmpeg args
+        cmd = [
+            "docker", "run", "--rm",
+            "--gpus", "all",
+            *vol_args,
+            docker_image,
+            "-i", dist_path,
+            "-i", ref_path,
+            "-filter_complex", filter_complex,
+            "-f", "null", "-",
+        ]
+
+        logger.info(f"Running VMAF via Docker: {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        if result.returncode != 0:
+            raise Exception(
+                f"Docker VMAF command failed (exit {result.returncode}):\n"
+                f"stdout: {result.stdout}\nstderr: {result.stderr}"
+            )
+
+        # Parse the JSON log produced by libvmaf_cuda
+        if not os.path.exists(output_json):
+            raise FileNotFoundError(
+                f"Expected VMAF JSON output '{output_json}' not found."
+            )
+
+        with open(output_json, "r") as f:
+            vmaf_data = json.load(f)
+
+        # Extract per-frame VMAF scores
+        frames = vmaf_data.get("frames", [])
+        if not frames:
+            raise ValueError("No frames found in VMAF JSON output.")
+
+        scores = []
+        for frame in frames:
+            metrics = frame.get("metrics", {})
+            vmaf_score = metrics.get("vmaf")
+            if vmaf_score is not None and vmaf_score > 0:
+                scores.append(vmaf_score)
+
+        if not scores:
+            raise ValueError("No valid (> 0) VMAF scores found in output.")
+
+        # Compute harmonic mean: n / sum(1/x_i)
+        harmonic_mean = len(scores) / sum(1.0 / s for s in scores)
+        logger.info(f"VMAF harmonic mean (ffmpeg/docker): {harmonic_mean:.4f}")
+        return harmonic_mean
+
+    except Exception as e:
+        logger.error(f"Error in vmaf_metric_ffmpeg: {e}")
+        raise
+
+    finally:
+        # Clean up temporary directory
+        if os.path.exists(tmp_dir):
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 def calculate_vmaf(ref_y4m_path, dist_mp4_path, random_frames, neg_model=False, return_y4m_path=False):
     """
