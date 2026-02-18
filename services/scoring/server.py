@@ -544,27 +544,52 @@ def validate_chroma_quality_on_frames(ref_frames, dist_frames, threshold=0.7):
         return False, f"Error validating chroma: {str(e)}"
 
 
-def _get_signalstats(video_path):
+def _get_signalstats(video_path, n_subsample=1):
     """
     Run ffmpeg signalstats filter on a video and return per-frame statistics.
     Extracts YAVG (luma average) and SATAVG (saturation average) per frame
     directly from the MP4 — no Y4M conversion needed.
 
-    Uses metadata=mode=print to ensure stats are printed to stderr in the
-    format: lavfi.signalstats.KEY=VALUE
+    Uses CUDA hardware-accelerated decoding when available, falling back to
+    CPU if GPU decode fails. Uses metadata=mode=print to ensure stats are
+    printed to stderr.
+
+    Args:
+        video_path: Path to input video
+        n_subsample: Analyze every Nth frame (1 = all frames, 5 = every 5th frame)
 
     Returns:
         list of dicts, each with at least 'YAVG' and 'SATAVG' keys.
     """
-    cmd = [
+    # Build filter chain
+    if n_subsample > 1:
+        vf = f"select='not(mod(n\\,{n_subsample}))',signalstats,metadata=mode=print"
+    else:
+        vf = "signalstats,metadata=mode=print"
+
+    # Try GPU-accelerated decoding first (NVDEC)
+    cmd_gpu = [
         "ffmpeg",
+        "-hwaccel", "cuda",
         "-i", video_path,
-        "-vf", "signalstats,metadata=mode=print",
+        "-vf", vf,
         "-f", "null", "-",
         "-hide_banner", "-loglevel", "info",
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    result = subprocess.run(cmd_gpu, capture_output=True, text=True, timeout=120)
+
+    # If GPU decode failed, fall back to CPU
+    if result.returncode != 0:
+        logger.info(f"GPU decode failed for signalstats, falling back to CPU decode")
+        cmd_cpu = [
+            "ffmpeg",
+            "-i", video_path,
+            "-vf", vf,
+            "-f", "null", "-",
+            "-hide_banner", "-loglevel", "info",
+        ]
+        result = subprocess.run(cmd_cpu, capture_output=True, text=True, timeout=120)
 
     frames = []
     current_frame = {}
