@@ -1082,6 +1082,35 @@ class MinerManager:
 
         return filtered_uids
 
+    def get_top_hotkeys_by_task(self, task_type: str, limit: int = 20) -> List[str]:
+        """
+        Get top hotkeys for a given task type, ordered by accumulate_score descending.
+        
+        Args:
+            task_type (str): Task type to filter by ('upscaling' or 'compression')
+            limit (int): Number of top hotkeys to return (default 20)
+            
+        Returns:
+            List[str]: List of hotkeys ordered by accumulate_score descending
+        """
+        session = self.session
+        try:
+            miners = session.query(
+                MinerMetadata.hotkey
+            ).filter(
+                MinerMetadata.processing_task_type == task_type
+            ).order_by(
+                MinerMetadata.accumulate_score.desc()
+            ).limit(limit).all()
+            
+            return [miner.hotkey for miner in miners]
+            
+        except Exception as e:
+            logger.error(f"Error getting top hotkeys for task {task_type}: {e}")
+            return []
+        finally:
+            session.close()
+
     def get_miner_task_info(self) -> tuple[List[int], List[str], List[float]]:
         """
         Get uid, processing_task_type, and avg_content_length for all miners

@@ -27,12 +27,12 @@ def check_uid_availability(metagraph: "bt.metagraph.Metagraph", uid: int, vpermi
 
 def get_organic_forward_uids(self, count: int = None, task_type : str = None, vpermit_tao_limit: int = 100000000, exclude: List[int] = None) -> np.ndarray:
     """
-    Get a list of UIDs that are available for forwarding, randomly sampled from
-    incentive-ranked groups of 20 (top 20, next 20, etc.) until count is filled.
+    Get a list of UIDs that are available for forwarding, selected from
+    the top 20 miners by accumulate_score for the given task_type.
 
     Args:
         count (int): Number of UIDs to return
-        task_type (str): Task type to filter miners by
+        task_type (str): Task type to filter miners by ('upscaling' or 'compression')
         vpermit_tao_limit (int): Validator permit tao limit
         exclude (List[int]): List of UIDs to exclude
 
@@ -40,46 +40,37 @@ def get_organic_forward_uids(self, count: int = None, task_type : str = None, vp
         np.ndarray: Array of selected UIDs
     """
     exclude = exclude or []
-    incentives = self.metagraph.I
 
-    miner_uids, task_types, content_lengths = self.miner_manager.get_miner_task_info()
+    # Get top 20 hotkeys for this task type from MinerMetadata, ordered by accumulate_score desc
+    top_hotkeys = self.miner_manager.get_top_hotkeys_by_task(task_type, limit=20)
 
-    # Filter by task type and content length
-    filtered_uids = [
-        uid for i, uid in enumerate(miner_uids)
-        if task_types[i] == task_type and content_lengths[i] > 7.5
-    ]
+    if not top_hotkeys:
+        logger.warning(f"No hotkeys found for task_type={task_type}")
+        return np.array([], dtype=int)
 
-    # Sort miners by incentive (descending)
-    sorted_uids = sorted(
-        [{"uid": uid, "incentive": incentives[uid]} for uid in filtered_uids],
-        key=lambda x: x["incentive"],
-        reverse=True
+    # Build a hotkey -> uid mapping from the metagraph
+    hotkey_to_uid = {}
+    for uid, axon in enumerate(self.metagraph.axons):
+        hotkey_to_uid[axon.hotkey] = uid
+
+    # Map hotkeys to UIDs, preserving the accumulate_score ordering
+    candidate_uids = []
+    for hotkey in top_hotkeys:
+        uid = hotkey_to_uid.get(hotkey)
+        if uid is not None \
+                and uid not in exclude \
+                and check_uid_availability(self.metagraph, uid, vpermit_tao_limit):
+            candidate_uids.append(uid)
+
+    if not candidate_uids:
+        logger.warning(f"No available UIDs found for task_type={task_type}")
+        return np.array([], dtype=int)
+
+    # Sample up to `count` UIDs from the candidates
+    selected = np.random.choice(
+        candidate_uids,
+        size=min(count, len(candidate_uids)),
+        replace=False
     )
 
-    chosen_uids = []
-    batch_size = 20
-    start_idx = 0
-
-    while len(chosen_uids) < count and start_idx < len(sorted_uids):
-        end_idx = start_idx + batch_size
-        batch = sorted_uids[start_idx:end_idx]
-        batch_uids = [
-            m["uid"] for m in batch
-            if check_uid_availability(self.metagraph, m["uid"], vpermit_tao_limit)
-            and m["uid"] not in exclude
-        ]
-
-        # Number of UIDs still needed
-        remaining = count - len(chosen_uids)
-        if batch_uids:
-            selected = np.random.choice(
-                batch_uids,
-                size=min(remaining, len(batch_uids)),
-                replace=False
-            )
-            chosen_uids.extend(selected)
-
-        start_idx += batch_size  # move to next 20
-
-    return np.array(chosen_uids, dtype=int)
+    return np.array(selected, dtype=int)
