@@ -1091,10 +1091,22 @@ class MinerManager:
             limit (int): Number of top hotkeys to return (default 20)
             
         Returns:
-            List[str]: List of hotkeys ordered by accumulate_score descending
+            List[str]: List of hotkeys ordered by accumulate_score descending.
+                       Returns an empty list if the table has no entries or no
+                       entries match the given task_type.
         """
+        if not task_type:
+            logger.warning("get_top_hotkeys_by_task called with no task_type")
+            return []
+
         session = self.session
         try:
+            # Check if the miner_metadata table has any entries at all
+            total_count = session.query(MinerMetadata).count()
+            if total_count == 0:
+                logger.warning("MinerMetadata table is empty, no miners registered yet")
+                return []
+
             miners = session.query(
                 MinerMetadata.hotkey
             ).filter(
@@ -1102,7 +1114,11 @@ class MinerManager:
             ).order_by(
                 MinerMetadata.accumulate_score.desc()
             ).limit(limit).all()
-            
+
+            if not miners:
+                logger.warning(f"No miners found for task_type={task_type} in MinerMetadata")
+                return []
+
             return [miner.hotkey for miner in miners]
             
         except Exception as e:
