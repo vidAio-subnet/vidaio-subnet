@@ -532,14 +532,16 @@ async def get_compressibility_requests_paths(
     """
     Generate compression challenge videos using the LHS-based compressibility pipeline.
 
-    This function replaces process_video_permutations when ENABLE_COMPRESSIBILITY_PIPELINE
-    is true. It:
-      1. Downloads a seed video from the Pexels queue
-      2. Trims it to 30–60s (stream copy, instant)
-      3. Generates LHS samples covering resolution, noise, QP, FPS, blur/sharpen,
-         speed, denoise, codec (H.264/H.265/VP9/AV1), and H.264 profile
-      4. Runs transforms in parallel (NVENC pool + CPU pool)
-      5. Uploads outputs and pushes to compression queue with codec metadata
+    Seeds are sourced from the **YouTube** video queue (via yt-dlp / YouTubeHandler),
+    giving unpredictable, diverse content that miners cannot anticipate.
+
+    Pipeline:
+      1. Pop a video ID from the YouTube queue
+      2. Download it via YouTubeHandler at 2160p (reuses existing yt-dlp stack)
+      3. Trim to 30–120s using stream copy (instant, no re-encode)
+      4. Generate LHS samples across 9 compressibility factors + codec variation
+      5. Run transforms in parallel (NVENC pool + CPU pool)
+      6. Upload outputs with codec metadata
 
     Args:
         num_needed: Number of compression challenges to produce.
@@ -553,73 +555,153 @@ async def get_compressibility_requests_paths(
         logger.error("Compressibility pipeline not available, falling back to permutations")
         return await get_compression_requests_paths(num_needed, redis_conn)
 
-    from redis_utils import pop_pexels_video_id
+    from redis_utils import pop_youtube_video_id, get_youtube_queue_size
 
+    # Lazy-init YouTube handler (reuses existing youtube_requests.py stack)
+    try:
+        from youtube_requests import YouTubeHandler, RESOLUTIONS
+    except ImportError:
+        try:
+            from services.video_scheduler.youtube_requests import YouTubeHandler, RESOLUTIONS
+        except ImportError:
+            logger.error("Cannot import YouTubeHandler, falling back to permutation pipeline")
+            return await get_compression_requests_paths(num_needed, redis_conn)
+
+    youtube_handler = YouTubeHandler()
     pipeline = CompressibilityPipeline(output_dir="videos")
     uploaded_chunks: List[Dict[str, str]] = []
     remaining = num_needed
+    max_seed_retries = 5
+    seed_failures = 0
 
-    while remaining > 0:
-        # 1. Get a seed video from the Pexels queue
-        video_data = pop_pexels_video_id(redis_conn)
+    while remaining > 0 and seed_failures < max_seed_retries:
+        # ── 1. Get a seed video from the YouTube queue ────────────────
+        video_data = pop_youtube_video_id(redis_conn)
+
         if video_data is None:
-            logger.warning("Pexels queue empty during compressibility pipeline, replenishing...")
-            scheduler_config = CONFIG.video_scheduler
-            queue_thresholds = {
-                "pexels": scheduler_config.pexels_threshold,
-                "pexels_max": scheduler_config.pexels_max_size,
-            }
-            video_constraints = {
-                "min_length": scheduler_config.min_video_len,
-                "max_length": scheduler_config.max_video_len,
-            }
-            task_thresholds = calculate_task_thresholds(scheduler_config)
-            await manage_pexels_queue(redis_conn, queue_thresholds, video_constraints, task_thresholds)
-            video_data = pop_pexels_video_id(redis_conn)
+            logger.warning("YouTube queue empty for compressibility pipeline, attempting replenish...")
+            # Try to populate YouTube queue inline (same pattern as YouTubeWorker)
+            try:
+                from youtube_scraper import populate_database, get_2160p_videos, Video, Base
+                from sqlalchemy import create_engine
+                from sqlalchemy.orm import sessionmaker
+
+                engine = create_engine("sqlite:///youtube_videos.db")
+                Base.metadata.create_all(bind=engine)
+                SessionLocal = sessionmaker(bind=engine)
+                session = SessionLocal()
+
+                search_terms = [
+                    "4K nature documentary", "wildlife 4K footage",
+                    "4K city timelapse", "4K landscape scenery",
+                    "4K ocean waves", "4K aerial drone footage",
+                    "4K slow motion", "4K travel destinations",
+                ]
+                search_term = random.choice(search_terms)
+                logger.info(f"Searching YouTube for seed videos: '{search_term}'")
+                populate_database(session, search_term, count=10)
+
+                videos = get_2160p_videos(session)
+                if videos:
+                    from redis_utils import push_youtube_video_ids
+                    entries = [{"vid": v.id, "task_type": "HD24K", "source": "youtube"} for v in videos[:20]]
+                    push_youtube_video_ids(redis_conn, entries)
+                    logger.info(f"✅ Replenished YouTube queue with {len(entries)} videos")
+                    video_data = pop_youtube_video_id(redis_conn)
+                session.close()
+            except Exception as e:
+                logger.error(f"Failed to replenish YouTube queue: {e}")
+
             if video_data is None:
-                logger.error("Cannot get seed video for compressibility pipeline")
-                break
+                logger.error("Cannot get YouTube seed video for compressibility pipeline")
+                seed_failures += 1
+                continue
 
         vid = video_data.get("vid")
         task_type = video_data.get("task_type", "HD24K")
+        logger.info(f"🎬 Compressibility seed: YouTube video {vid} (task_type={task_type})")
 
-        # 2. Download the seed video (reuse existing Pexels download logic)
-        from video_utils import download_transform_and_trim_downscale_video
-        result = download_transform_and_trim_downscale_video(
-            clip_duration=30,
-            redis_conn=redis_conn,
-            output_dir="videos",
-            transformations_per_video=0,
-            enable_transformations=False,
-            use_downscale_video=False,
+        # ── 2. Download via YouTubeHandler ────────────────────────────
+        seed_dir = os.path.join("videos", "compressibility_seeds")
+        os.makedirs(seed_dir, exist_ok=True)
+        temp_path = os.path.join(seed_dir, f"{vid}_seed_original.mp4")
+
+        try:
+            target_resolution = RESOLUTIONS.HD_2160  # Default to 4K for max flexibility
+            logger.info(f"⬇️  Downloading YouTube video {vid} at {target_resolution}...")
+            download_start = time.time()
+            youtube_handler.download_video(vid, target_resolution, output_path=temp_path)
+            logger.info(f"⬇️  Downloaded in {time.time() - download_start:.1f}s")
+        except Exception as e:
+            logger.error(f"Failed to download YouTube video {vid}: {e}")
+            seed_failures += 1
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            continue
+
+        if not os.path.exists(temp_path):
+            logger.error(f"Downloaded file missing for YouTube video {vid}")
+            seed_failures += 1
+            continue
+
+        # ── 3. Trim to 30–120s via stream copy (instant) ─────────────
+        try:
+            import subprocess as sp
+            probe_cmd = [
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=duration", "-of", "csv=p=0", temp_path,
+            ]
+            probe_result = sp.run(probe_cmd, capture_output=True, text=True, timeout=10)
+            total_duration = float(probe_result.stdout.strip())
+        except Exception:
+            total_duration = 60.0  # Fallback assumption
+
+        # Pick a random clip between 30s and min(120s, total_duration)
+        max_clip = min(120.0, total_duration)
+        clip_duration = max(30.0, min(max_clip, random.uniform(30, 120)))
+        start_offset = random.uniform(0, max(0, total_duration - clip_duration))
+
+        trimmed_path = os.path.join(seed_dir, f"{vid}_seed_trimmed.mp4")
+        trim_success = trim_seed_video(
+            input_path=temp_path,
+            output_path=trimmed_path,
+            start_seconds=start_offset,
+            duration_seconds=clip_duration,
         )
 
-        if result is None or result[0] is None:
-            logger.warning("Failed to download seed video for compressibility, retrying...")
+        # Clean up full download
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+        if not trim_success or not os.path.exists(trimmed_path):
+            logger.error(f"Failed to trim YouTube seed video {vid}")
+            seed_failures += 1
             continue
 
-        challenge_paths, video_ids_raw, reference_paths, _ = result
+        seed_path = trimmed_path
+        logger.info(f"🧪 Running compressibility pipeline on YouTube seed: {seed_path} "
+                     f"({clip_duration:.0f}s from {start_offset:.0f}s)")
 
-        if not reference_paths:
-            logger.warning("No reference paths from seed download, retrying...")
-            continue
-
-        # Use the first reference (trim) file as the seed for the compressibility pipeline
-        seed_path = reference_paths[0]
-        logger.info(f"🧪 Running compressibility pipeline on seed: {seed_path}")
-
-        # 3. Generate LHS samples (limit to what we still need)
+        # ── 4. Generate LHS samples ──────────────────────────────────
         samples_needed = min(remaining, int(os.getenv("LHS_SAMPLE_COUNT", "10")))
         samples = generate_lhs_samples(n_samples=samples_needed)
 
-        # 4. Run transforms
+        # ── 5. Run transforms ────────────────────────────────────────
         results = pipeline.run_batch(seed_path=seed_path, n_samples=samples_needed)
 
+        # Clean up trimmed seed after transforms
+        if os.path.exists(seed_path):
+            os.remove(seed_path)
+
         if not results:
-            logger.warning("Compressibility pipeline produced no outputs, retrying...")
+            logger.warning("Compressibility pipeline produced no outputs from YouTube seed, retrying...")
+            seed_failures += 1
             continue
 
-        # 5. Upload and push to queue
+        # Reset failure counter on success
+        seed_failures = 0
+
+        # ── 6. Upload and push to queue ──────────────────────────────
         for r_item in results:
             try:
                 output_path = r_item["output_path"]
@@ -653,20 +735,15 @@ async def get_compressibility_requests_paths(
                 logger.error(f"Error uploading compressibility variant: {e}")
                 continue
 
-        # Clean up seed / reference files
-        for p in challenge_paths + reference_paths:
-            if p and os.path.exists(p):
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
-
         logger.info(f"Compressibility cycle: {len(uploaded_chunks)} produced so far, {remaining} remaining")
 
         if remaining <= 0:
             break
 
-    logger.info(f"🎉 Compressibility pipeline complete: {len(uploaded_chunks)} variants produced")
+    if seed_failures >= max_seed_retries:
+        logger.error(f"🚨 Compressibility pipeline exhausted {max_seed_retries} seed retries")
+
+    logger.info(f"🎉 Compressibility pipeline complete: {len(uploaded_chunks)} variants from YouTube seeds")
     return uploaded_chunks
 
 async def main_loop():
