@@ -911,7 +911,7 @@ class MinerManager:
                     organic_s_l = 0.5   # Moderate length score
                     success = False
 
-                    panelty_percentage = 0.05
+                    panelty_percentage = 0.01  # Deduct 1% of current score
                     panelty_amount = current_score * panelty_percentage
                     acc_score = current_score - panelty_amount
 
@@ -1081,6 +1081,51 @@ class MinerManager:
         logger.info(f"Filtered to {len(filtered_uids)} UIDs after rate limiting")
 
         return filtered_uids
+
+    def get_top_hotkeys_by_task(self, task_type: str, limit: int = 20) -> List[str]:
+        """
+        Get top hotkeys for a given task type, ordered by accumulate_score descending.
+        
+        Args:
+            task_type (str): Task type to filter by ('upscaling' or 'compression')
+            limit (int): Number of top hotkeys to return (default 20)
+            
+        Returns:
+            List[str]: List of hotkeys ordered by accumulate_score descending.
+                       Returns an empty list if the table has no entries or no
+                       entries match the given task_type.
+        """
+        if not task_type:
+            logger.warning("get_top_hotkeys_by_task called with no task_type")
+            return []
+
+        session = self.session
+        try:
+            # Check if the miner_metadata table has any entries at all
+            total_count = session.query(MinerMetadata).count()
+            if total_count == 0:
+                logger.warning("MinerMetadata table is empty, no miners registered yet")
+                return []
+
+            miners = session.query(
+                MinerMetadata.hotkey
+            ).filter(
+                MinerMetadata.processing_task_type == task_type
+            ).order_by(
+                MinerMetadata.accumulate_score.desc()
+            ).limit(limit).all()
+
+            if not miners:
+                logger.warning(f"No miners found for task_type={task_type} in MinerMetadata")
+                return []
+
+            return [miner.hotkey for miner in miners]
+            
+        except Exception as e:
+            logger.error(f"Error getting top hotkeys for task {task_type}: {e}")
+            return []
+        finally:
+            session.close()
 
     def get_miner_task_info(self) -> tuple[List[int], List[str], List[float]]:
         """
