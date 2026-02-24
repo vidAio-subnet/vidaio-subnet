@@ -34,6 +34,14 @@ from services.google_drive.google_drive_manager import GoogleDriveManager
 from vidaio_subnet_core import CONFIG
 from vidaio_subnet_core.utilities.storage_client import storage_client
 
+# Compressibility pipeline (feature-gated)
+try:
+    from compressibility_pipeline import CompressibilityPipeline, trim_seed_video
+    from compressibility_sampler import generate_lhs_samples, get_output_extension, sample_to_metadata
+    COMPRESSIBILITY_PIPELINE_AVAILABLE = True
+except ImportError:
+    COMPRESSIBILITY_PIPELINE_AVAILABLE = False
+
 load_dotenv()
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -516,6 +524,151 @@ async def get_compression_requests_paths(num_needed: int, redis_conn: redis.Redi
     
     return uploaded_video_chunks
 
+
+async def get_compressibility_requests_paths(
+    num_needed: int,
+    redis_conn: redis.Redis,
+) -> List[Dict[str, str]]:
+    """
+    Generate compression challenge videos using the LHS-based compressibility pipeline.
+
+    This function replaces process_video_permutations when ENABLE_COMPRESSIBILITY_PIPELINE
+    is true. It:
+      1. Downloads a seed video from the Pexels queue
+      2. Trims it to 30–60s (stream copy, instant)
+      3. Generates LHS samples covering resolution, noise, QP, FPS, blur/sharpen,
+         speed, denoise, codec (H.264/H.265/VP9/AV1), and H.264 profile
+      4. Runs transforms in parallel (NVENC pool + CPU pool)
+      5. Uploads outputs and pushes to compression queue with codec metadata
+
+    Args:
+        num_needed: Number of compression challenges to produce.
+        redis_conn: Redis connection.
+
+    Returns:
+        List of dicts with video_id, uploaded_object_name, sharing_link,
+        codec, and compressibility_params.
+    """
+    if not COMPRESSIBILITY_PIPELINE_AVAILABLE:
+        logger.error("Compressibility pipeline not available, falling back to permutations")
+        return await get_compression_requests_paths(num_needed, redis_conn)
+
+    from redis_utils import pop_pexels_video_id
+
+    pipeline = CompressibilityPipeline(output_dir="videos")
+    uploaded_chunks: List[Dict[str, str]] = []
+    remaining = num_needed
+
+    while remaining > 0:
+        # 1. Get a seed video from the Pexels queue
+        video_data = pop_pexels_video_id(redis_conn)
+        if video_data is None:
+            logger.warning("Pexels queue empty during compressibility pipeline, replenishing...")
+            scheduler_config = CONFIG.video_scheduler
+            queue_thresholds = {
+                "pexels": scheduler_config.pexels_threshold,
+                "pexels_max": scheduler_config.pexels_max_size,
+            }
+            video_constraints = {
+                "min_length": scheduler_config.min_video_len,
+                "max_length": scheduler_config.max_video_len,
+            }
+            task_thresholds = calculate_task_thresholds(scheduler_config)
+            await manage_pexels_queue(redis_conn, queue_thresholds, video_constraints, task_thresholds)
+            video_data = pop_pexels_video_id(redis_conn)
+            if video_data is None:
+                logger.error("Cannot get seed video for compressibility pipeline")
+                break
+
+        vid = video_data.get("vid")
+        task_type = video_data.get("task_type", "HD24K")
+
+        # 2. Download the seed video (reuse existing Pexels download logic)
+        from video_utils import download_transform_and_trim_downscale_video
+        result = download_transform_and_trim_downscale_video(
+            clip_duration=30,
+            redis_conn=redis_conn,
+            output_dir="videos",
+            transformations_per_video=0,
+            enable_transformations=False,
+            use_downscale_video=False,
+        )
+
+        if result is None or result[0] is None:
+            logger.warning("Failed to download seed video for compressibility, retrying...")
+            continue
+
+        challenge_paths, video_ids_raw, reference_paths, _ = result
+
+        if not reference_paths:
+            logger.warning("No reference paths from seed download, retrying...")
+            continue
+
+        # Use the first reference (trim) file as the seed for the compressibility pipeline
+        seed_path = reference_paths[0]
+        logger.info(f"🧪 Running compressibility pipeline on seed: {seed_path}")
+
+        # 3. Generate LHS samples (limit to what we still need)
+        samples_needed = min(remaining, int(os.getenv("LHS_SAMPLE_COUNT", "10")))
+        samples = generate_lhs_samples(n_samples=samples_needed)
+
+        # 4. Run transforms
+        results = pipeline.run_batch(seed_path=seed_path, n_samples=samples_needed)
+
+        if not results:
+            logger.warning("Compressibility pipeline produced no outputs, retrying...")
+            continue
+
+        # 5. Upload and push to queue
+        for r_item in results:
+            try:
+                output_path = r_item["output_path"]
+                variant_id = r_item["variant_id"]
+                codec = r_item["codec"]
+                ext = r_item["extension"]
+
+                object_name = f"{variant_id}{ext}"
+
+                await storage_client.upload_file(object_name, output_path)
+                sharing_link = await storage_client.get_presigned_url(object_name)
+
+                # Clean up local file after upload
+                if os.path.exists(output_path):
+                    os.unlink(output_path)
+
+                if not sharing_link:
+                    logger.warning(f"Upload failed for compressibility variant {variant_id}")
+                    continue
+
+                uploaded_chunks.append({
+                    "video_id": variant_id,
+                    "uploaded_object_name": object_name,
+                    "sharing_link": sharing_link,
+                    "codec": codec,
+                    "compressibility_params": r_item["compressibility_params"],
+                })
+                remaining -= 1
+
+            except Exception as e:
+                logger.error(f"Error uploading compressibility variant: {e}")
+                continue
+
+        # Clean up seed / reference files
+        for p in challenge_paths + reference_paths:
+            if p and os.path.exists(p):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+
+        logger.info(f"Compressibility cycle: {len(uploaded_chunks)} produced so far, {remaining} remaining")
+
+        if remaining <= 0:
+            break
+
+    logger.info(f"🎉 Compressibility pipeline complete: {len(uploaded_chunks)} variants produced")
+    return uploaded_chunks
+
 async def main_loop():
     """
     Main service function that manages video processing workflow and queue maintenance.
@@ -661,6 +814,23 @@ async def initialize_environment(redis_conn):
     clear_queues(redis_conn)
     purge_cached_videos()
     await storage_client.delete_all_items()
+
+    # Probe FFmpeg encoders for compressibility pipeline readiness
+    if COMPRESSIBILITY_PIPELINE_AVAILABLE:
+        from compressibility_pipeline import probe_available_encoders, check_nvenc_available
+        encoders = probe_available_encoders()
+        nvenc = check_nvenc_available()
+        nvenc_list = [e for e in encoders if "nvenc" in e]
+        cpu_list = [e for e in ["libx264", "libx265", "libvpx-vp9", "libsvtav1"] if e in encoders]
+        logger.info(f"FFmpeg NVENC encoders: {nvenc_list or 'none'}")
+        logger.info(f"FFmpeg CPU encoders: {cpu_list or 'none'}")
+        if not nvenc:
+            logger.warning("⚠️ No NVENC encoders detected — compressibility pipeline will use CPU fallbacks")
+        pipeline_enabled = os.getenv("ENABLE_COMPRESSIBILITY_PIPELINE", "false").lower() == "true"
+        logger.info(f"Compressibility pipeline: {'ENABLED' if pipeline_enabled else 'DISABLED (set ENABLE_COMPRESSIBILITY_PIPELINE=true to enable)'}")
+    else:
+        logger.info("Compressibility pipeline module not installed (optional)")
+
     logger.info("Environment initialized successfully")
 
 
@@ -765,12 +935,25 @@ async def replenish_synthetic_compression_queue(redis_conn, threshold, target):
     if queue_size < target:
         needed = target - queue_size
         logger.info(f"Replenishing compression queue with {needed} items (current: {queue_size}, target: {target})")
-        
+
+        # Route to compressibility pipeline if enabled and available
+        use_compressibility = (
+            os.getenv("ENABLE_COMPRESSIBILITY_PIPELINE", "false").lower() == "true"
+            and COMPRESSIBILITY_PIPELINE_AVAILABLE
+        )
+
         try:
-            chunk_data = await get_compression_requests_paths(
-                num_needed=needed,
-                redis_conn=redis_conn,
-            )
+            if use_compressibility:
+                logger.info("🧪 Using LHS compressibility pipeline for compression queue")
+                chunk_data = await get_compressibility_requests_paths(
+                    num_needed=needed,
+                    redis_conn=redis_conn,
+                )
+            else:
+                chunk_data = await get_compression_requests_paths(
+                    num_needed=needed,
+                    redis_conn=redis_conn,
+                )
 
             push_compression_chunks(redis_conn, chunk_data)
             logger.info(f"Successfully added {len(chunk_data)} chunks to compression queue")

@@ -761,6 +761,8 @@ class Validator(base.BaseValidator):
         for uid, response in zip(uids, responses):
             distorted_urls.append(response.miner_response.optimized_video_url)
 
+        logger.info(f"responses: {responses}")
+
         score_response = await self.score_client.post(
             "/score_compression_synthetics",
             json = {

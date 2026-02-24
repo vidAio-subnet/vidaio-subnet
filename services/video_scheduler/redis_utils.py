@@ -281,6 +281,29 @@ def get_youtube_queue_size(r: redis.Redis) -> int:
     """
     return r.llen(REDIS_CONFIG.youtube_video_ids_key)
 
+def get_compression_queue_by_codec(r: redis.Redis) -> Dict[str, int]:
+    """
+    Get a breakdown of compression queue entries by codec.
+    Useful for monitoring codec distribution in the pipeline.
+
+    Args:
+        r (redis.Redis): Redis connection
+
+    Returns:
+        Dict[str, int]: Mapping of codec name → count.
+    """
+    all_items = r.lrange(REDIS_CONFIG.synthetic_compression_queue_key, 0, -1)
+    codec_counts: Dict[str, int] = {}
+    for raw in all_items:
+        try:
+            entry = json.loads(raw)
+            codec = entry.get("codec", "unknown")
+            codec_counts[codec] = codec_counts.get(codec, 0) + 1
+        except (json.JSONDecodeError, TypeError):
+            codec_counts["parse_error"] = codec_counts.get("parse_error", 0) + 1
+    return codec_counts
+
+
 def set_scheduler_ready(r: redis.Redis, is_ready: bool) -> None:
     """
     Set the scheduler readiness flag in Redis.

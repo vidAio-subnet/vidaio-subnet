@@ -1349,7 +1349,9 @@ def cleanup_orphaned_files(output_dir: str = "videos", max_age_hours: int = 720)
         "*_trim.mp4",       
         "*_downscale.mp4",  
         "*_original.mp4",   
-        "*_ytransform_*.mp4"
+        "*_ytransform_*.mp4",
+        "compress_*.mp4",    # compressibility pipeline outputs
+        "compress_*.webm",   # VP9 compressibility pipeline outputs
     ]
     
     now = time.time()
