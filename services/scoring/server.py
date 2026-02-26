@@ -23,7 +23,7 @@ from pieapp_metric import calculate_pieapp_score
 from vidaio_subnet_core.utilities.storage_client import storage_client
 from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video
 from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
-from scoring_function import calculate_compression_score
+from scoring_function import calculate_compression_score, calculate_vbr_score
 
 # Compression scoring constants
 COMPRESSION_RATE_WEIGHT = 0.7  # w_c
@@ -991,23 +991,38 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
 
         errors = []
 
-        # Validate bitrate for CBR and VBR modes (skip for CRF mode)
-        if codec_mode and codec_mode.upper() in ["CBR", "VBR"]:
+        # Validate bitrate based on codec mode
+        if codec_mode and codec_mode.upper() == "VBR":
+            # VBR: must be within ±5% of target in both directions
             if bit_rate_mbps is None:
-                errors.append(f"Bitrate information missing for {codec_mode} mode")
+                errors.append(f"Bitrate information missing for VBR mode")
             else:
-                # Allow up to 10% difference between target and actual bitrate
-                bitrate_tolerance = 0.10  # 10%
-                lower_bound = target_bitrate * (1 - bitrate_tolerance)
-                upper_bound = target_bitrate * (1 + bitrate_tolerance)
+                vbr_tolerance = 0.05  # 5%
+                lower_bound = target_bitrate * (1 - vbr_tolerance)
+                upper_bound = target_bitrate * (1 + vbr_tolerance)
+
+                if bit_rate_mbps < lower_bound or bit_rate_mbps > upper_bound:
+                    errors.append(
+                        f"Bitrate mismatch for VBR mode: expected {target_bitrate:.2f} Mbps "
+                        f"(±5%), got {bit_rate_mbps:.2f} Mbps (allowed: {lower_bound:.2f}-{upper_bound:.2f} Mbps)"
+                    )
+                else:
+                    logger.info(f"✅ Bitrate validation passed for VBR mode: {bit_rate_mbps:.2f} Mbps (target: {target_bitrate:.2f} Mbps, ±5%)")
+        elif codec_mode and codec_mode.upper() == "CBR":
+            # CBR: must not exceed target + 10% (upper bound only)
+            if bit_rate_mbps is None:
+                errors.append(f"Bitrate information missing for CBR mode")
+            else:
+                cbr_tolerance = 0.10  # 10%
+                upper_bound = target_bitrate * (1 + cbr_tolerance)
 
                 if bit_rate_mbps > upper_bound:
                     errors.append(
-                        f"Bitrate mismatch for {codec_mode} mode: expected {target_bitrate:.2f} Mbps "
-                        f"(±10%), got {bit_rate_mbps:.2f} Mbps (allowed values must be less than {upper_bound:.2f} Mbps)"
+                        f"Bitrate mismatch for CBR mode: expected {target_bitrate:.2f} Mbps "
+                        f"(max +10%), got {bit_rate_mbps:.2f} Mbps (allowed values must be less than {upper_bound:.2f} Mbps)"
                     )
                 else:
-                    logger.info(f"✅ Bitrate validation passed for {codec_mode} mode: {bit_rate_mbps:.2f} Mbps (target: {target_bitrate:.2f} Mbps)")
+                    logger.info(f"✅ Bitrate validation passed for CBR mode: {bit_rate_mbps:.2f} Mbps (target: {target_bitrate:.2f} Mbps)")
         elif codec_mode and codec_mode.upper() == "CRF":
             logger.info(f"ℹ️ Bitrate check skipped for CRF mode (quality-based encoding)")
         else:
@@ -1947,27 +1962,27 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 8.7. Validated chroma quality in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-            # Calculate compression score using the proper formula
-            # Check scoring function for details
+            # Calculate score based on codec mode
+            if codec_mode.upper() == "VBR":
+                # VBR: score purely on VMAF quality (bitrate already validated at ±5%)
+                final_score, compression_component, quality_component, reason = calculate_vbr_score(
+                    vmaf_score=vmaf_score
+                )
+                logger.info(f"VBR quality score: {quality_component:.4f}")
+            else:
+                # CRF/CBR: score on compression ratio + VMAF quality
+                final_score, compression_component, quality_component, reason = calculate_compression_score(
+                    vmaf_score=vmaf_score,
+                    compression_rate=compression_rate,
+                    vmaf_threshold=vmaf_threshold,
+                    compression_weight=COMPRESSION_RATE_WEIGHT,
+                    quality_weight=COMPRESSION_VMAF_WEIGHT,
+                    soft_threshold_margin=SOFT_THRESHOLD_MARGIN
+                )
+                logger.info(f"VMAF quality component: {quality_component:.4f}")
+                logger.info(f"🎯 Compression score is {compression_component:.4f}")
 
-            final_score, compression_component, quality_component, reason = calculate_compression_score(
-                vmaf_score=vmaf_score,
-                compression_rate=compression_rate,
-                vmaf_threshold=vmaf_threshold,
-                compression_weight=COMPRESSION_RATE_WEIGHT,
-                quality_weight=COMPRESSION_VMAF_WEIGHT,
-                soft_threshold_margin=SOFT_THRESHOLD_MARGIN
-            )
-           
-
-            #  quality component: 
-            logger.info(f"VMAF quality component: {quality_component:.4f}")
-
-            # compression component
-            logger.info(f"🎯 Compression score is {compression_component:.4f}")
-
-            # final score
-            logger.info(f"🎯 Final score is {final_score:.4f}")
+            logger.info(f"🎯 Final score is {final_score:.4f} (mode: {codec_mode})")
             compression_rates.append(compression_rate)
             final_scores.append(final_score)
             reasons.append(f"{reason}; {encoding_msg}")
@@ -2012,10 +2027,40 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
     # except Exception as e:
     #     logger.error(f"⚠️ Error during cleanup: {e}")
 
+    # VBR batch normalization: normalize scores relative to best performer
+    # All miners in a synthetic batch get the same challenge (video + bitrate),
+    # so the best VMAF sets the ceiling and others are scored relative to it.
+    # This ensures challenge difficulty doesn't leak into accumulated scores.
+    codec_mode = (request.codec_mode or "CRF").upper()
+    if codec_mode == "VBR":
+        vmaf_minimum = 50.0
+        # Find indices of miners that passed all gates (score > 0)
+        valid_indices = [i for i in range(len(final_scores)) if final_scores[i] > 0]
+
+        if len(valid_indices) > 1:
+            best_vmaf = max(vmaf_scores[i] for i in valid_indices)
+
+            if best_vmaf > vmaf_minimum:
+                for i in valid_indices:
+                    old_score = final_scores[i]
+                    final_scores[i] = (vmaf_scores[i] - vmaf_minimum) / (best_vmaf - vmaf_minimum)
+                    logger.info(f"VBR normalization: UID {request.uids[i]}, VMAF {vmaf_scores[i]:.2f}, "
+                                f"score {old_score:.4f} -> {final_scores[i]:.4f}")
+
+                logger.info(f"VBR batch normalization complete. Best VMAF: {best_vmaf:.2f}, "
+                            f"normalized {len(valid_indices)} miners")
+        elif len(valid_indices) == 1:
+            # Single successful miner gets 1.0 (no peers to compare against)
+            i = valid_indices[0]
+            old_score = final_scores[i]
+            final_scores[i] = 1.0
+            logger.info(f"VBR normalization: single valid miner UID {request.uids[i]}, "
+                        f"score {old_score:.4f} -> 1.0")
+
     processed_time = time.time() - start_time
     logger.info(f"Completed batch scoring of {len(request.distorted_urls)} pairs within {processed_time:.2f} seconds")
     logger.info(f"🍉🍉🍉 Calculated final scores: {final_scores} 🍉🍉🍉")
-    
+
     return CompressionScoringResponse(
         vmaf_scores=vmaf_scores,
         compression_rates=compression_rates,
@@ -2647,28 +2692,27 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 10.7. Validated chroma quality in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-            # Calculate compression score using the proper formula
-            # Check scoring function for details
+            # Calculate score based on codec mode
+            if codec_mode.upper() == "VBR":
+                # VBR: score purely on VMAF quality (bitrate already validated at ±5%)
+                final_score, compression_component, quality_component, reason = calculate_vbr_score(
+                    vmaf_score=vmaf_score
+                )
+                logger.info(f"VBR quality score: {quality_component:.4f}")
+            else:
+                # CRF/CBR: score on compression ratio + VMAF quality
+                final_score, compression_component, quality_component, reason = calculate_compression_score(
+                    vmaf_score=vmaf_score,
+                    compression_rate=compression_rate,
+                    vmaf_threshold=vmaf_threshold,
+                    compression_weight=COMPRESSION_RATE_WEIGHT,
+                    quality_weight=COMPRESSION_VMAF_WEIGHT,
+                    soft_threshold_margin=SOFT_THRESHOLD_MARGIN
+                )
+                logger.info(f"VMAF quality component: {quality_component:.4f}")
+                logger.info(f"🎯 Compression score is {compression_component:.4f}")
 
-            final_score, compression_component, quality_component, reason = calculate_compression_score(
-                vmaf_score=vmaf_score,
-                compression_rate=compression_rate,
-                vmaf_threshold=vmaf_threshold,
-                compression_weight=COMPRESSION_RATE_WEIGHT,
-                quality_weight=COMPRESSION_VMAF_WEIGHT,
-                soft_threshold_margin=SOFT_THRESHOLD_MARGIN
-            )
-
-
-            #  quality component: 
-            logger.info(f"VMAF quality component: {quality_component:.4f}")
-
-            # compression component
-            logger.info(f"🎯 Compression score is {compression_component:.4f}")
-
-            # final score
-            logger.info(f"🎯 Final score is {final_score:.4f}")
-            # vmaf_scores.append(vmaf_score)
+            logger.info(f"🎯 Final score is {final_score:.4f} (mode: {codec_mode})")
             compression_rates.append(compression_rate)
             final_scores.append(final_score)
             reasons.append(f"{reason}; {encoding_msg}")

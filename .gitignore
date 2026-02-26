@@ -15,6 +15,7 @@ note.txt
 .DS_Store
 *.json
 .env
+scoring.md
 venv/
 video2x/
 logs/

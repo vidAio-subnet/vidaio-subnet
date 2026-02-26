@@ -1,6 +1,37 @@
 import math
 
 
+def calculate_vbr_score(
+    vmaf_score: float,
+    vmaf_minimum: float = 50.0) -> tuple[float, float, float, str]:
+    """
+    Calculate VBR compression score based purely on VMAF quality.
+
+    In VBR mode, the bitrate is constrained to ±5% of target (validated separately),
+    so the score is entirely determined by the VMAF quality achieved.
+    The compression ratio is irrelevant since the bitrate budget dictates file size.
+
+    Scoring:
+    - VMAF < 50: score 0 (video doesn't make sense)
+    - VMAF 50-100: linear mapping to 0.0-1.0
+
+    Args:
+        vmaf_score: VMAF quality score (0-100)
+        vmaf_minimum: Minimum VMAF sanity threshold (default: 50)
+
+    Returns:
+        Tuple of (final_score, compression_component, quality_component, reason)
+        compression_component is always 0.0 (not applicable for VBR)
+        final_score equals quality_component
+    """
+    if vmaf_score < vmaf_minimum:
+        return 0.0, 0.0, 0.0, f"VMAF {vmaf_score:.2f} below minimum threshold ({vmaf_minimum:.2f})"
+
+    quality_component = (vmaf_score - vmaf_minimum) / (100 - vmaf_minimum)
+
+    return quality_component, 0.0, quality_component, "success"
+
+
 def calculate_compression_score(
     vmaf_score: float,
     compression_rate: float,
