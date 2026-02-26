@@ -1824,29 +1824,29 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 continue
 
             # Calculate VMAF — Docker-first with Y4M fallback
-            ref_clip_vmaf_path = None
-            dist_clip_vmaf_path = None
+            # ref_clip_vmaf_path = None
+            # dist_clip_vmaf_path = None
             try:
                 vmaf_start = time.time()
 
                 # Trim 1-second clips for VMAF calculation (frame-accurate)
                 ref_fps = get_video_fps(ref_path) or 30.0
-                vmaf_num_frames = int(ref_fps)  # 1 second worth of frames
-                max_start_frame = max(0, ref_total_frames - vmaf_num_frames)
-                vmaf_start_frame = random.randint(0, max_start_frame)
+                # vmaf_num_frames = int(ref_fps)  # 1 second worth of frames
+                # max_start_frame = max(0, ref_total_frames - vmaf_num_frames)
+                # vmaf_start_frame = random.randint(0, max_start_frame)
 
-                ref_clip_vmaf_path = trim_video_select(ref_path, vmaf_start_frame, vmaf_num_frames)
-                dist_clip_vmaf_path = trim_video_select(dist_path, vmaf_start_frame, vmaf_num_frames)
-                logger.info(f"Trimmed {vmaf_num_frames} frames starting at frame {vmaf_start_frame} for VMAF calculation")
+                # ref_clip_vmaf_path = trim_video_select(ref_path, vmaf_start_frame, vmaf_num_frames)
+                # dist_clip_vmaf_path = trim_video_select(dist_path, vmaf_start_frame, vmaf_num_frames)
+                # logger.info(f"Trimmed {vmaf_num_frames} frames starting at frame {vmaf_start_frame} for VMAF calculation")
 
-                if VMAF_FFMPEG_AVAILABLE and ref_clip_vmaf_path and dist_clip_vmaf_path:
+                if VMAF_FFMPEG_AVAILABLE:
                     try:
                         logger.info("Attempting Docker-based VMAF calculation (libvmaf_cuda)...")
                         vmaf_score = vmaf_metric_ffmpeg(
-                            dist_path=dist_clip_vmaf_path,
-                            ref_path=ref_clip_vmaf_path,
-                            skip_frames=0,
-                            n_subsample=1,
+                            dist_path=dist_path,
+                            ref_path=ref_path,
+                            skip_frames=np.random.randint(0, ref_fps),
+                            n_subsample=np.random.randint(20, 30),
                         )
                         logger.info(f"Docker VMAF calculation succeeded: {vmaf_score}")
                     except Exception as docker_err:
@@ -1882,11 +1882,12 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 logger.error(f"Error calculating VMAF score: {e}")
                 continue
             finally:
+                pass
                 # Clean up trimmed VMAF clips
-                if ref_clip_vmaf_path and os.path.exists(ref_clip_vmaf_path):
-                    os.unlink(ref_clip_vmaf_path)
-                if dist_clip_vmaf_path and os.path.exists(dist_clip_vmaf_path):
-                    os.unlink(dist_clip_vmaf_path)
+                # if ref_clip_vmaf_path and os.path.exists(ref_clip_vmaf_path):
+                #     os.unlink(ref_clip_vmaf_path)
+                # if dist_clip_vmaf_path and os.path.exists(dist_clip_vmaf_path):
+                #     os.unlink(dist_clip_vmaf_path)
 
             if vmaf_score / 100 < VMAF_THRESHOLD:
                 logger.info(f"VMAF score is too low, giving zero score, current VMAF score: {vmaf_score}")
@@ -2167,8 +2168,8 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             # Calculate VMAF — Docker-first with Y4M fallback
             # Docker path: FFmpeg signalstats for color/chroma validation (no Y4M needed)
             # Fallback path: Y4M-based VMAF + Y4M-based color/chroma validation
-            ref_clip_vmaf_path = None
-            dist_clip_vmaf_path = None
+            # ref_clip_vmaf_path = None
+            # dist_clip_vmaf_path = None
             dist_y4m_path = None
             used_docker_vmaf = False
             try:
@@ -2181,18 +2182,18 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 max_start_frame = max(0, ref_total_frames - vmaf_num_frames)
                 vmaf_start_frame = random.randint(0, max_start_frame)
 
-                ref_clip_vmaf_path = trim_video_select(ref_path, vmaf_start_frame, vmaf_num_frames)
-                dist_clip_vmaf_path = trim_video_select(dist_path, vmaf_start_frame, vmaf_num_frames)
-                logger.info(f"Trimmed {vmaf_num_frames} frames starting at frame {vmaf_start_frame} for VMAF calculation")
+                # ref_clip_vmaf_path = trim_video_select(ref_path, vmaf_start_frame, vmaf_num_frames)
+                # dist_clip_vmaf_path = trim_video_select(dist_path, vmaf_start_frame, vmaf_num_frames)
+                # logger.info(f"Trimmed {vmaf_num_frames} frames starting at frame {vmaf_start_frame} for VMAF calculation")
 
-                if VMAF_FFMPEG_AVAILABLE and ref_clip_vmaf_path and dist_clip_vmaf_path:
+                if VMAF_FFMPEG_AVAILABLE:
                     try:
                         logger.info("Attempting Docker-based VMAF calculation (libvmaf_cuda)...")
                         vmaf_score = vmaf_metric_ffmpeg(
-                            dist_path=dist_clip_vmaf_path,
-                            ref_path=ref_clip_vmaf_path,
-                            skip_frames=0,
-                            n_subsample=1,
+                            dist_path=dist_path,
+                            ref_path=ref_path,
+                            skip_frames=np.random.randint(0, ref_fps_val),
+                            n_subsample=np.random.randint(20, 30),
                         )
                         logger.info(f"Docker VMAF calculation succeeded: {vmaf_score}")
                         used_docker_vmaf = True
@@ -2230,11 +2231,12 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                     os.unlink(dist_y4m_path)
                 continue
             finally:
+                pass
                 # Clean up trimmed VMAF clips — signalstats runs on originals, not clips
-                if ref_clip_vmaf_path and os.path.exists(ref_clip_vmaf_path):
-                    os.unlink(ref_clip_vmaf_path)
-                if dist_clip_vmaf_path and os.path.exists(dist_clip_vmaf_path):
-                    os.unlink(dist_clip_vmaf_path)
+                # if ref_clip_vmaf_path and os.path.exists(ref_clip_vmaf_path):
+                #     os.unlink(ref_clip_vmaf_path)
+                # if dist_clip_vmaf_path and os.path.exists(dist_clip_vmaf_path):
+                #     os.unlink(dist_clip_vmaf_path)
 
             # === COLOR / CHROMA VALIDATION ===
             if used_docker_vmaf:
