@@ -24,6 +24,7 @@ IQA-PyTorch/
 MDTVSFA/
 output/
 ignore/
+scoring.md
 MANIQA/
 frames/
 tmp/

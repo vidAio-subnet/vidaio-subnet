@@ -21,7 +21,7 @@ from fastapi import FastAPI, HTTPException
 import torchvision.transforms as transforms
 from pieapp_metric import calculate_pieapp_score
 from vidaio_subnet_core.utilities.storage_client import storage_client
-from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video, vmaf_metric_ffmpeg, is_vmaf_ffmpeg_available
+from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video, trim_video_select, vmaf_metric_ffmpeg, is_vmaf_ffmpeg_available
 from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
 from scoring_function import calculate_compression_score
 
@@ -1829,16 +1829,15 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             try:
                 vmaf_start = time.time()
 
-                # Trim 1-second clips for VMAF calculation
+                # Trim 1-second clips for VMAF calculation (frame-accurate)
                 ref_fps = get_video_fps(ref_path) or 30.0
-                ref_duration = ref_total_frames / ref_fps
-                vmaf_clip_duration = 1  # seconds
-                max_start = max(0, ref_duration - vmaf_clip_duration)
-                vmaf_start_time = random.uniform(0, max_start)
+                vmaf_num_frames = int(ref_fps)  # 1 second worth of frames
+                max_start_frame = max(0, ref_total_frames - vmaf_num_frames)
+                vmaf_start_frame = random.randint(0, max_start_frame)
 
-                ref_clip_vmaf_path = trim_video(ref_path, vmaf_start_time, vmaf_clip_duration)
-                dist_clip_vmaf_path = trim_video(dist_path, vmaf_start_time, vmaf_clip_duration)
-                logger.info(f"Trimmed 1s clips at {vmaf_start_time:.2f}s for VMAF calculation")
+                ref_clip_vmaf_path = trim_video_select(ref_path, vmaf_start_frame, vmaf_num_frames)
+                dist_clip_vmaf_path = trim_video_select(dist_path, vmaf_start_frame, vmaf_num_frames)
+                logger.info(f"Trimmed {vmaf_num_frames} frames starting at frame {vmaf_start_frame} for VMAF calculation")
 
                 if VMAF_FFMPEG_AVAILABLE and ref_clip_vmaf_path and dist_clip_vmaf_path:
                     try:
@@ -2176,16 +2175,15 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 vmaf_start = time.time()
                 vmaf_score = None
 
-                # Trim 1-second clips for VMAF calculation
+                # Trim 1-second clips for VMAF calculation (frame-accurate)
                 ref_fps_val = get_video_fps(ref_path) or 30.0
-                ref_duration = ref_total_frames / ref_fps_val
-                vmaf_clip_duration = 1  # seconds
-                max_start = max(0, ref_duration - vmaf_clip_duration)
-                vmaf_start_time = random.uniform(0, max_start)
+                vmaf_num_frames = int(ref_fps_val)  # 1 second worth of frames
+                max_start_frame = max(0, ref_total_frames - vmaf_num_frames)
+                vmaf_start_frame = random.randint(0, max_start_frame)
 
-                ref_clip_vmaf_path = trim_video(ref_path, vmaf_start_time, vmaf_clip_duration)
-                dist_clip_vmaf_path = trim_video(dist_path, vmaf_start_time, vmaf_clip_duration)
-                logger.info(f"Trimmed 1s clips at {vmaf_start_time:.2f}s for VMAF calculation")
+                ref_clip_vmaf_path = trim_video_select(ref_path, vmaf_start_frame, vmaf_num_frames)
+                dist_clip_vmaf_path = trim_video_select(dist_path, vmaf_start_frame, vmaf_num_frames)
+                logger.info(f"Trimmed {vmaf_num_frames} frames starting at frame {vmaf_start_frame} for VMAF calculation")
 
                 if VMAF_FFMPEG_AVAILABLE and ref_clip_vmaf_path and dist_clip_vmaf_path:
                     try:
@@ -2244,8 +2242,11 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 logger.info("Using FFmpeg signalstats for color/chroma validation (no Y4M conversion)")
 
                 # Compute signalstats once on original videos (not trimmed clips — avoids keyframe issues)
-                ref_signal_stats = _get_signalstats(ref_path, start_time=vmaf_start_time, duration=vmaf_clip_duration)
-                dist_signal_stats = _get_signalstats(dist_path, start_time=vmaf_start_time, duration=vmaf_clip_duration)
+                # Convert frame-based position back to time for signalstats
+                signalstats_start_time = vmaf_start_frame / ref_fps_val
+                signalstats_duration = vmaf_num_frames / ref_fps_val
+                ref_signal_stats = _get_signalstats(ref_path, start_time=signalstats_start_time, duration=signalstats_duration)
+                dist_signal_stats = _get_signalstats(dist_path, start_time=signalstats_start_time, duration=signalstats_duration)
 
                 # Color validation (grayscale detection)
                 color_valid, color_reason = validate_color_channels_ffmpeg(ref_signal_stats, dist_signal_stats)
@@ -2601,22 +2602,18 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
 
         # === MAIN SCORING LOGIC ===
         try:
-            # Calculate 0.25 second clip duration
-            clip_duration = 0.25  # seconds
-            
-            # Calculate maximum start time to ensure we don't exceed video length
-            ref_duration = ref_total_frames / ref_fps
-            max_start_time = max(0, ref_duration - clip_duration)
-            start_time = random.uniform(0, max_start_time)
-            
-            logger.info(f"Creating 0.25-second clips starting from {start_time:.2f} seconds")
-            
-            # Create 0.25-second reference clip (re-encode needed for upscale_video compatibility)
-            ref_clip_path = trim_video(ref_path, start_time, clip_duration, reencode=True)
+            # Calculate 0.25 second clip using frame-accurate extraction
+            clip_num_frames = max(1, int(ref_fps * 0.25))  # 0.25 seconds worth of frames
+            max_start_frame = max(0, ref_total_frames - clip_num_frames)
+            start_frame = random.randint(0, max_start_frame)
+
+            logger.info(f"Creating {clip_num_frames}-frame clips starting at frame {start_frame}")
+
+            # Frame-accurate extraction for both ref and dist
+            ref_clip_path = trim_video_select(ref_path, start_frame, clip_num_frames)
             logger.info(f"Created reference clip: {ref_clip_path}")
-            
-            # Create 0.25-second distorted clip
-            dist_clip_path = trim_video(dist_path, start_time, clip_duration)
+
+            dist_clip_path = trim_video_select(dist_path, start_frame, clip_num_frames)
             logger.info(f"Created distorted clip: {dist_clip_path}")
             
             # Upscale the reference clip
@@ -2901,30 +2898,26 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 compression_rate = 1.0
                 logger.info("Reference file size is 0 or distorted file size >= reference, setting compression rate to 1.0")
 
-            # Calculate 0.5 second clip duration for VMAF calculation
-            clip_duration = 0.5  # seconds
-            
-            # Get video FPS to calculate frame-based timing using ffprobe (no AV1 warnings)
+            # Calculate 0.5 second clip using frame-accurate extraction
             ref_fps = get_video_fps(ref_path)
             logger.info(f"Reference video FPS: {ref_fps}")
-            
-            # Calculate maximum start time to ensure we don't exceed video length
-            ref_duration = ref_total_frames / ref_fps
-            max_start_time = max(0, ref_duration - clip_duration)
-            start_time = random.uniform(0, max_start_time)
-            
-            logger.info(f"Creating 0.5-second clips starting from {start_time:.2f} seconds")
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 6. Selected random start time for video chunks in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-            # Create 0.5-second reference clip
-            ref_clip_path = trim_video(ref_path, start_time, clip_duration)
+            clip_num_frames = max(1, int(ref_fps * 0.5))  # 0.5 seconds worth of frames
+            max_start_frame = max(0, ref_total_frames - clip_num_frames)
+            start_frame = random.randint(0, max_start_frame)
+
+            logger.info(f"Creating {clip_num_frames}-frame clips starting at frame {start_frame}")
+            step_time = time.time() - uid_start_time
+            logger.info(f"♎️ 6. Selected random start frame for video chunks in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            # Create reference clip (frame-accurate)
+            ref_clip_path = trim_video_select(ref_path, start_frame, clip_num_frames)
             logger.info(f"Created reference clip: {ref_clip_path}")
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 7. Created reference video clip in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-            # Create 0.5-second distorted clip
-            dist_clip_path = trim_video(dist_path, start_time, clip_duration)
+            # Create distorted clip (frame-accurate)
+            dist_clip_path = trim_video_select(dist_path, start_frame, clip_num_frames)
             logger.info(f"Created distorted clip: {dist_clip_path}")
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 8. Created distorted video clip in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
@@ -2993,8 +2986,11 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 logger.info("Using FFmpeg signalstats for color/chroma validation (no Y4M conversion)")
 
                 # Compute signalstats once on original videos (not trimmed clips — avoids keyframe issues)
-                ref_signal_stats = _get_signalstats(ref_path, start_time=start_time, duration=clip_duration)
-                dist_signal_stats = _get_signalstats(dist_path, start_time=start_time, duration=clip_duration)
+                # Convert frame-based position back to time for signalstats
+                signalstats_start_time = start_frame / ref_fps
+                signalstats_duration = clip_num_frames / ref_fps
+                ref_signal_stats = _get_signalstats(ref_path, start_time=signalstats_start_time, duration=signalstats_duration)
+                dist_signal_stats = _get_signalstats(dist_path, start_time=signalstats_start_time, duration=signalstats_duration)
 
                 # Color validation (grayscale detection)
                 color_valid, color_reason = validate_color_channels_ffmpeg(ref_signal_stats, dist_signal_stats)

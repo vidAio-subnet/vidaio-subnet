@@ -100,6 +100,52 @@ def trim_video(input_path, start_time, trim_duration=1, target_crf=18, reencode=
         print(f"Error: {e.stderr.decode()}")
         return None
 
+
+def trim_video_select(input_path, start_frame, num_frames, target_crf=18):
+    """
+    Frame-accurate video trimming using the select filter.
+
+    Unlike trim_video (which uses stream copy or time-based seeking and can
+    land on the wrong keyframe), this function extracts exact frame indices.
+    Both the reference and distorted videos will contain the exact same
+    frame range, eliminating alignment issues in VMAF comparisons.
+
+    Args:
+        input_path (str): Path to the source video.
+        start_frame (int): First frame index to include (0-based).
+        num_frames (int): Number of consecutive frames to extract.
+        target_crf (int): CRF quality for the re-encoded output (default: 18).
+
+    Returns:
+        str: Path to the trimmed MP4 file, or None on error.
+    """
+    filename, ext = os.path.splitext(input_path)
+    output_path = f"{filename}_trimmed_f{start_frame}.mp4"
+
+    end_frame = start_frame + num_frames - 1
+    select_expr = f"between(n\\,{start_frame}\\,{end_frame})"
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i", input_path,
+        "-vf", f"select='{select_expr}',setpts=N/FRAME_RATE/TB",
+        "-an",                 # Drop audio (not needed for VMAF)
+        "-pix_fmt", "yuv420p",
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", str(target_crf),
+        output_path,
+    ]
+
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+        return output_path
+    except subprocess.CalledProcessError as e:
+        print(f"Error in trim_video_select: {e.stderr.decode()}")
+        return None
+
+
 def get_video_fps(video_path):
     """
     Get the frame rate of a video using ffprobe.
