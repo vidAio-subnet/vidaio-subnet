@@ -115,28 +115,55 @@ def trim_video_select(input_path, start_frame, num_frames, target_crf=18):
         start_frame (int): First frame index to include (0-based).
         num_frames (int): Number of consecutive frames to extract.
         target_crf (int): CRF quality for the re-encoded output (default: 18).
+        docker_image (str): Docker image name to use if available.
 
     Returns:
         str: Path to the trimmed MP4 file, or None on error.
     """
-    filename, ext = os.path.splitext(input_path)
-    output_path = f"{filename}_trimmed_f{start_frame}.mp4"
+    # Resolve absolute paths for Docker volume mounting
+    abs_input_path = os.path.abspath(input_path)
+    base_dir = os.path.dirname(abs_input_path)
+    base_name = os.path.basename(abs_input_path)
+
+    filename, ext = os.path.splitext(base_name)
+    output_filename = f"{filename}_trimmed_f{start_frame}.mp4"
+    output_path = os.path.join(base_dir, output_filename)
 
     end_frame = start_frame + num_frames - 1
     select_expr = f"between(n\\,{start_frame}\\,{end_frame})"
 
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-i", input_path,
-        "-vf", f"select='{select_expr}',setpts=N/FRAME_RATE/TB",
-        "-an",                 # Drop audio (not needed for VMAF)
-        "-pix_fmt", "yuv420p",
-        "-c:v", "libx264",
-        "-preset", "fast",
-        "-crf", str(target_crf),
-        output_path,
-    ]
+    if is_vmaf_ffmpeg_available():
+        logger.info(f"Using Docker image vmaf_ffmpeg with hevc_nvenc for trimming.")
+        cmd = [
+            "docker", "run", "--rm", 
+            "--gpus", "all,\"capabilities=compute,video,utility\"",
+            "-v", f"{base_dir}:/files",
+            "vmaf_ffmpeg",
+            "-y",
+            "-i", f"/files/{base_name}",
+            "-vf", f"select='{select_expr}',setpts=N/FRAME_RATE/TB",
+            "-an",
+            "-pix_fmt", "yuv420p",
+            "-c:v", "hevc_nvenc",   
+            "-preset", "p4",        
+            "-rc", "vbr",
+            "-cq", str(target_crf),
+            f"/files/{output_filename}",
+        ]
+    else:
+        logger.info("Falling back to local FFmpeg for trimming.")
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i", abs_input_path,
+            "-vf", f"select='{select_expr}',setpts=N/FRAME_RATE/TB",
+            "-an",
+            "-pix_fmt", "yuv420p",
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", str(target_crf),
+            output_path,
+        ]
 
     try:
         subprocess.run(cmd, check=True, capture_output=True)
@@ -144,7 +171,6 @@ def trim_video_select(input_path, start_frame, num_frames, target_crf=18):
     except subprocess.CalledProcessError as e:
         print(f"Error in trim_video_select: {e.stderr.decode()}")
         return None
-
 
 def get_video_fps(video_path):
     """
