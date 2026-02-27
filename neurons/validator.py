@@ -589,15 +589,16 @@ class Validator(base.BaseValidator):
                     logger.warning(f"⚠️ Reference video file missing for video_id {video_id}: {reference_video_path}")
                 reference_video_paths.append(reference_video_path)
             
-            asyncio.create_task(self.score_compressions(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, vmaf_thresholds, target_codec, codec_mode, target_bitrate, round_id))
-
+            # asyncio.create_task(self.score_compressions(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, vmaf_thresholds, target_codec, codec_mode, target_bitrate, round_id))
+            await self.score_compressions(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, vmaf_thresholds, target_codec, codec_mode, target_bitrate, round_id)
+            
             batch_processed_time = time.time() - batch_start_time
-            sleep_time = random.uniform(SLEEP_TIME_LOW, SLEEP_TIME_HIGH) - batch_processed_time
+            # sleep_time = random.uniform(SLEEP_TIME_LOW, SLEEP_TIME_HIGH) - batch_processed_time
 
             logger.info(f"Completed compression batch within {batch_processed_time:.2f} seconds")
-            logger.info(f"Sleeping for 5-6 minutes before next compression batch")
+            # logger.info(f"Sleeping for 5-6 minutes before next compression batch")
             
-            await asyncio.sleep(sleep_time)
+            # await asyncio.sleep(sleep_time)
 
 
     async def start_organic_loop(self):
