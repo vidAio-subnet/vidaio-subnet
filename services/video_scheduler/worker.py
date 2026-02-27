@@ -538,6 +538,7 @@ async def main_loop():
         
         scheduler_config = CONFIG.video_scheduler
         queue_thresholds = {
+            "compression_target": scheduler_config.max_synthetic_queue_size,
             "refill": scheduler_config.refill_threshold,
             "target": scheduler_config.refill_target,
             "pexels": scheduler_config.pexels_threshold,
@@ -573,8 +574,7 @@ async def main_loop():
                 
                 await replenish_synthetic_compression_queue(
                     redis_conn,
-                    queue_thresholds["refill"],
-                    queue_thresholds["target"]
+                    queue_thresholds["compression_target"]
                 )
                 
                 for duration in [5, 10]:
@@ -759,7 +759,7 @@ async def replenish_synthetic_queue(redis_conn, duration, threshold, target):
     return False  # No replenishment needed
 
 
-async def replenish_synthetic_compression_queue(redis_conn, threshold, target):
+async def replenish_synthetic_compression_queue(redis_conn, target):
     """Replenish the synthetic compression queue if below target."""
     queue_size = get_compression_queue_size(redis_conn)
     if queue_size < target:
