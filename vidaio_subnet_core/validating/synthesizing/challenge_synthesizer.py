@@ -217,7 +217,7 @@ class Synthesizer:
             num_needed = (num_protocols + miners_per_task - 1) // miners_per_task  # Ceiling division
             logger.info(f"Using {miners_per_task} miners per task. Processing {num_protocols} protocols.")
 
-        logger.info(f"Vmaf_thresholds: {vmaf_thresholds}")
+        # logger.info(f"Vmaf_thresholds: {vmaf_thresholds}")
         logger.info(f"Optimized chunk request: {num_needed} chunks")
         
         for attempt in range(self.max_retries):

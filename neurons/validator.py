@@ -75,11 +75,18 @@ class Validator(base.BaseValidator):
         self.dendrite = bt.dendrite(wallet=self.wallet)
         logger.info("💧 Initialized dendrite 💧")
         
-        self.score_client = httpx.AsyncClient(
-            base_url=f"http://{CONFIG.score.host}:{CONFIG.score.port}"
+        self.score_client_upscaling = httpx.AsyncClient(
+            base_url=f"http://{CONFIG.score.host}:{CONFIG.score.upscaling_score_port}"
         )
         logger.info(
-            f"💧 Initialized score client with base URL: http://{CONFIG.score.host}:{CONFIG.score.port} 💧"
+            f"💧 Initialized upscaling score client with base URL: http://{CONFIG.score.host}:{CONFIG.score.upscaling_score_port} 💧"
+        )
+        
+        self.score_client_compression = httpx.AsyncClient(
+            base_url=f"http://{CONFIG.score.host}:{CONFIG.score.compression_score_port}"
+        )
+        logger.info(
+            f"💧 Initialized compression score client with base URL: http://{CONFIG.score.host}:{CONFIG.score.compression_score_port} 💧"
         )
         
         self.set_weights_executor = ThreadPoolExecutor(max_workers=1)
@@ -562,7 +569,7 @@ class Validator(base.BaseValidator):
 
         payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_compression_protocol(
             vmaf_thresholds, num_miners, version, round_id, target_codec, codec_mode, target_bitrate, broadcast_single_chunk=True)
-        logger.warning(f"Built compression challenge protocol with {num_miners} thresholds, codec {target_codec}, mode {codec_mode}, bitrate {target_bitrate} Mbps")
+        logger.warning(f"Built compression challenge protocol for {num_miners} miners, VMAF threshold {vmaf_thresholds[0]}, codec {target_codec}, mode {codec_mode}, bitrate {target_bitrate} Mbps")
 
         timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -672,7 +679,7 @@ class Validator(base.BaseValidator):
 
         logger.info(f"payloads: {payload_urls}\nresponses: {responses}")
 
-        score_response = await self.score_client.post(
+        score_response = await self.score_client_upscaling.post(
             "/score_upscaling_synthetics",
             json = {
                 "uids": uids,
@@ -782,9 +789,9 @@ class Validator(base.BaseValidator):
         for uid, response in zip(uids, responses):
             distorted_urls.append(response.miner_response.optimized_video_url)
 
-        logger.info(f"payloads: {payload_urls}\nresponses: {responses}")
+        logger.info(f"payload: {payload_urls[0]}\nresponses: {responses}")
 
-        score_response = await self.score_client.post(
+        score_response = await self.score_client_compression.post(
             "/score_compression_synthetics",
             json = {
                 "uids": uids,
@@ -889,7 +896,7 @@ class Validator(base.BaseValidator):
 
         logger.info(f"Randomly selected {len(selected_uids)} pairs out of {len(uids)} total pairs for validation")
 
-        score_response = await self.score_client.post(
+        score_response = await self.score_client_upscaling.post(
             "/score_organics_upscaling",
             json={
                 "uids": selected_uids,
@@ -975,7 +982,7 @@ class Validator(base.BaseValidator):
 
         logger.info(f"Randomly selected {len(selected_uids)} pairs out of {len(uids)} total pairs for compression validation")
 
-        score_response = await self.score_client.post(
+        score_response = await self.score_client_compression.post(
             "/score_organics_compression",
             json={
                 "uids": selected_uids,

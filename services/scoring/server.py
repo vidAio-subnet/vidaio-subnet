@@ -2711,8 +2711,14 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
 
 if __name__ == "__main__":
     import uvicorn
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Vidaio Subnet Scoring Server")
+    parser.add_argument("--port", type=int, default=CONFIG.score.port, help="Port to run the scoring server on")
+    args = parser.parse_args()
     
     host = CONFIG.score.host
-    port = CONFIG.score.port
+    port = args.port
     
+    logger.info(f"Starting scoring server on {host}:{port}")
     uvicorn.run(app, host=host, port=port)
