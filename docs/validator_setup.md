@@ -12,6 +12,33 @@ To achieve optimal results, we recommend the following setup:
 
 ---
 
+## Bootstrap System Dependencies
+
+The `bootstrap.sh` script at the repository root automates the installation of core system-level dependencies:
+
+- **NVIDIA GPU drivers** (default version 535)
+- **Docker** and the **NVIDIA Container Toolkit**
+- **Python 3.11**
+- Base utilities (git, curl, wget, etc.)
+
+Run the script **as root** with the `-E` flag to preserve environment variables:
+
+```bash
+sudo -E ./bootstrap.sh
+```
+
+> **Note:** If you encounter `dpkg` lock issues (common on platforms like TensorDock), wait ~15 minutes and re-run the script. The script will **automatically reboot** the machine if a new NVIDIA driver was installed.
+
+#### Optional environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `NVIDIA_DRIVER_VERSION` | `535` | NVIDIA driver version to install |
+
+Once the bootstrap completes (and any reboot finishes), proceed with the rest of this guide.
+
+---
+
 ## Install PM2 (Process Manager)
 
 **PM2** is used to manage and monitor the validator process. If you haven’t installed PM2 yet, follow these steps:
@@ -124,104 +151,19 @@ To enable video quality validation, install **VMAF** by following the steps belo
 
 ---
 
-Clone the VMAF repository into the working root directory of your `vidaio-subnet` package. If the `vidaio-subnet` virtual environment is currently active, deactivate it first:
+Clone the VMAF repository into the working root directory of your `vidaio-subnet` package:
 
 ```bash
 git clone https://github.com/vidAio-subnet/vmaf.git
+cp vmaf_utils/Dockerfile vmaf/Dockerfile
+cp vmaf_utils/Dockerfile.ffmpeg vmaf/Dockerfile.ffmpeg
 cd vmaf
+git stash && git reset --hard 332dde62838d91d8b5216e9822de58851f2fd64f && git stash apply
+docker build -t vmaf .
+docker build -t vmaf_ffmpeg:latest -f Dockerfile.ffmpeg .
 ```
 
 ---
-
-### Step 1: Set Up a Virtual Environment in VMAF directory
-
-1. Install `venv` if it’s not already installed:
-   ```bash
-   python3 -m venv vmaf-venv
-   ```
-
-2. Activate the virtual environment:
-   ```bash
-   source vmaf-venv/bin/activate
-   ```
-
----
-
-### Step 2: Install Dependencies
-
-1. Install `meson`:
-   ```bash
-   pip install meson
-   ```
-
-2. Install system dependencies:
-   ```bash
-   sudo apt-get update
-   sudo apt-get install nasm ninja-build doxygen xxd
-   ```
-   For Ninja, verify whether the package name is `ninja` or `ninja-build` before running the install command.
-
----
-
-### Step 3: Compile VMAF
-
-
-1. Set up the build environment:
-   ```bash
-   cd libvmaf
-   meson setup build --buildtype release -Denable_avx512=true
-   ```
-
-2. Optional flags:
-   - Use `-Denable_float=true` to enable floating-point feature extractors.
-   - Use `-Denable_avx512=true` to enable AVX-512 SIMD instructions for faster processing on supported CPUs.  
-   - Use `-Denable_cuda=true` to build with CUDA support (requires `nvcc` and CUDA >= 11).  
-     **Note:** To enable CUDA successfully, ensure `nvcc` and the CUDA driver are installed. Refer to the [CUDA and NVCC setup guide](miner_setup.md#step-2-install-cuda-and-nvcc).
-   - Use `-Denable_nvtx=true` to enable NVTX marker support for profiling with Nsight Systems.
-   - **Recommendation:**
-   We recommend adding `-Denable_avx512=true` to enhance validation speed. If CUDA is available, include the flag `-Denable_cuda=true` But At present, VMAF does not include support for CUDA integration.
-
-3. Build the project:
-   ```bash
-   ninja -vC build
-   ```
-
----
-
-### Step 4: Test the Build
-
-Run tests to verify the build:
-```bash
-ninja -vC build test
-```
-
----
-
-### Step 5: Install VMAF
-
-Install the library, headers, and the command-line tool:
-```bash
-ninja -vC build install
-```
-
----
-
-### Step 6: Generate Documentation
-
-Generate HTML documentation:
-```bash
-ninja -vC build doc/html
-```
-
-### Step 7: Deactivate vmaf-venv, activate project venv
-
-```bash
-deactivate
-cd ..
-cd ..
-source venv/bin/activate
-```
-
 ## Running the Validator with PM2
 
 To run the validator, use the following command:
