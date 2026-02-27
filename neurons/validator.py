@@ -543,6 +543,18 @@ class Validator(base.BaseValidator):
         """Process compression miners in batches similar to upscaling but with compression protocols."""
         batch_size = CONFIG.bandwidth.requests_per_synthetic_interval
 
+        round_id = str(uuid.uuid4())
+
+        vmaf_threshold = random.choice(list(VMAF_QUALITY_THRESHOLD)) 
+        target_codec = random.choice(TARGET_CODECS)
+        codec_mode = random.choice(CODEC_MODES)
+        target_bitrate = random.choice(TARGET_BITRATES)
+        num_miners = len(compression_miners)
+
+        payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_compression_protocol(
+            [vmaf_threshold], num_miners, version, round_id, target_codec, codec_mode, target_bitrate)
+        logger.warning(f"Built compression challenge protocol with VMAF threshold {vmaf_threshold}, codec {target_codec}, mode {codec_mode}, bitrate {target_bitrate} Mbps")
+        
         miner_batches = await self.create_miner_batches(compression_miners, batch_size, task_type="compression")
 
         logger.info(f"Created {len(miner_batches)} compression batches of size {batch_size}")
@@ -559,22 +571,6 @@ class Validator(base.BaseValidator):
                 axons.append(miner[0])
                 recent_counts.append(recent_count)
 
-            vmaf_thresholds = [
-                random.choice(list(VMAF_QUALITY_THRESHOLD)) if recent_count >= CONFIG.score.max_performance_records
-                else random.choice([VMAF_QUALITY_THRESHOLD.LOW, VMAF_QUALITY_THRESHOLD.MEDIUM])
-                for idx, recent_count in enumerate(recent_counts)
-            ]
-
-            target_codec = random.choice(TARGET_CODECS)
-            codec_mode = random.choice(CODEC_MODES)
-            target_bitrate = random.choice(TARGET_BITRATES)
-            round_id = str(uuid.uuid4())
-
-            num_miners = len(uids)
-
-            payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_compression_protocol(
-                vmaf_thresholds, num_miners, version, round_id, target_codec, codec_mode, target_bitrate)
-            logger.warning(f"Built compression challenge protocol with VMAF threshold {vmaf_thresholds}, codec {target_codec}, mode {codec_mode}, bitrate {target_bitrate} Mbps")
             timestamp = datetime.now(timezone.utc).isoformat()
 
             logger.debug(f"Processing compression UIDs in batch: {uids}")
