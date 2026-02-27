@@ -203,6 +203,10 @@ check_package_installed "jq"
 
 # 🚀 START THE 4 PM2 PROCESSES
 # pm2 start "PYTHONPATH=. python services/scoring/server.py" --name scoring_endpoint
+
+# pm2 start "PYTHONPATH=. python services/scoring/server.py --port 8201" --name scoring_endpoint_upscaling
+# pm2 start "PYTHONPATH=. python services/scoring/server.py --port 8202" --name scoring_endpoint_compression
+
 # pm2 start "PYTHONPATH=. python services/video_scheduler/worker.py" --name video_scheduler_worker
 # pm2 start "PYTHONPATH=. python services/video_scheduler/server.py" --name video_scheduler_endpoint
 # pm2 start "PYTHONPATH=. python services/dashboard/metagraph_api_server.py" --name metagraph-api
