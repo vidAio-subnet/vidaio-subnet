@@ -627,6 +627,11 @@ class Validator(base.BaseValidator):
             logger.info(f"Completed scoring compression batch {batch_uids} within {batch_processed_time:.2f} seconds")
             # await asyncio.sleep(sleep_time)
 
+        try:
+            if os.path.exists(reference_video_paths[0]):
+                os.unlink(reference_video_paths[0])
+        except Exception as e:
+            logger.error(f"Error deleting reference video file: {e}")
 
     async def start_organic_loop(self):
         """Start organic processing loop for both upscaling and compression tasks asynchronously."""
@@ -677,7 +682,7 @@ class Validator(base.BaseValidator):
         for uid, response in zip(uids, responses):
             distorted_urls.append(response.miner_response.optimized_video_url)
 
-        logger.info(f"payloads: {payload_urls}\nresponses: {responses}")
+        logger.info(f"payloads: {payload_urls}\nresponses: {distorted_urls}")
 
         score_response = await self.score_client_upscaling.post(
             "/score_upscaling_synthetics",
@@ -789,7 +794,7 @@ class Validator(base.BaseValidator):
         for uid, response in zip(uids, responses):
             distorted_urls.append(response.miner_response.optimized_video_url)
 
-        logger.info(f"payload: {payload_urls[0]}\nresponses: {responses}")
+        logger.info(f"payload: {payload_urls[0]}\nresponses: {distorted_urls}")
 
         score_response = await self.score_client_compression.post(
             "/score_compression_synthetics",

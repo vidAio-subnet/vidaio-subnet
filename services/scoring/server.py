@@ -2368,10 +2368,6 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
 
             # Delete the uploaded object
             storage_client.delete_file(uploaded_object_name)
-            
-    for ref_path in request.reference_paths:
-        if os.path.exists(ref_path):
-            os.unlink(ref_path)
 
     # tmp_directory = "/tmp"
     # try:
