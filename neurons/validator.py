@@ -529,15 +529,15 @@ class Validator(base.BaseValidator):
                     logger.warning(f"⚠️ Reference video file missing for video_id {video_id}: {reference_video_path}")
                 reference_video_paths.append(reference_video_path)
             
-            asyncio.create_task(self.score_upscalings(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, content_lengths, task_types, round_id))
+            await self.score_upscalings(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, content_lengths, task_types, round_id)
 
             batch_processed_time = time.time() - batch_start_time
             
-            sleep_time = random.uniform(SLEEP_TIME_LOW, SLEEP_TIME_HIGH) - batch_processed_time
+            # sleep_time = random.uniform(SLEEP_TIME_LOW, SLEEP_TIME_HIGH) - batch_processed_time
             logger.info(f"Completed upscaling batch within {batch_processed_time:.2f} seconds")
-            logger.info(f"Sleeping for 5-6 minutes before next upscaling batch")
+            # logger.info(f"Sleeping for 5-6 minutes before next upscaling batch")
             
-            await asyncio.sleep(sleep_time)
+            # await asyncio.sleep(sleep_time)
 
     async def process_compression_miners(self, compression_miners, version):
         """Process compression miners in batches similar to upscaling but with compression protocols."""
