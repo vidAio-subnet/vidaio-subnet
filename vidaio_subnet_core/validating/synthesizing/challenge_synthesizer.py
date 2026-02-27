@@ -179,7 +179,8 @@ class Synthesizer:
         raise RuntimeError(f"Failed to get synthetic chunks after {self.max_retries} attempts")
 
     async def build_compression_protocol(self, vmaf_thresholds: List[float], num_miners: int, version, round_id,
-     target_codec: str = "av1", codec_mode: str = "CRF", target_bitrate: float = 10.0) -> Tuple[list[str], list[str], list[str], list[VideoCompressionProtocol]]:
+     target_codec: str = "av1", codec_mode: str = "CRF", target_bitrate: float = 10.0,
+     broadcast_single_chunk: bool = False) -> Tuple[list[str], list[str], list[str], list[VideoCompressionProtocol]]:
         """Fetches synthetic video chunks and builds the video compression protocols.
 
         Args:
@@ -205,14 +206,19 @@ class Synthesizer:
         # Get miners per task from configuration
         miners_per_task = CONFIG.bandwidth.miners_per_task
         
-        # Calculate required chunks (one chunk per miners_per_task protocols)
+        # Calculate required chunks
         num_protocols = num_miners
         assert len(vmaf_thresholds) == num_protocols
-        num_needed = (num_protocols + miners_per_task - 1) // miners_per_task  # Ceiling division
         
+        if broadcast_single_chunk:
+            num_needed = 1  # We only need 1 chunk to broadcast to all miners
+            logger.info(f"Broadcasting single payload to all {num_miners} miners in batch")
+        else:
+            num_needed = (num_protocols + miners_per_task - 1) // miners_per_task  # Ceiling division
+            logger.info(f"Using {miners_per_task} miners per task. Processing {num_protocols} protocols.")
+
         logger.info(f"Vmaf_thresholds: {vmaf_thresholds}")
-        logger.info(f"Using {miners_per_task} miners per task")
-        logger.info(f"Optimized chunk request: {num_needed} chunks (reduced from {num_protocols} protocols)")
+        logger.info(f"Optimized chunk request: {num_needed} chunks")
         
         for attempt in range(self.max_retries):
             try:
@@ -246,10 +252,13 @@ class Synthesizer:
                     await asyncio.sleep(self.retry_delay)
                     continue
 
-                # Generate protocols in order, reusing chunks based on miners_per_task
+                # Generate protocols in order
                 for i in range(num_miners):
-                    # Determine which chunk to use (one chunk per miners_per_task protocols)
-                    chunk_index = i // miners_per_task
+                    if broadcast_single_chunk:
+                        chunk_index = 0
+                    else:
+                        # Determine which chunk to use (one chunk per miners_per_task protocols)
+                        chunk_index = i // miners_per_task
                     
                     if chunk_index >= len(valid_chunks):
                         # If we run out of chunks, cycle back to first chunk
