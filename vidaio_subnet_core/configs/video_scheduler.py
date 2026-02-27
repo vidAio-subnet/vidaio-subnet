@@ -4,9 +4,9 @@ from pydantic import BaseModel, Field
 class VideoSchedulerConfig(BaseModel):
     host: str = Field(default="localhost")
     port: int = Field(default=8000)
-    max_synthetic_queue_size: int = Field(default=100) 
-    refill_target: int = Field(default=100)
-    refill_threshold: int = Field(default=100) 
+    max_synthetic_queue_size: int = Field(default=20) 
+    refill_target: int = Field(default=20)
+    refill_threshold: int = Field(default=20) 
     min_video_len: int = Field(default=29.7)
     max_video_len: int = Field(default=40)
     pexels_max_size: int = Field(default=50)
