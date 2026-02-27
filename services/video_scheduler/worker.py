@@ -465,7 +465,7 @@ async def get_compression_requests_paths(num_needed: int, redis_conn: redis.Redi
 
         video_ids, challenge_local_paths = process_video_permutations(
             redis_conn=redis_conn,
-            max_permutations=100
+            max_permutations=remaining_count + 10 # Add some buffer
         )
 
         if not challenge_local_paths:
