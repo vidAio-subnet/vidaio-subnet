@@ -252,13 +252,16 @@ class Validator(base.BaseValidator):
         if unknown_task_miners:
             logger.info(f"❓ Unknown task UIDs processed: {unknown_task_miners}")
 
-        if upscaling_miners:
+        # ---- Run upscaling & compression epochs in parallel ---- #
+        async def _run_upscaling():
+            if not upscaling_miners:
+                return
             logger.info(f"Sending LengthCheckProtocol requests to {len(upscaling_miners)} upscaling miners")
-            
+
             upscaling_start_time = time.time()
             upscaling_axons = [miner[0] for miner in upscaling_miners]
             length_check_synapse = LengthCheckProtocol(version=version)
-            
+
             length_check_responses = await self.dendrite.forward(
                 axons=upscaling_axons, synapse=length_check_synapse, timeout=10
             )
@@ -282,22 +285,25 @@ class Validator(base.BaseValidator):
             await self.process_upscaling_miners(upscaling_miners_with_lengths, version)
 
             upscaling_processed_time = time.time() - upscaling_start_time
-
             logger.info(f"Upscaling tasks processed in {upscaling_processed_time:.2f} seconds")
 
-            await asyncio.sleep(2)
-
-        if compression_miners:
+        async def _run_compression():
+            if not compression_miners:
+                return
             logger.info(f"Processing {len(compression_miners)} compression miners")
 
             compression_start_time = time.time()
             await self.process_compression_miners(compression_miners, version)
 
             compression_processed_time = time.time() - compression_start_time
-
             logger.info(f"Compression tasks processed in {compression_processed_time:.2f} seconds")
 
-            await asyncio.sleep(2)
+        results = await asyncio.gather(
+            _run_upscaling(), _run_compression(), return_exceptions=True
+        )
+        for label, result in zip(["upscaling", "compression"], results):
+            if isinstance(result, BaseException):
+                logger.error(f"Parallel {label} epoch failed: {result}", exc_info=result)
 
         epoch_processed_time = time.time() - epoch_start_time
         logger.info(f"Completed one epoch within {epoch_processed_time:.2f} seconds")
