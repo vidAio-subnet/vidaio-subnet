@@ -278,6 +278,7 @@ def vmaf_metric_ffmpeg(
     skip_frames=0,
     n_subsample=1,
     docker_image="vmaf_ffmpeg",
+    neg_model=False,
 ):
     """
     Calculate VMAF score using the vmaf_ffmpeg Docker container with GPU-accelerated
@@ -328,10 +329,17 @@ def vmaf_metric_ffmpeg(
         else:
             select_filter = ""
 
+        if neg_model:
+            logger.info("Using VMAF NEG model for scoring (ffmpeg/docker).")
+            model_param = ":model='version=vmaf_v0.6.1neg'"
+        else:
+            logger.info("Using standard VMAF model for scoring (ffmpeg/docker).")
+            model_param = ""
+
         filter_complex = (
             f"[0:v]{select_filter}format=yuv420p,hwupload_cuda[dis];"
             f"[1:v]{select_filter}format=yuv420p,hwupload_cuda[ref];"
-            f"[dis][ref]libvmaf_cuda=n_subsample={n_subsample}"
+            f"[dis][ref]libvmaf_cuda=n_subsample={n_subsample}{model_param}"
             f":log_fmt=json:log_path={output_json}"
         )
 
