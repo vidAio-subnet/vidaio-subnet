@@ -202,11 +202,12 @@ async def download_video(video_url: str, verbose: bool) -> tuple[str, float]:
             logger.info(f"Download time: {download_time:.2f} seconds")
 
         return file_path, download_time
-
-    except aiohttp.ClientError as e:
-        raise Exception(f"Download failed due to a network error: {e}")
+    except aiohttp.ServerTimeoutError:
+        raise Exception("Download failed: Server connection timed out")
     except asyncio.TimeoutError:
         raise Exception("Download timed out")
+    except aiohttp.ClientError as e:
+        raise Exception(f"Download failed due to a network error: {type(e).__name__}: {repr(e)}")
 
 # Function to get ClipIQA+ score programmatically
 def get_clipiqa_score(video_path, num_frames=3):
@@ -1685,7 +1686,7 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 quality_scores.append(0.0)
                 length_scores.append(0.0)
                 final_scores.append(0.0)
-                reasons.append("failed to download video file from url")
+                reasons.append(error_msg)
                 continue
 
             try:
@@ -1697,8 +1698,8 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 pieapp_scores.append(0.0)
                 quality_scores.append(0.0)
                 length_scores.append(0.0)
-                final_scores.append(0.0)
-                reasons.append("failed to download video file from url")
+                final_scores.append(-100)
+                reasons.append(error_msg)
                 continue
 
             step_time = time.time() - uid_start_time
