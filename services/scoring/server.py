@@ -2192,6 +2192,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                         vmaf_score = vmaf_metric_ffmpeg(
                             dist_path=dist_path,
                             ref_path=ref_path,
+                            neg_model=True,
                             # skip_frames=np.random.randint(0, ref_fps_val),
                             # n_subsample=np.random.randint(20, 30),
                         )
@@ -2941,6 +2942,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                             ref_path=ref_clip_path,
                             skip_frames=0,
                             n_subsample=1,
+                            neg_model=True,
                         )
                         logger.info(f"Docker VMAF calculation succeeded: {vmaf_score}")
                         used_docker_vmaf = True
