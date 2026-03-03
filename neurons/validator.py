@@ -7,6 +7,8 @@ import asyncio
 import traceback
 import pandas as pd
 import bittensor as bt
+import tempfile
+import aiohttp
 from loguru import logger
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
@@ -17,7 +19,6 @@ from services.video_scheduler.video_utils import get_trim_video_path, get_perumt
 from vidaio_subnet_core.utilities.uids import get_organic_forward_uids
 from vidaio_subnet_core.protocol import LengthCheckProtocol, TaskWarrantProtocol, TaskType
 from vidaio_subnet_core.validating.managing.sql_schemas import MinerMetadata, MinerPerformanceHistory, Base
-from services.scoring.server import download_video
 from sqlalchemy import desc, asc, func, select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta
@@ -140,6 +141,58 @@ class Validator(base.BaseValidator):
         
         logger.info("✅ Scheduler is ready! Proceeding with synthetic requests.")
 
+    async def download_video(video_url: str, verbose: bool) -> tuple[str, float]:
+        """
+        Download a video from the given URL and save it to a temporary file.
+
+        Args:
+            video_url (str): The URL of the video to download.
+            verbose (bool): Whether to show download progress.
+
+        Returns:
+            tuple[str, float]: A tuple containing the path to the downloaded video file
+                            and the time taken to download it.
+
+        Raises:
+            Exception: If the download fails or takes longer than the timeout.
+        """
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as vid_temp:
+                file_path = vid_temp.name  # Path to the temporary file
+            if verbose:
+                logger.info(f"Downloading video from {video_url} to {file_path}")
+
+            timeout = aiohttp.ClientTimeout(sock_connect=30, total=300)
+
+            start_time = time.time()  # Record start time
+
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(video_url) as response:
+                    if response.status != 200:
+                        raise Exception(f"Failed to download video. HTTP status: {response.status}")
+
+                    with open(file_path, "wb") as f:
+                        async for chunk in response.content.iter_chunked(2 * 1024 * 1024):
+                            f.write(chunk)
+
+            end_time = time.time()  # Record end time
+            download_time = end_time - start_time  # Calculate download duration
+
+            if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+                raise Exception(f"Download failed or file is empty: {file_path}")
+
+            if verbose:
+                logger.info(f"File successfully downloaded to: {file_path}")
+                logger.info(f"Download time: {download_time:.2f} seconds")
+
+            return file_path, download_time
+        except aiohttp.ServerTimeoutError:
+            raise Exception("Download failed: Server connection timed out")
+        except asyncio.TimeoutError:
+            raise Exception("Download timed out")
+        except aiohttp.ClientError as e:
+            raise Exception(f"Download failed due to a network error: {type(e).__name__}: {repr(e)}")
+    
     async def refresh_miner_manager(self, miner_uids: list[int]):
         if not miner_uids:
             return
