@@ -266,6 +266,10 @@ class Validator(base.BaseValidator):
         async def _run_upscaling():
             if not upscaling_miners:
                 return
+            
+            logger.info("🧩 Sleeping for 1 minute before starting upscaling epoch")
+            await asyncio.sleep(60)
+            
             logger.info(f"Sending LengthCheckProtocol requests to {len(upscaling_miners)} upscaling miners")
 
             upscaling_start_time = time.time()
@@ -294,7 +298,7 @@ class Validator(base.BaseValidator):
 
             logger.info(f"Sleeping for 1 minute before starting upscaling epoch")
             await asyncio.sleep(60)
-            
+
             await self.process_upscaling_miners(upscaling_miners_with_lengths, version)
 
             upscaling_processed_time = time.time() - upscaling_start_time
