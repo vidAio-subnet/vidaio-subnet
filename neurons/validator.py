@@ -615,8 +615,44 @@ class Validator(base.BaseValidator):
                 logger.warning(f"⚠️ Reference video file missing for video_id {video_id}: {reference_video_path}")
             reference_video_paths.append(reference_video_path)
 
+        import services.scoring.server
+        
+        # Concurrently start all downloads that have valid URLs
+        # (Those without valid URLs immediately return None)
+        download_tasks = []
+        for uid_val, response in zip(uids, responses):
+            url = response.miner_response.optimized_video_url
+            if not url or len(url) < 10:
+                logger.error(f"UID {uid_val}: invalid or missing distorted video download URL: {url}")
+                # Create a task that simply returns None
+                download_tasks.append(asyncio.create_task(asyncio.sleep(0, result=None)))
+            else:
+                logger.debug(f"UID {uid_val}: Queuing download for distorted video from {url}")
+                download_tasks.append(
+                    asyncio.create_task(services.scoring.server.download_video(url, verbose=True))
+                )
+        
+        # Wait for all downloads to finish
+        download_results = await asyncio.gather(*download_tasks, return_exceptions=True)
+        
+        # Process the results, handling any exceptions
+        distorted_file_paths = []
+        for uid_val, url, result in zip(uids, [r.miner_response.optimized_video_url for r in responses], download_results):
+            if isinstance(result, Exception):
+                logger.error(f"UID {uid_val}: Failed to download distorted video from {url} - {str(result)}")
+                distorted_file_paths.append(None)
+            elif result is None:
+                # Already logged in the loop above
+                distorted_file_paths.append(None)
+            elif isinstance(result, tuple) and len(result) >= 1:
+                distorted_file_paths.append(result[0])
+            else:
+                logger.error(f"UID {uid_val}: Unexpected result from download_video for {url} - {result}")
+                distorted_file_paths.append(None)
+
+
         batch_processed_time = time.time() - batch_start_time
-        logger.info(f"Completed compression gathering within {batch_processed_time:.2f} seconds")
+        logger.info(f"Completed compression gathering and downloading within {batch_processed_time:.2f} seconds")
 
         # Score in batches of 5
         score_batch_size = 5
@@ -625,6 +661,7 @@ class Validator(base.BaseValidator):
         for i in range(0, num_miners, score_batch_size):
             batch_uids = uids[i:i+score_batch_size]
             batch_responses = responses[i:i+score_batch_size]
+            batch_distorted_file_paths = distorted_file_paths[i:i+score_batch_size]
             batch_payload_urls = payload_urls[i:i+score_batch_size]
             batch_reference_paths = reference_video_paths[i:i+score_batch_size]
             batch_video_ids = video_ids[i:i+score_batch_size]
@@ -633,7 +670,8 @@ class Validator(base.BaseValidator):
             
             await self.score_compressions(
                 batch_uids, 
-                batch_responses, 
+                batch_responses,
+                batch_distorted_file_paths,
                 batch_payload_urls, 
                 batch_reference_paths, 
                 timestamp, 
@@ -645,6 +683,14 @@ class Validator(base.BaseValidator):
                 target_bitrate, 
                 round_id
             )
+            
+            # Cleanup downloaded distorted videos after scoring the batch
+            for path in batch_distorted_file_paths:
+                if path and os.path.exists(path):
+                    try:
+                        os.unlink(path)
+                    except Exception as e:
+                        logger.error(f"Error deleting distorted video file {path}: {e}")
             
             logger.info(f"Completed scoring compression batch {batch_uids} within {batch_processed_time:.2f} seconds")
             # await asyncio.sleep(sleep_time)
@@ -801,6 +847,7 @@ class Validator(base.BaseValidator):
         self,
         uids: list[int],
         responses: list[protocol.Synapse],
+        distorted_file_paths: list[str],
         payload_urls: list[str],
         reference_video_paths: list[str],
         timestamp: str,
@@ -822,7 +869,7 @@ class Validator(base.BaseValidator):
             "/score_compression_synthetics",
             json = {
                 "uids": uids,
-                "distorted_urls": distorted_urls,
+                "distorted_file_paths": distorted_file_paths,
                 "reference_paths": reference_video_paths,
                 "video_ids": video_ids,
                 "uploaded_object_names": uploaded_object_names,

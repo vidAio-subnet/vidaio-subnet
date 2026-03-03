@@ -63,9 +63,9 @@ class UpscalingScoringRequest(BaseModel):
 
 class CompressionScoringRequest(BaseModel):
     """
-    Request model for compression scoring. Contains URLs for distorted videos and the reference video path.
+    Request model for compression scoring. Contains paths for distorted videos and the reference video path.
     """
-    distorted_urls: List[str]
+    distorted_file_paths: List[Optional[str]]
     reference_paths: List[str]
     uids: List[int]
     video_ids: List[str]
@@ -2010,33 +2010,32 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
     vmaf_scores = []
     reasons = []
 
-    if len(request.reference_paths) != len(request.distorted_urls):
+    if len(request.reference_paths) != len(request.distorted_file_paths):
         raise HTTPException(
             status_code=400, 
-            detail="Number of reference paths must match number of distorted URLs"
+            detail="Number of reference paths must match number of distorted file paths"
         )
     
-    if len(request.uids) != len(request.distorted_urls):
+    if len(request.uids) != len(request.distorted_file_paths):
         raise HTTPException(
             status_code=400, 
-            detail="Number of UIDs must match number of distorted URLs"
+            detail="Number of UIDs must match number of distorted file paths"
         )
 
-    for idx, (ref_path, dist_url, uid, video_id, uploaded_object_name) in enumerate(zip(
+    for idx, (ref_path, dist_path, uid, video_id, uploaded_object_name) in enumerate(zip(
         request.reference_paths, 
-        request.distorted_urls, 
+        request.distorted_file_paths, 
         request.uids,
         request.video_ids,
         request.uploaded_object_names,
     )):
         try:
-            logger.info(f"🧩 Processing pair {idx+1}/{len(request.distorted_urls)}: UID {uid} 🧩")
+            logger.info(f"🧩 Processing pair {idx+1}/{len(request.distorted_file_paths)}: UID {uid} 🧩")
             
             uid_start_time = time.time()  # Start time for this UID
             vmaf_threshold = request.vmaf_thresholds[idx]
             
             ref_y4m_path = None
-            dist_path = None
             dist_y4m_path = None
 
             # Validate reference video using ffprobe (avoids AV1 warnings)
@@ -2077,37 +2076,24 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             ref_file_size = os.path.getsize(ref_path)
             logger.info(f"Reference video file size: {ref_file_size} bytes")
 
-            if len(dist_url) < 10:
-                logger.error(f"Wrong dist download URL: {dist_url}. Assigning score of 0.")
+            if not dist_path or not os.path.exists(dist_path):
+                logger.error(f"Distorted file path is missing or invalid: {dist_path}. Assigning score of 0.")
                 vmaf_scores.append(0.0)
                 compression_rates.append(0.9999)   # No compression achieved
                 final_scores.append(0.0)
-                reasons.append("Invalid download URL: the distorted video download URL must be at least 10 characters long.")
-                continue
-
-            try:
-                dist_path, download_time = await download_video(dist_url, request.verbose)
-            except Exception as e:
-                error_msg = f"Failed to download video from {dist_url}: {str(e)}"
-                logger.error(f"{error_msg}. Assigning score of 0.")
-                vmaf_scores.append(0.0)
-                compression_rates.append(0.9999)   # No compression achieved
-                final_scores.append(0.0)
-                reasons.append(error_msg)
+                reasons.append(f"Invalid or missing distorted video file")
                 continue
 
             step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 3. Downloaded distorted video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            logger.info(f"♎️ 3. Verified distorted video path in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Validate video using ffprobe (avoids AV1 warnings)
             if not is_valid_video(dist_path):
-                logger.error(f"Error opening distorted video file from {dist_url}. Assigning score of 0.")
+                logger.error(f"Error opening distorted video file from {dist_path}. Assigning score of 0.")
                 vmaf_scores.append(0.0)
                 compression_rates.append(0.9999)   # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("error opening distorted video file")
-                if dist_path and os.path.exists(dist_path):
-                    os.unlink(dist_path)
                 continue
 
             step_time = time.time() - uid_start_time
@@ -2293,8 +2279,6 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                     compression_rates.append(0.9999)
                     final_scores.append(0.0)
                     reasons.append(f"Color validation failed: {color_reason}")
-                    if dist_path and os.path.exists(dist_path):
-                        os.unlink(dist_path)
                     if dist_y4m_path and os.path.exists(dist_y4m_path):
                         os.unlink(dist_y4m_path)
                     continue
@@ -2312,8 +2296,6 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                     compression_rates.append(0.9999)
                     final_scores.append(0.0)
                     reasons.append(f"Chroma validation failed: {chroma_reason}")
-                    if dist_path and os.path.exists(dist_path):
-                        os.unlink(dist_path)
                     if dist_y4m_path and os.path.exists(dist_y4m_path):
                         os.unlink(dist_y4m_path)
                     continue
@@ -2351,7 +2333,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             logger.info(f"🛑 Processed one UID in {step_time:.2f} seconds.")
 
         except Exception as e:
-            error_msg = f"Failed to process video from {dist_url}: {str(e)}"
+            error_msg = f"Failed to process video from {dist_path}: {str(e)}"
             logger.error(f"{error_msg}. Assigning score of 0.")
             vmaf_scores.append(0.0)
             compression_rates.append(0.9999)   # No compression achieved
@@ -2365,8 +2347,6 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 os.unlink(ref_y4m_path)
             if dist_y4m_path and os.path.exists(dist_y4m_path):
                 os.unlink(dist_y4m_path)
-            if dist_path and os.path.exists(dist_path):
-                os.unlink(dist_path)
 
             # Delete the uploaded object
             storage_client.delete_file(uploaded_object_name)
@@ -2384,7 +2364,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
     #     logger.error(f"⚠️ Error during cleanup: {e}")
 
     processed_time = time.time() - start_time
-    logger.info(f"Completed batch scoring of {len(request.distorted_urls)} pairs within {processed_time:.2f} seconds")
+    logger.info(f"Completed batch scoring of {len(request.distorted_file_paths)} pairs within {processed_time:.2f} seconds")
     logger.info(f"🍉🍉🍉 Calculated final scores: {final_scores} 🍉🍉🍉")
     
     return CompressionScoringResponse(
