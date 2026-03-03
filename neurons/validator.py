@@ -201,7 +201,7 @@ class Validator(base.BaseValidator):
         task_warrant_synapse = TaskWarrantProtocol(version=version)
         
         task_warrant_responses = await self.dendrite.forward(
-            axons=axons, synapse=task_warrant_synapse, timeout=30
+            axons=axons, synapse=task_warrant_synapse, timeout=60
         )
         logger.info(f"💊 Received {len(task_warrant_responses)} responses from miners for TaskWarrantProtocol requests💊")
 
