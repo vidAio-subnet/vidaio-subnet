@@ -178,7 +178,7 @@ async def download_video(video_url: str, verbose: bool) -> tuple[str, float]:
         if verbose:
             logger.info(f"Downloading video from {video_url} to {file_path}")
 
-        timeout = aiohttp.ClientTimeout(sock_connect=30, total=60)
+        timeout = aiohttp.ClientTimeout(sock_connect=30, total=300)
 
         start_time = time.time()  # Record start time
 

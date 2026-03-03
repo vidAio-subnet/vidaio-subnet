@@ -621,9 +621,10 @@ class Validator(base.BaseValidator):
         semaphore = asyncio.Semaphore(15)
 
         async def _download_with_semaphore(uid_val, url_str):
+            logger.info(f"UID {uid_val}: Queuing download for distorted video from {url_str}")
             async with semaphore:
                 try:
-                    logger.info(f"UID {uid_val}: Queuing download for distorted video from {url_str}")
+                    logger.info(f"UID {uid_val}: Starting download for distorted video from {url_str}")
                     return await services.scoring.server.download_video(url_str, verbose=True)
                 except Exception as e:
                     return e
