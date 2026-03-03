@@ -21,7 +21,7 @@ from fastapi import FastAPI, HTTPException
 import torchvision.transforms as transforms
 from pieapp_metric import calculate_pieapp_score
 from vidaio_subnet_core.utilities.storage_client import storage_client
-from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video
+from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video, trim_video_select, vmaf_metric_ffmpeg, is_vmaf_ffmpeg_available
 from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
 from scoring_function import calculate_compression_score
 
@@ -40,6 +40,9 @@ VMAF_THRESHOLD = CONFIG.score.vmaf_threshold
 PIEAPP_SAMPLE_COUNT = CONFIG.score.pieapp_sample_count
 PIEAPP_THRESHOLD = CONFIG.score.pieapp_threshold
 VMAF_SAMPLE_COUNT = CONFIG.score.vmaf_sample_count
+
+# Check if vmaf_ffmpeg Docker image with libvmaf_cuda is available
+VMAF_FFMPEG_AVAILABLE = is_vmaf_ffmpeg_available()
 
 class UpscalingScoringRequest(BaseModel):
     """
@@ -539,6 +542,275 @@ def validate_chroma_quality_on_frames(ref_frames, dist_frames, threshold=0.7):
 
     except Exception as e:
         logger.error(f"Error validating chroma quality: {e}")
+        return False, f"Error validating chroma: {str(e)}"
+
+
+def _get_signalstats(video_path, n_subsample=1, start_time=None, duration=None, max_frames=30):
+    """
+    Run ffmpeg signalstats filter on a video and return per-frame statistics.
+    Extracts YAVG (luma average) and SATAVG (saturation average) per frame
+    directly from the MP4 — no Y4M conversion needed.
+
+    Uses CUDA hardware-accelerated decoding when available, falling back to
+    CPU if GPU decode fails. Uses metadata=mode=print to ensure stats are
+    printed to stderr.
+
+    FFmpeg processing is bounded by max_frames — FFmpeg stops decoding after
+    max_frames frames, so even hour-long videos are fast.
+
+    Args:
+        video_path: Path to input video
+        n_subsample: Analyze every Nth frame (1 = all frames, 5 = every 5th frame)
+        start_time: Optional start time in seconds (analyze from this point)
+        duration: Optional duration in seconds (analyze this many seconds)
+        max_frames: Maximum number of frames FFmpeg will decode (default 30).
+                    FFmpeg stops after this many frames via -frames:v.
+
+    Returns:
+        list of dicts, each with at least 'YAVG' and 'SATAVG' keys.
+    """
+    # Build filter chain
+    if n_subsample > 1:
+        vf = f"select='not(mod(n\\,{n_subsample}))',signalstats,metadata=mode=print"
+    else:
+        vf = "signalstats,metadata=mode=print"
+
+    # Build seek/duration args (placed before -i for fast input seeking)
+    seek_args = []
+    if start_time is not None:
+        seek_args += ["-ss", str(start_time)]
+    if duration is not None:
+        seek_args += ["-t", str(duration)]
+
+    # -frames:v tells FFmpeg to stop after processing this many frames
+    frame_limit_args = ["-frames:v", str(max_frames)] if max_frames else []
+
+    # Try GPU-accelerated decoding first (NVDEC)
+    cmd_gpu = [
+        "ffmpeg",
+        "-hwaccel", "cuda",
+    ] + seek_args + [
+        "-i", video_path,
+        "-vf", vf,
+    ] + frame_limit_args + [
+        "-f", "null", "-",
+        "-hide_banner", "-loglevel", "info",
+    ]
+
+    result = subprocess.run(cmd_gpu, capture_output=True, text=True, timeout=120)
+
+    # If GPU decode failed, fall back to CPU
+    if result.returncode != 0:
+        logger.info(f"GPU decode failed for signalstats, falling back to CPU decode")
+        cmd_cpu = [
+            "ffmpeg",
+        ] + seek_args + [
+            "-i", video_path,
+            "-vf", vf,
+        ] + frame_limit_args + [
+            "-f", "null", "-",
+            "-hide_banner", "-loglevel", "info",
+        ]
+        result = subprocess.run(cmd_cpu, capture_output=True, text=True, timeout=120)
+
+    frames = []
+    current_frame = {}
+
+    for line in result.stderr.split('\n'):
+        line = line.strip()
+
+        # New frame boundary: "[Parsed_metadata_1 @ 0x...] frame:N pts:M ..."
+        # Lines are prefixed by FFmpeg, so we can't use startswith('frame:')
+        if 'frame:' in line and 'pts:' in line:
+            # Save the previous frame if it has the keys we need
+            if current_frame and 'SATAVG' in current_frame and 'YAVG' in current_frame:
+                frames.append(current_frame)
+            current_frame = {}
+        elif 'lavfi.signalstats.' in line:
+            # Parse: "lavfi.signalstats.SATAVG=29.800000"
+            parts = line.split('lavfi.signalstats.', 1)
+            if len(parts) == 2:
+                key_val = parts[1]
+                if '=' in key_val:
+                    key, val = key_val.split('=', 1)
+                    try:
+                        current_frame[key] = float(val)
+                    except ValueError:
+                        pass
+
+    # Don't forget the last frame
+    if current_frame and 'SATAVG' in current_frame and 'YAVG' in current_frame:
+        frames.append(current_frame)
+
+    if not frames:
+        logger.warning(
+            f"signalstats returned 0 frames for {video_path}. "
+            f"FFmpeg returncode={result.returncode}, stderr length={len(result.stderr)}"
+        )
+    else:
+        logger.info(f"signalstats collected {len(frames)} frames for {os.path.basename(video_path)}")
+
+    return frames
+
+
+def validate_color_channels_ffmpeg(
+    ref_stats,
+    dist_stats,
+    max_gray_ratio=0.50,
+    brightness_threshold=20.0,
+    ref_sat_threshold=6.0,
+    dist_sat_threshold=4.0,
+    min_checked_frames=3,
+):
+    """
+    FFmpeg-based color validation using pre-computed signalstats.
+    Detects grayscale conversion by comparing per-frame saturation.
+
+    Uses the same logic as validate_color_channels_on_frames:
+      - Skip dark reference frames (YAVG < brightness_threshold)
+      - Skip naturally grayscale reference frames (SATAVG < ref_sat_threshold)
+      - Count distorted frames with low saturation (SATAVG < dist_sat_threshold)
+      - Fail if too many distorted frames lost color
+
+    Args:
+        ref_stats: Pre-computed signalstats for reference video (from _get_signalstats)
+        dist_stats: Pre-computed signalstats for distorted video (from _get_signalstats)
+        max_gray_ratio: Max fraction of frames allowed with reduced color
+        brightness_threshold: Min YAVG to consider a ref frame
+        ref_sat_threshold: Min ref SATAVG to consider frame as colorful
+        dist_sat_threshold: Max dist SATAVG to classify as gray
+        min_checked_frames: Min evaluated frames for strict ratio validation
+
+    Returns:
+        tuple: (is_valid, reason)
+    """
+    try:
+
+        if not ref_stats or not dist_stats:
+            return False, "No frames available for color validation (signalstats)"
+
+        checked_frames = 0
+        low_color_frames = 0
+
+        for i, (ref_s, dist_s) in enumerate(zip(ref_stats, dist_stats)):
+            ref_yavg = ref_s.get('YAVG', 0)
+            ref_satavg = ref_s.get('SATAVG', 0)
+            dist_satavg = dist_s.get('SATAVG', 0)
+
+            # Skip very dark reference frames
+            if ref_yavg < brightness_threshold:
+                continue
+
+            # Skip naturally grayscale reference frames
+            if ref_satavg < ref_sat_threshold:
+                continue
+
+            checked_frames += 1
+
+            # Count distorted frames with very low saturation
+            if dist_satavg < dist_sat_threshold:
+                low_color_frames += 1
+                logger.debug(
+                    f"Frame {i}: reduced saturation detected "
+                    f"(ref_sat={ref_satavg:.2f}, dist_sat={dist_satavg:.2f})"
+                )
+
+        if checked_frames == 0:
+            return True, (
+                "No reference frames with sufficient color information were found; "
+                "color validation was skipped"
+            )
+
+        low_color_ratio = low_color_frames / checked_frames
+
+        logger.info(
+            "Color validation (ffmpeg) summary: "
+            f"{low_color_frames}/{checked_frames} frames with reduced saturation "
+            f"({low_color_ratio:.2%}); allowed maximum {max_gray_ratio:.2%}"
+        )
+
+        if low_color_ratio > max_gray_ratio:
+            return False, (
+                f"Color preservation failed: {low_color_ratio:.1%} of evaluated frames "
+                f"exhibit reduced saturation (>{max_gray_ratio:.0%} allowed)"
+            )
+
+        return True, (
+            f"Color preservation validated: {low_color_ratio:.1%} of evaluated frames "
+            f"exhibit reduced saturation (≤{max_gray_ratio:.0%} allowed)"
+        )
+
+    except Exception as e:
+        logger.error(f"Error during ffmpeg color validation: {e}")
+        return False, f"Error during color validation: {str(e)}"
+
+
+def validate_chroma_quality_ffmpeg(ref_stats, dist_stats, threshold=0.7):
+    """
+    FFmpeg-based chroma validation using pre-computed signalstats.
+    Detects partial UV channel reduction by comparing saturation energy.
+
+    Uses SATAVG² as a proxy for chroma energy (var(U) + var(V)),
+    then computes the ratio: dist_energy / ref_energy per frame.
+
+    Corner cases handled:
+      - Ref frames with near-zero saturation (naturally B&W) are skipped
+      - If all frames are low-energy, validation passes (content is valid B&W)
+
+    Args:
+        ref_stats: Pre-computed signalstats for reference video (from _get_signalstats)
+        dist_stats: Pre-computed signalstats for distorted video (from _get_signalstats)
+        threshold: Minimum acceptable chroma energy ratio (0.0-1.0)
+
+    Returns:
+        tuple: (is_valid, reason)
+    """
+    try:
+        if not ref_stats or not dist_stats:
+            return False, "No frames available for chroma validation (signalstats)"
+
+        if abs(len(ref_stats) - len(dist_stats)) > FRAME_TOLERANCE:
+            return False, (
+                f"Frame count mismatch between reference and distorted: "
+                f"{len(ref_stats)} vs {len(dist_stats)}"
+            )
+
+        chroma_ratios = []
+        low_energy_threshold = 1.0  # Min SATAVG to consider (filters flat/black frames)
+
+        for i, (ref_s, dist_s) in enumerate(zip(ref_stats, dist_stats)):
+            ref_satavg = ref_s.get('SATAVG', 0)
+            dist_satavg = dist_s.get('SATAVG', 0)
+
+            # Skip frames with very low saturation in reference (B&W or flat content)
+            if ref_satavg < low_energy_threshold:
+                logger.debug(f"Frame {i} has low ref saturation ({ref_satavg:.3f}), skipping")
+                continue
+
+            # Use SATAVG² as proxy for chroma energy (analogous to var(U) + var(V))
+            ref_energy = ref_satavg ** 2
+            dist_energy = dist_satavg ** 2
+            chroma_ratio = dist_energy / ref_energy
+            chroma_ratios.append(chroma_ratio)
+            logger.debug(f"Frame {i} chroma ratio: {chroma_ratio:.3f}")
+
+        if not chroma_ratios:
+            logger.info("All frames have low saturation (e.g., B&W content), skipping chroma validation")
+            return True, "Chroma validation skipped (low-saturation content)"
+
+        avg_chroma_ratio = float(np.mean(chroma_ratios))
+        logger.info(f"Average chroma quality ratio (ffmpeg): {avg_chroma_ratio:.3f}, Threshold: {threshold}")
+
+        if avg_chroma_ratio < threshold:
+            return False, (
+                f"Chroma quality too low: {avg_chroma_ratio:.3f} < {threshold} "
+                f"(UV channels reduced/degraded)"
+            )
+
+        return True, f"Chroma quality validated: {avg_chroma_ratio:.3f}"
+
+    except Exception as e:
+        logger.error(f"Error validating chroma quality (ffmpeg): {e}")
         return False, f"Error validating chroma: {str(e)}"
 
 # Calculate ClipIQA+ inspired score
@@ -1518,16 +1790,6 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 5. Validated encoding settings ({encoding_msg}) in {step_time:.2f} seconds.")
 
-            random_frames = sorted(random.sample(range(ref_total_frames), min(ref_total_frames, VMAF_SAMPLE_COUNT)))
-            logger.info(f"Randomly selected {VMAF_SAMPLE_COUNT} frames for VMAF score: frame list: {random_frames}")
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 6. Selected random frames for VMAF in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
-            ref_y4m_path = convert_mp4_to_y4m(ref_path, random_frames)
-            logger.info("The reference video has been successfully converted to Y4M format.")
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 7. Converted reference video to Y4M in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
             if len(dist_url) < 10:
                 logger.info(f"Wrong dist download URL: {dist_url}. Assigning score of 0.")
                 vmaf_scores.append(0.0)
@@ -1539,14 +1801,14 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 continue
 
             step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 8. Validated distorted video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            logger.info(f"♎️ 6. Validated distorted video in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Get frame count using ffprobe (no AV1 warnings)
             dist_total_frames = get_frame_count(dist_path)
 
             logger.info(f"Distorted video has {dist_total_frames} frames.")
             step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 9. Retrieved distorted video frame count in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            logger.info(f"♎️ 7. Retrieved distorted video frame count in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             if abs(dist_total_frames - ref_total_frames) > FRAME_TOLERANCE:
                 logger.info(
@@ -1562,15 +1824,48 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                     os.unlink(dist_path)
                 continue
 
-            # Calculate VMAF
+            # Calculate VMAF — Docker-first with Y4M fallback
+            # ref_clip_vmaf_path = None
+            # dist_clip_vmaf_path = None
             try:
                 vmaf_start = time.time()
-                vmaf_score = calculate_vmaf(ref_y4m_path, dist_path, random_frames, neg_model=False)
+
+                # Trim 1-second clips for VMAF calculation (frame-accurate)
+                ref_fps = get_video_fps(ref_path) or 30.0
+                # vmaf_num_frames = int(ref_fps)  # 1 second worth of frames
+                # max_start_frame = max(0, ref_total_frames - vmaf_num_frames)
+                # vmaf_start_frame = random.randint(0, max_start_frame)
+
+                # ref_clip_vmaf_path = trim_video_select(ref_path, vmaf_start_frame, vmaf_num_frames)
+                # dist_clip_vmaf_path = trim_video_select(dist_path, vmaf_start_frame, vmaf_num_frames)
+                # logger.info(f"Trimmed {vmaf_num_frames} frames starting at frame {vmaf_start_frame} for VMAF calculation")
+
+                if VMAF_FFMPEG_AVAILABLE:
+                    try:
+                        logger.info("Attempting Docker-based VMAF calculation (libvmaf_cuda)...")
+                        vmaf_score = vmaf_metric_ffmpeg(
+                            dist_path=dist_path,
+                            ref_path=ref_path,
+                            skip_frames=np.random.randint(0, ref_fps),
+                            n_subsample=np.random.randint(20, 30),
+                        )
+                        logger.info(f"Docker VMAF calculation succeeded: {vmaf_score}")
+                    except Exception as docker_err:
+                        logger.warning(f"Docker VMAF failed, falling back to Y4M: {docker_err}")
+                        vmaf_score = None  # trigger fallback below
+
+                if not VMAF_FFMPEG_AVAILABLE or vmaf_score is None:
+                    # Fallback: Y4M-based VMAF calculation
+                    logger.info("Using Y4M-based VMAF calculation (fallback)...")
+                    random_frames = sorted(random.sample(range(ref_total_frames), min(ref_total_frames, VMAF_SAMPLE_COUNT)))
+                    ref_y4m_path = convert_mp4_to_y4m(ref_path, random_frames)
+                    vmaf_score = calculate_vmaf(ref_y4m_path, dist_path, random_frames, neg_model=False)
+
                 vmaf_calc_time = time.time() - vmaf_start
                 logger.info(f"☣️☣️ VMAF calculation took {vmaf_calc_time:.2f} seconds.")
 
                 step_time = time.time() - uid_start_time
-                logger.info(f"♎️ 10. Completed VMAF calculation in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+                logger.info(f"♎️ 8. Completed VMAF calculation in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
                 if vmaf_score is not None:
                     vmaf_scores.append(vmaf_score)
@@ -1587,6 +1882,13 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 reasons.append("failed to calculate VMAF score due to video dimension mismatch")
                 logger.error(f"Error calculating VMAF score: {e}")
                 continue
+            finally:
+                pass
+                # Clean up trimmed VMAF clips
+                # if ref_clip_vmaf_path and os.path.exists(ref_clip_vmaf_path):
+                #     os.unlink(ref_clip_vmaf_path)
+                # if dist_clip_vmaf_path and os.path.exists(dist_clip_vmaf_path):
+                #     os.unlink(dist_clip_vmaf_path)
 
             if vmaf_score / 100 < VMAF_THRESHOLD:
                 logger.info(f"VMAF score is too low, giving zero score, current VMAF score: {vmaf_score}")
@@ -1864,22 +2166,51 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 compression_rate = 1.0
                 logger.info("Reference file size is 0 or distorted file size >= reference, setting compression rate to 1.0")
 
-            # Sample frames for VMAF calculation
-            random_frames = sorted(random.sample(range(ref_total_frames), min(ref_total_frames, VMAF_SAMPLE_COUNT)))
-            logger.info(f"Randomly selected {VMAF_SAMPLE_COUNT} frames for VMAF score: frame list: {random_frames}")
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 6. Selected random frames for VMAF in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
-            ref_y4m_path = convert_mp4_to_y4m(ref_path, random_frames)
-            logger.info("The reference video has been successfully converted to Y4M format.")
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 7. Converted reference video to Y4M in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
-            # Calculate VMAF and get Y4M paths for validation
+            # Calculate VMAF — Docker-first with Y4M fallback
+            # Docker path: FFmpeg signalstats for color/chroma validation (no Y4M needed)
+            # Fallback path: Y4M-based VMAF + Y4M-based color/chroma validation
+            # ref_clip_vmaf_path = None
+            # dist_clip_vmaf_path = None
             dist_y4m_path = None
+            used_docker_vmaf = False
             try:
                 vmaf_start = time.time()
-                vmaf_score, dist_y4m_path = calculate_vmaf(ref_y4m_path, dist_path, random_frames, neg_model=True, return_y4m_path=True)
+                vmaf_score = None
+
+                # Trim 1-second clips for VMAF calculation (frame-accurate)
+                ref_fps_val = get_video_fps(ref_path) or 30.0
+                vmaf_num_frames = int(ref_fps_val)  # 1 second worth of frames
+                max_start_frame = max(0, ref_total_frames - vmaf_num_frames)
+                vmaf_start_frame = random.randint(0, max_start_frame)
+
+                # ref_clip_vmaf_path = trim_video_select(ref_path, vmaf_start_frame, vmaf_num_frames)
+                # dist_clip_vmaf_path = trim_video_select(dist_path, vmaf_start_frame, vmaf_num_frames)
+                # logger.info(f"Trimmed {vmaf_num_frames} frames starting at frame {vmaf_start_frame} for VMAF calculation")
+
+                if VMAF_FFMPEG_AVAILABLE:
+                    try:
+                        logger.info("Attempting Docker-based VMAF calculation (libvmaf_cuda)...")
+                        vmaf_score = vmaf_metric_ffmpeg(
+                            dist_path=dist_path,
+                            ref_path=ref_path,
+                            neg_model=True,
+                            # skip_frames=np.random.randint(0, ref_fps_val),
+                            # n_subsample=np.random.randint(20, 30),
+                        )
+                        logger.info(f"Docker VMAF calculation succeeded: {vmaf_score}")
+                        used_docker_vmaf = True
+                    except Exception as docker_err:
+                        logger.warning(f"Docker VMAF failed, falling back to Y4M: {docker_err}")
+                        vmaf_score = None
+
+                if vmaf_score is None:
+                    # Fallback: Y4M-based VMAF calculation
+                    logger.info("Using Y4M-based VMAF calculation (fallback)...")
+                    random_frames = sorted(random.sample(range(ref_total_frames), min(ref_total_frames, VMAF_SAMPLE_COUNT)))
+                    ref_y4m_path = convert_mp4_to_y4m(ref_path, random_frames)
+                    logger.info("The reference video has been successfully converted to Y4M format.")
+                    vmaf_score, dist_y4m_path = calculate_vmaf(ref_y4m_path, dist_path, random_frames, neg_model=True, return_y4m_path=True)
+
                 vmaf_calc_time = time.time() - vmaf_start
                 logger.info(f"☣️☣️ VMAF calculation took {vmaf_calc_time:.2f} seconds.")
 
@@ -1901,52 +2232,95 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 if dist_y4m_path and os.path.exists(dist_y4m_path):
                     os.unlink(dist_y4m_path)
                 continue
-            
-            # Now reuse the Y4M files for color validation (no redundant conversion!)
-            # Extract frames for color validation from Y4M files
-            logger.info(f"Extracting frames from Y4M for color validation (reusing VMAF Y4M files)")
-            dist_frames = extract_frames_from_y4m(dist_y4m_path)
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 8.5. Extracted {len(dist_frames)} frames from Y4M for color validation in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            finally:
+                pass
+                # Clean up trimmed VMAF clips — signalstats runs on originals, not clips
+                # if ref_clip_vmaf_path and os.path.exists(ref_clip_vmaf_path):
+                #     os.unlink(ref_clip_vmaf_path)
+                # if dist_clip_vmaf_path and os.path.exists(dist_clip_vmaf_path):
+                #     os.unlink(dist_clip_vmaf_path)
 
-            # Extract reference frames from Y4M for chroma quality comparison
-            ref_frames = extract_frames_from_y4m(ref_y4m_path)
+            # === COLOR / CHROMA VALIDATION ===
+            if used_docker_vmaf:
+                # Docker path: use FFmpeg signalstats on original videos with time bounds (no Y4M needed)
+                logger.info("Using FFmpeg signalstats for color/chroma validation (no Y4M conversion)")
 
-            # Validate color channels (grayscale check)
-            color_valid, color_reason = validate_color_channels_on_frames(ref_frames, dist_frames)
-            if not color_valid:
-                logger.error(f"UID {uid}: {color_reason}")
-                compression_rates.append(0.9999) 
-                final_scores.append(0.0)
-                reasons.append(f"Color validation failed: {color_reason}")
-                if dist_path and os.path.exists(dist_path):
-                    os.unlink(dist_path)
-                if dist_y4m_path and os.path.exists(dist_y4m_path):
-                    os.unlink(dist_y4m_path)
-                continue
-            
-            logger.info(f"✅ UID {uid}: Color channels validated - {color_reason}")
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 8.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+                # Compute signalstats once on original videos (not trimmed clips — avoids keyframe issues)
+                # Convert frame-based position back to time for signalstats
+                signalstats_start_time = vmaf_start_frame / ref_fps_val
+                signalstats_duration = vmaf_num_frames / ref_fps_val
+                ref_signal_stats = _get_signalstats(ref_path, start_time=signalstats_start_time, duration=signalstats_duration)
+                dist_signal_stats = _get_signalstats(dist_path, start_time=signalstats_start_time, duration=signalstats_duration)
 
-            # Validate chroma quality (prevents partial UV reduction)
-            chroma_valid, chroma_reason = validate_chroma_quality_on_frames(
-                ref_frames, dist_frames, threshold=0.7
-            )
-            if not chroma_valid:
-                logger.error(f"UID {uid}: {chroma_reason}")
-                compression_rates.append(0.9999) 
-                final_scores.append(0.0)
-                reasons.append(f"Chroma validation failed: {chroma_reason}")
-                if dist_path and os.path.exists(dist_path):
-                    os.unlink(dist_path)
-                if dist_y4m_path and os.path.exists(dist_y4m_path):
-                    os.unlink(dist_y4m_path)
-                continue
-            
-            logger.info(f"✅ UID {uid}: Chroma quality validated - {chroma_reason}")
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 8.7. Validated chroma quality in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+                # Color validation (grayscale detection)
+                color_valid, color_reason = validate_color_channels_ffmpeg(ref_signal_stats, dist_signal_stats)
+                if not color_valid:
+                    logger.error(f"UID {uid}: {color_reason}")
+                    compression_rates.append(0.9999)
+                    final_scores.append(0.0)
+                    reasons.append(f"Color validation failed: {color_reason}")
+                    continue
+
+                logger.info(f"✅ UID {uid}: Color channels validated (ffmpeg) - {color_reason}")
+                step_time = time.time() - uid_start_time
+                logger.info(f"♎️ 8.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+                # Chroma validation (UV reduction detection)
+                chroma_valid, chroma_reason = validate_chroma_quality_ffmpeg(ref_signal_stats, dist_signal_stats, threshold=0.7)
+                if not chroma_valid:
+                    logger.error(f"UID {uid}: {chroma_reason}")
+                    compression_rates.append(0.9999)
+                    final_scores.append(0.0)
+                    reasons.append(f"Chroma validation failed: {chroma_reason}")
+                    continue
+
+                logger.info(f"✅ UID {uid}: Chroma quality validated (ffmpeg) - {chroma_reason}")
+                step_time = time.time() - uid_start_time
+                logger.info(f"♎️ 8.7. Validated chroma quality in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            else:
+                # Fallback path: use Y4M-based validation (existing approach)
+                logger.info("Extracting frames from Y4M for color validation (reusing VMAF Y4M files)")
+                dist_frames = extract_frames_from_y4m(dist_y4m_path)
+                step_time = time.time() - uid_start_time
+                logger.info(f"♎️ 8.5. Extracted {len(dist_frames)} frames from Y4M for color validation in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+                ref_frames = extract_frames_from_y4m(ref_y4m_path)
+
+                # Validate color channels (grayscale check)
+                color_valid, color_reason = validate_color_channels_on_frames(ref_frames, dist_frames)
+                if not color_valid:
+                    logger.error(f"UID {uid}: {color_reason}")
+                    compression_rates.append(0.9999)
+                    final_scores.append(0.0)
+                    reasons.append(f"Color validation failed: {color_reason}")
+                    if dist_path and os.path.exists(dist_path):
+                        os.unlink(dist_path)
+                    if dist_y4m_path and os.path.exists(dist_y4m_path):
+                        os.unlink(dist_y4m_path)
+                    continue
+
+                logger.info(f"✅ UID {uid}: Color channels validated - {color_reason}")
+                step_time = time.time() - uid_start_time
+                logger.info(f"♎️ 8.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+                # Validate chroma quality (prevents partial UV reduction)
+                chroma_valid, chroma_reason = validate_chroma_quality_on_frames(
+                    ref_frames, dist_frames, threshold=0.7
+                )
+                if not chroma_valid:
+                    logger.error(f"UID {uid}: {chroma_reason}")
+                    compression_rates.append(0.9999)
+                    final_scores.append(0.0)
+                    reasons.append(f"Chroma validation failed: {chroma_reason}")
+                    if dist_path and os.path.exists(dist_path):
+                        os.unlink(dist_path)
+                    if dist_y4m_path and os.path.exists(dist_y4m_path):
+                        os.unlink(dist_y4m_path)
+                    continue
+
+                logger.info(f"✅ UID {uid}: Chroma quality validated - {chroma_reason}")
+                step_time = time.time() - uid_start_time
+                logger.info(f"♎️ 8.7. Validated chroma quality in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Calculate compression score using the proper formula
             # Check scoring function for details
@@ -2228,22 +2602,18 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
 
         # === MAIN SCORING LOGIC ===
         try:
-            # Calculate 0.5 second clip duration
-            clip_duration = 0.25  # seconds
-            
-            # Calculate maximum start time to ensure we don't exceed video length
-            ref_duration = ref_total_frames / ref_fps
-            max_start_time = max(0, ref_duration - clip_duration)
-            start_time = random.uniform(0, max_start_time)
-            
-            logger.info(f"Creating 0.5-second clips starting from {start_time:.2f} seconds")
-            
-            # Create 0.5-second reference clip
-            ref_clip_path = trim_video(ref_path, start_time, clip_duration)
+            # Calculate 0.25 second clip using frame-accurate extraction
+            clip_num_frames = max(1, int(ref_fps * 0.25))  # 0.25 seconds worth of frames
+            max_start_frame = max(0, ref_total_frames - clip_num_frames)
+            start_frame = random.randint(0, max_start_frame)
+
+            logger.info(f"Creating {clip_num_frames}-frame clips starting at frame {start_frame}")
+
+            # Frame-accurate extraction for both ref and dist
+            ref_clip_path = trim_video_select(ref_path, start_frame, clip_num_frames)
             logger.info(f"Created reference clip: {ref_clip_path}")
-            
-            # Create 0.5-second distorted clip
-            dist_clip_path = trim_video(dist_path, start_time, clip_duration)
+
+            dist_clip_path = trim_video_select(dist_path, start_frame, clip_num_frames)
             logger.info(f"Created distorted clip: {dist_clip_path}")
             
             # Upscale the reference clip
@@ -2260,18 +2630,31 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             logger.info(f"Distorted ClipIQ score: {dist_clipiqa_score:.4f}")
             logger.info(f"Upscaled reference ClipIQ score: {ref_upscaled_clipiqa_score:.4f}")
             
-            # Create Y4M files for VMAF calculation
-            logger.info("Creating Y4M files for VMAF calculation...")
-            # Get the number of frames in the clips for Y4M conversion using ffprobe
-            ref_clip_frames = get_frame_count(ref_upscaled_clip_path)
-
-            random_frames = sorted(random.sample(range(ref_clip_frames), min(ref_clip_frames, VMAF_SAMPLE_COUNT)))
-            
-            ref_y4m_path = convert_mp4_to_y4m(ref_upscaled_clip_path, random_frames)
-            
-            # Calculate VMAF score
+            # Calculate VMAF — Docker-first with Y4M fallback
             logger.info("Calculating VMAF score...")
-            vmaf_score = calculate_vmaf(ref_y4m_path, dist_clip_path, random_frames, neg_model=False)
+            vmaf_score = None
+
+            if VMAF_FFMPEG_AVAILABLE and ref_upscaled_clip_path and dist_clip_path:
+                try:
+                    logger.info("Attempting Docker-based VMAF calculation (libvmaf_cuda)...")
+                    vmaf_score = vmaf_metric_ffmpeg(
+                        dist_path=dist_clip_path,
+                        ref_path=ref_upscaled_clip_path,
+                        skip_frames=0,
+                        n_subsample=1,
+                    )
+                    logger.info(f"Docker VMAF calculation succeeded: {vmaf_score}")
+                except Exception as docker_err:
+                    logger.warning(f"Docker VMAF failed, falling back to Y4M: {docker_err}")
+                    vmaf_score = None
+
+            if vmaf_score is None:
+                # Fallback: Y4M-based VMAF calculation
+                logger.info("Using Y4M-based VMAF calculation (fallback)...")
+                ref_clip_frames = get_frame_count(ref_upscaled_clip_path)
+                random_frames = sorted(random.sample(range(ref_clip_frames), min(ref_clip_frames, VMAF_SAMPLE_COUNT)))
+                ref_y4m_path = convert_mp4_to_y4m(ref_upscaled_clip_path, random_frames)
+                vmaf_score = calculate_vmaf(ref_y4m_path, dist_clip_path, random_frames, neg_model=False)
             
             if vmaf_score is None:
                 vmaf_score = 0.0
@@ -2515,55 +2898,67 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 compression_rate = 1.0
                 logger.info("Reference file size is 0 or distorted file size >= reference, setting compression rate to 1.0")
 
-            # Calculate 0.5 second clip duration for VMAF calculation
-            clip_duration = 0.5  # seconds
-            
-            # Get video FPS to calculate frame-based timing using ffprobe (no AV1 warnings)
+            # Calculate 0.5 second clip using frame-accurate extraction
             ref_fps = get_video_fps(ref_path)
             logger.info(f"Reference video FPS: {ref_fps}")
-            
-            # Calculate maximum start time to ensure we don't exceed video length
-            ref_duration = ref_total_frames / ref_fps
-            max_start_time = max(0, ref_duration - clip_duration)
-            start_time = random.uniform(0, max_start_time)
-            
-            logger.info(f"Creating 0.5-second clips starting from {start_time:.2f} seconds")
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 6. Selected random start time for video chunks in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-            # Create 0.5-second reference clip
-            # ref_clip_path = trim_video(ref_path, start_time, clip_duration)
-            ref_clip_path = ref_path
+            clip_num_frames = max(1, int(ref_fps * 0.5))  # 0.5 seconds worth of frames
+            max_start_frame = max(0, ref_total_frames - clip_num_frames)
+            start_frame = random.randint(0, max_start_frame)
+
+            logger.info(f"Creating {clip_num_frames}-frame clips starting at frame {start_frame}")
+            step_time = time.time() - uid_start_time
+            logger.info(f"♎️ 6. Selected random start frame for video chunks in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+            # Create reference clip (frame-accurate)
+            ref_clip_path = trim_video_select(ref_path, start_frame, clip_num_frames)
             logger.info(f"Created reference clip: {ref_clip_path}")
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 7. Created reference video clip in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-            # Create 0.5-second distorted clip
-            # dist_clip_path = trim_video(dist_path, start_time, clip_duration)
-            dist_clip_path = dist_path
+            # Create distorted clip (frame-accurate)
+            dist_clip_path = trim_video_select(dist_path, start_frame, clip_num_frames)
             logger.info(f"Created distorted clip: {dist_clip_path}")
             step_time = time.time() - uid_start_time
             logger.info(f"♎️ 8. Created distorted video clip in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-            # Get the number of frames in the clips for Y4M conversion
-            
-            # ref_clip_frames = get_frame_count(ref_clip_path)
-            ref_clip_frames = ref_total_frames
-            logger.info(f"Reference clip has {ref_clip_frames} frames.")
-            
-            
-            # Ensure we don't sample more frames than available
-            random_frames = sorted(random.sample(range(ref_clip_frames), min(VMAF_SAMPLE_COUNT, ref_clip_frames)))
-            ref_y4m_path = convert_mp4_to_y4m(ref_clip_path, random_frames)
-            logger.info("The reference video clip has been successfully converted to Y4M format.")
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 9. Converted reference video clip to Y4M in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
-            # Calculate VMAF on chunked videos and get Y4M paths for validation
+            # Calculate VMAF — Docker-first with Y4M fallback
+            # Docker path: FFmpeg signalstats for color/chroma validation (no Y4M needed)
+            # Fallback path: Y4M-based VMAF + Y4M-based color/chroma validation
             dist_y4m_path = None
+            used_docker_vmaf = False
             try:
                 vmaf_start = time.time()
-                vmaf_score, dist_y4m_path = calculate_vmaf(ref_y4m_path, dist_clip_path, random_frames, neg_model=True, return_y4m_path=True)
+                vmaf_score = None
+
+                if VMAF_FFMPEG_AVAILABLE and ref_clip_path and dist_clip_path:
+                    try:
+                        logger.info("Attempting Docker-based VMAF calculation (libvmaf_cuda)...")
+                        vmaf_score = vmaf_metric_ffmpeg(
+                            dist_path=dist_clip_path,
+                            ref_path=ref_clip_path,
+                            skip_frames=0,
+                            n_subsample=1,
+                            neg_model=True,
+                        )
+                        logger.info(f"Docker VMAF calculation succeeded: {vmaf_score}")
+                        used_docker_vmaf = True
+                    except Exception as docker_err:
+                        logger.warning(f"Docker VMAF failed, falling back to Y4M: {docker_err}")
+                        vmaf_score = None
+
+                if vmaf_score is None:
+                    # Fallback: Y4M-based VMAF calculation
+                    logger.info("Using Y4M-based VMAF calculation (fallback)...")
+                    ref_clip_frames = get_frame_count(ref_clip_path)
+                    logger.info(f"Reference clip has {ref_clip_frames} frames.")
+                    random_frames = sorted(random.sample(range(ref_clip_frames), min(VMAF_SAMPLE_COUNT, ref_clip_frames)))
+                    ref_y4m_path = convert_mp4_to_y4m(ref_clip_path, random_frames)
+                    logger.info("The reference video clip has been successfully converted to Y4M format.")
+                    step_time = time.time() - uid_start_time
+                    logger.info(f"♎️ 9. Converted reference video clip to Y4M in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+                    vmaf_score, dist_y4m_path = calculate_vmaf(ref_y4m_path, dist_clip_path, random_frames, neg_model=True, return_y4m_path=True)
+
                 vmaf_calc_time = time.time() - vmaf_start
                 logger.info(f"☣️☣️ VMAF calculation took {vmaf_calc_time:.2f} seconds.")
 
@@ -2585,64 +2980,108 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 if dist_y4m_path and os.path.exists(dist_y4m_path):
                     os.unlink(dist_y4m_path)
                 continue
-            
-            # Now reuse the Y4M files for color validation (no redundant conversion!)
-            # Extract frames for color validation from Y4M files
-            logger.info(f"Extracting frames from Y4M for color validation from clip (reusing VMAF Y4M files)")
-            dist_clip_frames = extract_frames_from_y4m(dist_y4m_path)
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 10.5. Extracted {len(dist_clip_frames)} frames from Y4M for color validation in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-            # Extract reference frames from Y4M for chroma quality comparison
-            ref_clip_frames_data = extract_frames_from_y4m(ref_y4m_path)
+            # === COLOR / CHROMA VALIDATION ===
+            if used_docker_vmaf:
+                # Docker path: use FFmpeg signalstats on original videos with time bounds (no Y4M needed)
+                logger.info("Using FFmpeg signalstats for color/chroma validation (no Y4M conversion)")
 
-            # Validate color channels (grayscale check)
-            color_valid, color_reason = validate_color_channels_on_frames(ref_clip_frames_data, dist_clip_frames)
-            if not color_valid:
-                logger.error(f"UID {uid}: {color_reason}")
-                # vmaf_scores.append(0.0)
-                compression_rates.append(0.9999) 
-                final_scores.append(0.0)
-                reasons.append(f"Color validation failed: {color_reason}")
-                if dist_path and os.path.exists(dist_path):
-                    os.unlink(dist_path)
-                if ref_clip_path and os.path.exists(ref_clip_path):
-                    os.unlink(ref_clip_path)
-                if dist_clip_path and os.path.exists(dist_clip_path):
-                    os.unlink(dist_clip_path)
-                if dist_y4m_path and os.path.exists(dist_y4m_path):
-                    os.unlink(dist_y4m_path)
-                continue
-            
-            logger.info(f"✅ UID {uid}: Color channels validated - {color_reason}")
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 10.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+                # Compute signalstats once on original videos (not trimmed clips — avoids keyframe issues)
+                # Convert frame-based position back to time for signalstats
+                signalstats_start_time = start_frame / ref_fps
+                signalstats_duration = clip_num_frames / ref_fps
+                ref_signal_stats = _get_signalstats(ref_path, start_time=signalstats_start_time, duration=signalstats_duration)
+                dist_signal_stats = _get_signalstats(dist_path, start_time=signalstats_start_time, duration=signalstats_duration)
 
-            
-            
-            # Validate chroma quality (prevents partial UV reduction)
-            chroma_valid, chroma_reason = validate_chroma_quality_on_frames(
-                ref_clip_frames_data, dist_clip_frames, threshold=0.7
-            )
-            if not chroma_valid:
-                logger.error(f"UID {uid}: {chroma_reason}")
-                # vmaf_scores.append(0.0)
-                compression_rates.append(0.9999) 
-                final_scores.append(0.0)
-                reasons.append(f"Chroma validation failed: {chroma_reason}")
-                if dist_path and os.path.exists(dist_path):
-                    os.unlink(dist_path)
-                if ref_clip_path and os.path.exists(ref_clip_path):
-                    os.unlink(ref_clip_path)
-                if dist_clip_path and os.path.exists(dist_clip_path):
-                    os.unlink(dist_clip_path)
-                if dist_y4m_path and os.path.exists(dist_y4m_path):
-                    os.unlink(dist_y4m_path)
-                continue
-            
-            logger.info(f"✅ UID {uid}: Chroma quality validated - {chroma_reason}")
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 10.7. Validated chroma quality in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+                # Color validation (grayscale detection)
+                color_valid, color_reason = validate_color_channels_ffmpeg(ref_signal_stats, dist_signal_stats)
+                if not color_valid:
+                    logger.error(f"UID {uid}: {color_reason}")
+                    compression_rates.append(0.9999)
+                    final_scores.append(0.0)
+                    reasons.append(f"Color validation failed: {color_reason}")
+                    if dist_path and os.path.exists(dist_path):
+                        os.unlink(dist_path)
+                    if ref_clip_path and os.path.exists(ref_clip_path):
+                        os.unlink(ref_clip_path)
+                    if dist_clip_path and os.path.exists(dist_clip_path):
+                        os.unlink(dist_clip_path)
+                    continue
+
+                logger.info(f"✅ UID {uid}: Color channels validated (ffmpeg) - {color_reason}")
+                step_time = time.time() - uid_start_time
+                logger.info(f"♎️ 10.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+                # Chroma validation (UV reduction detection)
+                chroma_valid, chroma_reason = validate_chroma_quality_ffmpeg(ref_signal_stats, dist_signal_stats, threshold=0.7)
+                if not chroma_valid:
+                    logger.error(f"UID {uid}: {chroma_reason}")
+                    compression_rates.append(0.9999)
+                    final_scores.append(0.0)
+                    reasons.append(f"Chroma validation failed: {chroma_reason}")
+                    if dist_path and os.path.exists(dist_path):
+                        os.unlink(dist_path)
+                    if ref_clip_path and os.path.exists(ref_clip_path):
+                        os.unlink(ref_clip_path)
+                    if dist_clip_path and os.path.exists(dist_clip_path):
+                        os.unlink(dist_clip_path)
+                    continue
+
+                logger.info(f"✅ UID {uid}: Chroma quality validated (ffmpeg) - {chroma_reason}")
+                step_time = time.time() - uid_start_time
+                logger.info(f"♎️ 10.7. Validated chroma quality in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            else:
+                # Fallback path: use Y4M-based validation (existing approach)
+                logger.info("Extracting frames from Y4M for color validation from clip (reusing VMAF Y4M files)")
+                dist_clip_frames = extract_frames_from_y4m(dist_y4m_path)
+                step_time = time.time() - uid_start_time
+                logger.info(f"♎️ 10.5. Extracted {len(dist_clip_frames)} frames from Y4M for color validation in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+                ref_clip_frames_data = extract_frames_from_y4m(ref_y4m_path)
+
+                # Validate color channels (grayscale check)
+                color_valid, color_reason = validate_color_channels_on_frames(ref_clip_frames_data, dist_clip_frames)
+                if not color_valid:
+                    logger.error(f"UID {uid}: {color_reason}")
+                    compression_rates.append(0.9999)
+                    final_scores.append(0.0)
+                    reasons.append(f"Color validation failed: {color_reason}")
+                    if dist_path and os.path.exists(dist_path):
+                        os.unlink(dist_path)
+                    if ref_clip_path and os.path.exists(ref_clip_path):
+                        os.unlink(ref_clip_path)
+                    if dist_clip_path and os.path.exists(dist_clip_path):
+                        os.unlink(dist_clip_path)
+                    if dist_y4m_path and os.path.exists(dist_y4m_path):
+                        os.unlink(dist_y4m_path)
+                    continue
+
+                logger.info(f"✅ UID {uid}: Color channels validated - {color_reason}")
+                step_time = time.time() - uid_start_time
+                logger.info(f"♎️ 10.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+
+                # Validate chroma quality (prevents partial UV reduction)
+                chroma_valid, chroma_reason = validate_chroma_quality_on_frames(
+                    ref_clip_frames_data, dist_clip_frames, threshold=0.7
+                )
+                if not chroma_valid:
+                    logger.error(f"UID {uid}: {chroma_reason}")
+                    compression_rates.append(0.9999)
+                    final_scores.append(0.0)
+                    reasons.append(f"Chroma validation failed: {chroma_reason}")
+                    if dist_path and os.path.exists(dist_path):
+                        os.unlink(dist_path)
+                    if ref_clip_path and os.path.exists(ref_clip_path):
+                        os.unlink(ref_clip_path)
+                    if dist_clip_path and os.path.exists(dist_clip_path):
+                        os.unlink(dist_clip_path)
+                    if dist_y4m_path and os.path.exists(dist_y4m_path):
+                        os.unlink(dist_y4m_path)
+                    continue
+
+                logger.info(f"✅ UID {uid}: Chroma quality validated - {chroma_reason}")
+                step_time = time.time() - uid_start_time
+                logger.info(f"♎️ 10.7. Validated chroma quality in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Calculate compression score using the proper formula
             # Check scoring function for details
