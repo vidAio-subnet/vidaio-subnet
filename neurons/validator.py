@@ -259,7 +259,7 @@ class Validator(base.BaseValidator):
         if unknown_task_miners:
             logger.info(f"❓ Unknown task UIDs processed: {unknown_task_miners}")
         
-        # sleep for 1 minute
+        logger.info("Sleeping for 1 minute before starting epoch")
         await asyncio.sleep(60)
 
         # ---- Run upscaling & compression epochs in parallel ---- #
