@@ -542,8 +542,7 @@ class Validator(base.BaseValidator):
             
             round_id = str(uuid.uuid4())
             payload_urls, video_ids, uploaded_object_names, synapses, task_types = await self.challenge_synthesizer.build_synthetic_protocol(content_lengths, version, round_id)
-            logger.info(f"Built compression challenge protocol: payload URLs: {payload_urls}\nvideo IDs: {video_ids}")
-            logger.debug(f"Built upscaling challenge protocol")
+            logger.info(f"Built upscaling challenge protocol: payload URLs: {payload_urls}\nvideo IDs: {video_ids}")
 
             timestamp = datetime.now(timezone.utc).isoformat()
 
