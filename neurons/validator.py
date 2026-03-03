@@ -338,16 +338,16 @@ class Validator(base.BaseValidator):
             upscaling_content_lengths = []
             for response in length_check_responses:
                 avail_max_len = response.max_content_length.value
-                if avail_max_len == 10:
+                if avail_max_len == 5:
                     upscaling_content_lengths.append(avail_max_len)
                 else:
-                    upscaling_content_lengths.append(5)
+                    upscaling_content_lengths.append(10)
 
             logger.info(f"Upscaling content lengths: {upscaling_content_lengths}")
 
             upscaling_miners_with_lengths = []
             for i, (axon, uid) in enumerate(upscaling_miners):
-                content_length = upscaling_content_lengths[i] if i < len(upscaling_content_lengths) else 5
+                content_length = upscaling_content_lengths[i] if i < len(upscaling_content_lengths) else 10
                 upscaling_miners_with_lengths.append((axon, uid, content_length))
 
             logger.info(f"Sleeping for 2 minute before querying upscaling miners")
