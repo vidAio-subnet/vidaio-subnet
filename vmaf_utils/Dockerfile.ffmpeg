@@ -1,0 +1,46 @@
+FROM vmaf
+
+RUN apt-get update && \
+    apt-get install -y pkg-config libx264-dev git python3-pip && \
+    pip3 install meson
+
+# build dav1d from source (requires >= 1.0.0 for ffmpeg)
+RUN git clone --depth 1 --branch 1.4.2 https://code.videolan.org/videolan/dav1d.git && \
+    cd dav1d && \
+    mkdir build && cd build && \
+    meson setup .. --default-library=static --buildtype release && \
+    ninja && \
+    ninja install && \
+    ldconfig
+
+ENV PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH"
+
+ARG FFMPEG_TAG=master
+ARG NVCC_FLAGS="-gencode arch=compute_75,code=sm_75 -gencode arch=compute_75,code=compute_75 -O2"
+
+# get ffmpeg
+RUN git clone https://github.com/FFmpeg/FFmpeg ffmpeg
+
+RUN cd ffmpeg && git reset --hard 33b215d1554a14e87416a24f8e6034312e629af7 && ./configure \
+    --enable-gpl \
+    --enable-libx264 \
+    --enable-libvmaf \
+    --enable-libdav1d \
+    --enable-nonfree \
+    --enable-cuda-nvcc \
+    --enable-libnpp \
+    --extra-cflags="-I/usr/local/cuda/include" \
+    --extra-ldflags="-L/usr/local/cuda/lib64" \
+    --disable-static \
+    --enable-shared \
+    --nvccflags="${NVCC_FLAGS}" && \
+    make -j && \
+    make install
+
+RUN set -eux; \
+    test -f /usr/local/lib/x86_64-linux-gnu/libvmaf.so.3 || test -f /usr/local/lib/libvmaf.so.3; \
+    ldconfig
+
+RUN mkdir /data
+# VMAF+decode GPU (only works for NVDec supported formats https://developer.nvidia.com/video-encode-and-decode-gpu-support-matrix-new)
+ENTRYPOINT ["ffmpeg"]
