@@ -141,7 +141,7 @@ class Validator(base.BaseValidator):
         
         logger.info("✅ Scheduler is ready! Proceeding with synthetic requests.")
 
-    async def download_video(video_url: str, verbose: bool) -> tuple[str, float]:
+    async def download_video(self, video_url: str, verbose: bool = False) -> tuple[str, float]:
         """
         Download a video from the given URL and save it to a temporary file.
 
