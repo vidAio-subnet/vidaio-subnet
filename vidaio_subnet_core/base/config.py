@@ -90,7 +90,7 @@ def add_common_config(parser: argparse.ArgumentParser):
     Returns the updated parser.
     """
     bt.Wallet.add_args(parser)
-    bt.subtensor.add_args(parser)
+    bt.Subtensor.add_args(parser)
     bt.logging.add_args(parser)
     bt.axon.add_args(parser)
     add_args(parser)

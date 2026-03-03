@@ -27,7 +27,7 @@ class MinerManager:
         self.dendrite = bt.dendrite(wallet=self.wallet)
 
         self.config = config
-        self.subtensor = bt.subtensor(config=self.config)
+        self.subtensor = bt.Subtensor(config=self.config)
         self.burn_proportion = float(1/3)   # 1 of miner emissions burnt
 
         self.metagraph = metagraph

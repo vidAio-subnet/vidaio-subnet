@@ -16,7 +16,7 @@ class BaseMiner(ABC):
         self.init_bittensor()
 
     def init_bittensor(self):
-        self.subtensor = bt.subtensor(config=self.config)
+        self.subtensor = bt.Subtensor(config=self.config)
         logger.info(f"Subtensor: {self.subtensor}")
         self.wallet = bt.Wallet(config=self.config)
         logger.info(f"Wallet: {self.wallet}")
