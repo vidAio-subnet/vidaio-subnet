@@ -17,6 +17,7 @@ from services.video_scheduler.video_utils import get_trim_video_path, get_perumt
 from vidaio_subnet_core.utilities.uids import get_organic_forward_uids
 from vidaio_subnet_core.protocol import LengthCheckProtocol, TaskWarrantProtocol, TaskType
 from vidaio_subnet_core.validating.managing.sql_schemas import MinerMetadata, MinerPerformanceHistory, Base
+from services.scoring.server import download_video
 from sqlalchemy import desc, asc, func, select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta
@@ -614,7 +615,6 @@ class Validator(base.BaseValidator):
                 logger.warning(f"⚠️ Reference video file missing for video_id {video_id}: {reference_video_path}")
             reference_video_paths.append(reference_video_path)
 
-        import services.scoring.server
         
         # Concurrently start all downloads that have valid URLs,
         # limited by a semaphore to prevent timeouts on large fleets
@@ -625,7 +625,7 @@ class Validator(base.BaseValidator):
             async with semaphore:
                 try:
                     logger.info(f"UID {uid_val}: Starting download for distorted video from {url_str}")
-                    return await services.scoring.server.download_video(url_str, verbose=True)
+                    return await download_video(url_str, verbose=True)
                 except Exception as e:
                     return e
 
