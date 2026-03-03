@@ -203,16 +203,21 @@ check_package_installed "jq"
 
 # 🚀 START THE 4 PM2 PROCESSES
 # pm2 start "PYTHONPATH=. python services/scoring/server.py" --name scoring_endpoint
+
+# pm2 start "PYTHONPATH=. python services/scoring/server.py --port 8201" --name scoring_endpoint_upscaling
+# pm2 start "PYTHONPATH=. python services/scoring/server.py --port 8202" --name scoring_endpoint_compression
+
 # pm2 start "PYTHONPATH=. python services/video_scheduler/worker.py" --name video_scheduler_worker
 # pm2 start "PYTHONPATH=. python services/video_scheduler/server.py" --name video_scheduler_endpoint
 # pm2 start "PYTHONPATH=. python services/dashboard/metagraph_api_server.py" --name metagraph-api
-# pm2 start /usr/bin/bash --name validator -- -c "PYTHONPATH=. python -m neurons.validator --wallet.name default --wallet.hotkey default --subtensor.network finney --netuid 85 --axon.port 27000 --logging.debug"
+# pm2 start /usr/bin/bash --name video-validator -- -c "PYTHONPATH=. python -m neurons.validator --wallet.name default --wallet.hotkey default --subtensor.network finney --netuid 85 --axon.port 27000 --logging.debug"
 # pm2 start "python neurons/validator.py $joined_args" --name video-validator
 # pm2 start "PYTHONPATH=. python services/organic_gateway/server.py" --name organic-gateway
 # pm2 start "PYTHONPATH=. python vidaio_subnet_core/utilities/storage_client.py" --name storage-client-debug #for debugging storage
 
 # 🚀 START THE ADDITIONAL PM2 PROCESSES
-ensure_process "scoring_endpoint" "bash -c 'PYTHONPATH=. python services/scoring/server.py'" "true"
+ensure_process "scoring_endpoint_upscaling" "bash -c 'PYTHONPATH=. python services/scoring/server.py --port 8201'" "true"
+ensure_process "scoring_endpoint_compression" "bash -c 'PYTHONPATH=. python services/scoring/server.py --port 8202'" "true"
 ensure_process "video_scheduler_worker" "bash -c 'PYTHONPATH=. python services/video_scheduler/worker.py'" "$restart_video_scheduler"
 ensure_process "video_scheduler_endpoint" "bash -c 'PYTHONPATH=. python services/video_scheduler/server.py'" "$restart_video_scheduler"
 ensure_process "organic-gateway" "bash -c 'PYTHONPATH=. python services/organic_gateway/server.py'" "true"
@@ -252,7 +257,8 @@ while true; do
 
             if [ $time_since_last_restart -ge $restart_interval ]; then
                 echo "30 hours passed. Performing periodic PM2 restart..."
-                pm2 restart scoring_endpoint
+                pm2 restart scoring_endpoint_upscaling
+                pm2 restart scoring_endpoint_compression
                 if [[ "$restart_video_scheduler" == "true" ]]; then
                     pm2 restart video_scheduler_worker
                     pm2 restart video_scheduler_endpoint

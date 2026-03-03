@@ -1270,8 +1270,8 @@ def process_video_permutations(
                 "ffmpeg", "-y",
                 "-f", "concat", "-safe", "0",
                 "-i", concat_list_path,
-                "-c", "copy",
-                "-an", output_path,
+                "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                "-c:a", "copy", "-an", output_path,
                 "-hide_banner", "-loglevel", "error"
             ]
             subprocess.run(cmd, check=True)

@@ -75,11 +75,18 @@ class Validator(base.BaseValidator):
         self.dendrite = bt.dendrite(wallet=self.wallet)
         logger.info("💧 Initialized dendrite 💧")
         
-        self.score_client = httpx.AsyncClient(
-            base_url=f"http://{CONFIG.score.host}:{CONFIG.score.port}"
+        self.score_client_upscaling = httpx.AsyncClient(
+            base_url=f"http://{CONFIG.score.host}:{CONFIG.score.upscaling_score_port}"
         )
         logger.info(
-            f"💧 Initialized score client with base URL: http://{CONFIG.score.host}:{CONFIG.score.port} 💧"
+            f"💧 Initialized upscaling score client with base URL: http://{CONFIG.score.host}:{CONFIG.score.upscaling_score_port} 💧"
+        )
+        
+        self.score_client_compression = httpx.AsyncClient(
+            base_url=f"http://{CONFIG.score.host}:{CONFIG.score.compression_score_port}"
+        )
+        logger.info(
+            f"💧 Initialized compression score client with base URL: http://{CONFIG.score.host}:{CONFIG.score.compression_score_port} 💧"
         )
         
         self.set_weights_executor = ThreadPoolExecutor(max_workers=1)
@@ -252,13 +259,16 @@ class Validator(base.BaseValidator):
         if unknown_task_miners:
             logger.info(f"❓ Unknown task UIDs processed: {unknown_task_miners}")
 
-        if upscaling_miners:
+        # ---- Run upscaling & compression epochs in parallel ---- #
+        async def _run_upscaling():
+            if not upscaling_miners:
+                return
             logger.info(f"Sending LengthCheckProtocol requests to {len(upscaling_miners)} upscaling miners")
-            
+
             upscaling_start_time = time.time()
             upscaling_axons = [miner[0] for miner in upscaling_miners]
             length_check_synapse = LengthCheckProtocol(version=version)
-            
+
             length_check_responses = await self.dendrite.forward(
                 axons=upscaling_axons, synapse=length_check_synapse, timeout=10
             )
@@ -282,22 +292,25 @@ class Validator(base.BaseValidator):
             await self.process_upscaling_miners(upscaling_miners_with_lengths, version)
 
             upscaling_processed_time = time.time() - upscaling_start_time
-
             logger.info(f"Upscaling tasks processed in {upscaling_processed_time:.2f} seconds")
 
-            await asyncio.sleep(2)
-
-        if compression_miners:
+        async def _run_compression():
+            if not compression_miners:
+                return
             logger.info(f"Processing {len(compression_miners)} compression miners")
 
             compression_start_time = time.time()
             await self.process_compression_miners(compression_miners, version)
 
             compression_processed_time = time.time() - compression_start_time
-
             logger.info(f"Compression tasks processed in {compression_processed_time:.2f} seconds")
 
-            await asyncio.sleep(2)
+        results = await asyncio.gather(
+            _run_upscaling(), _run_compression(), return_exceptions=True
+        )
+        for label, result in zip(["upscaling", "compression"], results):
+            if isinstance(result, BaseException):
+                logger.error(f"Parallel {label} epoch failed: {result}", exc_info=result)
 
         epoch_processed_time = time.time() - epoch_start_time
         logger.info(f"Completed one epoch within {epoch_processed_time:.2f} seconds")
@@ -523,83 +536,102 @@ class Validator(base.BaseValidator):
                     logger.warning(f"⚠️ Reference video file missing for video_id {video_id}: {reference_video_path}")
                 reference_video_paths.append(reference_video_path)
             
-            asyncio.create_task(self.score_upscalings(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, content_lengths, task_types, round_id))
+            await self.score_upscalings(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, content_lengths, task_types, round_id)
 
             batch_processed_time = time.time() - batch_start_time
             
-            sleep_time = random.uniform(SLEEP_TIME_LOW, SLEEP_TIME_HIGH) - batch_processed_time
-            logger.info(f"Completed upscaling batch within {batch_processed_time:.2f} seconds")
-            logger.info(f"Sleeping for 5-6 minutes before next upscaling batch")
-            
-            await asyncio.sleep(sleep_time)
-
-    async def process_compression_miners(self, compression_miners, version):
-        """Process compression miners in batches similar to upscaling but with compression protocols."""
-        batch_size = CONFIG.bandwidth.requests_per_synthetic_interval
-
-        miner_batches = await self.create_miner_batches(compression_miners, batch_size, task_type="compression")
-
-        logger.info(f"Created {len(miner_batches)} compression batches of size {batch_size}")
-
-        for batch_idx, batch in enumerate(miner_batches):
-            batch_start_time = time.time()
-            logger.info(f"🧩 Processing compression batch {batch_idx + 1}/{len(miner_batches)} 🧩")
-            
-            uids = []
-            axons = []
-            recent_counts = []
-            for recent_count, miner in batch:
-                uids.append(miner[1])
-                axons.append(miner[0])
-                recent_counts.append(recent_count)
-
-            vmaf_thresholds = [
-                random.choice(list(VMAF_QUALITY_THRESHOLD)) if recent_count >= CONFIG.score.max_performance_records
-                else random.choice([VMAF_QUALITY_THRESHOLD.LOW, VMAF_QUALITY_THRESHOLD.MEDIUM])
-                for idx, recent_count in enumerate(recent_counts)
-            ]
-
-            target_codec = random.choice(TARGET_CODECS)
-            codec_mode = random.choice(CODEC_MODES)
-            target_bitrate = random.choice(TARGET_BITRATES)
-            round_id = str(uuid.uuid4())
-
-            num_miners = len(uids)
-
-            payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_compression_protocol(
-                vmaf_thresholds, num_miners, version, round_id, target_codec, codec_mode, target_bitrate)
-            logger.warning(f"Built compression challenge protocol with VMAF threshold {vmaf_thresholds}, codec {target_codec}, mode {codec_mode}, bitrate {target_bitrate} Mbps")
-            timestamp = datetime.now(timezone.utc).isoformat()
-
-            logger.debug(f"Processing compression UIDs in batch: {uids}")
-            
-            forward_tasks = [
-                self.call_miner(axon, synapse, uid, timeout=90)
-                for uid, axon, synapse in zip(uids, axons, synapses)
-            ]
-            raw_responses = await asyncio.gather(*forward_tasks)
-            responses = [response['result'] for response in raw_responses]
-
-            logger.info(f"🎲 Received {len(responses)} compression responses from miners 🎲")
-
-            reference_video_paths = []
-            for video_id in video_ids:
-                reference_video_path = get_perumted_video_path(video_id)
-                if not os.path.exists(reference_video_path):
-                    logger.warning(f"⚠️ Reference video file missing for video_id {video_id}: {reference_video_path}")
-                reference_video_paths.append(reference_video_path)
-            
-            # asyncio.create_task(self.score_compressions(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, vmaf_thresholds, target_codec, codec_mode, target_bitrate, round_id))
-            await self.score_compressions(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, vmaf_thresholds, target_codec, codec_mode, target_bitrate, round_id)
-            
-            batch_processed_time = time.time() - batch_start_time
             # sleep_time = random.uniform(SLEEP_TIME_LOW, SLEEP_TIME_HIGH) - batch_processed_time
-
-            logger.info(f"Completed compression batch within {batch_processed_time:.2f} seconds")
-            # logger.info(f"Sleeping for 5-6 minutes before next compression batch")
+            logger.info(f"Completed upscaling batch within {batch_processed_time:.2f} seconds")
+            # logger.info(f"Sleeping for 5-6 minutes before next upscaling batch")
             
             # await asyncio.sleep(sleep_time)
 
+    async def process_compression_miners(self, compression_miners, version):
+        """Process all compression miners concurrently, and score them in batches of 5."""
+        num_miners = len(compression_miners)
+        if num_miners == 0:
+            return
+
+        logger.info(f"🧩 Processing {num_miners} compression miners concurrently with same challenge broadcasted 🧩")
+        
+        round_id = str(uuid.uuid4())
+
+        uids = []
+        axons = []
+        for axon, uid in compression_miners:
+            uids.append(uid)
+            axons.append(axon)
+
+        vmaf_thresholds = [random.choice(list(VMAF_QUALITY_THRESHOLD))] * num_miners
+        target_codec = random.choice(TARGET_CODECS)
+        codec_mode = random.choice(CODEC_MODES)
+        target_bitrate = random.choice(TARGET_BITRATES)
+
+        payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_compression_protocol(
+            vmaf_thresholds, num_miners, version, round_id, target_codec, codec_mode, target_bitrate, broadcast_single_chunk=True)
+        logger.warning(f"Built compression challenge protocol for {num_miners} miners, VMAF threshold {vmaf_thresholds[0]}, codec {target_codec}, mode {codec_mode}, bitrate {target_bitrate} Mbps")
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+
+        logger.debug(f"Processing compression UIDs: {uids}")
+        
+        batch_start_time = time.time()
+        
+        forward_tasks = [
+            self.call_miner(axon, synapse, uid, timeout=90)
+            for uid, axon, synapse in zip(uids, axons, synapses)
+        ]
+        raw_responses = await asyncio.gather(*forward_tasks)
+        responses = [response['result'] for response in raw_responses]
+
+        logger.info(f"🎲 Received {len(responses)} compression responses from miners 🎲")
+
+        reference_video_paths = []
+        for video_id in video_ids:
+            reference_video_path = get_perumted_video_path(video_id)
+            if not os.path.exists(reference_video_path):
+                logger.warning(f"⚠️ Reference video file missing for video_id {video_id}: {reference_video_path}")
+            reference_video_paths.append(reference_video_path)
+
+        batch_processed_time = time.time() - batch_start_time
+        logger.info(f"Completed compression gathering within {batch_processed_time:.2f} seconds")
+
+        # Score in batches of 5
+        score_batch_size = 5
+        logger.info(f"Scoring {num_miners} compression miners in batches of {score_batch_size}")
+        
+        for i in range(0, num_miners, score_batch_size):
+            batch_uids = uids[i:i+score_batch_size]
+            batch_responses = responses[i:i+score_batch_size]
+            batch_payload_urls = payload_urls[i:i+score_batch_size]
+            batch_reference_paths = reference_video_paths[i:i+score_batch_size]
+            batch_video_ids = video_ids[i:i+score_batch_size]
+            batch_uploaded_object_names = uploaded_object_names[i:i+score_batch_size]
+            batch_vmaf_thresholds = vmaf_thresholds[i:i+score_batch_size]
+            
+            await self.score_compressions(
+                batch_uids, 
+                batch_responses, 
+                batch_payload_urls, 
+                batch_reference_paths, 
+                timestamp, 
+                batch_video_ids, 
+                batch_uploaded_object_names, 
+                batch_vmaf_thresholds, 
+                target_codec, 
+                codec_mode, 
+                target_bitrate, 
+                round_id
+            )
+            
+            logger.info(f"Completed scoring compression batch {batch_uids} within {batch_processed_time:.2f} seconds")
+            # await asyncio.sleep(sleep_time)
+
+        try:
+            if os.path.exists(reference_video_paths[0]):
+                os.unlink(reference_video_paths[0])
+        except Exception as e:
+            logger.error(f"Error deleting reference video file: {e}")
 
     async def start_organic_loop(self):
         """Start organic processing loop for both upscaling and compression tasks asynchronously."""
@@ -650,9 +682,9 @@ class Validator(base.BaseValidator):
         for uid, response in zip(uids, responses):
             distorted_urls.append(response.miner_response.optimized_video_url)
 
-        logger.info(f"responses: {responses}")
+        logger.info(f"payloads: {payload_urls}\nresponses: {distorted_urls}")
 
-        score_response = await self.score_client.post(
+        score_response = await self.score_client_upscaling.post(
             "/score_upscaling_synthetics",
             json = {
                 "uids": uids,
@@ -762,7 +794,9 @@ class Validator(base.BaseValidator):
         for uid, response in zip(uids, responses):
             distorted_urls.append(response.miner_response.optimized_video_url)
 
-        score_response = await self.score_client.post(
+        logger.info(f"payload: {payload_urls[0]}\nresponses: {distorted_urls}")
+
+        score_response = await self.score_client_compression.post(
             "/score_compression_synthetics",
             json = {
                 "uids": uids,
@@ -867,7 +901,7 @@ class Validator(base.BaseValidator):
 
         logger.info(f"Randomly selected {len(selected_uids)} pairs out of {len(uids)} total pairs for validation")
 
-        score_response = await self.score_client.post(
+        score_response = await self.score_client_upscaling.post(
             "/score_organics_upscaling",
             json={
                 "uids": selected_uids,
@@ -953,7 +987,7 @@ class Validator(base.BaseValidator):
 
         logger.info(f"Randomly selected {len(selected_uids)} pairs out of {len(uids)} total pairs for compression validation")
 
-        score_response = await self.score_client.post(
+        score_response = await self.score_client_compression.post(
             "/score_organics_compression",
             json={
                 "uids": selected_uids,
