@@ -27,7 +27,7 @@ class BaseValidator(ABC):
     def get_config(self):
         parser = argparse.ArgumentParser()
         parser = add_common_config(parser)
-        config = bt.config(parser)
+        config = bt.Config(parser)
         config.full_path = os.path.expanduser(
             "{}/{}/{}/netuid{}/{}".format(
                 config.logging.logging_dir,
