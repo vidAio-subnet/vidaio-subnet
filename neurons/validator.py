@@ -617,8 +617,18 @@ class Validator(base.BaseValidator):
 
         import services.scoring.server
         
-        # Concurrently start all downloads that have valid URLs
-        # (Those without valid URLs immediately return None)
+        # Concurrently start all downloads that have valid URLs,
+        # limited by a semaphore to prevent timeouts on large fleets
+        semaphore = asyncio.Semaphore(15)
+
+        async def _download_with_semaphore(uid_val, url_str):
+            async with semaphore:
+                try:
+                    logger.warning(f"UID {uid_val}: Queuing download for distorted video from {url_str}")
+                    return await services.scoring.server.download_video(url_str, verbose=True)
+                except Exception as e:
+                    return e
+
         download_tasks = []
         for uid_val, response in zip(uids, responses):
             url = response.miner_response.optimized_video_url
@@ -627,9 +637,8 @@ class Validator(base.BaseValidator):
                 # Create a task that simply returns None
                 download_tasks.append(asyncio.create_task(asyncio.sleep(0, result=None)))
             else:
-                logger.debug(f"UID {uid_val}: Queuing download for distorted video from {url}")
                 download_tasks.append(
-                    asyncio.create_task(services.scoring.server.download_video(url, verbose=True))
+                    asyncio.create_task(_download_with_semaphore(uid_val, url))
                 )
         
         # Wait for all downloads to finish
