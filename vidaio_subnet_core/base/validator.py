@@ -80,7 +80,7 @@ class BaseValidator(ABC):
             logger.info(f"Running validator on uid: {self.my_subnet_uid}")
 
     def setup_axon(self):
-        self.axon = bt.axon(wallet=self.wallet, config=self.config)
+        self.axon = bt.Axon(wallet=self.wallet, config=self.config)
         logger.info(
             f"Serving axon on network: {self.config.subtensor.network} with netuid: {self.config.netuid}"
         )

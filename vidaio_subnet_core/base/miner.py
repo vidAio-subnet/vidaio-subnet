@@ -22,7 +22,7 @@ class BaseMiner(ABC):
         logger.info(f"Wallet: {self.wallet}")
         self.metagraph = self.subtensor.metagraph(netuid=self.config.netuid)
         logger.info(f"Metagraph: {self.metagraph}")
-        self.axon = bt.axon(config=self.config)
+        self.axon = bt.Axon(config=self.config)
         self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         logger.info(f"Running Miner with UID {self.uid}")
         self.axon.attach(

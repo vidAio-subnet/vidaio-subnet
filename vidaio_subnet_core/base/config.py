@@ -92,7 +92,7 @@ def add_common_config(parser: argparse.ArgumentParser):
     bt.Wallet.add_args(parser)
     bt.Subtensor.add_args(parser)
     bt.logging.add_args(parser)
-    bt.axon.add_args(parser)
+    bt.Axon.add_args(parser)
     add_args(parser)
     add_validator_args(parser)
     return parser  
