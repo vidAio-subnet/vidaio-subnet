@@ -61,7 +61,7 @@ class BaseValidator(ABC):
         logger.info(f"Wallet: {self.wallet}")
         self.subtensor = bt.Subtensor(config=self.config)
         logger.info(f"Subtensor: {self.subtensor}")
-        self.dendrite = bt.dendrite(wallet=self.wallet)
+        self.dendrite = bt.Dendrite(wallet=self.wallet)
         logger.info(f"Dendrite: {self.dendrite}")
         logger.info(self.config.netuid)
         self.metagraph = self.subtensor.metagraph(self.config.netuid)
