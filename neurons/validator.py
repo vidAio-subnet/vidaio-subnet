@@ -451,6 +451,23 @@ class Validator(base.BaseValidator):
 
         return batches
 
+    async def call_miner_batch(self, axons, synapse, batch, timeout=60):
+        start = time.perf_counter()
+
+        try:
+            raw = await self.dendrite.forward(
+                axons=axons,
+                synapse=synapse,
+                timeout=timeout,
+            )
+            duration = (time.perf_counter() - start) * 1000  # ms
+
+            logger.info(f"💊 Received {len(raw)} responses from miners in {duration} ms💊")
+            return raw
+        except Exception as e:
+            logger.error(f"Unexpected error calling miner batch: {e}", exc_info=True)
+            return []
+
     async def call_miner(self, axon, synapse, uid, timeout=60):
         start = time.perf_counter()
 
@@ -587,12 +604,7 @@ class Validator(base.BaseValidator):
         
         batch_start_time = time.time()
         
-        forward_tasks = [
-            self.call_miner(axon, synapse, uid, timeout=90)
-            for uid, axon, synapse in zip(uids, axons, synapses)
-        ]
-        raw_responses = await asyncio.gather(*forward_tasks)
-        responses = [response['result'] for response in raw_responses]
+        responses = await self.call_miner_batch(axons, synapses[0], num_miners, timeout=90)
 
         logger.info(f"🎲 Received {len(responses)} compression responses from miners 🎲")
 
