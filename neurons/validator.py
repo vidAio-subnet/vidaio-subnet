@@ -678,7 +678,7 @@ class Validator(base.BaseValidator):
             async with semaphore:
                 try:
                     logger.info(f"UID {uid_val}: Starting download for distorted video from {url_str}")
-                    return await download_video(url_str, verbose=True)
+                    return await self.download_video(url_str, verbose=True)
                 except Exception as e:
                     return e
 
