@@ -292,6 +292,9 @@ class Validator(base.BaseValidator):
                 content_length = upscaling_content_lengths[i] if i < len(upscaling_content_lengths) else 5
                 upscaling_miners_with_lengths.append((axon, uid, content_length))
 
+            logger.info(f"Sleeping for 1 minute before starting upscaling epoch")
+            await asyncio.sleep(60)
+            
             await self.process_upscaling_miners(upscaling_miners_with_lengths, version)
 
             upscaling_processed_time = time.time() - upscaling_start_time
