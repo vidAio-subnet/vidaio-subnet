@@ -89,7 +89,7 @@ def add_common_config(parser: argparse.ArgumentParser):
     Adds relevant common arguments to the parser for this miner or validator.
     Returns the updated parser.
     """
-    bt.wallet.add_args(parser)
+    bt.Wallet.add_args(parser)
     bt.subtensor.add_args(parser)
     bt.logging.add_args(parser)
     bt.axon.add_args(parser)

@@ -57,7 +57,7 @@ class BaseValidator(ABC):
 
     def setup_bittensor_objects(self):
         logger.info("Setting up Bittensor objects.")
-        self.wallet = bt.wallet(config=self.config)
+        self.wallet = bt.Wallet(config=self.config)
         logger.info(f"Wallet: {self.wallet}")
         self.subtensor = bt.subtensor(config=self.config)
         logger.info(f"Subtensor: {self.subtensor}")
