@@ -7,6 +7,8 @@ import asyncio
 import traceback
 import pandas as pd
 import bittensor as bt
+import tempfile
+import aiohttp
 from loguru import logger
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
@@ -72,7 +74,7 @@ class Validator(base.BaseValidator):
         self.challenge_synthesizer = validating.synthesizing.Synthesizer()
         logger.info("💧 Initialized challenge synthesizer 💧")
         
-        self.dendrite = bt.dendrite(wallet=self.wallet)
+        self.dendrite = bt.Dendrite(wallet=self.wallet)
         logger.info("💧 Initialized dendrite 💧")
         
         self.score_client_upscaling = httpx.AsyncClient(
@@ -139,6 +141,58 @@ class Validator(base.BaseValidator):
         
         logger.info("✅ Scheduler is ready! Proceeding with synthetic requests.")
 
+    async def download_video(self, video_url: str, verbose: bool = False) -> tuple[str, float]:
+        """
+        Download a video from the given URL and save it to a temporary file.
+
+        Args:
+            video_url (str): The URL of the video to download.
+            verbose (bool): Whether to show download progress.
+
+        Returns:
+            tuple[str, float]: A tuple containing the path to the downloaded video file
+                            and the time taken to download it.
+
+        Raises:
+            Exception: If the download fails or takes longer than the timeout.
+        """
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as vid_temp:
+                file_path = vid_temp.name  # Path to the temporary file
+            if verbose:
+                logger.info(f"Downloading video from {video_url} to {file_path}")
+
+            timeout = aiohttp.ClientTimeout(sock_connect=30, total=300)
+
+            start_time = time.time()  # Record start time
+
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(video_url) as response:
+                    if response.status != 200:
+                        raise Exception(f"Failed to download video. HTTP status: {response.status}")
+
+                    with open(file_path, "wb") as f:
+                        async for chunk in response.content.iter_chunked(2 * 1024 * 1024):
+                            f.write(chunk)
+
+            end_time = time.time()  # Record end time
+            download_time = end_time - start_time  # Calculate download duration
+
+            if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+                raise Exception(f"Download failed or file is empty: {file_path}")
+
+            if verbose:
+                logger.info(f"File successfully downloaded to: {file_path}")
+                logger.info(f"Download time: {download_time:.2f} seconds")
+
+            return file_path, download_time
+        except aiohttp.ServerTimeoutError:
+            raise Exception("Download failed: Server connection timed out")
+        except asyncio.TimeoutError:
+            raise Exception("Download timed out")
+        except aiohttp.ClientError as e:
+            raise Exception(f"Download failed due to a network error: {type(e).__name__}: {repr(e)}")
+    
     async def refresh_miner_manager(self, miner_uids: list[int]):
         if not miner_uids:
             return
@@ -201,7 +255,7 @@ class Validator(base.BaseValidator):
         task_warrant_synapse = TaskWarrantProtocol(version=version)
         
         task_warrant_responses = await self.dendrite.forward(
-            axons=axons, synapse=task_warrant_synapse, timeout=10
+            axons=axons, synapse=task_warrant_synapse, timeout=60
         )
         logger.info(f"💊 Received {len(task_warrant_responses)} responses from miners for TaskWarrantProtocol requests💊")
 
@@ -258,11 +312,18 @@ class Validator(base.BaseValidator):
             logger.info(f"📉 Compression UIDs: {compression_uids}")
         if unknown_task_miners:
             logger.info(f"❓ Unknown task UIDs processed: {unknown_task_miners}")
+        
+        logger.info("Sleeping for 2 minutes before starting epoch")
+        await asyncio.sleep(120)
 
         # ---- Run upscaling & compression epochs in parallel ---- #
         async def _run_upscaling():
             if not upscaling_miners:
                 return
+            
+            logger.info("🧩 Sleeping for 3 minute before starting upscaling epoch")
+            await asyncio.sleep(180)
+            
             logger.info(f"Sending LengthCheckProtocol requests to {len(upscaling_miners)} upscaling miners")
 
             upscaling_start_time = time.time()
@@ -277,17 +338,20 @@ class Validator(base.BaseValidator):
             upscaling_content_lengths = []
             for response in length_check_responses:
                 avail_max_len = response.max_content_length.value
-                if avail_max_len == 10:
+                if avail_max_len == 5:
                     upscaling_content_lengths.append(avail_max_len)
                 else:
-                    upscaling_content_lengths.append(5)
+                    upscaling_content_lengths.append(10)
 
             logger.info(f"Upscaling content lengths: {upscaling_content_lengths}")
 
             upscaling_miners_with_lengths = []
             for i, (axon, uid) in enumerate(upscaling_miners):
-                content_length = upscaling_content_lengths[i] if i < len(upscaling_content_lengths) else 5
+                content_length = upscaling_content_lengths[i] if i < len(upscaling_content_lengths) else 10
                 upscaling_miners_with_lengths.append((axon, uid, content_length))
+
+            logger.info(f"Sleeping for 2 minute before querying upscaling miners")
+            await asyncio.sleep(120)
 
             await self.process_upscaling_miners(upscaling_miners_with_lengths, version)
 
@@ -441,6 +505,23 @@ class Validator(base.BaseValidator):
 
         return batches
 
+    async def call_miner_batch(self, axons, synapse, batch, timeout=60):
+        start = time.perf_counter()
+
+        try:
+            raw = await self.dendrite.forward(
+                axons=axons,
+                synapse=synapse,
+                timeout=timeout,
+            )
+            duration = (time.perf_counter() - start) * 1000  # ms
+
+            logger.info(f"💊 Received {len(raw)} responses from miners in {duration} ms💊")
+            return raw
+        except Exception as e:
+            logger.error(f"Unexpected error calling miner batch: {e}", exc_info=True)
+            return []
+
     async def call_miner(self, axon, synapse, uid, timeout=60):
         start = time.perf_counter()
 
@@ -515,8 +596,7 @@ class Validator(base.BaseValidator):
             
             round_id = str(uuid.uuid4())
             payload_urls, video_ids, uploaded_object_names, synapses, task_types = await self.challenge_synthesizer.build_synthetic_protocol(content_lengths, version, round_id)
-            logger.info(f"Built compression challenge protocol: payload URLs: {payload_urls}\nvideo IDs: {video_ids}")
-            logger.debug(f"Built upscaling challenge protocol")
+            logger.info(f"Built upscaling challenge protocol: payload URLs: {payload_urls}\nvideo IDs: {video_ids}")
 
             timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -577,12 +657,7 @@ class Validator(base.BaseValidator):
         
         batch_start_time = time.time()
         
-        forward_tasks = [
-            self.call_miner(axon, synapse, uid, timeout=90)
-            for uid, axon, synapse in zip(uids, axons, synapses)
-        ]
-        raw_responses = await asyncio.gather(*forward_tasks)
-        responses = [response['result'] for response in raw_responses]
+        responses = await self.call_miner_batch(axons, synapses[0], num_miners, timeout=90)
 
         logger.info(f"🎲 Received {len(responses)} compression responses from miners 🎲")
 
@@ -593,8 +668,53 @@ class Validator(base.BaseValidator):
                 logger.warning(f"⚠️ Reference video file missing for video_id {video_id}: {reference_video_path}")
             reference_video_paths.append(reference_video_path)
 
+        
+        # Concurrently start all downloads that have valid URLs,
+        # limited by a semaphore to prevent timeouts on large fleets
+        semaphore = asyncio.Semaphore(15)
+
+        async def _download_with_semaphore(uid_val, url_str):
+            logger.info(f"UID {uid_val}: Queuing download for distorted video from {url_str}")
+            async with semaphore:
+                try:
+                    logger.info(f"UID {uid_val}: Starting download for distorted video from {url_str}")
+                    return await self.download_video(url_str)
+                except Exception as e:
+                    return e
+
+        download_tasks = []
+        for uid_val, response in zip(uids, responses):
+            url = response.miner_response.optimized_video_url
+            if not url or len(url) < 10:
+                logger.error(f"UID {uid_val}: invalid or missing distorted video download URL: {url}")
+                # Create a task that simply returns None
+                download_tasks.append(asyncio.create_task(asyncio.sleep(0, result=None)))
+            else:
+                download_tasks.append(
+                    asyncio.create_task(_download_with_semaphore(uid_val, url))
+                )
+        
+        # Wait for all downloads to finish
+        download_results = await asyncio.gather(*download_tasks, return_exceptions=True)
+        
+        # Process the results, handling any exceptions
+        distorted_file_paths = []
+        for uid_val, url, result in zip(uids, [r.miner_response.optimized_video_url for r in responses], download_results):
+            if isinstance(result, Exception):
+                logger.error(f"UID {uid_val}: Failed to download distorted video from {url} - {str(result)}")
+                distorted_file_paths.append(None)
+            elif result is None:
+                # Already logged in the loop above
+                distorted_file_paths.append(None)
+            elif isinstance(result, tuple) and len(result) >= 1:
+                distorted_file_paths.append(result[0])
+            else:
+                logger.error(f"UID {uid_val}: Unexpected result from download_video for {url} - {result}")
+                distorted_file_paths.append(None)
+
+
         batch_processed_time = time.time() - batch_start_time
-        logger.info(f"Completed compression gathering within {batch_processed_time:.2f} seconds")
+        logger.info(f"Completed compression gathering and downloading within {batch_processed_time:.2f} seconds")
 
         # Score in batches of 5
         score_batch_size = 5
@@ -603,6 +723,7 @@ class Validator(base.BaseValidator):
         for i in range(0, num_miners, score_batch_size):
             batch_uids = uids[i:i+score_batch_size]
             batch_responses = responses[i:i+score_batch_size]
+            batch_distorted_file_paths = distorted_file_paths[i:i+score_batch_size]
             batch_payload_urls = payload_urls[i:i+score_batch_size]
             batch_reference_paths = reference_video_paths[i:i+score_batch_size]
             batch_video_ids = video_ids[i:i+score_batch_size]
@@ -611,7 +732,8 @@ class Validator(base.BaseValidator):
             
             await self.score_compressions(
                 batch_uids, 
-                batch_responses, 
+                batch_responses,
+                batch_distorted_file_paths,
                 batch_payload_urls, 
                 batch_reference_paths, 
                 timestamp, 
@@ -623,6 +745,14 @@ class Validator(base.BaseValidator):
                 target_bitrate, 
                 round_id
             )
+            
+            # Cleanup downloaded distorted videos after scoring the batch
+            for path in batch_distorted_file_paths:
+                if path and os.path.exists(path):
+                    try:
+                        os.unlink(path)
+                    except Exception as e:
+                        logger.error(f"Error deleting distorted video file {path}: {e}")
             
             logger.info(f"Completed scoring compression batch {batch_uids} within {batch_processed_time:.2f} seconds")
             # await asyncio.sleep(sleep_time)
@@ -779,6 +909,7 @@ class Validator(base.BaseValidator):
         self,
         uids: list[int],
         responses: list[protocol.Synapse],
+        distorted_file_paths: list[str],
         payload_urls: list[str],
         reference_video_paths: list[str],
         timestamp: str,
@@ -800,7 +931,7 @@ class Validator(base.BaseValidator):
             "/score_compression_synthetics",
             json = {
                 "uids": uids,
-                "distorted_urls": distorted_urls,
+                "distorted_file_paths": distorted_file_paths,
                 "reference_paths": reference_video_paths,
                 "video_ids": video_ids,
                 "uploaded_object_names": uploaded_object_names,

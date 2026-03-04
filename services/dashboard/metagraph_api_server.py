@@ -179,7 +179,7 @@ def health_check():
 def get_filtered_miners(threshold=threshold):
     """Get filtered miners with optimized database operations - reads DB once per request"""
     miner_info = MinerInfo()
-    subtensor = bt.subtensor()
+    subtensor = bt.Subtensor()
     metagraph = subtensor.metagraph(netuid=85)
     
     incentives = metagraph.I

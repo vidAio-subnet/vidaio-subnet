@@ -16,13 +16,13 @@ class BaseMiner(ABC):
         self.init_bittensor()
 
     def init_bittensor(self):
-        self.subtensor = bt.subtensor(config=self.config)
+        self.subtensor = bt.Subtensor(config=self.config)
         logger.info(f"Subtensor: {self.subtensor}")
-        self.wallet = bt.wallet(config=self.config)
+        self.wallet = bt.Wallet(config=self.config)
         logger.info(f"Wallet: {self.wallet}")
         self.metagraph = self.subtensor.metagraph(netuid=self.config.netuid)
         logger.info(f"Metagraph: {self.metagraph}")
-        self.axon = bt.axon(config=self.config)
+        self.axon = bt.Axon(config=self.config)
         self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         logger.info(f"Running Miner with UID {self.uid}")
         self.axon.attach(
@@ -56,12 +56,12 @@ class BaseMiner(ABC):
     def get_config(self):
         parser = argparse.ArgumentParser()
         parser = add_common_config(parser)
-        config = bt.config(parser)
+        config = bt.Config(parser)
         config.full_path = os.path.expanduser(
             "{}/{}/{}/netuid{}/{}".format(
                 config.logging.logging_dir,
                 config.wallet.name,
-                config.wallet.hotkey_str,
+                config.wallet.hotkey,
                 config.netuid,
                 "validator",
             )

@@ -27,12 +27,12 @@ class BaseValidator(ABC):
     def get_config(self):
         parser = argparse.ArgumentParser()
         parser = add_common_config(parser)
-        config = bt.config(parser)
+        config = bt.Config(parser)
         config.full_path = os.path.expanduser(
             "{}/{}/{}/netuid{}/{}".format(
                 config.logging.logging_dir,
                 config.wallet.name,
-                config.wallet.hotkey_str,
+                config.wallet.hotkey,
                 config.netuid,
                 "validator",
             )
@@ -57,11 +57,11 @@ class BaseValidator(ABC):
 
     def setup_bittensor_objects(self):
         logger.info("Setting up Bittensor objects.")
-        self.wallet = bt.wallet(config=self.config)
+        self.wallet = bt.Wallet(config=self.config)
         logger.info(f"Wallet: {self.wallet}")
-        self.subtensor = bt.subtensor(config=self.config)
+        self.subtensor = bt.Subtensor(config=self.config)
         logger.info(f"Subtensor: {self.subtensor}")
-        self.dendrite = bt.dendrite(wallet=self.wallet)
+        self.dendrite = bt.Dendrite(wallet=self.wallet)
         logger.info(f"Dendrite: {self.dendrite}")
         logger.info(self.config.netuid)
         self.metagraph = self.subtensor.metagraph(self.config.netuid)
@@ -80,7 +80,7 @@ class BaseValidator(ABC):
             logger.info(f"Running validator on uid: {self.my_subnet_uid}")
 
     def setup_axon(self):
-        self.axon = bt.axon(wallet=self.wallet, config=self.config)
+        self.axon = bt.Axon(wallet=self.wallet, config=self.config)
         logger.info(
             f"Serving axon on network: {self.config.subtensor.network} with netuid: {self.config.netuid}"
         )
