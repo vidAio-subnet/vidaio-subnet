@@ -1282,14 +1282,27 @@ def process_video_permutations(
             else: # h264
                 codec_args = ["-c:v", "libx264", "-preset", "fast", "-crf", "18"]
 
+            concat_dir = os.path.abspath(os.path.dirname(concat_list_path))
+            out_dir = os.path.abspath(os.path.dirname(output_path))
+            
+            volumes = {concat_dir, out_dir}
+            vol_args = []
+            for vol in volumes:
+                vol_args.extend(["-v", f"{vol}:{vol}"])
+
             cmd = [
-                "ffmpeg", "-y",
+                "docker", "run", "--rm",
+                *vol_args,
+                "vmaf_ffmpeg",
+                "-y",
                 "-f", "concat", "-safe", "0",
                 "-i", concat_list_path
             ] + codec_args + [
                 "-c:a", "copy", "-an", output_path,
                 "-hide_banner", "-loglevel", "error"
             ]
+
+            print(f"🎉 Creating permutation {i} with codec: {target_codec}...")
             subprocess.run(cmd, check=True)
 
             final_output_paths.append(output_path)
