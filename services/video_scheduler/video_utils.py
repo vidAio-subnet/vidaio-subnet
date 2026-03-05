@@ -1292,6 +1292,7 @@ def process_video_permutations(
 
             cmd = [
                 "docker", "run", "--rm",
+                "--gpus", "all",
                 *vol_args,
                 "vmaf_ffmpeg",
                 "-y",
