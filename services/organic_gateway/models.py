@@ -25,13 +25,6 @@ class UpscaleResponse(BaseModel):
     status: TaskStatus
     message: str
 
-TARGET_CODECS = [
-    "av1",        # AV1 codec (protocol standard name)
-    # "hevc",       # H.265/HEVC (protocol standard name) 
-    # "h264",       # H.264/AVC (protocol standard name)
-    # "vp9",        # VP9 (protocol standard name)
-]
-
 class CompressionRequest(BaseModel):
     chunk_id: str
     chunk_url: str
