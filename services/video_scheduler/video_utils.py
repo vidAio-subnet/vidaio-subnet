@@ -1266,11 +1266,27 @@ def process_video_permutations(
                 for seg in final_segment_order:
                     f.write(f"file '{os.path.abspath(seg)}'\n")
 
+            target_codec = random.choice([
+                "av1",        # AV1 codec (protocol standard name)
+                "hevc",       # H.265/HEVC (protocol standard name) 
+                "h264",       # H.264/AVC (protocol standard name)
+                "vp9",        # VP9 (protocol standard name)
+            ])
+            
+            if target_codec == "av1":
+                codec_args = ["-c:v", "libsvtav1", "-preset", "8", "-crf", "30"]
+            elif target_codec == "hevc":
+                codec_args = ["-c:v", "libx265", "-preset", "fast", "-crf", "24"]
+            elif target_codec == "vp9":
+                codec_args = ["-c:v", "libvpx-vp9", "-cpu-used", "4", "-crf", "30", "-b:v", "0"]
+            else: # h264
+                codec_args = ["-c:v", "libx264", "-preset", "fast", "-crf", "18"]
+
             cmd = [
                 "ffmpeg", "-y",
                 "-f", "concat", "-safe", "0",
-                "-i", concat_list_path,
-                "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                "-i", concat_list_path
+            ] + codec_args + [
                 "-c:a", "copy", "-an", output_path,
                 "-hide_banner", "-loglevel", "error"
             ]
