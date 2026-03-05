@@ -1296,9 +1296,9 @@ def process_video_permutations(
                 "vmaf_ffmpeg",
                 "-y",
                 "-f", "concat", "-safe", "0",
-                "-i", concat_list_path
+                "-i", os.path.abspath(concat_list_path)
             ] + codec_args + [
-                "-c:a", "copy", "-an", output_path,
+                "-c:a", "copy", "-an", os.path.abspath(output_path),
                 "-hide_banner", "-loglevel", "error"
             ]
 
