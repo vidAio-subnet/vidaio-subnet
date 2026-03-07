@@ -279,7 +279,7 @@ class MinerManager:
                     miner.processing_task_type = "upscaling"
                     task_changed = True
 
-                    miner.accumulate_score = 0.05
+                    miner.accumulate_score = 0
                     miner.bonus_multiplier = 1.0
                     miner.penalty_f_multiplier = 1.0
                     miner.penalty_q_multiplier = 1.0
@@ -449,7 +449,7 @@ class MinerManager:
                     miner.processing_task_type = "compression"
                     task_changed = True
 
-                    miner.accumulate_score = 0.05
+                    miner.accumulate_score = 0
                     miner.bonus_multiplier = 1.0
                     miner.penalty_f_multiplier = 1.0
                     miner.penalty_q_multiplier = 1.0
