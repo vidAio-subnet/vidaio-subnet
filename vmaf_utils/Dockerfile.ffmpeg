@@ -7,6 +7,7 @@ RUN apt-get update && \
     libx264-dev \
     libx265-dev \
     libnuma-dev \
+    libxml2-dev \
     git \
     python3-pip \
     cmake \
