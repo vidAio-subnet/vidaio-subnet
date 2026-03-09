@@ -22,12 +22,14 @@ RUN apt-get update && \
 # build SVT-AV1
 RUN git clone --depth 1 https://gitlab.com/AOMediaCodec/SVT-AV1.git && \
     cd SVT-AV1/Build && \
+    git reset --hard 3610ad762b9f634e149262895f9561d25711bbf6 && \
     cmake .. -G"Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF && \
     make -j$(nproc) && make install
 
 # build dav1d from source (requires >= 1.0.0 for ffmpeg)
 RUN git clone --depth 1 --branch 1.4.2 https://code.videolan.org/videolan/dav1d.git && \
     cd dav1d && \
+    git reset --hard 241a6b236a9c84441c872119c1f31b4074c0589d && \
     mkdir build && cd build && \
     meson setup .. --default-library=static --buildtype release && \
     ninja && \
@@ -38,6 +40,7 @@ RUN git clone --depth 1 --branch 1.4.2 https://code.videolan.org/videolan/dav1d.
 # build VVenC (VVC / H.266 Encoder)
 RUN git clone https://github.com/fraunhoferhhi/vvenc.git && \
     cd vvenc && \
+    git reset --hard 316087e5fb43ed1be82926fcedcca1592bed6478 && \
     mkdir build && cd build && \
     cmake .. -G"Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local && \
     make -j$(nproc) && make install
