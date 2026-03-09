@@ -1270,7 +1270,7 @@ def process_video_permutations(
                 # "av1",        # AV1 codec (protocol standard name)
                 "hevc",       # H.265/HEVC (protocol standard name) 
                 "h264",       # H.264/AVC (protocol standard name)
-                "vp9",        # VP9 (protocol standard name)
+                # "vp9",        # VP9 (protocol standard name)
             ])
             
             if target_codec == "av1":
@@ -1278,7 +1278,7 @@ def process_video_permutations(
             elif target_codec == "hevc":
                 codec_args = ["-c:v", "libx265", "-preset", "fast", "-crf", "24"]
             elif target_codec == "vp9":
-                codec_args = ["-c:v", "libvpx-vp9", "-cpu-used", "4", "-crf", "30", "-b:v", "0"]
+                codec_args = ["-c:v", "libvpx-vp9", "-cpu-used", "5", "-deadline", "realtime", "-crf", "30", "-b:v", "0"]
             else: # h264
                 codec_args = ["-c:v", "libx264", "-preset", "fast", "-crf", "18"]
 
