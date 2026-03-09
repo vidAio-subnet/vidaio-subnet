@@ -262,12 +262,25 @@ class AmazonS3Client:
                 print("No objects to delete.")
                 return
 
+            loop = asyncio.get_running_loop()
+            
+            chunk_size = 1000
             count = 0
-            # Delete each object
-            for obj in objects:
-                print(f"Deleting object: {obj.object_name}")
-                await self.delete_file(obj.object_name)
-                count += 1
+            for i in range(0, len(objects), chunk_size):
+                chunk = objects[i:i + chunk_size]
+                delete_keys = [{'Key': obj.object_name} for obj in chunk]
+                
+                def delete_batch(keys):
+                    return self.client.delete_objects(
+                        Bucket=self.bucket_name,
+                        Delete={'Objects': keys, 'Quiet': True}
+                    )
+                
+                await loop.run_in_executor(self.executor, delete_batch, delete_keys)
+                count += len(chunk)
+                print(f"Deleted batch of {len(chunk)} objects.")
+                await asyncio.sleep(0.1)
+                
             print(f"All {count} objects deleted successfully.")
         except Exception as e:
             print(f"Error deleting all items in bucket: {e}")
@@ -424,11 +437,25 @@ class CloudflareR2Client:
                 print("No objects to delete.")
                 return
 
+            loop = asyncio.get_running_loop()
+            
+            chunk_size = 1000
             count = 0
-            for obj in objects:
-                print(f"Deleting object: {obj.object_name}")
-                await self.delete_file(obj.object_name)
-                count += 1
+            for i in range(0, len(objects), chunk_size):
+                chunk = objects[i:i + chunk_size]
+                delete_keys = [{'Key': obj.object_name} for obj in chunk]
+                
+                def delete_batch(keys):
+                    return self.client.delete_objects(
+                        Bucket=self.bucket_name,
+                        Delete={'Objects': keys, 'Quiet': True}
+                    )
+                
+                await loop.run_in_executor(self.executor, delete_batch, delete_keys)
+                count += len(chunk)
+                print(f"Deleted batch of {len(chunk)} objects in R2.")
+                await asyncio.sleep(0.1)
+                
             print(f"All {count} objects deleted successfully.")
         except Exception as e:
             print(f"Error deleting all items in R2 bucket: {e}")
