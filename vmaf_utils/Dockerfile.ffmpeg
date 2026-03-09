@@ -1,8 +1,15 @@
 FROM vmaf
 
 RUN apt-get update && \
-    apt-get install -y pkg-config libvpx-dev libx264-dev git python3-pip && \
-    pip3 install meson
+    apt-get install -y pkg-config libvpx-dev libx264-dev git python3-pip cmake ninja-build && \
+    pip3 install meson && \
+    rm -rf /var/lib/apt/lists/*
+
+# build SVT-AV1
+RUN git clone --depth 1 https://gitlab.com/AOMediaCodec/SVT-AV1.git && \
+cd SVT-AV1/Build && \
+cmake .. -G"Unix Makefiles" -DCMAKE_BUILD_TYPE=Release && \
+make -j$(nproc) && make install
 
 # build dav1d from source (requires >= 1.0.0 for ffmpeg)
 RUN git clone --depth 1 --branch 1.4.2 https://code.videolan.org/videolan/dav1d.git && \
@@ -26,6 +33,7 @@ RUN cd ffmpeg && git reset --hard 33b215d1554a14e87416a24f8e6034312e629af7 && ./
     --enable-libx264 \
     --enable-libvmaf \
     --enable-libdav1d \
+    --enable-libsvtav1 \
     --enable-libvpx \
     --enable-nonfree \
     --enable-cuda-nvcc \
