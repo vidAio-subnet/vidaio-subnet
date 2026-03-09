@@ -30,16 +30,18 @@ RUN git clone https://github.com/fraunhoferhhi/vvenc.git && \
 
 # build AVM (AV2 Reference Codec)
 # Note: AVM is the research model for AV2. It builds a specialized libaom library with AV2 features enabled.
-RUN git clone https://gitlab.com/AOMediaCodec/avm.git && \
-    cd avm && \
-    mkdir build_tmp && cd build_tmp && \
-    cmake .. -G"Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_SHARED_LIBS=OFF -DENABLE_DOCS=0 -DENABLE_TESTS=0 -DCMAKE_POSITION_INDEPENDENT_CODE=ON && \
-    make -j$(nproc) && \
-    make install && \
-    mkdir -p /usr/local/include/aom && \
-    cp -r ../aom/*.h /usr/local/include/aom/ && \
-    find . -name "libaom.a" -exec cp {} /usr/local/lib/ \; && \
-    ldconfig
+# RUN git clone https://gitlab.com/AOMediaCodec/avm.git && \
+#     cd avm && \
+#     mkdir build_tmp && cd build_tmp && \
+#     cmake .. -G"Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_SHARED_LIBS=OFF -DENABLE_DOCS=0 -DENABLE_TESTS=0 -DCMAKE_POSITION_INDEPENDENT_CODE=ON && \
+#     make -j$(nproc) && \
+#     make install && \
+#     mkdir -p /usr/local/include/aom && \
+#     cp -r ../aom/*.h /usr/local/include/aom/ && \
+#     find . -name "libaom.a" -exec cp {} /usr/local/lib/ \; && \
+#     ldconfig
+
+ENV PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH"
 
 ARG FFMPEG_TAG=master
 ARG NVCC_FLAGS="-gencode arch=compute_75,code=sm_75 -gencode arch=compute_75,code=compute_75 -O2"
@@ -48,19 +50,21 @@ ARG NVCC_FLAGS="-gencode arch=compute_75,code=sm_75 -gencode arch=compute_75,cod
 RUN git clone https://github.com/FFmpeg/FFmpeg ffmpeg
 
 # configure ffmpeg (The Nuclear Option: Forging the missing aom.pc file)
-RUN mkdir -p /usr/lib/pkgconfig && \
-    echo "prefix=/usr/local" > /usr/lib/pkgconfig/aom.pc && \
-    echo "exec_prefix=\${prefix}" >> /usr/lib/pkgconfig/aom.pc && \
-    echo "libdir=\${prefix}/lib" >> /usr/lib/pkgconfig/aom.pc && \
-    echo "includedir=\${prefix}/include" >> /usr/lib/pkgconfig/aom.pc && \
-    echo "Name: aom" >> /usr/lib/pkgconfig/aom.pc && \
-    echo "Description: AOMedia codec library (AVM Fork)" >> /usr/lib/pkgconfig/aom.pc && \
-    echo "Version: 3.0.0" >> /usr/lib/pkgconfig/aom.pc && \
-    echo "Libs: -L\${libdir} -laom -lm -lpthread -lstdc++" >> /usr/lib/pkgconfig/aom.pc && \
-    echo "Cflags: -I\${includedir}" >> /usr/lib/pkgconfig/aom.pc && \
-    find /usr/local -name "*.pc" -exec cp {} /usr/lib/pkgconfig/ \; || true && \
-    cd ffmpeg && \
-    PKG_CONFIG_PATH="/usr/lib/pkgconfig" \
+# RUN mkdir -p /usr/lib/pkgconfig && \
+#     echo "prefix=/usr/local" > /usr/lib/pkgconfig/aom.pc && \
+#     echo "exec_prefix=\${prefix}" >> /usr/lib/pkgconfig/aom.pc && \
+#     echo "libdir=\${prefix}/lib" >> /usr/lib/pkgconfig/aom.pc && \
+#     echo "includedir=\${prefix}/include" >> /usr/lib/pkgconfig/aom.pc && \
+#     echo "Name: aom" >> /usr/lib/pkgconfig/aom.pc && \
+#     echo "Description: AOMedia codec library (AVM Fork)" >> /usr/lib/pkgconfig/aom.pc && \
+#     echo "Version: 3.0.0" >> /usr/lib/pkgconfig/aom.pc && \
+#     echo "Libs: -L\${libdir} -laom -lm -lpthread -lstdc++" >> /usr/lib/pkgconfig/aom.pc && \
+#     echo "Cflags: -I\${includedir}" >> /usr/lib/pkgconfig/aom.pc && \
+#     find /usr/local -name "*.pc" -exec cp {} /usr/lib/pkgconfig/ \; || true && \
+
+
+RUN cd ffmpeg && \
+    # PKG_CONFIG_PATH="/usr/lib/pkgconfig" \
     ./configure \
     --enable-gpl \
     --enable-libx264 \
@@ -70,7 +74,7 @@ RUN mkdir -p /usr/lib/pkgconfig && \
     --enable-libsvtav1 \
     --enable-libvpx \
     --enable-libvvenc \
-    --enable-libaom \
+    # --enable-libaom \
     --enable-nonfree \
     --enable-cuda-nvcc \
     --enable-libnpp \
