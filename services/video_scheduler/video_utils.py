@@ -665,7 +665,7 @@ def download_transform_and_trim_downscale_video(
         
         try:
             print(f"Trimming chunk {i+1} to {actual_duration}s")
-            subprocess.run(trim_cmd, check=True, capture_output=True, text=True)
+            subprocess.run(trim_cmd, check=True)
 
             if not os.path.exists(clipped_path) or os.path.getsize(clipped_path) == 0:
                 safe_print(f"Warning: Trim output is empty or invalid: {clipped_path}")
@@ -675,7 +675,7 @@ def download_transform_and_trim_downscale_video(
 
             if use_downscale_video:
                 print(f"Downscaling chunk {i+1} to {downscale_height}p with normalized framerate")
-                subprocess.run(scale_cmd, check=True, capture_output=True, text=True)
+                subprocess.run(scale_cmd, check=True)
                 
                 if not os.path.exists(downscale_path) or os.path.getsize(downscale_path) == 0:
                     safe_print(f"Warning: Downscale output is empty or invalid: {downscale_path}")
@@ -693,8 +693,6 @@ def download_transform_and_trim_downscale_video(
             
         except subprocess.SubprocessError as e:
             safe_print(f"Error processing chunk {i+1}: {e}")
-            if hasattr(e, 'stderr') and e.stderr:
-                safe_print(f"FFmpeg stderr:\n{e.stderr}")
             
             cleanup_files = []
             if os.path.exists(clipped_path):
@@ -1307,7 +1305,7 @@ def process_video_permutations(
 
             print(f"🎉 Creating permutation {i} with codec: {target_codec}...")
             start_concat_time = time.time()
-            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            subprocess.run(cmd, check=True)
             elapsed_concat_time = time.time() - start_concat_time
             print(f"⏱️ Time taken to create permutation {i}: {elapsed_concat_time:.2f}s")
 
@@ -1316,8 +1314,6 @@ def process_video_permutations(
 
         except Exception as e:
             print(f"Error creating scrambled permutation {i}: {e}")
-            if hasattr(e, 'stderr') and e.stderr:
-                print(f"FFmpeg stderr:\n{e.stderr}")
         finally:
             # Clean up temp segments and concat list
             if os.path.exists(concat_list_path):
@@ -1534,8 +1530,8 @@ def download_trim_downscale_youtube_video(
         ]
         
         try:
-            subprocess.run(trim_cmd, check=True, capture_output=True, text=True)
-            subprocess.run(scale_cmd, check=True, capture_output=True, text=True)
+            subprocess.run(trim_cmd, check=True)
+            subprocess.run(scale_cmd, check=True)
             
             chunk_elapsed_time = time.time() - chunk_start_time
             safe_print(f"Time taken to process YouTube chunk {i+1}: {chunk_elapsed_time:.2f} seconds")
@@ -1544,8 +1540,6 @@ def download_trim_downscale_youtube_video(
             
         except subprocess.SubprocessError as e:
             safe_print(f"Error processing YouTube chunk {i+1}: {e}")
-            if hasattr(e, 'stderr') and e.stderr:
-                safe_print(f"FFmpeg stderr:\n{e.stderr}")
             
             cleanup_files = []
             if os.path.exists(clipped_path):
