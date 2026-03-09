@@ -1,7 +1,7 @@
 FROM vmaf
 
 RUN apt-get update && \
-    apt-get install -y pkg-config libvpx-dev libx264-dev libx265-dev git python3-pip cmake ninja-build && \
+    apt-get install -y pkg-config libvpx-dev libx264-dev libx265-dev git python3-pip cmake ninja-build nasm yasm && \
     pip3 install meson && \
     rm -rf /var/lib/apt/lists/*
 

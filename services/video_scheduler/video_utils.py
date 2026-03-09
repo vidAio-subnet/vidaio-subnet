@@ -1304,7 +1304,10 @@ def process_video_permutations(
             ]
 
             print(f"🎉 Creating permutation {i} with codec: {target_codec}...")
+            start_concat_time = time.time()
             subprocess.run(cmd, check=True)
+            elapsed_concat_time = time.time() - start_concat_time
+            print(f"⏱️ Time taken to create permutation {i}: {elapsed_concat_time:.2f}s")
 
             final_output_paths.append(output_path)
             final_video_ids.append(perm_uuid)
