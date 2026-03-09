@@ -1267,7 +1267,7 @@ def process_video_permutations(
                     f.write(f"file '{os.path.abspath(seg)}'\n")
 
             target_codec = random.choice([
-                "av1",        # AV1 codec (protocol standard name)
+                # "av1",        # AV1 codec (protocol standard name)
                 "hevc",       # H.265/HEVC (protocol standard name) 
                 "h264",       # H.264/AVC (protocol standard name)
                 "vp9",        # VP9 (protocol standard name)
