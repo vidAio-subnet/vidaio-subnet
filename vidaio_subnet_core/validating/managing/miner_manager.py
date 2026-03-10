@@ -30,6 +30,10 @@ class MinerManager:
         self.subtensor = bt.Subtensor(config=self.config)
         self.burn_proportion = float(1/3)   # 1 of miner emissions burnt
 
+        # top X compression & upscaling miners getting non-zero emissions
+        self.top_n_compression_miners_cutoff_rank = 50
+        self.top_n_upscaling_miners_cutoff_rank = 50
+
         self.metagraph = metagraph
         self.config_url = CONFIG.sql.url
         self.local_db_path = "video_subnet_validator.db"
@@ -1232,8 +1236,13 @@ class MinerManager:
 
         # Process compression miners (60% of total rewards)
         if compression_miners:
+            compression_miners.sort(key=lambda x: x[1], reverse=True)
             compression_uids, compression_scores = zip(*compression_miners)
             compression_scores = np.array(compression_scores)
+
+            # limit to top N miners
+            if len(compression_scores) > self.top_n_compression_miners_cutoff_rank:
+                compression_scores[self.top_n_compression_miners_cutoff_rank:] = 0
             
             # Normalize compression scores and apply 60% allocation
             if compression_scores.sum() > 0:
@@ -1247,8 +1256,13 @@ class MinerManager:
         
         # Process upscaling miners (40% of total rewards)
         if upscaling_miners:
+            upscaling_miners.sort(key=lambda x: x[1], reverse=True)
             upscaling_uids, upscaling_scores = zip(*upscaling_miners)
             upscaling_scores = np.array(upscaling_scores)
+            
+            # limit to top N miners
+            if len(upscaling_scores) > self.top_n_upscaling_miners_cutoff_rank:
+                upscaling_scores[self.top_n_upscaling_miners_cutoff_rank:] = 0
             
             # Normalize upscaling scores and apply 40% allocation
             if upscaling_scores.sum() > 0:
