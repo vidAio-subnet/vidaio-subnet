@@ -157,13 +157,27 @@ def load_quality_model():
     model.eval()
     return model
 
-async def download_video(video_url: str, verbose: bool) -> tuple[str, float]:
+_shared_session: Optional[aiohttp.ClientSession] = None
+
+async def get_shared_session() -> aiohttp.ClientSession:
+    """Get or create a shared aiohttp ClientSession for connection pooling."""
+    global _shared_session
+    if _shared_session is None or _shared_session.closed:
+        # sock_read timeout prevents hanging on stalled downloads
+        timeout = aiohttp.ClientTimeout(sock_connect=30, sock_read=30, total=300)
+        connector = aiohttp.TCPConnector(limit=50)  # Adjust concurrency limit as needed
+        _shared_session = aiohttp.ClientSession(timeout=timeout, connector=connector)
+    return _shared_session
+
+async def download_video(video_url: str, verbose: bool, session: Optional[aiohttp.ClientSession] = None) -> tuple[str, float]:
     """
     Download a video from the given URL and save it to a temporary file.
+    Supports retries, connection pooling, partial download resumes, and tuned timeouts.
 
     Args:
         video_url (str): The URL of the video to download.
         verbose (bool): Whether to show download progress.
+        session (Optional[aiohttp.ClientSession]): Shared session for connection pooling.
 
     Returns:
         tuple[str, float]: A tuple containing the path to the downloaded video file
@@ -176,23 +190,41 @@ async def download_video(video_url: str, verbose: bool) -> tuple[str, float]:
         file_path = vid_temp.name  # Path to the temporary file
 
     max_retries = 2
+    start_time = time.time()  # Record start time
+
+    dl_session = session or await get_shared_session()
+
     for attempt in range(max_retries + 1):
         try:
-            if verbose:
-                logger.info(f"Downloading video from {video_url} to {file_path} (Attempt {attempt + 1}/{max_retries + 1})")
+            current_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+            headers = {}
+            
+            # If we have partially downloaded data, try to resume
+            if current_size > 0:
+                headers["Range"] = f"bytes={current_size}-"
+                if verbose:
+                    logger.info(f"Resuming download from byte {current_size} for {video_url} to {file_path} (Attempt {attempt + 1}/{max_retries + 1})")
+            else:
+                if verbose:
+                    logger.info(f"Downloading video from {video_url} to {file_path} (Attempt {attempt + 1}/{max_retries + 1})")
 
-            timeout = aiohttp.ClientTimeout(sock_connect=30, total=300)
-
-            start_time = time.time()  # Record start time
-
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(video_url) as response:
-                    if response.status != 200:
-                        raise Exception(f"Failed to download video. HTTP status: {response.status}")
-
+            async with dl_session.get(video_url, headers=headers) as response:
+                if response.status == 416:  # Range Not Satisfiable
+                    # The file might be fully downloaded already, or the server rejected the range.
+                    # We truncate the file and retry from scratch to be safe.
                     with open(file_path, "wb") as f:
-                        async for chunk in response.content.iter_chunked(2 * 1024 * 1024):
-                            f.write(chunk)
+                        pass
+                    raise Exception("Server returned 416 Range Not Satisfiable. Starting over.")
+                
+                if response.status not in (200, 206):
+                    raise Exception(f"Failed to download video. HTTP status: {response.status}")
+
+                # If status is 206 Partial Content, append. If 200 OK, the server ignored Range, so overwrite.
+                mode = "ab" if response.status == 206 else "wb"
+
+                with open(file_path, mode) as f:
+                    async for chunk in response.content.iter_chunked(2 * 1024 * 1024):
+                        f.write(chunk)
 
             end_time = time.time()  # Record end time
             download_time = end_time - start_time  # Calculate download duration
@@ -210,25 +242,25 @@ async def download_video(video_url: str, verbose: bool) -> tuple[str, float]:
                 raise Exception("Download failed: Server connection timed out")
             if verbose:
                 logger.warning(f"Download failed: Server connection timed out. Retrying {attempt + 1}/{max_retries}...")
-            await asyncio.sleep(1)
+            await asyncio.sleep(2 ** attempt)
         except asyncio.TimeoutError:
             if attempt == max_retries:
                 raise Exception("Download timed out")
             if verbose:
                 logger.warning(f"Download timed out. Retrying {attempt + 1}/{max_retries}...")
-            await asyncio.sleep(1)
+            await asyncio.sleep(2 ** attempt)
         except aiohttp.ClientError as e:
             if attempt == max_retries:
                 raise Exception(f"Download failed due to a network error: {type(e).__name__}: {repr(e)}")
             if verbose:
                 logger.warning(f"Download failed due to a network error: {type(e).__name__}: {repr(e)}. Retrying {attempt + 1}/{max_retries}...")
-            await asyncio.sleep(1)
+            await asyncio.sleep(2 ** attempt)
         except Exception as e:
             if attempt == max_retries:
                 raise
             if verbose:
                 logger.warning(f"Download failed: {str(e)}. Retrying {attempt + 1}/{max_retries}...")
-            await asyncio.sleep(1)
+            await asyncio.sleep(2 ** attempt)
 
 # Function to get ClipIQA+ score programmatically
 def get_clipiqa_score(video_path, num_frames=3):
