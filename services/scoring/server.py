@@ -172,42 +172,63 @@ async def download_video(video_url: str, verbose: bool) -> tuple[str, float]:
     Raises:
         Exception: If the download fails or takes longer than the timeout.
     """
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as vid_temp:
-            file_path = vid_temp.name  # Path to the temporary file
-        if verbose:
-            logger.info(f"Downloading video from {video_url} to {file_path}")
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as vid_temp:
+        file_path = vid_temp.name  # Path to the temporary file
 
-        timeout = aiohttp.ClientTimeout(sock_connect=30, total=300)
+    max_retries = 2
+    for attempt in range(max_retries + 1):
+        try:
+            if verbose:
+                logger.info(f"Downloading video from {video_url} to {file_path} (Attempt {attempt + 1}/{max_retries + 1})")
 
-        start_time = time.time()  # Record start time
+            timeout = aiohttp.ClientTimeout(sock_connect=30, total=300)
 
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(video_url) as response:
-                if response.status != 200:
-                    raise Exception(f"Failed to download video. HTTP status: {response.status}")
+            start_time = time.time()  # Record start time
 
-                with open(file_path, "wb") as f:
-                    async for chunk in response.content.iter_chunked(2 * 1024 * 1024):
-                        f.write(chunk)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(video_url) as response:
+                    if response.status != 200:
+                        raise Exception(f"Failed to download video. HTTP status: {response.status}")
 
-        end_time = time.time()  # Record end time
-        download_time = end_time - start_time  # Calculate download duration
+                    with open(file_path, "wb") as f:
+                        async for chunk in response.content.iter_chunked(2 * 1024 * 1024):
+                            f.write(chunk)
 
-        if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
-            raise Exception(f"Download failed or file is empty: {file_path}")
+            end_time = time.time()  # Record end time
+            download_time = end_time - start_time  # Calculate download duration
 
-        if verbose:
-            logger.info(f"File successfully downloaded to: {file_path}")
-            logger.info(f"Download time: {download_time:.2f} seconds")
+            if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+                raise Exception(f"Download failed or file is empty: {file_path}")
 
-        return file_path, download_time
-    except aiohttp.ServerTimeoutError:
-        raise Exception("Download failed: Server connection timed out")
-    except asyncio.TimeoutError:
-        raise Exception("Download timed out")
-    except aiohttp.ClientError as e:
-        raise Exception(f"Download failed due to a network error: {type(e).__name__}: {repr(e)}")
+            if verbose:
+                logger.info(f"File successfully downloaded to: {file_path}")
+                logger.info(f"Download time: {download_time:.2f} seconds")
+
+            return file_path, download_time
+        except aiohttp.ServerTimeoutError:
+            if attempt == max_retries:
+                raise Exception("Download failed: Server connection timed out")
+            if verbose:
+                logger.warning(f"Download failed: Server connection timed out. Retrying {attempt + 1}/{max_retries}...")
+            await asyncio.sleep(1)
+        except asyncio.TimeoutError:
+            if attempt == max_retries:
+                raise Exception("Download timed out")
+            if verbose:
+                logger.warning(f"Download timed out. Retrying {attempt + 1}/{max_retries}...")
+            await asyncio.sleep(1)
+        except aiohttp.ClientError as e:
+            if attempt == max_retries:
+                raise Exception(f"Download failed due to a network error: {type(e).__name__}: {repr(e)}")
+            if verbose:
+                logger.warning(f"Download failed due to a network error: {type(e).__name__}: {repr(e)}. Retrying {attempt + 1}/{max_retries}...")
+            await asyncio.sleep(1)
+        except Exception as e:
+            if attempt == max_retries:
+                raise
+            if verbose:
+                logger.warning(f"Download failed: {str(e)}. Retrying {attempt + 1}/{max_retries}...")
+            await asyncio.sleep(1)
 
 # Function to get ClipIQA+ score programmatically
 def get_clipiqa_score(video_path, num_frames=3):
@@ -1693,7 +1714,7 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 payload_path, download_time = await download_video(payload_url, request.verbose)
             except Exception as e:
                 error_msg = f"Failed to download payload video from {payload_path}: {str(e)}"
-                logger.error(f"{error_msg}. Assigning score of 0.")
+                logger.error(f"{error_msg}. Assigning score of -100, to be skipped while scoring.")
                 vmaf_scores.append(0.0)
                 pieapp_scores.append(0.0)
                 quality_scores.append(0.0)
