@@ -28,7 +28,7 @@ class MinerManager:
 
         self.config = config
         self.subtensor = bt.Subtensor(config=self.config)
-        self.burn_proportion = float(1/3)   # 1 of miner emissions burnt
+        self.burn_proportion = float(4/5)   # 80% of miner emissions burnt
 
         # top X compression & upscaling miners getting non-zero emissions
         self.top_n_compression_miners_cutoff_rank = 50
