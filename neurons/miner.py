@@ -214,7 +214,7 @@ class Miner(BaseMiner):
 
     async def blacklist_compression_job_requests(
         self, synapse: VideoCompressionJobProtocol
-    ) -> tuple[bool, str]:
+    ) -> Tuple[bool, str]:
         if not synapse.dendrite or not synapse.dendrite.hotkey:
             return True, "Missing dendrite or hotkey"
         uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
@@ -232,7 +232,7 @@ class Miner(BaseMiner):
 
     async def blacklist_compression_poll_requests(
         self, synapse: VideoCompressionPollProtocol
-    ) -> tuple[bool, str]:
+    ) -> Tuple[bool, str]:
         if not synapse.dendrite or not synapse.dendrite.hotkey:
             return True, "Missing dendrite or hotkey"
         uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
@@ -320,7 +320,7 @@ class Miner(BaseMiner):
 
     async def blacklist_upscaling_job_requests(
         self, synapse: VideoUpscalingJobProtocol
-    ) -> tuple[bool, str]:
+    ) -> Tuple[bool, str]:
         if not synapse.dendrite or not synapse.dendrite.hotkey:
             return True, "Missing dendrite or hotkey"
         uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
@@ -338,7 +338,7 @@ class Miner(BaseMiner):
 
     async def blacklist_upscaling_poll_requests(
         self, synapse: VideoUpscalingPollProtocol
-    ) -> tuple[bool, str]:
+    ) -> Tuple[bool, str]:
         if not synapse.dendrite or not synapse.dendrite.hotkey:
             return True, "Missing dendrite or hotkey"
         uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
