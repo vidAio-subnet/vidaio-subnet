@@ -2,6 +2,7 @@ import time
 import uuid
 import traceback
 import os
+import asyncio
 from typing import Tuple
 from loguru import logger
 import bittensor as bt
