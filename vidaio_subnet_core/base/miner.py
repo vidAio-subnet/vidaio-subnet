@@ -4,7 +4,16 @@ import threading
 from loguru import logger
 import time
 import traceback
-from vidaio_subnet_core.protocol import VideoUpscalingProtocol, LengthCheckProtocol, VideoCompressionProtocol, TaskWarrantProtocol
+from vidaio_subnet_core.protocol import (
+    VideoUpscalingProtocol,
+    LengthCheckProtocol,
+    VideoCompressionProtocol,
+    TaskWarrantProtocol,
+    VideoCompressionJobProtocol,
+    VideoCompressionPollProtocol,
+    VideoUpscalingJobProtocol,
+    VideoUpscalingPollProtocol,
+)
 import argparse
 from .config import add_common_config
 import os
@@ -41,6 +50,22 @@ class BaseMiner(ABC):
             forward_fn=self.forward_task_warrant_requests,
             blacklist_fn=self.blacklist_task_warrant_requests,
             priority_fn=self.priority_task_warrant_requests,
+        ).attach(
+            forward_fn=self.forward_compression_job_requests,
+            blacklist_fn=self.blacklist_compression_job_requests,
+            priority_fn=self.priority_compression_job_requests,
+        ).attach(
+            forward_fn=self.forward_compression_poll_requests,
+            blacklist_fn=self.blacklist_compression_poll_requests,
+            priority_fn=self.priority_compression_poll_requests,
+        ).attach(
+            forward_fn=self.forward_upscaling_job_requests,
+            blacklist_fn=self.blacklist_upscaling_job_requests,
+            priority_fn=self.priority_upscaling_job_requests,
+        ).attach(
+            forward_fn=self.forward_upscaling_poll_requests,
+            blacklist_fn=self.blacklist_upscaling_poll_requests,
+            priority_fn=self.priority_upscaling_poll_requests,
         )
 
         self.check_registered()
@@ -109,6 +134,50 @@ class BaseMiner(ABC):
 
     @abstractmethod
     async def priority_task_warrant_requests(self, synapse: TaskWarrantProtocol) -> float: ...
+
+    # ---- Polling: compression kick-off ----
+
+    @abstractmethod
+    async def forward_compression_job_requests(self, synapse: VideoCompressionJobProtocol) -> bt.Synapse: ...
+
+    @abstractmethod
+    async def blacklist_compression_job_requests(self, synapse: VideoCompressionJobProtocol) -> bool: ...
+
+    @abstractmethod
+    async def priority_compression_job_requests(self, synapse: VideoCompressionJobProtocol) -> float: ...
+
+    # ---- Polling: compression status poll ----
+
+    @abstractmethod
+    async def forward_compression_poll_requests(self, synapse: VideoCompressionPollProtocol) -> bt.Synapse: ...
+
+    @abstractmethod
+    async def blacklist_compression_poll_requests(self, synapse: VideoCompressionPollProtocol) -> bool: ...
+
+    @abstractmethod
+    async def priority_compression_poll_requests(self, synapse: VideoCompressionPollProtocol) -> float: ...
+
+    # ---- Polling: upscaling kick-off ----
+
+    @abstractmethod
+    async def forward_upscaling_job_requests(self, synapse: VideoUpscalingJobProtocol) -> bt.Synapse: ...
+
+    @abstractmethod
+    async def blacklist_upscaling_job_requests(self, synapse: VideoUpscalingJobProtocol) -> bool: ...
+
+    @abstractmethod
+    async def priority_upscaling_job_requests(self, synapse: VideoUpscalingJobProtocol) -> float: ...
+
+    # ---- Polling: upscaling status poll ----
+
+    @abstractmethod
+    async def forward_upscaling_poll_requests(self, synapse: VideoUpscalingPollProtocol) -> bt.Synapse: ...
+
+    @abstractmethod
+    async def blacklist_upscaling_poll_requests(self, synapse: VideoUpscalingPollProtocol) -> bool: ...
+
+    @abstractmethod
+    async def priority_upscaling_poll_requests(self, synapse: VideoUpscalingPollProtocol) -> float: ...
 
     def run(self):
         """

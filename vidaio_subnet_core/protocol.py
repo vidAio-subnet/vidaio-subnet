@@ -79,6 +79,38 @@ class MinerResponse(BaseModel):
     )
 
 
+# ---------------------------------------------------------------------------
+# Polling-based organic protocol models
+# ---------------------------------------------------------------------------
+
+class JobKickoffResponse(BaseModel):
+    """Returned by miner on job kick-off. Contains the assigned job_id."""
+    job_id: str = Field(
+        description="UUID assigned by the miner for this async job",
+        default="",
+    )
+    accepted: bool = Field(
+        description="Whether the miner accepted the job",
+        default=False,
+    )
+
+
+class PollResponse(BaseModel):
+    """Returned by miner on each poll request."""
+    job_id: str = Field(
+        description="The job_id being polled",
+        default="",
+    )
+    status: str = Field(
+        description="Job status: 'processing' | 'completed' | 'failed'",
+        default="unknown",
+    )
+    optimized_video_url: str = Field(
+        description="Populated with the result URL once status is 'completed'",
+        default="",
+    )
+
+
 class ScoringPayload(BaseModel):
     reference_video_url: str = Field(
         description="The URL of the reference video",
@@ -192,4 +224,96 @@ class TaskWarrantProtocol(Synapse):
     warrant_task: Optional[TaskType] = Field(
         description="Type of task miner can handle: COMPRESSION or UPSCALING",
         default=None
+    )
+
+
+# ---------------------------------------------------------------------------
+# Polling-based organic compression protocols
+# ---------------------------------------------------------------------------
+
+class VideoCompressionJobProtocol(Synapse):
+    """Phase-1 organic compression kick-off.
+
+    Validator sends compression parameters; miner spawns an async job and
+    returns a ``job_id`` immediately without waiting for the result.
+    The ``miner_response`` field is populated by the validator after the
+    poll phase completes, so downstream code can access
+    ``synapse.miner_response.optimized_video_url`` unchanged.
+    """
+
+    miner_payload: CompressionMinerPayload = Field(
+        description="Compression parameters for the miner job",
+        default_factory=CompressionMinerPayload,
+        frozen=True,
+    )
+    job_response: JobKickoffResponse = Field(
+        description="Miner's ack with assigned job_id",
+        default_factory=JobKickoffResponse,
+    )
+    miner_response: MinerResponse = Field(
+        description="Filled by validator after polling completes (for downstream compatibility)",
+        default_factory=MinerResponse,
+    )
+
+
+class VideoCompressionPollProtocol(Synapse):
+    """Phase-2 organic compression poll.
+
+    Validator sends the ``job_id`` from Phase-1; miner returns current
+    status and, when complete, the ``optimized_video_url``.
+    """
+
+    job_id: str = Field(
+        description="The job_id returned during the kick-off phase",
+        default="",
+    )
+    poll_response: PollResponse = Field(
+        description="Miner's current status + optional result URL",
+        default_factory=PollResponse,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Polling-based organic upscaling protocols
+# ---------------------------------------------------------------------------
+
+class VideoUpscalingJobProtocol(Synapse):
+    """Phase-1 organic upscaling kick-off.
+
+    Validator sends upscaling parameters; miner spawns an async job and
+    returns a ``job_id`` immediately without waiting for the result.
+    The ``miner_response`` field is populated by the validator after the
+    poll phase completes, so downstream code can access
+    ``synapse.miner_response.optimized_video_url`` unchanged.
+    """
+
+    miner_payload: UpscalingMinerPayload = Field(
+        description="Upscaling parameters for the miner job",
+        default_factory=UpscalingMinerPayload,
+        frozen=True,
+    )
+    job_response: JobKickoffResponse = Field(
+        description="Miner's ack with assigned job_id",
+        default_factory=JobKickoffResponse,
+    )
+    miner_response: MinerResponse = Field(
+        description="Filled by validator after polling completes (for downstream compatibility)",
+        default_factory=MinerResponse,
+    )
+
+
+class VideoUpscalingPollProtocol(Synapse):
+    """Phase-2 organic upscaling poll.
+
+    Validator sends the ``job_id`` from Phase-1; miner returns current
+    status and, when complete, the ``optimized_video_url``.
+    """
+
+    job_id: str = Field(
+        description="The job_id returned during the kick-off phase",
+        default="",
+    )
+    poll_response: PollResponse = Field(
+        description="Miner's current status + optional result URL",
+        default_factory=PollResponse,
     )

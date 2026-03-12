@@ -17,7 +17,16 @@ from vidaio_subnet_core import validating, CONFIG, base, protocol
 from vidaio_subnet_core.utilities.wandb_manager import WandbManager
 from services.video_scheduler.video_utils import get_trim_video_path, get_perumted_video_path
 from vidaio_subnet_core.utilities.uids import get_organic_forward_uids
-from vidaio_subnet_core.protocol import LengthCheckProtocol, TaskWarrantProtocol, TaskType
+from vidaio_subnet_core.protocol import (
+    LengthCheckProtocol,
+    TaskWarrantProtocol,
+    TaskType,
+    VideoCompressionJobProtocol,
+    VideoCompressionPollProtocol,
+    VideoUpscalingJobProtocol,
+    VideoUpscalingPollProtocol,
+    MinerResponse,
+)
 from vidaio_subnet_core.validating.managing.sql_schemas import MinerMetadata, MinerPerformanceHistory, Base
 from sqlalchemy import desc, asc, func, select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -571,6 +580,103 @@ class Validator(base.BaseValidator):
                 "latency_ms": duration,
             }
     
+    async def call_miner_polling(
+        self,
+        axon,
+        synapse_job,
+        uid: int,
+        PollProtocolClass,
+        poll_interval: float = 15.0,
+        max_polls: int = 20,
+    ):
+        """Polling-based miner call for organic requests.
+
+        Phase 1: Sends the job kick-off synapse and receives a ``job_id``
+        immediately (30s timeout — just long enough for a network round-trip).
+        Phase 2: Polls at ``poll_interval`` second intervals until the miner
+        reports ``completed`` or ``failed``, or ``max_polls`` is exhausted
+        (default: 20 × 15s = 5-minute budget).
+
+        Args:
+            axon: Target miner axon.
+            synapse_job: A ``VideoCompressionJobProtocol`` or
+                ``VideoUpscalingJobProtocol`` instance with the task payload.
+            uid: Miner UID (used for logging).
+            PollProtocolClass: ``VideoCompressionPollProtocol`` or
+                ``VideoUpscalingPollProtocol``.
+            poll_interval: Seconds between polls (default 15).
+            max_polls: Maximum poll attempts (default 20 → 5-min budget).
+
+        Returns:
+            Dict with keys ``uid``, ``result`` (synapse with populated
+            ``miner_response.optimized_video_url``), ``error``, ``latency_ms``.
+        """
+        start = time.perf_counter()
+
+        def _empty(error_msg):
+            return {
+                "uid": uid,
+                "result": synapse_job,
+                "error": error_msg,
+                "latency_ms": (time.perf_counter() - start) * 1000,
+            }
+
+        # ---- Phase 1: kick-off ----
+        try:
+            raw = await self.dendrite.forward(
+                axons=[axon], synapse=synapse_job, timeout=30
+            )
+            job_id = raw[0].job_response.job_id
+            accepted = raw[0].job_response.accepted
+        except Exception as e:
+            logger.error(f"UID {uid} → polling kick-off failed: {e}")
+            return _empty(str(e))
+
+        if not accepted or not job_id:
+            logger.warning(
+                f"UID {uid} → miner did not accept the job (job_id={job_id!r})"
+            )
+            return _empty("not accepted")
+
+        logger.info(f"UID {uid} → job kick-off accepted | job_id={job_id}")
+
+        # ---- Phase 2: poll loop ----
+        for poll_num in range(1, max_polls + 1):
+            await asyncio.sleep(poll_interval)
+            try:
+                poll_syn = PollProtocolClass(job_id=job_id)
+                raw = await self.dendrite.forward(
+                    axons=[axon], synapse=poll_syn, timeout=15
+                )
+                resp = raw[0].poll_response
+            except Exception as e:
+                logger.warning(f"UID {uid} | poll #{poll_num} error: {e}")
+                continue
+
+            logger.info(f"UID {uid} | poll #{poll_num} → status={resp.status}")
+
+            if resp.status == "completed":
+                # Shim result so all downstream code can access
+                # .miner_response.optimized_video_url unchanged.
+                synapse_job.miner_response = MinerResponse(
+                    optimized_video_url=resp.optimized_video_url
+                )
+                return {
+                    "uid": uid,
+                    "result": synapse_job,
+                    "error": None,
+                    "latency_ms": (time.perf_counter() - start) * 1000,
+                }
+            elif resp.status == "failed":
+                logger.error(f"UID {uid} → job {job_id} reported failed")
+                return _empty("miner reported failed")
+            # status == "processing" → keep polling
+
+        logger.error(
+            f"UID {uid} → polling timed out after {max_polls} attempts for job {job_id}"
+        )
+        return _empty("polling timeout")
+
     async def process_upscaling_miners(self, upscaling_miners_with_lengths, version):
         """Process upscaling miners in batches similar to the original implementation."""
         batch_size = CONFIG.bandwidth.requests_per_synthetic_interval
@@ -1245,9 +1351,9 @@ class Validator(base.BaseValidator):
 
         timestamp = datetime.now(timezone.utc).isoformat()
 
-        logger.info("🌜 | UPSCALING | Performing forward operations asynchronously for upscaling 🌜")
+        logger.info("🌜 | UPSCALING | Performing polling-based forward operations for upscaling 🌜")
         forward_tasks = [
-            self.call_miner(axon, synapse, uid, timeout=100)
+            self.call_miner_polling(axon, synapse, uid, VideoUpscalingPollProtocol)
             for uid, axon, synapse in zip(forward_uids, axon_list, synapses)
         ]
         raw_responses = await asyncio.gather(*forward_tasks)
@@ -1298,10 +1404,10 @@ class Validator(base.BaseValidator):
 
         timestamp = datetime.now(timezone.utc).isoformat()
 
-        logger.info("🌜 | COMPRESSION | Performing forward operations asynchronously for compression 🌜")
+        logger.info("🌜 | COMPRESSION | Performing polling-based forward operations for compression 🌜")
 
         forward_tasks = [
-            self.call_miner(axon, synapse, uid, timeout=120)
+            self.call_miner_polling(axon, synapse, uid, VideoCompressionPollProtocol)
             for uid, axon, synapse in zip(forward_uids, axon_list, synapses)
         ]
         raw_responses = await asyncio.gather(*forward_tasks)
