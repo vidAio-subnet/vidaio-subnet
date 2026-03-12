@@ -184,6 +184,7 @@ class Miner(BaseMiner):
         self, synapse: VideoCompressionPollProtocol
     ) -> VideoCompressionPollProtocol:
         """Phase-2: Return the current status (and result URL if done) for a compression job."""
+        logger.info(f"⭐️⭐️⭐️ Receiving CompressionPollRequest from validator: {synapse.dendrite.hotkey} with uid: {self.metagraph.hotkeys.index(synapse.dendrite.hotkey)} ⭐️⭐️⭐️")
         job_id = synapse.job_id
         job = self._jobs.get(job_id)
 
