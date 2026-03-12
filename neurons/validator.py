@@ -627,7 +627,7 @@ class Validator(base.BaseValidator):
         synapse_job.job_id = job_id
         try:
             raw = await self.dendrite.forward(
-                axons=[axon], synapse=synapse_job, timeout=30
+                axons=[axon], synapse=synapse_job, timeout=60
             )
             accepted = raw[0].job_response.accepted
         except Exception as e:
