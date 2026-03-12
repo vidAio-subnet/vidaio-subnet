@@ -152,7 +152,12 @@ class Miner(BaseMiner):
         )
 
         try:
-            job_id = str(uuid.uuid4())
+            job_id = synapse.job_id  # assigned by the validator
+            if not job_id:
+                logger.warning("CompressionJob received with empty job_id, rejecting")
+                synapse.job_response = JobKickoffResponse(accepted=False)
+                return synapse
+
             payload_url = synapse.miner_payload.reference_video_url
             vmaf_threshold = synapse.miner_payload.vmaf_threshold
             target_codec = synapse.miner_payload.target_codec
@@ -166,11 +171,11 @@ class Miner(BaseMiner):
 
             task = asyncio.create_task(_run_compression())
             self._jobs[job_id] = {"task": task, "result": None, "error": None}
-            synapse.job_response = JobKickoffResponse(job_id=job_id, accepted=True)
+            synapse.job_response = JobKickoffResponse(accepted=True)
             logger.info(f"📤 CompressionJob accepted | job_id={job_id}")
         except Exception as e:
             logger.error(f"Failed to accept compression job: {e}")
-            synapse.job_response = JobKickoffResponse(job_id="", accepted=False)
+            synapse.job_response = JobKickoffResponse(accepted=False)
 
         return synapse
 
@@ -258,7 +263,12 @@ class Miner(BaseMiner):
         )
 
         try:
-            job_id = str(uuid.uuid4())
+            job_id = synapse.job_id  # assigned by the validator
+            if not job_id:
+                logger.warning("UpscalingJob received with empty job_id, rejecting")
+                synapse.job_response = JobKickoffResponse(accepted=False)
+                return synapse
+
             payload_url = synapse.miner_payload.reference_video_url
             task_type = synapse.miner_payload.task_type
 
@@ -267,11 +277,11 @@ class Miner(BaseMiner):
 
             task = asyncio.create_task(_run_upscaling())
             self._jobs[job_id] = {"task": task, "result": None, "error": None}
-            synapse.job_response = JobKickoffResponse(job_id=job_id, accepted=True)
+            synapse.job_response = JobKickoffResponse(accepted=True)
             logger.info(f"📤 UpscalingJob accepted | job_id={job_id}")
         except Exception as e:
             logger.error(f"Failed to accept upscaling job: {e}")
-            synapse.job_response = JobKickoffResponse(job_id="", accepted=False)
+            synapse.job_response = JobKickoffResponse(accepted=False)
 
         return synapse
 

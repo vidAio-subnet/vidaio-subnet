@@ -622,17 +622,19 @@ class Validator(base.BaseValidator):
             }
 
         # ---- Phase 1: kick-off ----
+        # The validator owns the job_id — assign it before sending.
+        job_id = str(uuid.uuid4())
+        synapse_job.job_id = job_id
         try:
             raw = await self.dendrite.forward(
                 axons=[axon], synapse=synapse_job, timeout=30
             )
-            job_id = raw[0].job_response.job_id
             accepted = raw[0].job_response.accepted
         except Exception as e:
             logger.error(f"UID {uid} → polling kick-off failed: {e}")
             return _empty(str(e))
 
-        if not accepted or not job_id:
+        if not accepted:
             logger.warning(
                 f"UID {uid} → miner did not accept the job (job_id={job_id!r})"
             )

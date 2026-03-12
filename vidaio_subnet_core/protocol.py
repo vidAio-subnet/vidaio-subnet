@@ -84,11 +84,7 @@ class MinerResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 class JobKickoffResponse(BaseModel):
-    """Returned by miner on job kick-off. Contains the assigned job_id."""
-    job_id: str = Field(
-        description="UUID assigned by the miner for this async job",
-        default="",
-    )
+    """Returned by miner on job kick-off — confirms whether the job was accepted."""
     accepted: bool = Field(
         description="Whether the miner accepted the job",
         default=False,
@@ -234,20 +230,24 @@ class TaskWarrantProtocol(Synapse):
 class VideoCompressionJobProtocol(Synapse):
     """Phase-1 organic compression kick-off.
 
-    Validator sends compression parameters; miner spawns an async job and
-    returns a ``job_id`` immediately without waiting for the result.
+    The validator assigns a ``job_id`` before sending. The miner uses it as
+    the key for the async job so both sides share the same identifier.
     The ``miner_response`` field is populated by the validator after the
     poll phase completes, so downstream code can access
     ``synapse.miner_response.optimized_video_url`` unchanged.
     """
 
+    job_id: str = Field(
+        description="Validator-assigned UUID for this job",
+        default="",
+    )
     miner_payload: CompressionMinerPayload = Field(
         description="Compression parameters for the miner job",
         default_factory=CompressionMinerPayload,
         frozen=True,
     )
     job_response: JobKickoffResponse = Field(
-        description="Miner's ack with assigned job_id",
+        description="Miner's ack",
         default_factory=JobKickoffResponse,
     )
     miner_response: MinerResponse = Field(
@@ -280,20 +280,24 @@ class VideoCompressionPollProtocol(Synapse):
 class VideoUpscalingJobProtocol(Synapse):
     """Phase-1 organic upscaling kick-off.
 
-    Validator sends upscaling parameters; miner spawns an async job and
-    returns a ``job_id`` immediately without waiting for the result.
+    The validator assigns a ``job_id`` before sending. The miner uses it as
+    the key for the async job so both sides share the same identifier.
     The ``miner_response`` field is populated by the validator after the
     poll phase completes, so downstream code can access
     ``synapse.miner_response.optimized_video_url`` unchanged.
     """
 
+    job_id: str = Field(
+        description="Validator-assigned UUID for this job",
+        default="",
+    )
     miner_payload: UpscalingMinerPayload = Field(
         description="Upscaling parameters for the miner job",
         default_factory=UpscalingMinerPayload,
         frozen=True,
     )
     job_response: JobKickoffResponse = Field(
-        description="Miner's ack with assigned job_id",
+        description="Miner's ack",
         default_factory=JobKickoffResponse,
     )
     miner_response: MinerResponse = Field(
