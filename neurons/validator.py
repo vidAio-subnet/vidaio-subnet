@@ -586,7 +586,7 @@ class Validator(base.BaseValidator):
         synapse_job,
         uid: int,
         PollProtocolClass,
-        poll_interval: float = 15.0,
+        poll_interval: float = 60.0,
         max_polls: int = 20,
     ):
         """Polling-based miner call for organic requests.
