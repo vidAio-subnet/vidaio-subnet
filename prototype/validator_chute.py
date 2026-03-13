@@ -407,26 +407,13 @@ async def execute(self, request: ExecuteRequest) -> ExecuteResponse:
         if hashlib.sha256(script_bytes).hexdigest() != payload["script_hash"]:
             return ExecuteResponse(status="error", error="integrity check failed")
 
-        # Step 5: Load script — input_data intentionally absent from scope
-        #
-        # Two-phase execution model:
-        #   Phase A — compile + exec the script with NO input_data in globals.
-        #             The miner's module-level code runs without any knowledge
-        #             of the payload; it can only define functions/classes.
-        #   Phase B — the chute calls the exported `score(data)` entry-point,
-        #             passing input_data as a plain function argument.  This
-        #             happens entirely inside TDX-encrypted memory.
-        #
-        # The miner server (miner_axon.py) never receives input_data at any
-        # point in the protocol (handshake + script fetch carry no payload).
-        # Phase A ensures the miner's top-level script body cannot observe it
-        # either.  The function parameter in Phase B is a necessary interface
-        # contract, not an information leak to the miner's infrastructure.
+        # Step 5: Execute with restricted builtins
+        # The miner's script defines `score(data)` and never references
+        # input_data directly — the chute calls score() with input_data here.
         sys.settrace(None)
         sys.setprofile(None)
 
-        # Phase A: define functions/classes, no input_data in scope
-        load_sandbox = {
+        sandbox = {
             "__builtins__": _restricted_builtins(),
         }
 
@@ -434,11 +421,10 @@ async def execute(self, request: ExecuteRequest) -> ExecuteResponse:
         try:
             exec(  # noqa: S102
                 compile(script_bytes, "<miner_script>", "exec"),
-                load_sandbox,
+                sandbox,
             )
 
-            # Phase B: call the exported entry-point with input_data
-            entry_fn = load_sandbox.get("score")
+            entry_fn = sandbox.get("score")
             if not callable(entry_fn):
                 return ExecuteResponse(
                     status="error",
@@ -470,4 +456,4 @@ async def execute(self, request: ExecuteRequest) -> ExecuteResponse:
             script_bytes = b"\x00" * len(script_bytes)
             session_key = b"\x00" * 32
             raw_secret = b"\x00" * 32
-            del script_bytes, session_key, raw_secret, load_sandbox, session_private
+            del script_bytes, session_key, raw_secret, sandbox, session_private
