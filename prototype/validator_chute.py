@@ -1,11 +1,20 @@
 # validator_chute.py
 #
 # TEE COMPONENT — runs ONLY inside Chutes (TDX enclave).
-# This code decrypts and executes the miner's secret script.
-# The validator VM operator cannot see the plaintext script because:
-#   1. This code runs in hardware-encrypted memory (Intel TDX)
-#   2. The Chutes image is cosign-signed and attested — no modifications
-#   3. The validator VM only receives the execution *result*, never the script
+#
+# ATTESTATION MODEL (Option A — Chutes platform attestation):
+#   This chute does NOT access /dev/tdx_guest or generate TDX quotes.
+#   Instead, attestation is handled by Chutes' infrastructure:
+#     1. sek8s performs boot attestation (RTMR measurements → TD Quote)
+#     2. Chutes validator verifies quote against Intel root of trust
+#     3. LUKS passphrase released only if measurements match golden config
+#     4. Pod admitted only if image is cosign-signed by Chutes forge
+#   The miner verifies this chain via the Chutes API before sending
+#   the encrypted script (see validator_orchestrator.py).
+#
+#   This chute's job is simpler: receive miner_url + input_data,
+#   do ECDH handshake with the miner, decrypt script, execute it,
+#   return only the result. All crypto happens in TDX-encrypted RAM.
 #
 # ARCHITECTURE:
 #   Miner (VM1) ←─encrypted─→ Chute (TEE) ←─result only─→ Validator (VM2)
@@ -17,7 +26,7 @@
 #             -e CHUTES_EXECUTION_CONTEXT=REMOTE \
 #             -p 8080:8080 \
 #             --add-host=host.docker.internal:host-gateway \
-#             secure-validator:0.2 /bin/sh
+#             secure-validator:0.3 /bin/sh
 #   Terminal 4 (inside container):  chutes run validator_chute:chute --dev --port 8080
 #   Terminal 5:  python validator_orchestrator.py
 #
@@ -33,7 +42,7 @@ image = (
     Image(
         username="youruser",
         name="secure-validator",
-        tag="0.2",
+        tag="0.3",
     )
     .from_base("parachutes/python:3.12")
     .run_command("pip install cryptography httpx")
@@ -50,8 +59,11 @@ chute = Chute(
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
 class ExecuteRequest(BaseModel):
-    miner_url: str  # e.g. "http://192.168.1.10:9000"
+    miner_url: str
     input_data: dict
+    # The orchestrator passes the platform attestation proof so the chute
+    # can forward it to the miner during the handshake.
+    platform_attestation: dict | None = None
 
 
 class ExecuteResponse(BaseModel):
@@ -60,56 +72,7 @@ class ExecuteResponse(BaseModel):
     error: str | None = None
 
 
-# ── Attestation helpers ───────────────────────────────────────────────────────
-def _build_attestation_evidence(pubkey_bytes: bytes) -> dict:
-    """
-    Collect TDX attestation evidence, binding the ECDH pubkey into the
-    report_data field so the miner can verify key-to-enclave binding.
-
-    On real TDX (deployed via Chutes on sek8s) this reads /dev/tdx_guest.
-    In local dev mode it returns a clearly-labeled stub.
-    """
-    import base64
-    import hashlib
-    import os
-
-    report_data = hashlib.sha256(pubkey_bytes).digest().ljust(64, b"\x00")
-
-    tdx_device = "/dev/tdx_guest"
-    if os.path.exists(tdx_device):
-        quote_bytes = _get_tdx_quote(tdx_device, report_data)
-        return {
-            "type": "tdx",
-            "quote": base64.b64encode(quote_bytes).decode(),
-            "report_data": base64.b64encode(report_data).decode(),
-            "pubkey": base64.b64encode(pubkey_bytes).decode(),
-        }
-    else:
-        return {
-            "type": "dev-stub",
-            "report_data": base64.b64encode(report_data).decode(),
-            "pubkey": base64.b64encode(pubkey_bytes).decode(),
-            "warning": "NOT a real attestation — local dev mode only",
-        }
-
-
-def _get_tdx_quote(device_path: str, report_data: bytes) -> bytes:
-    """
-    Request a TDX quote via /dev/tdx_guest.
-
-    On Chutes' sek8s infrastructure the quote is a signed blob containing
-    RTMRs and our report_data, verifiable via Intel DCAP.
-    """
-    try:
-        with open(device_path, "rb+") as f:
-            f.write(report_data)
-            f.flush()
-            quote = f.read(8192)
-        return quote
-    except Exception:
-        return b""
-
-
+# ── Sandbox helpers ───────────────────────────────────────────────────────────
 def _restricted_builtins() -> dict:
     """
     Locked-down __builtins__ for the miner script sandbox.
@@ -141,17 +104,14 @@ def _restricted_builtins() -> dict:
 # ── Startup ───────────────────────────────────────────────────────────────────
 @chute.on_startup(priority=10)
 async def startup(self):
-    """Pre-compute startup attestation for identity verification."""
-    import base64
-    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
-    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+    """Startup — no TDX device access needed."""
+    import os
 
-    self._identity_private = X25519PrivateKey.generate()
-    pub_bytes = self._identity_private.public_key().public_bytes(
-        Encoding.Raw, PublicFormat.Raw
-    )
-    self._identity_pub_b64 = base64.b64encode(pub_bytes).decode()
-    self._startup_attestation = _build_attestation_evidence(pub_bytes)
+    self._is_tee = os.path.exists("/dev/tdx_guest") or os.environ.get(
+        "CHUTES_EXECUTION_CONTEXT"
+    ) == "REMOTE"
+    env_label = "TEE (Chutes)" if self._is_tee else "local dev"
+    print(f"[CHUTE] Started in {env_label} mode")
 
 
 # ── Cord ──────────────────────────────────────────────────────────────────────
@@ -183,27 +143,35 @@ async def execute(self, request: ExecuteRequest) -> ExecuteResponse:
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
     from cryptography.hazmat.primitives import hashes
 
-    # Per-session ephemeral key → forward secrecy
+    # ── Per-session ephemeral key → forward secrecy ──────────────────
     session_private = X25519PrivateKey.generate()
     session_pub_bytes = session_private.public_key().public_bytes(
         Encoding.Raw, PublicFormat.Raw,
     )
     session_pub_b64 = base64.b64encode(session_pub_bytes).decode()
 
-    # Bind this ephemeral key to the TDX attestation
-    session_attestation = _build_attestation_evidence(session_pub_bytes)
-
     session_id = str(uuid.uuid4())
     miner_url = request.miner_url.rstrip("/")
 
+    # Build the attestation payload for the miner.
+    # In production, this contains the Chutes platform attestation proof
+    # (server_id, attestation status, chute image hash) that the
+    # orchestrator fetched from the Chutes API and passed through.
+    # In dev mode, it's a stub.
+    attestation_payload = request.platform_attestation or {
+        "type": "dev-stub",
+        "source": "chute",
+        "warning": "No platform attestation — local dev mode",
+    }
+
     async with httpx.AsyncClient(timeout=30.0) as client:
 
-        # Step 1: Handshake with attestation
+        # Step 1: Handshake — send ephemeral pubkey + platform attestation
         try:
             r = await client.post(f"{miner_url}/handshake", json={
                 "session_id": session_id,
                 "validator_pubkey": session_pub_b64,
-                "attestation": session_attestation,
+                "attestation": attestation_payload,
             })
             r.raise_for_status()
             resp = r.json()
@@ -266,6 +234,7 @@ async def execute(self, request: ExecuteRequest) -> ExecuteResponse:
         except Exception as e:
             return ExecuteResponse(status="error", error=type(e).__name__)
         finally:
+            # Scrub all sensitive material from TDX memory
             script_bytes = b"\x00" * len(script_bytes)
             session_key = b"\x00" * 32
             raw_secret = b"\x00" * 32

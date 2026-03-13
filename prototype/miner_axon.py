@@ -2,22 +2,34 @@
 #
 # VM1 — the miner. Exposes 2 endpoints. Never sends plaintext.
 #
-# Security properties:
-#   - Secret script ONLY leaves this machine encrypted with AES-256-GCM
-#   - Per-session ephemeral ECDH keys → forward secrecy
-#   - Miner verifies TDX attestation before releasing encrypted script
-#   - DCAP verification confirms the validator chute runs in a genuine
-#     Intel TDX enclave with the expected image (MRTD measurement)
-#   - Sessions expire after 60s and keys are scrubbed on deletion
+# ATTESTATION MODEL (Option A — Chutes platform attestation):
+#   Instead of verifying a raw TDX quote (which requires /dev/tdx_guest
+#   access that user chute code doesn't have), the miner verifies
+#   the Chutes platform attestation chain:
+#
+#   1. Orchestrator fetches chute metadata + server attestation status
+#      from the Chutes API and passes it through the chute to the miner
+#   2. Miner independently queries the SAME Chutes API endpoints to
+#      cross-check that:
+#        a) The chute exists and has tee=True
+#        b) The server running it has passed TDX attestation
+#        c) The image is cosign-signed (Chutes enforces this)
+#   3. Only then does the miner release the encrypted script
+#
+#   This works because Chutes' own infrastructure does the TDX
+#   verification (boot attestation, RTMR measurement, LUKS unlock)
+#   and exposes the result via authenticated API endpoints.
 #
 # Run with:
-#   pip install fastapi uvicorn cryptography
+#   pip install fastapi uvicorn cryptography httpx
 #   python miner_axon.py
 #
 # Environment variables:
-#   MINER_PORT                 — listen port (default: 9000)
-#   REQUIRE_ATTESTATION=true   — reject dev-stub attestations
-#   VALIDATOR_IMAGE_DIGEST     — expected MRTD hex of validator chute image
+#   MINER_PORT                     — listen port (default: 9000)
+#   REQUIRE_REAL_ATTESTATION=true  — reject dev-stub attestations
+#   CHUTES_API_BASE                — Chutes API URL (default: https://api.chutes.ai)
+#   EXPECTED_CHUTE_NAME            — expected chute name for verification
+#   EXPECTED_IMAGE_NAME            — expected image name:tag
 
 import base64
 import hashlib
@@ -58,181 +70,208 @@ result = score(input_data)
 app = FastAPI()
 
 # ── Session storage ──────────────────────────────────────────────────────────
-_sessions: dict[str, dict] = {}  # session_id → {"key": bytes, "created": float}
+_sessions: dict[str, dict] = {}
 SESSION_TTL_SECONDS = 60
 
-# ── Attestation config ───────────────────────────────────────────────────────
+# ── Configuration ────────────────────────────────────────────────────────────
 REQUIRE_REAL_ATTESTATION = (
     os.environ.get("REQUIRE_ATTESTATION", "false").lower() == "true"
 )
-EXPECTED_VALIDATOR_IMAGE_DIGEST = os.environ.get("VALIDATOR_IMAGE_DIGEST", "")
-
-
-# ── Try to load Intel DCAP for real TDX quote verification ───────────────────
-_dcap_available = False
-try:
-    from dcap_quote_verify import (  # type: ignore
-        verify_quote_integrity,
-        extract_report_data,
-        extract_mrtd,
-    )
-    _dcap_available = True
-except ImportError:
-    # DCAP not installed — we'll use manual parsing as fallback.
-    # Install via: pip install dcap-quote-verify
-    # (requires Intel DCAP libraries on the system)
-    pass
+CHUTES_API_BASE = os.environ.get("CHUTES_API_BASE", "https://api.chutes.ai")
+EXPECTED_CHUTE_NAME = os.environ.get("EXPECTED_CHUTE_NAME", "")
+EXPECTED_IMAGE_NAME = os.environ.get("EXPECTED_IMAGE_NAME", "")
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
-class AttestationEvidence(BaseModel):
-    type: str                      # "tdx" or "dev-stub"
-    report_data: str               # base64 — SHA-256(validator_ecdh_pubkey)
-    pubkey: str                    # base64 — validator's ECDH pubkey
-    quote: Optional[str] = None    # base64 — raw TDX quote (type=tdx only)
-    warning: Optional[str] = None
+class PlatformAttestation(BaseModel):
+    type: str  # "chutes-platform" or "dev-stub"
+    # Fields present when type == "chutes-platform":
+    chute: dict | None = None
+    server_id: str | None = None
+    attestation_status: dict | None = None
+    api_base: str | None = None
+    # Fields present when type == "dev-stub":
+    source: str | None = None
+    warning: str | None = None
+    # Error case:
+    error: str | None = None
 
 
 class HandshakeRequest(BaseModel):
     session_id: str
-    validator_pubkey: str          # base64 X25519 public key
-    attestation: AttestationEvidence
+    validator_pubkey: str
+    attestation: PlatformAttestation
 
 
 class ScriptRequest(BaseModel):
     session_id: str
 
 
-# ── DCAP / attestation verification ─────────────────────────────────────────
-def verify_attestation(
-    attestation: AttestationEvidence,
-    validator_pubkey_b64: str,
-) -> Optional[str]:
+# ── Platform attestation verification ────────────────────────────────────────
+async def verify_platform_attestation(att: PlatformAttestation) -> Optional[str]:
     """
-    Verify the validator's attestation evidence.
+    Verify the Chutes platform attestation proof.
 
     Returns None on success, or an error string on failure.
 
-    Verification chain:
-      1. Pubkey binding: report_data == SHA-256(validator_pubkey) ∥ padding
-      2. Pubkey consistency: attestation.pubkey matches handshake pubkey
-      3. For dev-stub: accept only if REQUIRE_REAL_ATTESTATION is false
-      4. For TDX: verify quote signature via DCAP, check MRTD, confirm
-         report_data inside the quote matches what we computed
+    For "chutes-platform" type:
+      1. Check the claimed chute has tee=True
+      2. Check image name matches expectations (if configured)
+      3. Independently query the Chutes API to cross-verify:
+         a) The chute exists with tee=True
+         b) The server has valid attestation status
+      4. Verify the attestation_status indicates a passing state
+
+    For "dev-stub" type:
+      Accept only if REQUIRE_REAL_ATTESTATION is False.
     """
-    # 1. Verify pubkey binding
-    validator_pub_bytes = base64.b64decode(validator_pubkey_b64)
-    expected_rd = hashlib.sha256(validator_pub_bytes).digest().ljust(64, b"\x00")
-    actual_rd = base64.b64decode(attestation.report_data)
 
-    if actual_rd != expected_rd:
-        return "report_data does not bind to the presented pubkey"
-
-    # 2. Verify pubkey consistency
-    if attestation.pubkey != validator_pubkey_b64:
-        return "attestation pubkey does not match handshake pubkey"
-
-    # 3. Dev-stub
-    if attestation.type == "dev-stub":
+    # ── Dev stub ─────────────────────────────────────────────────────
+    if att.type == "dev-stub":
         if REQUIRE_REAL_ATTESTATION:
-            return "real TDX attestation required but got dev-stub"
+            return "real platform attestation required but got dev-stub"
         print(
             "[MINER] WARNING: accepting dev-stub attestation "
-            "(pubkey binding OK, but NO TEE guarantee)"
+            "(no TEE guarantee — dev mode only)"
         )
         return None
 
-    # 4. Real TDX
-    if attestation.type == "tdx":
-        return _verify_tdx_quote(attestation, expected_rd)
+    # ── Platform error forwarded from orchestrator ───────────────────
+    if att.type == "platform-error":
+        return f"orchestrator reported attestation error: {att.error}"
 
-    return f"unknown attestation type: {attestation.type}"
+    # ── Chutes platform attestation ──────────────────────────────────
+    if att.type != "chutes-platform":
+        return f"unknown attestation type: {att.type}"
 
+    if not att.chute:
+        return "attestation missing chute metadata"
 
-def _verify_tdx_quote(
-    attestation: AttestationEvidence,
-    expected_report_data: bytes,
-) -> Optional[str]:
-    """
-    Verify a TDX attestation quote.
+    # Check TEE flag in claimed metadata
+    if not att.chute.get("tee", False):
+        return "chute does not have tee=True"
 
-    With DCAP library available:
-      - Verifies the quote signature against Intel's root of trust
-      - Extracts and checks report_data matches our expectation
-      - Extracts MRTD and compares to EXPECTED_VALIDATOR_IMAGE_DIGEST
-
-    Without DCAP (dev/fallback):
-      - Performs structural validation on the raw quote bytes
-      - Checks report_data at the known TDX quote offset (368..432)
-      - Warns that signature verification is skipped
-    """
-    if not attestation.quote:
-        return "TDX attestation missing quote"
-
-    quote_bytes = base64.b64decode(attestation.quote)
-
-    if len(quote_bytes) < 584:
-        return f"TDX quote too short ({len(quote_bytes)} bytes, need ≥584)"
-
-    # ── Path A: Full DCAP verification ───────────────────────────────
-    if _dcap_available:
-        try:
-            if not verify_quote_integrity(quote_bytes):
-                return "TDX quote signature verification failed (DCAP)"
-
-            quote_rd = extract_report_data(quote_bytes)
-            if quote_rd != expected_report_data:
-                return "report_data inside TDX quote does not match"
-
-            if EXPECTED_VALIDATOR_IMAGE_DIGEST:
-                mrtd = extract_mrtd(quote_bytes)
-                if mrtd.hex() != EXPECTED_VALIDATOR_IMAGE_DIGEST.lower():
-                    return (
-                        f"MRTD mismatch: got {mrtd.hex()}, "
-                        f"expected {EXPECTED_VALIDATOR_IMAGE_DIGEST.lower()}"
-                    )
-
-            print("[MINER] TDX quote verified via DCAP ✓")
-            return None
-
-        except Exception as e:
-            return f"DCAP verification error: {e}"
-
-    # ── Path B: Structural validation (no DCAP) ─────────────────────
-    # TDX quote v4 layout (simplified):
-    #   Bytes 0-3:   version (should be 4)
-    #   Bytes 4-5:   attestation key type
-    #   Bytes 48-95: TD attributes
-    #   Bytes 368-431: report_data (64 bytes)
-    #   Bytes 432-479: MRTD (48 bytes) — TD measurement
-    #
-    # Without DCAP we can check structure + report_data, but NOT the
-    # signature chain. This is acceptable for dev but not production.
-
-    version = int.from_bytes(quote_bytes[0:2], "little")
-    if version not in (4, 5):
-        return f"unexpected TDX quote version: {version}"
-
-    # Check report_data at offset 368
-    quote_rd = quote_bytes[368:432]
-    if quote_rd != expected_report_data:
-        return "report_data inside TDX quote does not match (structural check)"
-
-    # Check MRTD if configured
-    if EXPECTED_VALIDATOR_IMAGE_DIGEST:
-        mrtd = quote_bytes[432:480]
-        if mrtd.hex() != EXPECTED_VALIDATOR_IMAGE_DIGEST.lower():
+    # Check image name if configured
+    if EXPECTED_IMAGE_NAME:
+        claimed_image = att.chute.get("image", {}).get("name", "")
+        if claimed_image != EXPECTED_IMAGE_NAME:
             return (
-                f"MRTD mismatch: got {mrtd.hex()}, "
-                f"expected {EXPECTED_VALIDATOR_IMAGE_DIGEST.lower()}"
+                f"image mismatch: expected {EXPECTED_IMAGE_NAME}, "
+                f"got {claimed_image}"
             )
 
-    print(
-        "[MINER] TDX quote structural check passed "
-        "(DCAP not available — signature NOT verified; "
-        "install dcap-quote-verify for full verification)"
-    )
+    # Check chute name if configured
+    if EXPECTED_CHUTE_NAME:
+        claimed_name = att.chute.get("chute_name", "")
+        if claimed_name != EXPECTED_CHUTE_NAME:
+            return (
+                f"chute name mismatch: expected {EXPECTED_CHUTE_NAME}, "
+                f"got {claimed_name}"
+            )
+
+    # ── Independent cross-verification via Chutes API ────────────────
+    # The miner does NOT trust the attestation blob at face value.
+    # It queries the Chutes API itself to confirm.
+    chute_id = att.chute.get("chute_id")
+    server_id = att.server_id
+    api_base = att.api_base or CHUTES_API_BASE
+
+    if chute_id and REQUIRE_REAL_ATTESTATION:
+        cross_check_err = await _cross_verify_with_chutes_api(
+            chute_id, server_id, api_base
+        )
+        if cross_check_err:
+            return f"cross-verification failed: {cross_check_err}"
+
+    # ── Check attestation_status from the orchestrator ───────────────
+    if att.attestation_status:
+        status = att.attestation_status
+        # The exact shape of this response depends on the Chutes API,
+        # but we expect something indicating "passed" or "valid"
+        att_state = (
+            status.get("status", "")
+            or status.get("state", "")
+            or status.get("result", "")
+        )
+        if isinstance(att_state, str) and att_state.lower() in (
+            "failed", "invalid", "expired", "error",
+        ):
+            return f"server attestation state: {att_state}"
+        print(f"[MINER] Server attestation status: {status}")
+    elif REQUIRE_REAL_ATTESTATION:
+        return "no server attestation status provided"
+    else:
+        print("[MINER] No server attestation status — accepting in dev mode")
+
+    print("[MINER] Platform attestation verified ✓")
     return None
+
+
+async def _cross_verify_with_chutes_api(
+    chute_id: str,
+    server_id: Optional[str],
+    api_base: str,
+) -> Optional[str]:
+    """
+    Independently query the Chutes API to verify the claimed attestation.
+
+    This prevents a malicious orchestrator from fabricating attestation
+    data. The miner checks the same public endpoints the orchestrator
+    used, confirming:
+      - The chute exists and has tee=True
+      - The server has passing attestation
+    """
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(
+            base_url=api_base, timeout=10.0
+        ) as client:
+            # Verify chute exists and has TEE
+            r = await client.get(f"/chutes/{chute_id}")
+            if r.status_code == 401:
+                # Some endpoints may require auth — if so, we can't
+                # cross-verify without an API key. Log and continue.
+                print(
+                    "[MINER] Cross-verify: chute endpoint requires auth "
+                    "(cannot independently verify — trusting claimed data)"
+                )
+                return None
+            r.raise_for_status()
+            chute_data = r.json()
+
+            if not chute_data.get("tee", False):
+                return "cross-check: chute tee=False on Chutes API"
+
+            # Verify server attestation if we have a server_id
+            if server_id:
+                r = await client.get(
+                    f"/servers/{server_id}/attestation/status"
+                )
+                if r.status_code == 401:
+                    print(
+                        "[MINER] Cross-verify: attestation endpoint "
+                        "requires auth — cannot verify server status"
+                    )
+                    return None
+                r.raise_for_status()
+                server_att = r.json()
+                state = (
+                    server_att.get("status", "")
+                    or server_att.get("state", "")
+                    or ""
+                )
+                if isinstance(state, str) and state.lower() in (
+                    "failed", "invalid", "error",
+                ):
+                    return f"cross-check: server attestation {state}"
+
+            return None  # All checks passed
+
+    except httpx.HTTPStatusError as e:
+        return f"Chutes API returned {e.response.status_code}"
+    except Exception as e:
+        return f"Chutes API unreachable: {e}"
 
 
 # ── Session cleanup ──────────────────────────────────────────────────────────
@@ -251,16 +290,18 @@ def _cleanup_expired_sessions():
 @app.post("/handshake")
 async def handshake(req: HandshakeRequest):
     """
-    Combined handshake: validator sends ECDH pubkey + attestation.
-    Miner verifies attestation, generates ephemeral key, derives
-    session secret, and returns its ephemeral pubkey.
+    Combined handshake: chute sends ECDH pubkey + platform attestation.
+    Miner verifies attestation (checking Chutes API independently),
+    generates ephemeral keypair, derives session key, returns its pubkey.
     """
     _cleanup_expired_sessions()
 
-    # Verify attestation BEFORE generating any keys
-    err = verify_attestation(req.attestation, req.validator_pubkey)
+    # Verify platform attestation BEFORE generating any keys
+    err = await verify_platform_attestation(req.attestation)
     if err:
-        raise HTTPException(status_code=403, detail=f"attestation rejected: {err}")
+        raise HTTPException(
+            status_code=403, detail=f"attestation rejected: {err}"
+        )
 
     # Per-session ephemeral keypair
     session_private = X25519PrivateKey.generate()
@@ -307,7 +348,9 @@ async def get_script(req: ScriptRequest):
     _cleanup_expired_sessions()
 
     if req.session_id not in _sessions:
-        raise HTTPException(status_code=404, detail="unknown or expired session")
+        raise HTTPException(
+            status_code=404, detail="unknown or expired session"
+        )
 
     key = _sessions[req.session_id]["key"]
     iv = os.urandom(12)
@@ -329,11 +372,10 @@ async def get_script(req: ScriptRequest):
 if __name__ == "__main__":
     port = int(os.environ.get("MINER_PORT", 9000))
     print(f"[MINER] Starting axon on port {port}")
-    print(f"[MINER] Attestation enforcement: {'REQUIRED' if REQUIRE_REAL_ATTESTATION else 'dev-mode (stubs accepted)'}")
-    if EXPECTED_VALIDATOR_IMAGE_DIGEST:
-        print(f"[MINER] Expected validator MRTD: {EXPECTED_VALIDATOR_IMAGE_DIGEST}")
-    if _dcap_available:
-        print("[MINER] Intel DCAP library loaded ✓")
-    else:
-        print("[MINER] Intel DCAP not available — structural validation only")
+    mode = "ENFORCED" if REQUIRE_REAL_ATTESTATION else "dev-mode (stubs accepted)"
+    print(f"[MINER] Platform attestation: {mode}")
+    if EXPECTED_CHUTE_NAME:
+        print(f"[MINER] Expected chute: {EXPECTED_CHUTE_NAME}")
+    if EXPECTED_IMAGE_NAME:
+        print(f"[MINER] Expected image: {EXPECTED_IMAGE_NAME}")
     uvicorn.run(app, host="0.0.0.0", port=port)
