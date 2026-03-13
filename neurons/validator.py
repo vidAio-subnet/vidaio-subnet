@@ -595,7 +595,7 @@ class Validator(base.BaseValidator):
         immediately (30s timeout — just long enough for a network round-trip).
         Phase 2: Polls at ``poll_interval`` second intervals until the miner
         reports ``completed`` or ``failed``, or ``max_polls`` is exhausted
-        (default: 20 × 15s = 5-minute budget).
+        (default: 20 * 60s = 20-minute budget).
 
         Args:
             axon: Target miner axon.
@@ -604,8 +604,8 @@ class Validator(base.BaseValidator):
             uid: Miner UID (used for logging).
             PollProtocolClass: ``VideoCompressionPollProtocol`` or
                 ``VideoUpscalingPollProtocol``.
-            poll_interval: Seconds between polls (default 15).
-            max_polls: Maximum poll attempts (default 20 → 5-min budget).
+            poll_interval: Seconds between polls (default 20).
+            max_polls: Maximum poll attempts (default 60 → 20-min budget).
 
         Returns:
             Dict with keys ``uid``, ``result`` (synapse with populated
