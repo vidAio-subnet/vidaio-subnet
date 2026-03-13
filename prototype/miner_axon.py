@@ -46,8 +46,15 @@ import uvicorn
 # ── Secret script — never leaves this machine in plaintext ───────────────────
 SECRET_SCRIPT = b"""
 # Miner's proprietary logic.
-# `input_data` dict is injected by the validator chute before exec().
-# Must assign output to `result`.
+#
+# Interface contract (enforced by the validator chute):
+#   - The script must define a callable named `score(data: dict) -> dict`.
+#   - The script body executes WITHOUT `input_data` in scope (Phase A).
+#   - The chute calls `score(input_data)` inside the TEE (Phase B).
+#
+# This two-phase model ensures the miner's top-level code never observes
+# the validator's input payload; it only arrives as a function argument
+# when the chute explicitly invokes the entry-point.
 
 def score(data: dict) -> dict:
     values = data.get("values", [])
@@ -56,8 +63,6 @@ def score(data: dict) -> dict:
         "mean": sum(values) / len(values) if values else 0,
         "count": len(values),
     }
-
-result = score(input_data)
 """
 
 app = FastAPI()

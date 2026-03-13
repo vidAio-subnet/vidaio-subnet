@@ -407,23 +407,44 @@ async def execute(self, request: ExecuteRequest) -> ExecuteResponse:
         if hashlib.sha256(script_bytes).hexdigest() != payload["script_hash"]:
             return ExecuteResponse(status="error", error="integrity check failed")
 
-        # Step 5: Execute with restricted builtins
+        # Step 5: Load script — input_data intentionally absent from scope
+        #
+        # Two-phase execution model:
+        #   Phase A — compile + exec the script with NO input_data in globals.
+        #             The miner's module-level code runs without any knowledge
+        #             of the payload; it can only define functions/classes.
+        #   Phase B — the chute calls the exported `score(data)` entry-point,
+        #             passing input_data as a plain function argument.  This
+        #             happens entirely inside TDX-encrypted memory.
+        #
+        # The miner server (miner_axon.py) never receives input_data at any
+        # point in the protocol (handshake + script fetch carry no payload).
+        # Phase A ensures the miner's top-level script body cannot observe it
+        # either.  The function parameter in Phase B is a necessary interface
+        # contract, not an information leak to the miner's infrastructure.
         sys.settrace(None)
         sys.setprofile(None)
 
-        sandbox = {
+        # Phase A: define functions/classes, no input_data in scope
+        load_sandbox = {
             "__builtins__": _restricted_builtins(),
-            "input_data": request.input_data,
-            "result": None,
         }
 
         s3_uri: str | None = None
         try:
             exec(  # noqa: S102
                 compile(script_bytes, "<miner_script>", "exec"),
-                sandbox,
+                load_sandbox,
             )
-            exec_result = sandbox.get("result")
+
+            # Phase B: call the exported entry-point with input_data
+            entry_fn = load_sandbox.get("score")
+            if not callable(entry_fn):
+                return ExecuteResponse(
+                    status="error",
+                    error="script must define a callable named 'score(data)'",
+                )
+            exec_result = entry_fn(request.input_data)
 
             # ── S3 upload ────────────────────────────────────────────
             if (
@@ -449,4 +470,4 @@ async def execute(self, request: ExecuteRequest) -> ExecuteResponse:
             script_bytes = b"\x00" * len(script_bytes)
             session_key = b"\x00" * 32
             raw_secret = b"\x00" * 32
-            del script_bytes, session_key, raw_secret, sandbox, session_private
+            del script_bytes, session_key, raw_secret, load_sandbox, session_private
