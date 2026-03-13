@@ -48,13 +48,15 @@ SECRET_SCRIPT = b"""
 # Miner's proprietary logic.
 #
 # Interface contract (enforced by the validator chute):
-#   - The script must define a callable named `score(data: dict) -> dict`.
-#   - The script body executes WITHOUT `input_data` in scope (Phase A).
-#   - The chute calls `score(input_data)` inside the TEE (Phase B).
+#   - Must define a callable `score(data: dict) -> dict`.
+#   - `input_data` is never in scope — the chute calls score() with it.
+#   - Network is disabled while this script runs (socket monkey-patched,
+#     network modules purged).  No external uploads, logging, or exfiltration
+#     is possible.
 #
-# This two-phase model ensures the miner's top-level code never observes
-# the validator's input payload; it only arrives as a function argument
-# when the chute explicitly invokes the entry-point.
+# Banned source patterns (static audit rejects the script if present):
+#   __subclasses__, __globals__, __bases__, __code__, __closure__,
+#   __mro__, __loader__, __spec__, __import__
 
 def score(data: dict) -> dict:
     values = data.get("values", [])

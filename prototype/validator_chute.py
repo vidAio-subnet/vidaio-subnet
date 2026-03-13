@@ -41,6 +41,17 @@
 #   infrastructure. The orchestrator passes platform attestation
 #   proof through the chute to the miner.
 #
+# SCRIPT ISOLATION:
+#   The miner's script executes inside a locked-down sandbox:
+#     - Restricted builtins (no __import__, open, exec, eval, getattr, type …)
+#     - Source-level audit rejects dunder escape hatches (__subclasses__,
+#       __globals__, __bases__, __code__, __closure__, __mro__, …)
+#     - Network kill-switch: socket monkey-patched + network modules purged
+#       from sys.modules for the duration of the script.  The miner cannot
+#       upload to external buckets, stream logs via wandb, or exfiltrate data.
+#     - Network is restored AFTER the script returns so the chute's own
+#       S3 upload (validator-owned credentials) still works.
+#
 # ARCHITECTURE:
 #   Miner (VM1) ←─encrypted─→ Chute (TEE) ←─result only─→ Validator (VM2)
 #                                  ↑
@@ -135,6 +146,104 @@ def _restricted_builtins() -> dict:
         if name not in BLOCKED:
             safe[name] = getattr(builtins, name)
     return safe
+
+
+# ── Script safety audit ──────────────────────────────────────────────────────
+#
+# Conservative source-level scan.  Any match — even inside comments — causes
+# rejection.  Intentionally strict: false-positives are preferred over
+# false-negatives.
+
+_BLOCKED_DUNDER_ATTRS = (
+    b"__subclasses__",  # object introspection → sandbox escape
+    b"__globals__",     # function.__globals__ → module namespace access
+    b"__code__",        # code object manipulation
+    b"__closure__",     # closure variable access
+    b"__bases__",       # class hierarchy traversal
+    b"__mro__",         # method-resolution-order traversal
+    b"__loader__",      # module loader access
+    b"__spec__",        # module spec access
+    b"__import__",      # redundant (blocked in builtins), belt-and-suspenders
+)
+
+
+def _audit_script(src: bytes) -> str | None:
+    """
+    Reject scripts that reference dangerous dunder attributes.
+
+    Returns an error string if the script is rejected, None if it passes.
+    """
+    for pat in _BLOCKED_DUNDER_ATTRS:
+        if pat in src:
+            return f"blocked attribute in script source: {pat.decode()}"
+    return None
+
+
+# ── Network isolation ────────────────────────────────────────────────────────
+#
+# Ensures the miner's script cannot reach the internet during execution —
+# no uploading to external buckets, no streaming telemetry, no exfiltration.
+#
+# Layers (in order of execution):
+#   1. Purge network-capable modules from sys.modules so the script can't
+#      import-by-cache even though __import__ is blocked in builtins.
+#   2. Monkey-patch socket.socket / getaddrinfo / create_connection to raise
+#      RuntimeError so any residual path to a raw socket is cut.
+#
+# All mutations are reverted in the `finally` block so that the chute's own
+# S3 upload (which runs AFTER the script) works normally.
+#
+# Production hardening (beyond this prototype):
+#   - unshare(2) --net: empty network namespace, zero interfaces
+#   - nsjail / gVisor: syscall-level sandboxing
+#   - Dedicated no-network container sidecar for script execution
+
+import contextlib
+
+_PURGE_MODULE_PREFIXES = (
+    "socket", "ssl", "http", "urllib", "requests", "httpx",
+    "aiohttp", "boto3", "botocore", "wandb", "websocket",
+    "ftplib", "smtplib", "imaplib", "poplib", "telnetlib",
+    "xmlrpc", "socketserver", "subprocess", "ctypes",
+    "multiprocessing",
+)
+
+
+@contextlib.contextmanager
+def _network_disabled():
+    """Kill network access for the duration of the block, then restore it."""
+    import socket as _socket_mod
+    import sys
+
+    # ── save originals ────────────────────────────────────────────────
+    _orig_socket = _socket_mod.socket
+    _orig_getaddrinfo = _socket_mod.getaddrinfo
+    _orig_create_conn = _socket_mod.create_connection
+
+    # ── purge network modules from import cache ───────────────────────
+    _purged: dict = {}
+    for mod_name in list(sys.modules.keys()):
+        if any(
+            mod_name == p or mod_name.startswith(p + ".")
+            for p in _PURGE_MODULE_PREFIXES
+        ):
+            _purged[mod_name] = sys.modules.pop(mod_name)
+
+    # ── monkey-patch socket primitives ────────────────────────────────
+    def _blocked(*_a, **_kw):
+        raise RuntimeError("network access disabled during miner script execution")
+
+    _socket_mod.socket = _blocked
+    _socket_mod.getaddrinfo = _blocked
+    _socket_mod.create_connection = _blocked
+
+    try:
+        yield
+    finally:
+        _socket_mod.socket = _orig_socket
+        _socket_mod.getaddrinfo = _orig_getaddrinfo
+        _socket_mod.create_connection = _orig_create_conn
+        sys.modules.update(_purged)
 
 
 # ── Startup ───────────────────────────────────────────────────────────────────
@@ -407,9 +516,20 @@ async def execute(self, request: ExecuteRequest) -> ExecuteResponse:
         if hashlib.sha256(script_bytes).hexdigest() != payload["script_hash"]:
             return ExecuteResponse(status="error", error="integrity check failed")
 
-        # Step 5: Execute with restricted builtins
+        # Step 4½: Static audit — reject scripts with sandbox-escape patterns
+        audit_err = _audit_script(script_bytes)
+        if audit_err:
+            return ExecuteResponse(status="error", error=audit_err)
+
+        # Step 5: Execute with restricted builtins + network disabled
+        #
         # The miner's script defines `score(data)` and never references
-        # input_data directly — the chute calls score() with input_data here.
+        # input_data directly — the chute calls score() with input_data.
+        #
+        # _network_disabled() ensures the script cannot reach the internet
+        # (no uploads to miner-owned buckets, no wandb, no exfiltration).
+        # Network is restored AFTER the script finishes so the chute's own
+        # S3 upload still works.
         sys.settrace(None)
         sys.setprofile(None)
 
@@ -419,20 +539,21 @@ async def execute(self, request: ExecuteRequest) -> ExecuteResponse:
 
         s3_uri: str | None = None
         try:
-            exec(  # noqa: S102
-                compile(script_bytes, "<miner_script>", "exec"),
-                sandbox,
-            )
-
-            entry_fn = sandbox.get("score")
-            if not callable(entry_fn):
-                return ExecuteResponse(
-                    status="error",
-                    error="script must define a callable named 'score(data)'",
+            with _network_disabled():
+                exec(  # noqa: S102
+                    compile(script_bytes, "<miner_script>", "exec"),
+                    sandbox,
                 )
-            exec_result = entry_fn(request.input_data)
 
-            # ── S3 upload ────────────────────────────────────────────
+                entry_fn = sandbox.get("score")
+                if not callable(entry_fn):
+                    return ExecuteResponse(
+                        status="error",
+                        error="script must define a callable named 'score(data)'",
+                    )
+                exec_result = entry_fn(request.input_data)
+
+            # ── S3 upload (network restored — chute's own credentials) ──
             if (
                 exec_result is not None
                 and self._s3_config is not None
