@@ -220,8 +220,8 @@ class Miner(BaseMiner):
         if not synapse.dendrite or not synapse.dendrite.hotkey:
             return True, "Missing dendrite or hotkey"
         uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
-        # if not self.metagraph.validator_permit[uid]:
-        #     return True, "Non-validator hotkey"
+        if not self.metagraph.validator_permit[uid]:
+            return True, "Non-validator hotkey"
         return False, "Hotkey recognized!"
 
     async def priority_compression_job_requests(
@@ -238,8 +238,8 @@ class Miner(BaseMiner):
         if not synapse.dendrite or not synapse.dendrite.hotkey:
             return True, "Missing dendrite or hotkey"
         uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
-        # if not self.metagraph.validator_permit[uid]:
-        #     return True, "Non-validator hotkey"
+        if not self.metagraph.validator_permit[uid]:
+            return True, "Non-validator hotkey"
         return False, "Hotkey recognized!"
 
     async def priority_compression_poll_requests(
@@ -326,8 +326,8 @@ class Miner(BaseMiner):
         if not synapse.dendrite or not synapse.dendrite.hotkey:
             return True, "Missing dendrite or hotkey"
         uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
-        # if not self.metagraph.validator_permit[uid]:
-        #     return True, "Non-validator hotkey"
+        if not self.metagraph.validator_permit[uid]:
+            return True, "Non-validator hotkey"
         return False, "Hotkey recognized!"
 
     async def priority_upscaling_job_requests(
@@ -344,8 +344,8 @@ class Miner(BaseMiner):
         if not synapse.dendrite or not synapse.dendrite.hotkey:
             return True, "Missing dendrite or hotkey"
         uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
-        # if not self.metagraph.validator_permit[uid]:
-        #     return True, "Non-validator hotkey"
+        if not self.metagraph.validator_permit[uid]:
+            return True, "Non-validator hotkey"
         return False, "Hotkey recognized!"
 
     async def priority_upscaling_poll_requests(
@@ -366,9 +366,9 @@ class Miner(BaseMiner):
 
         uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
 
-        # if not self.metagraph.validator_permit[uid]:
-        #     logger.warning(f"Blacklisting non-validator hotkey {synapse.dendrite.hotkey}")
-        #     return True, "Non-validator hotkey"
+        if not self.metagraph.validator_permit[uid]:
+            logger.warning(f"Blacklisting non-validator hotkey {synapse.dendrite.hotkey}")
+            return True, "Non-validator hotkey"
 
         logger.trace(f"Hotkey {synapse.dendrite.hotkey} recognized and allowed.")
         return False, "Hotkey recognized!"
@@ -398,9 +398,9 @@ class Miner(BaseMiner):
 
         uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
 
-        # if not self.metagraph.validator_permit[uid]:
-        #     logger.warning(f"Blacklisting non-validator hotkey {synapse.dendrite.hotkey}")
-        #     return True, "Non-validator hotkey"
+        if not self.metagraph.validator_permit[uid]:
+            logger.warning(f"Blacklisting non-validator hotkey {synapse.dendrite.hotkey}")
+            return True, "Non-validator hotkey"
 
         logger.trace(f"Hotkey {synapse.dendrite.hotkey} recognized and allowed.")
         return False, "Hotkey recognized!"
@@ -430,9 +430,9 @@ class Miner(BaseMiner):
 
         uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
 
-        # if not self.metagraph.validator_permit[uid]:
-        #     logger.warning(f"Blacklisting non-validator hotkey {synapse.dendrite.hotkey}")
-        #     return True, "Non-validator hotkey"
+        if not self.metagraph.validator_permit[uid]:
+            logger.warning(f"Blacklisting non-validator hotkey {synapse.dendrite.hotkey}")
+            return True, "Non-validator hotkey"
 
         logger.trace(f"Hotkey {synapse.dendrite.hotkey} recognized and allowed.")
         return False, "Hotkey recognized!"
@@ -462,9 +462,9 @@ class Miner(BaseMiner):
 
         uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
 
-        # if not self.metagraph.validator_permit[uid]:
-        #     logger.warning(f"Blacklisting non-validator hotkey {synapse.dendrite.hotkey}")
-        #     return True, "Non-validator hotkey"
+        if not self.metagraph.validator_permit[uid]:
+            logger.warning(f"Blacklisting non-validator hotkey {synapse.dendrite.hotkey}")
+            return True, "Non-validator hotkey"
 
         logger.trace(f"Hotkey {synapse.dendrite.hotkey} recognized and allowed.")
         return False, "Hotkey recognized!"
