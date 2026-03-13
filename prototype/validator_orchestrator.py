@@ -52,6 +52,13 @@ EXPECTED_IMAGE_NAME = os.environ.get("EXPECTED_IMAGE_NAME", "")
 # The execution password — must match what's in the Chutes secret
 EXEC_PASSWORD = os.environ.get("VALIDATOR_EXEC_PASSWORD", "")
 
+# S3 result-upload configuration (read-side / key generation only).
+# The chute holds the actual write credentials as Chutes secrets.
+# The orchestrator only needs to know the bucket/prefix to construct
+# the object key it passes to /execute (and to read results back if needed).
+S3_BUCKET = os.environ.get("S3_BUCKET", "")
+S3_RESULT_PREFIX = os.environ.get("S3_RESULT_PREFIX", "results")
+
 
 # ── Password rotation ────────────────────────────────────────────────────────
 async def rotate_chute_password(
@@ -203,9 +210,14 @@ async def call_chute_execute(
     chute_base_url: str = CHUTE_BASE_URL,
     api_key: str = CHUTES_API_KEY,
     timeout: float = 60.0,
+    result_s3_key: Optional[str] = None,
 ) -> dict:
     """
     Call the TEE chute's /execute endpoint with the execution password.
+
+    If *result_s3_key* is supplied the chute will upload the miner result to
+    that S3 object key (using its own credentials stored as Chutes secrets)
+    and return the s3:// URI in `result_s3_uri`.
     """
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -217,6 +229,8 @@ async def call_chute_execute(
         "exec_password": exec_password,
         "platform_attestation": platform_attestation,
     }
+    if result_s3_key:
+        payload["result_s3_key"] = result_s3_key
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         r = await client.post(
@@ -229,12 +243,16 @@ async def call_chute_execute(
 
 
 # ── Validation flow ───────────────────────────────────────────────────────────
-async def validate_miner(miner_url: str, input_data: dict) -> dict:
+async def validate_miner(
+    miner_url: str,
+    input_data: dict,
+    miner_hotkey: str = "unknown",
+) -> dict:
     """
     Full validation flow:
       1. Check we have an execution password
       2. Fetch platform attestation
-      3. Call the chute (password-gated)
+      3. Call the chute (password-gated), optionally requesting S3 upload
       4. Score the result
     """
     if not EXEC_PASSWORD:
@@ -263,10 +281,24 @@ async def validate_miner(miner_url: str, input_data: dict) -> dict:
         print(f"[ORCH] Attestation error: {platform_att.get('error')}")
         return {"status": "error", "error": f"attestation: {platform_att.get('error')}"}
 
-    # 2. Call the chute (password-gated)
+    # 2. Build S3 key for this evaluation (optional — skipped if not configured)
+    result_s3_key: Optional[str] = None
+    if S3_BUCKET:
+        import uuid as _uuid
+        session_id = _uuid.uuid4().hex
+        result_s3_key = f"{S3_RESULT_PREFIX}/{miner_hotkey}/{session_id}.json"
+        print(f"[ORCH] S3 result key: {result_s3_key}")
+    else:
+        print("[ORCH] S3_BUCKET not set — skipping S3 upload")
+
+    # 3. Call the chute (password-gated)
     try:
         response = await call_chute_execute(
-            miner_url, input_data, platform_att, EXEC_PASSWORD
+            miner_url,
+            input_data,
+            platform_att,
+            EXEC_PASSWORD,
+            result_s3_key=result_s3_key,
         )
     except httpx.HTTPStatusError as e:
         print(f"[ORCH] Chute HTTP {e.response.status_code}: {e.response.text}")
@@ -283,20 +315,33 @@ async def validate_miner(miner_url: str, input_data: dict) -> dict:
     print(f"[ORCH] Status: {response.get('status')}")
     print(f"[ORCH] Result: {response.get('result')}")
 
+    if response.get("result_s3_uri"):
+        print(f"[ORCH] Result stored at: {response['result_s3_uri']}")
+    elif result_s3_key:
+        print("[ORCH] WARNING: S3 key was requested but URI not returned — upload may have failed")
+
     if response.get("error"):
         print(f"[ORCH] TEE error: {response['error']}")
 
-    # 3. Score
+    # 4. Score
     if response.get("status") == "ok" and response.get("result"):
         result = response["result"]
         expected_sum = sum(input_data.get("values", []))
         actual_sum = result.get("sum")
         if actual_sum == expected_sum:
             print(f"[ORCH] PASS — sum={actual_sum}")
-            return {"status": "pass", "result": result}
+            return {
+                "status": "pass",
+                "result": result,
+                "result_s3_uri": response.get("result_s3_uri"),
+            }
         else:
             print(f"[ORCH] FAIL — expected {expected_sum}, got {actual_sum}")
-            return {"status": "fail", "result": result}
+            return {
+                "status": "fail",
+                "result": result,
+                "result_s3_uri": response.get("result_s3_uri"),
+            }
 
     return {"status": "error", "result": response}
 
@@ -340,11 +385,13 @@ async def main():
 
     print("=" * 60)
     print("VALIDATOR ORCHESTRATOR (password-gated, Option A attestation)")
-    print(f"  Chute:     {CHUTE_BASE_URL}")
-    print(f"  Chute ID:  {CHUTE_ID or '(dev mode)'}")
-    print(f"  Miner:     {miner_url}")
-    print(f"  Password:  {'set' if EXEC_PASSWORD else 'NOT SET'}")
-    print(f"  API key:   {'set' if CHUTES_API_KEY else 'not set (dev mode)'}")
+    print(f"  Chute:      {CHUTE_BASE_URL}")
+    print(f"  Chute ID:   {CHUTE_ID or '(dev mode)'}")
+    print(f"  Miner:      {miner_url}")
+    print(f"  Password:   {'set' if EXEC_PASSWORD else 'NOT SET'}")
+    print(f"  API key:    {'set' if CHUTES_API_KEY else 'not set (dev mode)'}")
+    print(f"  S3 bucket:  {S3_BUCKET or 'not set (upload disabled)'}")
+    print(f"  S3 prefix:  {S3_RESULT_PREFIX}")
     print("=" * 60)
 
     result = await validate_miner(miner_url, input_data)

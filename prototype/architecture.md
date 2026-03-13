@@ -13,6 +13,12 @@
                                    password-gated                   calls chute via
                                    (only validator                  Chutes HTTPS API
                                     can trigger)
+                                        │
+                                   S3 upload
+                                   (result JSON →
+                                    S3-compatible
+                                    bucket; creds
+                                    TEE-only)
 ```
 
 ---
@@ -82,6 +88,55 @@ chutes secrets create --purpose secure-validator \
 Rotation (no redeploy):
 ```bash
 python validator_orchestrator.py --rotate
+```
+
+---
+
+## S3 Result Upload
+
+After executing the miner script the chute optionally uploads the result JSON to any S3-compatible bucket (AWS S3, Cloudflare R2, MinIO, etc.).
+
+### Credential flow
+
+| Where stored | Who can read it | How |
+|---|---|---|
+| Chutes secrets (S3_ENDPOINT_URL, S3_BUCKET, S3_ACCESS_KEY, S3_SECRET_KEY) | Only the TEE | Injected as env vars; TDX-encrypted memory |
+| Orchestrator env (S3_BUCKET, S3_RESULT_PREFIX) | Validator VM only | Used only to construct the object key — never holds write credentials |
+
+The orchestrator supplies a **key path** (`result_s3_key`, e.g. `results/{miner_hotkey}/{uuid}.json`) with each `/execute` call. The chute writes to that key using its own credentials. The orchestrator never touches the S3 write credentials.
+
+### Key generation
+
+```
+S3_RESULT_PREFIX / miner_hotkey / <uuid4_hex>.json
+```
+
+Example: `results/5FHneW46.../a3f1b2c0d4e5f6a7b8c9d0e1f2a3b4c5.json`
+
+### Response fields
+
+| Field | Description |
+|---|---|
+| `result_s3_uri` | `s3://bucket/key` if upload succeeded; `null` if skipped or failed |
+
+S3 upload failure is **non-fatal** — the result is still returned in the response body. The orchestrator logs a warning if a key was requested but no URI came back.
+
+### Setup
+
+```bash
+# Store write credentials as Chutes secrets (TEE-only)
+chutes secrets create --purpose secure-validator \
+  --key S3_ENDPOINT_URL --value "https://s3.amazonaws.com"
+chutes secrets create --purpose secure-validator \
+  --key S3_BUCKET       --value "my-validator-results"
+chutes secrets create --purpose secure-validator \
+  --key S3_ACCESS_KEY   --value "<write-access-key-id>"
+chutes secrets create --purpose secure-validator \
+  --key S3_SECRET_KEY   --value "<write-secret-access-key>"
+
+# Orchestrator only needs bucket name for key construction
+export S3_BUCKET="my-validator-results"
+export S3_RESULT_PREFIX="results"  # optional
 ```
 
 ---

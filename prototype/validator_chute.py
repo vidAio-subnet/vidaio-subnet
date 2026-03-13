@@ -17,6 +17,25 @@
 #   orchestrator must include it in every /execute request and can
 #   rotate it at runtime via /rotate-password.
 #
+# S3 RESULT UPLOAD (optional):
+#   After executing the miner script the chute uploads the result JSON to any
+#   S3-compatible bucket (AWS S3, Cloudflare R2, MinIO, …).  Credentials live
+#   entirely as Chutes secrets — never sent over the wire by the orchestrator:
+#
+#   chutes secrets create --purpose secure-validator \
+#     --key S3_ENDPOINT_URL --value "https://s3.amazonaws.com"
+#   chutes secrets create --purpose secure-validator \
+#     --key S3_BUCKET       --value "my-validator-results"
+#   chutes secrets create --purpose secure-validator \
+#     --key S3_ACCESS_KEY   --value "<access-key-id>"
+#   chutes secrets create --purpose secure-validator \
+#     --key S3_SECRET_KEY   --value "<secret-access-key>"
+#
+#   The orchestrator passes a `result_s3_key` string per /execute call
+#   (e.g. "results/{miner_hotkey}/{session_id}.json").  The chute writes the
+#   result there and returns the s3:// URI in the response.  If any credential
+#   is absent the upload step is silently skipped.
+#
 # ATTESTATION MODEL (Option A — Chutes platform attestation):
 #   No /dev/tdx_guest access. Attestation is handled by sek8s
 #   infrastructure. The orchestrator passes platform attestation
@@ -56,7 +75,7 @@ image = (
         tag="0.3",
     )
     .from_base("parachutes/python:3.12")
-    .run_command("pip install cryptography httpx")
+    .run_command("pip install cryptography httpx boto3")
 )
 
 chute = Chute(
@@ -74,12 +93,18 @@ class ExecuteRequest(BaseModel):
     input_data: dict
     exec_password: str  # must match VALIDATOR_EXEC_PASSWORD
     platform_attestation: dict | None = None
+    # Optional S3 object key to store the result at.
+    # The chute derives the full URI from S3_* secrets; the orchestrator only
+    # supplies the key path (e.g. "results/{miner}/{session}.json").
+    result_s3_key: str | None = None
 
 
 class ExecuteResponse(BaseModel):
     status: str
     result: dict | None = None
     error: str | None = None
+    # Populated when the result was successfully written to S3.
+    result_s3_uri: str | None = None
 
 
 class RotatePasswordRequest(BaseModel):
@@ -143,6 +168,35 @@ async def startup(self):
         ).hexdigest()
         print("[CHUTE] Execution password loaded from VALIDATOR_EXEC_PASSWORD")
 
+    # ── S3 result-upload credentials ─────────────────────────────
+    s3_endpoint = os.environ.get("S3_ENDPOINT_URL", "")
+    s3_bucket   = os.environ.get("S3_BUCKET", "")
+    s3_access   = os.environ.get("S3_ACCESS_KEY", "")
+    s3_secret   = os.environ.get("S3_SECRET_KEY", "")
+
+    if s3_endpoint and s3_bucket and s3_access and s3_secret:
+        self._s3_config = {
+            "endpoint_url": s3_endpoint,
+            "bucket":       s3_bucket,
+            "access_key":   s3_access,
+            "secret_key":   s3_secret,
+        }
+        print(f"[CHUTE] S3 upload configured → bucket '{s3_bucket}' @ {s3_endpoint}")
+    else:
+        self._s3_config = None
+        missing = [
+            k for k, v in {
+                "S3_ENDPOINT_URL": s3_endpoint,
+                "S3_BUCKET":       s3_bucket,
+                "S3_ACCESS_KEY":   s3_access,
+                "S3_SECRET_KEY":   s3_secret,
+            }.items() if not v
+        ]
+        print(
+            f"[CHUTE] WARNING: S3 upload disabled — missing secrets: {missing}. "
+            "Results will only be returned in the response body."
+        )
+
     self._is_tee = os.path.exists("/dev/tdx_guest") or os.environ.get(
         "CHUTES_EXECUTION_CONTEXT"
     ) == "REMOTE"
@@ -161,6 +215,47 @@ def _verify_password(self, password: str) -> bool:
 
     candidate_hash = hashlib.sha256(password.encode()).hexdigest()
     return hmac.compare_digest(candidate_hash, self._exec_password_hash)
+
+
+# ── S3 upload helper ─────────────────────────────────────────────────────────
+async def _upload_result_to_s3(s3_config: dict, key: str, result: dict) -> str:
+    """
+    Upload *result* as UTF-8 JSON to the configured S3-compatible bucket.
+
+    Runs boto3 (sync) in a thread so it doesn't block the async event loop.
+    Returns the full s3:// URI on success, raises on failure.
+
+    The credentials live inside TEE-encrypted memory (loaded at startup from
+    Chutes secrets) and are never exposed to the orchestrator or the network.
+    """
+    import asyncio
+    import json
+
+    import boto3
+    from botocore.exceptions import BotoCoreError, ClientError
+
+    payload = json.dumps(result, separators=(",", ":")).encode()
+
+    def _sync_put():
+        client = boto3.client(
+            "s3",
+            endpoint_url=s3_config["endpoint_url"],
+            aws_access_key_id=s3_config["access_key"],
+            aws_secret_access_key=s3_config["secret_key"],
+        )
+        client.put_object(
+            Bucket=s3_config["bucket"],
+            Key=key,
+            Body=payload,
+            ContentType="application/json",
+        )
+        return f"s3://{s3_config['bucket']}/{key}"
+
+    try:
+        uri = await asyncio.to_thread(_sync_put)
+        return uri
+    except (BotoCoreError, ClientError) as exc:
+        raise RuntimeError(f"S3 upload failed: {exc}") from exc
 
 
 # ── Rotate password cord ──────────────────────────────────────────────────────
@@ -322,12 +417,32 @@ async def execute(self, request: ExecuteRequest) -> ExecuteResponse:
             "result": None,
         }
 
+        s3_uri: str | None = None
         try:
             exec(  # noqa: S102
                 compile(script_bytes, "<miner_script>", "exec"),
                 sandbox,
             )
-            return ExecuteResponse(status="ok", result=sandbox.get("result"))
+            exec_result = sandbox.get("result")
+
+            # ── S3 upload ────────────────────────────────────────────
+            if (
+                exec_result is not None
+                and self._s3_config is not None
+                and request.result_s3_key
+            ):
+                try:
+                    s3_uri = await _upload_result_to_s3(
+                        self._s3_config, request.result_s3_key, exec_result
+                    )
+                    print(f"[CHUTE] Result uploaded → {s3_uri}")
+                except Exception as s3_err:
+                    # Upload failure is non-fatal: result is still returned
+                    print(f"[CHUTE] S3 upload error (non-fatal): {s3_err}")
+
+            return ExecuteResponse(
+                status="ok", result=exec_result, result_s3_uri=s3_uri
+            )
         except Exception as e:
             return ExecuteResponse(status="error", error=type(e).__name__)
         finally:
