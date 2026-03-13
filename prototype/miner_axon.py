@@ -3,22 +3,15 @@
 # VM1 — the miner. Exposes 2 endpoints. Never sends plaintext.
 #
 # ATTESTATION MODEL (Option A — Chutes platform attestation):
-#   Instead of verifying a raw TDX quote (which requires /dev/tdx_guest
-#   access that user chute code doesn't have), the miner verifies
-#   the Chutes platform attestation chain:
+#   The miner verifies the Chutes platform attestation proof
+#   (chute metadata + server attestation status) by independently
+#   querying the Chutes API. See previous docstring for full details.
 #
-#   1. Orchestrator fetches chute metadata + server attestation status
-#      from the Chutes API and passes it through the chute to the miner
-#   2. Miner independently queries the SAME Chutes API endpoints to
-#      cross-check that:
-#        a) The chute exists and has tee=True
-#        b) The server running it has passed TDX attestation
-#        c) The image is cosign-signed (Chutes enforces this)
-#   3. Only then does the miner release the encrypted script
-#
-#   This works because Chutes' own infrastructure does the TDX
-#   verification (boot attestation, RTMR measurement, LUKS unlock)
-#   and exposes the result via authenticated API endpoints.
+# NOTE: The miner has no knowledge of the orchestrator's execution
+#   password. That password gates access to the *chute*, not to the
+#   miner. The miner's own gate is the attestation verification —
+#   it only releases the encrypted script after confirming the caller
+#   is a genuine TEE chute on attested hardware.
 #
 # Run with:
 #   pip install fastapi uvicorn cryptography httpx
@@ -26,9 +19,9 @@
 #
 # Environment variables:
 #   MINER_PORT                     — listen port (default: 9000)
-#   REQUIRE_REAL_ATTESTATION=true  — reject dev-stub attestations
-#   CHUTES_API_BASE                — Chutes API URL (default: https://api.chutes.ai)
-#   EXPECTED_CHUTE_NAME            — expected chute name for verification
+#   REQUIRE_ATTESTATION=true       — reject dev-stub attestations
+#   CHUTES_API_BASE                — for cross-verification
+#   EXPECTED_CHUTE_NAME            — expected chute name
 #   EXPECTED_IMAGE_NAME            — expected image name:tag
 
 import base64
@@ -84,16 +77,13 @@ EXPECTED_IMAGE_NAME = os.environ.get("EXPECTED_IMAGE_NAME", "")
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 class PlatformAttestation(BaseModel):
-    type: str  # "chutes-platform" or "dev-stub"
-    # Fields present when type == "chutes-platform":
+    type: str
     chute: dict | None = None
     server_id: str | None = None
     attestation_status: dict | None = None
     api_base: str | None = None
-    # Fields present when type == "dev-stub":
     source: str | None = None
     warning: str | None = None
-    # Error case:
     error: str | None = None
 
 
@@ -111,167 +101,106 @@ class ScriptRequest(BaseModel):
 async def verify_platform_attestation(att: PlatformAttestation) -> Optional[str]:
     """
     Verify the Chutes platform attestation proof.
-
     Returns None on success, or an error string on failure.
-
-    For "chutes-platform" type:
-      1. Check the claimed chute has tee=True
-      2. Check image name matches expectations (if configured)
-      3. Independently query the Chutes API to cross-verify:
-         a) The chute exists with tee=True
-         b) The server has valid attestation status
-      4. Verify the attestation_status indicates a passing state
-
-    For "dev-stub" type:
-      Accept only if REQUIRE_REAL_ATTESTATION is False.
     """
 
-    # ── Dev stub ─────────────────────────────────────────────────────
+    # Dev stub
     if att.type == "dev-stub":
         if REQUIRE_REAL_ATTESTATION:
             return "real platform attestation required but got dev-stub"
-        print(
-            "[MINER] WARNING: accepting dev-stub attestation "
-            "(no TEE guarantee — dev mode only)"
-        )
+        print("[MINER] WARNING: accepting dev-stub (no TEE guarantee)")
         return None
 
-    # ── Platform error forwarded from orchestrator ───────────────────
+    # Error from orchestrator
     if att.type == "platform-error":
-        return f"orchestrator reported attestation error: {att.error}"
+        return f"orchestrator error: {att.error}"
 
-    # ── Chutes platform attestation ──────────────────────────────────
+    # Chutes platform
     if att.type != "chutes-platform":
         return f"unknown attestation type: {att.type}"
 
     if not att.chute:
-        return "attestation missing chute metadata"
+        return "missing chute metadata"
 
-    # Check TEE flag in claimed metadata
     if not att.chute.get("tee", False):
-        return "chute does not have tee=True"
+        return "chute tee=False"
 
-    # Check image name if configured
     if EXPECTED_IMAGE_NAME:
-        claimed_image = att.chute.get("image", {}).get("name", "")
-        if claimed_image != EXPECTED_IMAGE_NAME:
-            return (
-                f"image mismatch: expected {EXPECTED_IMAGE_NAME}, "
-                f"got {claimed_image}"
-            )
+        claimed = att.chute.get("image", {}).get("name", "")
+        if claimed != EXPECTED_IMAGE_NAME:
+            return f"image mismatch: expected {EXPECTED_IMAGE_NAME}, got {claimed}"
 
-    # Check chute name if configured
     if EXPECTED_CHUTE_NAME:
-        claimed_name = att.chute.get("chute_name", "")
-        if claimed_name != EXPECTED_CHUTE_NAME:
-            return (
-                f"chute name mismatch: expected {EXPECTED_CHUTE_NAME}, "
-                f"got {claimed_name}"
-            )
+        claimed = att.chute.get("chute_name", "")
+        if claimed != EXPECTED_CHUTE_NAME:
+            return f"chute name mismatch: expected {EXPECTED_CHUTE_NAME}, got {claimed}"
 
-    # ── Independent cross-verification via Chutes API ────────────────
-    # The miner does NOT trust the attestation blob at face value.
-    # It queries the Chutes API itself to confirm.
+    # Independent cross-verification
     chute_id = att.chute.get("chute_id")
     server_id = att.server_id
     api_base = att.api_base or CHUTES_API_BASE
 
     if chute_id and REQUIRE_REAL_ATTESTATION:
-        cross_check_err = await _cross_verify_with_chutes_api(
-            chute_id, server_id, api_base
-        )
-        if cross_check_err:
-            return f"cross-verification failed: {cross_check_err}"
+        err = await _cross_verify(chute_id, server_id, api_base)
+        if err:
+            return f"cross-verification: {err}"
 
-    # ── Check attestation_status from the orchestrator ───────────────
+    # Check attestation_status
     if att.attestation_status:
-        status = att.attestation_status
-        # The exact shape of this response depends on the Chutes API,
-        # but we expect something indicating "passed" or "valid"
-        att_state = (
-            status.get("status", "")
-            or status.get("state", "")
-            or status.get("result", "")
+        state = (
+            att.attestation_status.get("status", "")
+            or att.attestation_status.get("state", "")
+            or att.attestation_status.get("result", "")
         )
-        if isinstance(att_state, str) and att_state.lower() in (
+        if isinstance(state, str) and state.lower() in (
             "failed", "invalid", "expired", "error",
         ):
-            return f"server attestation state: {att_state}"
-        print(f"[MINER] Server attestation status: {status}")
+            return f"server attestation: {state}"
+        print(f"[MINER] Server attestation: {att.attestation_status}")
     elif REQUIRE_REAL_ATTESTATION:
-        return "no server attestation status provided"
+        return "no server attestation status"
     else:
-        print("[MINER] No server attestation status — accepting in dev mode")
+        print("[MINER] No attestation status — accepting in dev mode")
 
     print("[MINER] Platform attestation verified ✓")
     return None
 
 
-async def _cross_verify_with_chutes_api(
-    chute_id: str,
-    server_id: Optional[str],
-    api_base: str,
+async def _cross_verify(
+    chute_id: str, server_id: Optional[str], api_base: str,
 ) -> Optional[str]:
-    """
-    Independently query the Chutes API to verify the claimed attestation.
-
-    This prevents a malicious orchestrator from fabricating attestation
-    data. The miner checks the same public endpoints the orchestrator
-    used, confirming:
-      - The chute exists and has tee=True
-      - The server has passing attestation
-    """
+    """Independently query Chutes API to confirm attestation claims."""
     import httpx
 
     try:
-        async with httpx.AsyncClient(
-            base_url=api_base, timeout=10.0
-        ) as client:
-            # Verify chute exists and has TEE
+        async with httpx.AsyncClient(base_url=api_base, timeout=10.0) as client:
             r = await client.get(f"/chutes/{chute_id}")
             if r.status_code == 401:
-                # Some endpoints may require auth — if so, we can't
-                # cross-verify without an API key. Log and continue.
-                print(
-                    "[MINER] Cross-verify: chute endpoint requires auth "
-                    "(cannot independently verify — trusting claimed data)"
-                )
+                print("[MINER] Cross-verify: auth required — trusting claimed data")
                 return None
             r.raise_for_status()
-            chute_data = r.json()
+            data = r.json()
+            if not data.get("tee", False):
+                return "cross-check: chute tee=False"
 
-            if not chute_data.get("tee", False):
-                return "cross-check: chute tee=False on Chutes API"
-
-            # Verify server attestation if we have a server_id
             if server_id:
-                r = await client.get(
-                    f"/servers/{server_id}/attestation/status"
-                )
+                r = await client.get(f"/servers/{server_id}/attestation/status")
                 if r.status_code == 401:
-                    print(
-                        "[MINER] Cross-verify: attestation endpoint "
-                        "requires auth — cannot verify server status"
-                    )
+                    print("[MINER] Cross-verify: server auth required")
                     return None
                 r.raise_for_status()
-                server_att = r.json()
-                state = (
-                    server_att.get("status", "")
-                    or server_att.get("state", "")
-                    or ""
-                )
+                srv = r.json()
+                state = srv.get("status", "") or srv.get("state", "") or ""
                 if isinstance(state, str) and state.lower() in (
                     "failed", "invalid", "error",
                 ):
-                    return f"cross-check: server attestation {state}"
+                    return f"cross-check: server {state}"
 
-            return None  # All checks passed
-
+            return None
     except httpx.HTTPStatusError as e:
-        return f"Chutes API returned {e.response.status_code}"
+        return f"API {e.response.status_code}"
     except Exception as e:
-        return f"Chutes API unreachable: {e}"
+        return f"API unreachable: {e}"
 
 
 # ── Session cleanup ──────────────────────────────────────────────────────────
@@ -291,25 +220,19 @@ def _cleanup_expired_sessions():
 async def handshake(req: HandshakeRequest):
     """
     Combined handshake: chute sends ECDH pubkey + platform attestation.
-    Miner verifies attestation (checking Chutes API independently),
-    generates ephemeral keypair, derives session key, returns its pubkey.
+    Miner verifies, generates ephemeral key, derives session secret.
     """
     _cleanup_expired_sessions()
 
-    # Verify platform attestation BEFORE generating any keys
     err = await verify_platform_attestation(req.attestation)
     if err:
-        raise HTTPException(
-            status_code=403, detail=f"attestation rejected: {err}"
-        )
+        raise HTTPException(status_code=403, detail=f"attestation rejected: {err}")
 
-    # Per-session ephemeral keypair
     session_private = X25519PrivateKey.generate()
     session_pub_bytes = session_private.public_key().public_bytes(
         Encoding.Raw, PublicFormat.Raw,
     )
 
-    # Derive shared secret
     try:
         their_pub = X25519PublicKey.from_public_bytes(
             base64.b64decode(req.validator_pubkey)
@@ -323,7 +246,6 @@ async def handshake(req: HandshakeRequest):
         info=b"chutes-miner-validator-v1",
     ).derive(raw_secret)
 
-    # Scrub intermediaries
     raw_secret = b"\x00" * len(raw_secret)
     del raw_secret, session_private
 
@@ -341,23 +263,17 @@ async def handshake(req: HandshakeRequest):
 
 @app.post("/script")
 async def get_script(req: ScriptRequest):
-    """
-    Return the encrypted script for an established session.
-    Single-use: session key is scrubbed after this call.
-    """
+    """Encrypted script for an established session. Single-use."""
     _cleanup_expired_sessions()
 
     if req.session_id not in _sessions:
-        raise HTTPException(
-            status_code=404, detail="unknown or expired session"
-        )
+        raise HTTPException(status_code=404, detail="unknown or expired session")
 
     key = _sessions[req.session_id]["key"]
     iv = os.urandom(12)
     ciphertext = AESGCM(key).encrypt(iv, SECRET_SCRIPT, None)
     script_hash = hashlib.sha256(SECRET_SCRIPT).hexdigest()
 
-    # Scrub and delete
     _sessions[req.session_id]["key"] = b"\x00" * 32
     del _sessions[req.session_id]
 
