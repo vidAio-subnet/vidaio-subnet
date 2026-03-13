@@ -1356,7 +1356,7 @@ class Validator(base.BaseValidator):
         except httpx.RequestError as e:
             logger.error(f"Error pushing result for task {task_id}: {e}")
 
-    def set_weights(self):
+    async def set_weights(self):
         self.current_block = self.subtensor.get_current_block()
         self.last_update = self.metagraph.last_update[self.uid]
         uids, weights = self.miner_manager.weights
@@ -1389,7 +1389,7 @@ class Validator(base.BaseValidator):
                     uids=uint_uids,
                     weights=uint_weights,
                 )
-                success, msg = future.result(timeout=120)
+                success, msg = await asyncio.wait_for(asyncio.wrap_future(future), timeout=120)
                 if not success:
                     logger.error(f"😠 Failed to set weights: {msg}")
                 else: 
@@ -1412,7 +1412,7 @@ class WeightSynthesizer:
         while True:
             try:
                 logger.info("Running weight_manager...")
-                self.validator.set_weights()  
+                await self.validator.set_weights()  
             except Exception as e:
                 logger.error(f"Error in WeightSynthesizer: {e}", exc_info=True)
             await asyncio.sleep(1200)  
