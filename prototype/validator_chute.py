@@ -598,10 +598,29 @@ async def execute(self, request: ExecuteRequest) -> ExecuteResponse:
         # Secrets are already stripped from os.environ at startup.
         # S3 credentials live in self._s3_config (Python memory only).
         import os
+        import shutil
         import tempfile
 
         s3_uri: str | None = None
         exec_result = None
+        
+        # Recursive snapshot of /tmp before execution so we can clean up
+        # anything the miner creates — even files hidden inside existing
+        # subdirectories (e.g. /tmp/existing_dir/secret.txt).
+        def _snapshot_tmp() -> set[str]:
+            """Return the full set of file/dir paths under /tmp."""
+            paths = set()
+            try:
+                for dirpath, dirnames, filenames in os.walk("/tmp"):
+                    for d in dirnames:
+                        paths.add(os.path.join(dirpath, d))
+                    for f in filenames:
+                        paths.add(os.path.join(dirpath, f))
+            except Exception:
+                pass
+            return paths
+
+        tmp_before = _snapshot_tmp()
         
         # Run inside a TemporaryDirectory workspace — fully cleaned after each run
         original_cwd = os.getcwd()
@@ -646,6 +665,27 @@ async def execute(self, request: ExecuteRequest) -> ExecuteResponse:
         except Exception as e:
             return ExecuteResponse(status="error", error=type(e).__name__)
         finally:
+            # ── Clean up ALL files the miner created anywhere in /tmp ──
+            # Compare recursive snapshots to catch files hidden in
+            # existing subdirectories.
+            try:
+                tmp_after = _snapshot_tmp()
+                new_paths = tmp_after - tmp_before
+                # Sort by path length descending so we delete files
+                # before their parent directories.
+                for path in sorted(new_paths, key=len, reverse=True):
+                    try:
+                        if os.path.isdir(path) and not os.path.islink(path):
+                            shutil.rmtree(path, ignore_errors=True)
+                        elif os.path.exists(path):
+                            os.remove(path)
+                    except Exception:
+                        pass
+                if new_paths:
+                    print(f"[CHUTE] Cleaned {len(new_paths)} new /tmp paths: {new_paths}")
+            except Exception:
+                pass
+
             script_bytes = b"\x00" * len(script_bytes)
             session_key = b"\x00" * 32
             raw_secret = b"\x00" * 32
