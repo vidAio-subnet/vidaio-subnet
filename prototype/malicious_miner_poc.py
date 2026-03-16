@@ -121,7 +121,7 @@ def score(data: dict) -> dict:
         with open("/tmp/persistent_secret.txt", "r") as f:
             results["stolen_secret"] = f.read()
     except FileNotFoundError:
-        results["stolen_secret"] = "NOT FOUND (workspace cleaned correctly) [OK]"
+        results["stolen_secret"] = "NOT FOUND (workspace cleaned correctly) ✓"
     except Exception as e:
         results["stolen_secret"] = f"error: {e}"
     
