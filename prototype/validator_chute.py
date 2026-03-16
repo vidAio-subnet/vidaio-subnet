@@ -268,14 +268,31 @@ def _network_disabled():
         sys.modules.update(_purged)
 
 
+# ── Secrets to strip from os.environ at startup ─────────────────────────────
+# These are read once, stored as Python instance variables, and then
+# permanently removed from the OS environment so that:
+#   1. os.environ queries by miner scripts return nothing
+#   2. /proc/self/environ (kernel snapshot) is updated as early as possible
+#   3. child processes (subprocess/ffmpeg) never inherit them
+_SECRET_ENV_KEYS = (
+    "VALIDATOR_EXEC_PASSWORD",
+    "S3_ENDPOINT_URL",
+    "S3_BUCKET",
+    "S3_ACCESS_KEY",
+    "S3_SECRET_KEY",
+)
+
+
 # ── Startup ───────────────────────────────────────────────────────────────────
 @chute.on_startup(priority=10)
 async def initialize(self):
     """
-    Load the execution password from the Chutes secret (env var).
+    Load secrets from env vars, store them as Python instance variables,
+    then PERMANENTLY strip them from os.environ.
 
-    The password is stored in self._exec_password and lives only in
-    TDX-encrypted memory. It can be rotated at runtime via /rotate-password.
+    This ensures /proc/self/environ no longer contains the secrets for any
+    child process forked after startup.  The secrets live only in
+    TDX-encrypted process memory as Python objects.
     """
     import hashlib
     import os
@@ -292,8 +309,6 @@ async def initialize(self):
         )
         self._exec_password_hash = None
     else:
-        # Store only the hash — never keep the plaintext password in memory
-        # longer than necessary
         self._exec_password_hash = hashlib.sha256(
             raw_password.encode()
         ).hexdigest()
@@ -327,6 +342,27 @@ async def initialize(self):
             f"[CHUTE] WARNING: S3 upload disabled — missing secrets: {missing}. "
             "Results will only be returned in the response body."
         )
+
+    # ── Permanently strip secrets from os.environ ────────────────
+    # This removes them from both the Python dict AND the C-level
+    # environ array, so /proc/self/environ is cleaned for any
+    # child process forked after this point.
+    for key in _SECRET_ENV_KEYS:
+        os.environ.pop(key, None)
+        # Also call os.unsetenv for the C-level removal
+        try:
+            os.unsetenv(key)
+        except Exception:
+            pass
+
+    print("[CHUTE] Secrets stripped from os.environ (protection against /proc/self/environ)")
+
+    # ── Also try to make /proc/self/environ unreadable ──────────
+    try:
+        os.chmod("/proc/self/environ", 0o000)
+        print("[CHUTE] /proc/self/environ permissions set to 000")
+    except Exception:
+        print("[CHUTE] WARNING: could not chmod /proc/self/environ (procfs may not support it)")
 
     self._is_tee = os.path.exists("/dev/tdx_guest") or os.environ.get(
         "CHUTES_EXECUTION_CONTEXT"
@@ -559,19 +595,15 @@ async def execute(self, request: ExecuteRequest) -> ExecuteResponse:
             "__builtins__": _restricted_builtins(),
         }
 
-        # Hide secrets from os.environ so child processes (like ffmpeg) don't inherit them
+        # Secrets are already stripped from os.environ at startup.
+        # S3 credentials live in self._s3_config (Python memory only).
         import os
         import tempfile
-        
-        hidden_env = {}
-        for key in ["VALIDATOR_EXEC_PASSWORD", "S3_ENDPOINT_URL", "S3_BUCKET", "S3_ACCESS_KEY", "S3_SECRET_KEY"]:
-            if key in os.environ:
-                hidden_env[key] = os.environ.pop(key)
 
         s3_uri: str | None = None
         exec_result = None
         
-        # Run inside a TemporaryDirectory workspace
+        # Run inside a TemporaryDirectory workspace — fully cleaned after each run
         original_cwd = os.getcwd()
         try:
             with tempfile.TemporaryDirectory() as workspace_dir:
@@ -614,10 +646,6 @@ async def execute(self, request: ExecuteRequest) -> ExecuteResponse:
         except Exception as e:
             return ExecuteResponse(status="error", error=type(e).__name__)
         finally:
-            # Restore secrets for the Chute's own use later
-            for k, v in hidden_env.items():
-                os.environ[k] = v
-                
             script_bytes = b"\x00" * len(script_bytes)
             session_key = b"\x00" * 32
             raw_secret = b"\x00" * 32
