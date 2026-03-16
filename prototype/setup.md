@@ -23,7 +23,7 @@ python validator_orchestrator.py (OR) pm2 start "PYTHONPATH=. python validator_o
 ```bash
 chutes build validator_chute:chute --local
 # For running locally in a temporary container, follow the docker run instructions in the file header of validator_chute.py:
-# docker run --rm -it -e CHUTES_EXECUTION_CONTEXT=REMOTE -e VALIDATOR_EXEC_PASSWORD=devpass123 -p 8080:8080 --add-host=host.docker.internal:host-gateway secure-validator:0.3 /bin/sh
+docker run --rm -it -e CHUTES_EXECUTION_CONTEXT=REMOTE -e VALIDATOR_EXEC_PASSWORD=$VALIDATOR_EXEC_PASSWORD -p 8080:8080 --add-host=host.docker.internal:host-gateway secure-validator:0.3 /bin/sh
 # Inside the container:
 chutes run validator_chute:chute --dev --port 8080
 ```

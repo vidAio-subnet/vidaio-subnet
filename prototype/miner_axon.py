@@ -43,8 +43,6 @@ from pydantic import BaseModel
 import uvicorn
 
 
-# ── Secret script — never leaves this machine in plaintext ───────────────────
-SECRET_SCRIPT = b"""
 # Miner's proprietary logic.
 #
 # Interface contract (enforced by the validator chute):
@@ -58,6 +56,8 @@ SECRET_SCRIPT = b"""
 #   __subclasses__, __globals__, __bases__, __code__, __closure__,
 #   __mro__, __loader__, __spec__, __import__
 
+# ── Secret script — never leaves this machine in plaintext ───────────────────
+SECRET_SCRIPT = b"""
 def score(data: dict) -> dict:
     values = data.get("values", [])
     return {
