@@ -143,7 +143,7 @@ def _restricted_builtins() -> dict:
     import builtins
 
     BLOCKED = {
-        "__import__", "open", "exec", "eval", "compile",
+        "exec", "eval", "compile",
         "globals", "locals", "vars", "dir",
         "getattr", "setattr", "delattr",
         "type", "__build_class__",
@@ -226,7 +226,7 @@ _PURGE_MODULE_PREFIXES = (
     "socket", "ssl", "http", "urllib", "requests", "httpx",
     "aiohttp", "boto3", "botocore", "wandb", "websocket",
     "ftplib", "smtplib", "imaplib", "poplib", "telnetlib",
-    "xmlrpc", "socketserver", "subprocess", "ctypes",
+    "xmlrpc", "socketserver", "ctypes",
     "multiprocessing",
 )
 
@@ -559,21 +559,39 @@ async def execute(self, request: ExecuteRequest) -> ExecuteResponse:
             "__builtins__": _restricted_builtins(),
         }
 
-        s3_uri: str | None = None
-        try:
-            with _network_disabled():
-                exec(  # noqa: S102
-                    compile(script_bytes, "<miner_script>", "exec"),
-                    sandbox,
-                )
+        # Hide secrets from os.environ so child processes (like ffmpeg) don't inherit them
+        import os
+        import tempfile
+        
+        hidden_env = {}
+        for key in ["VALIDATOR_EXEC_PASSWORD", "S3_ENDPOINT_URL", "S3_BUCKET", "S3_ACCESS_KEY", "S3_SECRET_KEY"]:
+            if key in os.environ:
+                hidden_env[key] = os.environ.pop(key)
 
-                entry_fn = sandbox.get("score")
-                if not callable(entry_fn):
-                    return ExecuteResponse(
-                        status="error",
-                        error="script must define a callable named 'score(data)'",
-                    )
-                exec_result = entry_fn(request.input_data)
+        s3_uri: str | None = None
+        exec_result = None
+        
+        # Run inside a TemporaryDirectory workspace
+        original_cwd = os.getcwd()
+        try:
+            with tempfile.TemporaryDirectory() as workspace_dir:
+                os.chdir(workspace_dir)
+                try:
+                    with _network_disabled():
+                        exec(  # noqa: S102
+                            compile(script_bytes, "<miner_script>", "exec"),
+                            sandbox,
+                        )
+
+                        entry_fn = sandbox.get("score")
+                        if not callable(entry_fn):
+                            return ExecuteResponse(
+                                status="error",
+                                error="script must define a callable named 'score(data)'",
+                            )
+                        exec_result = entry_fn(request.input_data)
+                finally:
+                    os.chdir(original_cwd)
 
             # ── S3 upload (network restored — chute's own credentials) ──
             if (
@@ -596,6 +614,10 @@ async def execute(self, request: ExecuteRequest) -> ExecuteResponse:
         except Exception as e:
             return ExecuteResponse(status="error", error=type(e).__name__)
         finally:
+            # Restore secrets for the Chute's own use later
+            for k, v in hidden_env.items():
+                os.environ[k] = v
+                
             script_bytes = b"\x00" * len(script_bytes)
             session_key = b"\x00" * 32
             raw_secret = b"\x00" * 32
