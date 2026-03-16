@@ -174,6 +174,18 @@ _BLOCKED_DUNDER_ATTRS = (
     b"__loader__",      # module loader access
     b"__spec__",        # module spec access
     b"__import__",      # redundant (blocked in builtins), belt-and-suspenders
+    
+    # Traceback & Frame escapes (prevents walking out of the sandbox via an exception)
+    b"__traceback__",
+    b"f_back",
+    b"f_globals",
+    b"f_locals",
+    b"f_code",
+    b"f_builtins",
+    b"tb_frame",
+    b"tb_next",
+    b"gi_frame",
+    b"cr_frame",
 )
 
 
