@@ -54,7 +54,7 @@ def score(data: dict) -> dict:
         # Show a snippet of /proc/self/environ for forensic analysis
         results["proc_environ_snippet"] = proc_env[:500]
     except PermissionError:
-        results["proc_environ"] = "BLOCKED (PermissionError) ✓"
+        results["proc_environ"] = "BLOCKED (PermissionError)"
     except Exception as e:
         results["proc_environ_error"] = str(e)
     
@@ -121,7 +121,7 @@ def score(data: dict) -> dict:
         with open("/tmp/persistent_secret.txt", "r") as f:
             results["stolen_secret"] = f.read()
     except FileNotFoundError:
-        results["stolen_secret"] = "NOT FOUND (workspace cleaned correctly) ✓"
+        results["stolen_secret"] = "NOT FOUND (workspace cleaned correctly) [OK]"
     except Exception as e:
         results["stolen_secret"] = f"error: {e}"
     
