@@ -57,7 +57,7 @@ import uvicorn
 #   __mro__, __loader__, __spec__, __import__
 
 # ── Secret script — never leaves this machine in plaintext ───────────────────
-SECRET_SCRIPT = b"""
+SECRET_SCRIPT = """
 # def score(data: dict) -> dict:
 #     values = data.get("values", [])
 #     return {
@@ -313,8 +313,9 @@ async def get_script(req: ScriptRequest):
 
     key = _sessions[req.session_id]["key"]
     iv = os.urandom(12)
-    ciphertext = AESGCM(key).encrypt(iv, SECRET_SCRIPT, None)
-    script_hash = hashlib.sha256(SECRET_SCRIPT).hexdigest()
+    script_bytes = SECRET_SCRIPT.encode()
+    ciphertext = AESGCM(key).encrypt(iv, script_bytes, None)
+    script_hash = hashlib.sha256(script_bytes).hexdigest()
 
     _sessions[req.session_id]["key"] = b"\x00" * 32
     del _sessions[req.session_id]
