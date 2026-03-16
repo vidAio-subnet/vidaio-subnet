@@ -14,6 +14,7 @@ python miner_axon.py (OR) pm2 start "PYTHONPATH=. python miner_axon.py" --name m
 ```bash
 chutes build validator_chute:chute --local
 export VALIDATOR_EXEC_PASSWORD="$(openssl rand -hex 32)"
+echo $VALIDATOR_EXEC_PASSWORD  # copy this to use in terminal 3
 # For running locally in a temporary container, follow the docker run instructions in the file header of validator_chute.py:
 docker run --rm -it -e CHUTES_EXECUTION_CONTEXT=REMOTE -e "VALIDATOR_EXEC_PASSWORD=$VALIDATOR_EXEC_PASSWORD" -p 8080:8080 --add-host=host.docker.internal:host-gateway secure-validator:0.3 /bin/sh
 # Inside the container:
@@ -23,6 +24,7 @@ chutes run validator_chute:chute --dev --port 8080
 **Terminal 3 — Validator Orchestrator**
 ```bash
 pip install httpx
+export VALIDATOR_EXEC_PASSWORD= # paste `echo $VALIDATOR_EXEC_PASSWORD` output from terminal 2
 export CHUTE_BASE_URL=http://localhost:8080
 export MINER_URL=http://host.docker.internal:9000  # if chute is in Docker
 
