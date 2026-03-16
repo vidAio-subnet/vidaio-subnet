@@ -70,14 +70,14 @@
 #   Terminal 5:  python validator_orchestrator.py
 #
 # DEPLOY:
-#   chutes build validator_chute:chute --wait
+#   chutes build validator_chute:chute --wait 
 #   chutes deploy validator_chute:chute --accept-fee
 #   export VALIDATOR_EXEC_PASSWORD="$(openssl rand -hex 32)"
 #   chutes secrets create --purpose secure-validator \
 #     --key VALIDATOR_EXEC_PASSWORD --value "$VALIDATOR_EXEC_PASSWORD"
 
 from chutes.image import Image
-from chutes.chute import Chute
+from chutes.chute import Chute, NodeSelector
 from pydantic import BaseModel
 
 image = (
@@ -96,6 +96,15 @@ chute = Chute(
     readme="## Secure validator — TEE-backed encrypted script executor",
     image=image,
     tee=True,
+    node_selector=NodeSelector(
+        gpu_count=0,
+        min_cpu_count=8,
+        # min_vram_gb_per_gpu=1,
+    ),
+    concurrency=1,
+    # include=["rtx4090", "rtx3090","rtx2080"],
+    exclude=["k80", "p100", "v100", "a100", "h100"]
+
 )
 
 
