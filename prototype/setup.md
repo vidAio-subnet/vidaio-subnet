@@ -7,7 +7,7 @@ This guide covers running the components locally for development, and deploying 
 **Terminal 1 — Miner Axon**
 ```bash
 pip install fastapi uvicorn cryptography
-python miner_axon.py
+python miner_axon.py (OR) pm2 start "PYTHONPATH=. python miner_axon.py" --name miner-axon
 ```
 
 **Terminal 2 — Build + Run Chute Locally**
