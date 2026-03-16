@@ -49,7 +49,7 @@ SECRET_SCRIPT = b"""
 #
 # Interface contract (enforced by the validator chute):
 #   - Must define a callable `score(data: dict) -> dict`.
-#   - `input_data` is never in scope — the chute calls score() with it.
+#   - `input_data` is never in scope - the chute calls score() with it.
 #   - Network is disabled while this script runs (socket monkey-patched,
 #     network modules purged).  No external uploads, logging, or exfiltration
 #     is possible.
