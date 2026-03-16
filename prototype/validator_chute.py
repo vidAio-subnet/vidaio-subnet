@@ -72,8 +72,9 @@
 # DEPLOY:
 #   chutes build validator_chute:chute --wait
 #   chutes deploy validator_chute:chute --accept-fee
+#   export VALIDATOR_EXEC_PASSWORD="$(openssl rand -hex 32)"
 #   chutes secrets create --purpose secure-validator \
-#     --key VALIDATOR_EXEC_PASSWORD --value "$(openssl rand -hex 32)"
+#     --key VALIDATOR_EXEC_PASSWORD --value "$VALIDATOR_EXEC_PASSWORD"
 
 from chutes.image import Image
 from chutes.chute import Chute
