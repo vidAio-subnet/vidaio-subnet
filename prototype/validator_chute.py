@@ -249,7 +249,7 @@ def _network_disabled():
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 @chute.on_startup(priority=10)
-async def startup(self):
+async def initialize(self):
     """
     Load the execution password from the Chutes secret (env var).
 

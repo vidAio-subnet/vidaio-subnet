@@ -60,6 +60,7 @@ chutes secrets create --purpose secure-validator \
 
 **3. Deploy the Chute:**
 ```bash
+chutes build validator_chute:chute --wait --include-cwd
 chutes deploy validator_chute:chute --accept-fee
 ```
 *(Note your `CHUTE_ID` and the image name you used, e.g., `youruser/secure-validator:0.3`)*
