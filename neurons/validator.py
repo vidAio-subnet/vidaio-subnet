@@ -826,7 +826,7 @@ class Validator(base.BaseValidator):
                 "content_lengths": content_lengths,
                 "task_types": task_types
             },
-            timeout=300
+            timeout=600
         )
 
         response_data = score_response.json()
@@ -940,7 +940,7 @@ class Validator(base.BaseValidator):
                 "codec_mode": codec_mode,
                 "target_bitrate": target_bitrate
             },
-            timeout=300
+            timeout=600
         )
 
         response_data = score_response.json()
