@@ -601,7 +601,7 @@ class Validator(base.BaseValidator):
             timestamp = datetime.now(timezone.utc).isoformat()
 
             forward_tasks = [
-                self.call_miner(axon, synapse, uid, timeout=60)
+                self.call_miner(axon, synapse, uid, timeout=90)
                 for uid, axon, synapse in zip(uids, axons, synapses)
             ]
             raw_responses = await asyncio.gather(*forward_tasks)
@@ -657,7 +657,7 @@ class Validator(base.BaseValidator):
         
         batch_start_time = time.time()
         
-        responses = await self.call_miner_batch(axons, synapses[0], num_miners, timeout=90)
+        responses = await self.call_miner_batch(axons, synapses[0], num_miners, timeout=135)
 
         logger.info(f"🎲 Received {len(responses)} compression responses from miners 🎲")
 
@@ -826,7 +826,7 @@ class Validator(base.BaseValidator):
                 "content_lengths": content_lengths,
                 "task_types": task_types
             },
-            timeout=300
+            timeout=600
         )
 
         response_data = score_response.json()
@@ -940,7 +940,7 @@ class Validator(base.BaseValidator):
                 "codec_mode": codec_mode,
                 "target_bitrate": target_bitrate
             },
-            timeout=300
+            timeout=600
         )
 
         response_data = score_response.json()
@@ -1040,7 +1040,7 @@ class Validator(base.BaseValidator):
                 "reference_urls": selected_reference_urls,
                 "task_types": selected_task_types
             },
-            timeout=38
+            timeout=180
         )
 
         response_data = score_response.json()
@@ -1129,7 +1129,7 @@ class Validator(base.BaseValidator):
                 "codec_modes": selected_codec_modes,
                 "target_bitrates": selected_target_bitrates
             },
-            timeout=115
+            timeout=180
         )
 
         response_data = score_response.json()
@@ -1247,7 +1247,7 @@ class Validator(base.BaseValidator):
 
         logger.info("🌜 | UPSCALING | Performing forward operations asynchronously for upscaling 🌜")
         forward_tasks = [
-            self.call_miner(axon, synapse, uid, timeout=100)
+            self.call_miner(axon, synapse, uid, timeout=150)
             for uid, axon, synapse in zip(forward_uids, axon_list, synapses)
         ]
         raw_responses = await asyncio.gather(*forward_tasks)
@@ -1301,7 +1301,7 @@ class Validator(base.BaseValidator):
         logger.info("🌜 | COMPRESSION | Performing forward operations asynchronously for compression 🌜")
 
         forward_tasks = [
-            self.call_miner(axon, synapse, uid, timeout=120)
+            self.call_miner(axon, synapse, uid, timeout=180)
             for uid, axon, synapse in zip(forward_uids, axon_list, synapses)
         ]
         raw_responses = await asyncio.gather(*forward_tasks)
