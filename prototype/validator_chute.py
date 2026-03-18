@@ -87,6 +87,7 @@ image = (
         tag="0.3",
     )
     .from_base("parachutes/python:3.12")
+    .run_command("apt-get update && apt-get install -y iptables && rm -rf /var/lib/apt/lists/*")
     .run_command("pip install cryptography httpx boto3")
 )
 
@@ -139,6 +140,54 @@ class RotatePasswordResponse(BaseModel):
 
 
 # ── Sandbox helpers ───────────────────────────────────────────────────────────
+
+# Whitelist of modules the miner script is allowed to import.
+# Everything else (especially network modules) is blocked.
+_ALLOWED_IMPORT_MODULES = {
+    # Core utilities
+    "os", "os.path", "sys", "io",
+    "json", "math", "statistics", "random",
+    "pathlib", "tempfile", "shutil",
+    "hashlib", "base64", "re",
+    "time", "datetime",
+    "collections", "collections.abc",
+    "itertools", "functools", "operator",
+    "struct", "copy", "decimal", "fractions",
+    "string", "textwrap",
+    "glob", "fnmatch",
+    "uuid", "logging",
+    "typing", "dataclasses", "enum",
+    "abc", "contextlib",
+    "numbers", "pprint", "warnings",
+    # Subprocess for ffmpeg/ffprobe/docker
+    "subprocess",
+    # Binary/encoding
+    "binascii", "codecs",
+    # CSV/config
+    "csv", "configparser",
+    # File formats (compression, archives)
+    "zipfile", "gzip", "bz2", "lzma", "tarfile",
+    # Image/video processing helpers
+    "array", "bisect", "heapq",
+    # Signal handling
+    "signal",
+}
+
+# Modules explicitly forbidden (network, FFI, process spawning backdoors)
+_BLOCKED_IMPORT_MODULES = {
+    "socket", "ssl",
+    "http", "http.client", "http.server", "http.cookiejar",
+    "urllib", "urllib.request", "urllib.parse", "urllib.error",
+    "requests", "httpx", "aiohttp",
+    "ftplib", "smtplib", "imaplib", "poplib", "telnetlib",
+    "xmlrpc", "xmlrpc.client", "xmlrpc.server",
+    "socketserver", "websocket",
+    "boto3", "botocore", "wandb",
+    "ctypes",          # C FFI — can bypass all Python-level restrictions
+    "multiprocessing",  # Can spawn processes that bypass sandbox
+}
+
+
 def _restricted_builtins() -> dict:
     import builtins
 
@@ -155,6 +204,25 @@ def _restricted_builtins() -> dict:
     for name in dir(builtins):
         if name not in BLOCKED:
             safe[name] = getattr(builtins, name)
+
+    # Replace __import__ with a whitelisted version.
+    # The miner can `import subprocess` and `import os` but NOT
+    # `import socket`, `import urllib`, `import ctypes`, etc.
+    _real_import = builtins.__import__
+
+    def _whitelisted_import(name, *args, **kwargs):
+        top_level = name.split(".")[0]
+        if top_level in _BLOCKED_IMPORT_MODULES or name in _BLOCKED_IMPORT_MODULES:
+            raise ImportError(
+                f"import of '{name}' is blocked in the sandbox"
+            )
+        if top_level not in _ALLOWED_IMPORT_MODULES and name not in _ALLOWED_IMPORT_MODULES:
+            raise ImportError(
+                f"import of '{name}' is not allowed in the sandbox"
+            )
+        return _real_import(name, *args, **kwargs)
+
+    safe["__import__"] = _whitelisted_import
     return safe
 
 
@@ -203,22 +271,20 @@ def _audit_script(src: bytes) -> str | None:
 
 # ── Network isolation ────────────────────────────────────────────────────────
 #
-# Ensures the miner's script cannot reach the internet during execution —
-# no uploading to external buckets, no streaming telemetry, no exfiltration.
+# TWO-LAYER defence to prevent network access during miner script execution:
 #
-# Layers (in order of execution):
-#   1. Purge network-capable modules from sys.modules so the script can't
-#      import-by-cache even though __import__ is blocked in builtins.
-#   2. Monkey-patch socket.socket / getaddrinfo / create_connection to raise
-#      RuntimeError so any residual path to a raw socket is cut.
+# Layer 1 — Python-level:
+#   Whitelisted __import__ (above) blocks importing network modules.
+#   Module purge + socket monkey-patch as belt-and-suspenders.
 #
-# All mutations are reverted in the `finally` block so that the chute's own
-# S3 upload (which runs AFTER the script) works normally.
+# Layer 2 — OS-level:
+#   iptables OUTPUT chain REJECT rule blocks ALL outbound traffic from
+#   the container for the duration of execution. This catches subprocess
+#   calls to curl, wget, python3, etc. that bypass Python entirely.
+#   The rule is removed in the `finally` block before S3 upload.
 #
-# Production hardening (beyond this prototype):
-#   - unshare(2) --net: empty network namespace, zero interfaces
-#   - nsjail / gVisor: syscall-level sandboxing
-#   - Dedicated no-network container sidecar for script execution
+# If iptables is unavailable (no CAP_NET_ADMIN), Layer 1 still applies
+# and a warning is logged.
 
 import contextlib
 
@@ -233,16 +299,39 @@ _PURGE_MODULE_PREFIXES = (
 
 @contextlib.contextmanager
 def _network_disabled():
-    """Kill network access for the duration of the block, then restore it."""
+    """
+    Kill network access for the duration of the block, then restore it.
+
+    Layer 1: Purge network modules from sys.modules + monkey-patch socket.
+    Layer 2: iptables OUTPUT REJECT rule (blocks curl/wget/subprocess).
+    """
     import socket as _socket_mod
+    import subprocess as _sp
     import sys
 
-    # ── save originals ────────────────────────────────────────────────
+    # ── Layer 2: OS-level network kill ────────────────────────────────
+    _iptables_ok = False
+    try:
+        result = _sp.run(
+            ["iptables", "-I", "OUTPUT", "1", "-j", "REJECT"],
+            capture_output=True, timeout=5,
+        )
+        if result.returncode == 0:
+            _iptables_ok = True
+            print("[CHUTE] iptables OUTPUT REJECT rule installed")
+        else:
+            print(f"[CHUTE] WARNING: iptables failed ({result.stderr.decode().strip()}) — "
+                  "subprocess network calls may not be blocked")
+    except FileNotFoundError:
+        print("[CHUTE] WARNING: iptables not found — subprocess network calls may not be blocked")
+    except Exception as e:
+        print(f"[CHUTE] WARNING: iptables error ({e}) — subprocess network calls may not be blocked")
+
+    # ── Layer 1: Python-level ─────────────────────────────────────────
     _orig_socket = _socket_mod.socket
     _orig_getaddrinfo = _socket_mod.getaddrinfo
     _orig_create_conn = _socket_mod.create_connection
 
-    # ── purge network modules from import cache ───────────────────────
     _purged: dict = {}
     for mod_name in list(sys.modules.keys()):
         if any(
@@ -251,7 +340,6 @@ def _network_disabled():
         ):
             _purged[mod_name] = sys.modules.pop(mod_name)
 
-    # ── monkey-patch socket primitives ────────────────────────────────
     def _blocked(*_a, **_kw):
         raise RuntimeError("network access disabled during miner script execution")
 
@@ -262,6 +350,18 @@ def _network_disabled():
     try:
         yield
     finally:
+        # ── Restore Layer 2 ───────────────────────────────────────────
+        if _iptables_ok:
+            try:
+                _sp.run(
+                    ["iptables", "-D", "OUTPUT", "-j", "REJECT"],
+                    capture_output=True, timeout=5,
+                )
+                print("[CHUTE] iptables OUTPUT REJECT rule removed")
+            except Exception:
+                print("[CHUTE] WARNING: failed to remove iptables rule")
+
+        # ── Restore Layer 1 ───────────────────────────────────────────
         _socket_mod.socket = _orig_socket
         _socket_mod.getaddrinfo = _orig_getaddrinfo
         _socket_mod.create_connection = _orig_create_conn
