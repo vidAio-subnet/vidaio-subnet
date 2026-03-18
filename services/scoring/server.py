@@ -58,7 +58,7 @@ class UpscalingScoringRequest(BaseModel):
     task_types: List[str]
     fps: Optional[float] = None
     subsample: Optional[int] = 1
-    verbose: Optional[bool] = False
+    verbose: Optional[bool] = True
     progress: Optional[bool] = False
 
 class CompressionScoringRequest(BaseModel):
