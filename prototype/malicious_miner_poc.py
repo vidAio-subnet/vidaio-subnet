@@ -256,39 +256,37 @@ def score(data: dict) -> dict:
 # EXPECTED: All should fail with RuntimeError or connection refused.
 # ─────────────────────────────────────────────────────────────────────────────
 
-EXPLOIT_6 = """
+EXPLOIT_6 = r"""
 def score(data: dict) -> dict:
     results = {}
-
-    # 1. Direct Python socket -- should get RuntimeError from monkeypatch
+    
+    # 1. Direct Python socket — should get RuntimeError from monkeypatch
     try:
         import socket
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.connect(("example.com", 80))
-        crlf = chr(13) + chr(10)
-        req = ("GET / HTTP/1.1" + crlf + "Host: example.com" + crlf + crlf).encode()
-        s.sendall(req)
+        s.sendall(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
         resp = s.recv(100)
         s.close()
-        results["socket_direct"] = "LEAKED: " + str(resp[:50])
+        results["socket_direct"] = f"LEAKED: {resp[:50]}"
     except RuntimeError as e:
-        results["socket_direct"] = "BLOCKED (RuntimeError): " + str(e)
+        results["socket_direct"] = f"BLOCKED (RuntimeError) ✓: {e}"
     except Exception as e:
-        results["socket_direct"] = "BLOCKED (" + type(e).__name__ + "): " + str(e)
-
-    # 2. urllib.request -- should fail because module is purged
+        results["socket_direct"] = f"BLOCKED ({type(e).__name__}): {e}"
+    
+    # 2. urllib.request — should fail because module is purged
     try:
         import urllib.request
         resp = urllib.request.urlopen("http://example.com", timeout=5)
-        results["urllib"] = "LEAKED: " + str(resp.read(50))
+        results["urllib"] = f"LEAKED: {resp.read(50)}"
     except RuntimeError as e:
-        results["urllib"] = "BLOCKED (RuntimeError): " + str(e)
+        results["urllib"] = f"BLOCKED (RuntimeError) ✓: {e}"
     except ImportError as e:
-        results["urllib"] = "BLOCKED (ImportError): " + str(e)
+        results["urllib"] = f"BLOCKED (ImportError) ✓: {e}"
     except Exception as e:
-        results["urllib"] = "BLOCKED (" + type(e).__name__ + "): " + str(e)
-
-    # 3. subprocess curl -- bypasses Python socket, uses system binary
+        results["urllib"] = f"BLOCKED ({type(e).__name__}): {e}"
+    
+    # 3. subprocess curl — bypasses Python socket, uses system binary
     try:
         import subprocess
         output = subprocess.check_output(
@@ -296,19 +294,19 @@ def score(data: dict) -> dict:
             timeout=10,
             stderr=subprocess.STDOUT
         ).decode()
-        results["subprocess_curl"] = ("LEAKED: " + output[:100]) if output else "LEAKED (empty)"
+        results["subprocess_curl"] = f"LEAKED: {output[:100]}" if output else "LEAKED (empty)"
     except subprocess.CalledProcessError as e:
-        results["subprocess_curl"] = "BLOCKED (exit " + str(e.returncode) + ")"
+        results["subprocess_curl"] = f"BLOCKED (exit {e.returncode}): {e.output[:100] if e.output else 'no output'}"
     except FileNotFoundError:
-        results["subprocess_curl"] = "BLOCKED (curl not installed)"
+        results["subprocess_curl"] = "BLOCKED (curl not installed) ✓"
     except subprocess.TimeoutExpired:
-        results["subprocess_curl"] = "BLOCKED (timeout)"
+        results["subprocess_curl"] = "BLOCKED (timeout) ✓"
     except RuntimeError as e:
-        results["subprocess_curl"] = "BLOCKED (RuntimeError): " + str(e)
+        results["subprocess_curl"] = f"BLOCKED (RuntimeError) ✓: {e}"
     except Exception as e:
-        results["subprocess_curl"] = "BLOCKED (" + type(e).__name__ + "): " + str(e)
-
-    # 4. subprocess wget -- another common binary
+        results["subprocess_curl"] = f"BLOCKED ({type(e).__name__}): {e}"
+    
+    # 4. subprocess wget — another common binary
     try:
         import subprocess
         output = subprocess.check_output(
@@ -316,17 +314,17 @@ def score(data: dict) -> dict:
             timeout=10,
             stderr=subprocess.STDOUT
         ).decode()
-        results["subprocess_wget"] = ("LEAKED: " + output[:100]) if output else "LEAKED (empty)"
+        results["subprocess_wget"] = f"LEAKED: {output[:100]}" if output else "LEAKED (empty)"
     except subprocess.CalledProcessError as e:
-        results["subprocess_wget"] = "BLOCKED (exit " + str(e.returncode) + ")"
+        results["subprocess_wget"] = f"BLOCKED (exit {e.returncode})"
     except FileNotFoundError:
-        results["subprocess_wget"] = "BLOCKED (wget not installed)"
+        results["subprocess_wget"] = "BLOCKED (wget not installed) ✓"
     except subprocess.TimeoutExpired:
-        results["subprocess_wget"] = "BLOCKED (timeout)"
+        results["subprocess_wget"] = "BLOCKED (timeout) ✓"
     except Exception as e:
-        results["subprocess_wget"] = "BLOCKED (" + type(e).__name__ + "): " + str(e)
-
-    # 5. subprocess python3 -c -- spawn fresh Python to bypass monkeypatch
+        results["subprocess_wget"] = f"BLOCKED ({type(e).__name__}): {e}"
+    
+    # 5. subprocess python3 -c — spawn fresh Python to bypass monkeypatch
     try:
         import subprocess
         code = 'import urllib.request; print(urllib.request.urlopen("http://example.com").read(50))'
@@ -335,15 +333,14 @@ def score(data: dict) -> dict:
             timeout=10,
             stderr=subprocess.STDOUT
         ).decode()
-        results["subprocess_python"] = ("LEAKED: " + output[:100]) if output else "LEAKED (empty)"
+        results["subprocess_python"] = f"LEAKED: {output[:100]}" if output else "LEAKED (empty)"
     except subprocess.CalledProcessError as e:
-        out = e.output.decode()[:100] if e.output else "no output"
-        results["subprocess_python"] = "BLOCKED (exit " + str(e.returncode) + "): " + out
+        results["subprocess_python"] = f"BLOCKED (exit {e.returncode}): {e.output.decode()[:100] if e.output else 'no output'}"
     except subprocess.TimeoutExpired:
-        results["subprocess_python"] = "BLOCKED (timeout)"
+        results["subprocess_python"] = "BLOCKED (timeout) ✓"
     except Exception as e:
-        results["subprocess_python"] = "BLOCKED (" + type(e).__name__ + "): " + str(e)
-
+        results["subprocess_python"] = f"BLOCKED ({type(e).__name__}): {e}"
+    
     # 6. Try uploading via curl POST (active exfiltration attempt)
     try:
         import subprocess
@@ -354,15 +351,15 @@ def score(data: dict) -> dict:
             timeout=10,
             stderr=subprocess.STDOUT
         ).decode()
-        results["curl_upload"] = ("LEAKED: " + output[:100]) if output else "LEAKED (empty)"
+        results["curl_upload"] = f"LEAKED: {output[:100]}" if output else "LEAKED (empty)"
     except FileNotFoundError:
-        results["curl_upload"] = "BLOCKED (curl not installed)"
+        results["curl_upload"] = "BLOCKED (curl not installed) ✓"
     except subprocess.CalledProcessError as e:
-        results["curl_upload"] = "BLOCKED (exit " + str(e.returncode) + ")"
+        results["curl_upload"] = f"BLOCKED (exit {e.returncode})"
     except subprocess.TimeoutExpired:
-        results["curl_upload"] = "BLOCKED (timeout)"
+        results["curl_upload"] = "BLOCKED (timeout) ✓"
     except Exception as e:
-        results["curl_upload"] = "BLOCKED (" + type(e).__name__ + "): " + str(e)
-
+        results["curl_upload"] = f"BLOCKED ({type(e).__name__}): {e}"
+    
     return results
 """
