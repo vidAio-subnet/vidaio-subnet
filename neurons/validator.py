@@ -1040,7 +1040,7 @@ class Validator(base.BaseValidator):
                 "reference_urls": selected_reference_urls,
                 "task_types": selected_task_types
             },
-            timeout=38
+            timeout=180
         )
 
         response_data = score_response.json()
@@ -1129,7 +1129,7 @@ class Validator(base.BaseValidator):
                 "codec_modes": selected_codec_modes,
                 "target_bitrates": selected_target_bitrates
             },
-            timeout=115
+            timeout=180
         )
 
         response_data = score_response.json()
