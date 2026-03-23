@@ -137,6 +137,64 @@ def create_lightweight_metadata(input_file: str, target_quality: str, target_cod
 # Codec Mapping
 # ============================================================================
 
+def check_nvenc_available() -> bool:
+    """Check if NVENC (NVIDIA encoder) is available via ffmpeg."""
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            return 'av1_nvenc' in result.stdout or 'hevc_nvenc' in result.stdout
+    except Exception:
+        pass
+    return False
+
+
+def get_optimal_codec_choice(target_codec: str) -> tuple[str, bool]:
+    """
+    Determine optimal codec and whether to use GPU acceleration.
+
+    For competitive mining on SN85:
+    1. AV1 NVENC provides best compression ratio at good speed (RTX 4090)
+    2. HEVC NVENC is fallback for compatibility
+    3. CPU encoders only if GPU unavailable
+
+    Returns:
+        tuple: (ffmpeg_codec_name, is_gpu_encoder)
+    """
+    import torch
+
+    has_gpu = torch.cuda.is_available()
+    has_nvenc = check_nvenc_available() if has_gpu else False
+
+    # Map of preferred encoders based on hardware
+    if has_gpu and has_nvenc:
+        # RTX 4090 path - prioritize AV1 NVENC for competitive mining
+        codec_preferences = {
+            'av1': ('av1_nvenc', True),
+            'hevc': ('hevc_nvenc', True),
+            'h264': ('h264_nvenc', True),
+            'vp9': ('libvpx-vp9', False),  # No NVENC for VP9
+        }
+    else:
+        # CPU path - use best software encoders
+        codec_preferences = {
+            'av1': ('libsvtav1', False),
+            'hevc': ('libx265', False),
+            'h264': ('libx264', False),
+            'vp9': ('libvpx-vp9', False),
+        }
+
+    normalized_codec = target_codec.lower().strip()
+    ffmpeg_codec, is_gpu = codec_preferences.get(
+        normalized_codec,
+        ('av1_nvenc', True) if has_gpu else ('libsvtav1', False)
+    )
+
+    return ffmpeg_codec, is_gpu
+
+
 def map_codec_name(target_codec: str, prefer_gpu: bool = True) -> str:
     """
     Map user-facing codec names (from ffprobe format) to ffmpeg encoder names.
@@ -157,22 +215,22 @@ def map_codec_name(target_codec: str, prefer_gpu: bool = True) -> str:
         map_codec_name('hevc', prefer_gpu=True) → 'hevc_nvenc'
         map_codec_name('h264', prefer_gpu=False) → 'libx264'
     """
-    codec_map = {
-        'av1': 'av1_nvenc' if prefer_gpu else 'libsvtav1',
-        'hevc': 'hevc_nvenc' if prefer_gpu else 'libx265',
-        'h264': 'h264_nvenc' if prefer_gpu else 'libx264',
-        'vp9': 'libvpx_vp9',  # No NVENC encoder for VP9
-    }
+    # Use new optimal codec selection if GPU preferred
+    if prefer_gpu:
+        ffmpeg_codec, is_gpu = get_optimal_codec_choice(target_codec)
+    else:
+        # Manual CPU-only mapping
+        codec_map_cpu = {
+            'av1': 'libsvtav1',
+            'hevc': 'libx265',
+            'h264': 'libx264',
+            'vp9': 'libvpx-vp9',
+        }
+        normalized = target_codec.lower().strip()
+        ffmpeg_codec = codec_map_cpu.get(normalized, 'libsvtav1')
+        is_gpu = False
 
-    # Normalize to lowercase and get mapped codec
-    normalized_codec = target_codec.lower().strip()
-    ffmpeg_codec = codec_map.get(normalized_codec)
-
-    if not ffmpeg_codec:
-        logger.warning(f"Unknown codec '{target_codec}', defaulting to av1_nvenc")
-        return 'av1_nvenc'
-
-    logger.info(f"Mapped codec '{target_codec}' → '{ffmpeg_codec}' (GPU={prefer_gpu})")
+    logger.info(f"Mapped codec '{target_codec}' → '{ffmpeg_codec}' (GPU={is_gpu})")
     return ffmpeg_codec
 
 

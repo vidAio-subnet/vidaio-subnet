@@ -113,19 +113,40 @@ def upscale_video(payload_video_path: str, task_type: str):
         # Step 2: Upscale video using video2x
         print("Step 2: Upscaling video using video2x...")
         start_time = time.time()
+        # Determine optimal encoder based on available hardware
+        # Priority: av1_nvenc (RTX 4090) > hevc_nvenc > libx265 (CPU fallback)
+        import torch
+        if torch.cuda.is_available():
+            # RTX 4090 detected - use AV1 NVENC for best compression/quality ratio
+            codec = "av1_nvenc"
+            codec_params = [
+                "-e", "preset=p2",                # p2 = good balance on Ada architecture
+                "-e", "qp=22",                    # Quality level (comparable to CRF 20)
+                "-e", "tile-columns=2",           # Parallel encoding for 4K+
+                "-e", "tile-rows=1",
+            ]
+            logger.info("Using av1_nvenc (GPU accelerated) for upscaling output")
+        else:
+            # CPU fallback - use x265 for better quality than x264
+            codec = "libx265"
+            codec_params = [
+                "-e", "preset=slow",
+                "-e", "crf=20",
+            ]
+            logger.info("Using libx265 (CPU) for upscaling output - consider GPU for production")
+
         video2x_command = [
-            "video2x",
+            os.environ.get("VIDEO2X_BINARY", "video2x"),
             "-i", str(output_file_with_extra_frames),
             "-o", str(output_file_upscaled),
-            "-p", "realesrgan",               
-            "-s", scale_factor,               
-            "-c", "libx265",                  
-            "-e", "preset=slow",              
-            "-e", "crf=20",                   
-            "-e", "profile=main",             
-            "-e", "pix_fmt=yuv420p",          
-            "-e", "sar=1:1",                  
-            "-e", "color_primaries=bt709",    
+            "-p", "realesrgan",
+            "-s", scale_factor,
+            "-c", codec,
+            *codec_params,
+            "-e", "profile=main",
+            "-e", "pix_fmt=yuv420p",
+            "-e", "sar=1:1",
+            "-e", "color_primaries=bt709",
             "-e", "color_trc=bt709",
             "-e", "colorspace=bt709",
             "-e", "movflags=+faststart",

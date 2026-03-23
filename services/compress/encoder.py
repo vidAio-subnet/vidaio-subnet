@@ -704,11 +704,28 @@ def ai_encoding(scene_metadata, config, resources, target_vmaf=None, target_qual
         print(f"   🎯 Using quality tier: {tier_label} (Indicative VMAF: {target_vmaf if target_vmaf else 'n/a'})")
         print(f"   🎚️ Base CQ from lookup table for '{mapped_scene_type}' at {tier_label} quality: {base_cq}")
     
-    # Apply conservative adjustment from config
-    conservative_cq_adjustment = safe_float(config.get('video_processing', {}).get('conservative_cq_adjustment', 2), 2)
+    # Apply codec-specific and hardware-specific CQ adjustment
+    # For competitive mining: more aggressive on GPU (NVENC handles higher CQ well)
+    vp = config.get('video_processing', {})
+
+    # Check if using GPU encoder for adaptive adjustment
+    is_gpu_encoder = 'nvenc' in codec.lower() if 'codec' in locals() else False
+
+    if is_gpu_encoder:
+        # NVENC can handle +1-2 higher CQ while maintaining quality (RTX 4090)
+        # This improves compression ratio without hurting VMAF
+        aggressive_adjustment = safe_float(vp.get('nvenc_cq_adjustment', 1), 1)
+        base_adjustment = safe_float(vp.get('conservative_cq_adjustment', 2), 2)
+        conservative_cq_adjustment = min(base_adjustment + aggressive_adjustment, 3)
+        if logging_enabled:
+            print(f"   🔧 NVENC detected: using adaptive CQ adjustment +{conservative_cq_adjustment}")
+    else:
+        # CPU encoders stick with conservative values
+        conservative_cq_adjustment = safe_float(vp.get('conservative_cq_adjustment', 2), 2)
+
     final_cq = min(base_cq + conservative_cq_adjustment, 51.0)
     if logging_enabled:
-        print(f"   🔧 Applied conservative adjustment: +{conservative_cq_adjustment} -> Final CQ: {final_cq}")
+        print(f"   🎯 Final CQ: {base_cq} + {conservative_cq_adjustment} = {final_cq}")
 
     # Create a placeholder scene_data object
     scene_data = {
