@@ -34,7 +34,7 @@ import asyncio
 import os
 import sys
 import tempfile
-from asyncio import Semaphore, create_subprocess_exec, gather, subprocess
+from asyncio import create_subprocess_exec, subprocess
 from pathlib import Path
 
 from huggingface_hub import HfApi
@@ -81,22 +81,17 @@ async def upload_to_hf(
     if not files:
         raise ValueError(f"No files found in {model_path}")
 
-    sem = Semaphore(concurrency)
-
-    async def _upload_one(p: Path) -> None:
-        async with sem:
-            await asyncio.to_thread(
-                lambda: hf_api.upload_file(
-                    path_or_fileobj=str(p),
-                    path_in_repo=str(p.relative_to(model_path)),
-                    repo_id=repo_name,
-                    repo_type="model",
-                    commit_message=f"vidaio: upload {p.name}",
-                )
-            )
-            print(f"  uploaded {p.relative_to(model_path)}")
-
-    await gather(*(_upload_one(p) for p in files))
+    print(f"  uploading {len(files)} files in a single commit...")
+    await asyncio.to_thread(
+        lambda: hf_api.upload_folder(
+            folder_path=str(model_path),
+            repo_id=repo_name,
+            repo_type="model",
+            commit_message="vidaio: upload miner files",
+        )
+    )
+    for p in files:
+        print(f"  uploaded {p.relative_to(model_path)}")
 
     # Make repo public so the chute can access it
     try:
