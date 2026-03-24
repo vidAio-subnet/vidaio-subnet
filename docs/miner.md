@@ -214,32 +214,35 @@ You can test your chute locally before deploying. This does **not** require Hugg
    chutes build my_chute:chute --local
    ```
 
-3. Run the container and start the chute:
+3. Run the container with `VIDAIO_LOCAL_TEST=1` and start the chute:
    ```bash
-   docker run -p 8000:8000 -e CHUTES_EXECUTION_CONTEXT=REMOTE -it <image-name> /bin/bash
+   docker run -p 8000:8000 -e CHUTES_EXECUTION_CONTEXT=REMOTE -e VIDAIO_LOCAL_TEST=1 -it <image-name> /bin/bash
    # Inside the container:
    chutes run my_chute:chute --dev --debug
    ```
+
+   `VIDAIO_LOCAL_TEST=1` enables local testing mode:
+   - Loads `miner.py` from the local directory instead of downloading from HuggingFace
+   - Downloads videos directly instead of via the chutes proxy
+   - `upload_url` is optional -- if omitted or upload fails, the result video is returned inline as base64 in `output_video_b64`
 
 4. Test the endpoints from another terminal:
    ```bash
    curl -X POST http://localhost:8000/health -d '{}'
 
-   # Compression example
+   # Compression example (no upload_url -- result returned as base64)
    curl -X POST http://localhost:8000/process -d '{
      "video_url": "https://example.com/video.mp4",
      "vmaf_threshold": 90.0,
      "target_codec": "av1",
      "codec_mode": "CRF",
-     "target_bitrate": 10.0,
-     "upload_url": "https://example.com/presigned-put"
+     "target_bitrate": 10.0
    }'
 
    # Upscaling example
    curl -X POST http://localhost:8000/process -d '{
      "video_url": "https://example.com/video.mp4",
-     "task_type": "SD2HD",
-     "upload_url": "https://example.com/presigned-put"
+     "task_type": "SD2HD"
    }'
    ```
 

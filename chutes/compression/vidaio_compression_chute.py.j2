@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+import base64
+import os
 import sys
 from importlib.machinery import PathFinder
 from importlib.util import module_from_spec, spec_from_file_location
@@ -18,6 +20,8 @@ from huggingface_hub import snapshot_download
 from pydantic import BaseModel
 from yaml import safe_load
 
+LOCAL_TEST = os.environ.get("VIDAIO_LOCAL_TEST", "").lower() in ("1", "true", "yes")
+
 ## ============ VARIABLES =======================
 HF_REPO_NAME = "{{ huggingface_repository_name }}"
 HF_REPO_REVISION = "{{ huggingface_repository_revision }}"
@@ -35,12 +39,13 @@ class CompressionInput(BaseModel):
     target_codec: str
     codec_mode: str
     target_bitrate: float
-    upload_url: str
+    upload_url: str = ""
 
 
 class ProcessOutput(BaseModel):
     success: bool
     output_url: str | None = None
+    output_video_b64: str | None = None
     error: str | None = None
 
 
@@ -199,7 +204,11 @@ chute = load_chute(
 async def load_model(self) -> None:
     self.miner = None
     try:
-        hf_repo_path = Path(snapshot_download(HF_REPO_NAME, revision=HF_REPO_REVISION))
+        if LOCAL_TEST:
+            hf_repo_path = Path(__file__).resolve().parent
+            print(f"LOCAL_TEST mode: loading miner from {hf_repo_path}")
+        else:
+            hf_repo_path = Path(snapshot_download(HF_REPO_NAME, revision=HF_REPO_REVISION))
         self.miner = load_miner_from_hf_repo(
             path_hf_repo=hf_repo_path, filename=FILENAME, classname=CLASSNAME
         )
@@ -224,10 +233,13 @@ async def process(self, data: CompressionInput) -> dict:
         if self.miner is None:
             raise ValueError("Miner was not properly loaded!")
 
-        # Download video via chutes proxy
-        proxy_url = f"https://proxy.chutes.ai/misc/proxy?url={quote(data.video_url, safe='')}"
+        # Download video -- direct in local test, via chutes proxy in production
+        if LOCAL_TEST:
+            download_url = data.video_url
+        else:
+            download_url = f"https://proxy.chutes.ai/misc/proxy?url={quote(data.video_url, safe='')}"
         async with ClientSession() as session:
-            async with session.get(proxy_url) as response:
+            async with session.get(download_url) as response:
                 response.raise_for_status()
                 video_content = await response.read()
 
@@ -245,20 +257,37 @@ async def process(self, data: CompressionInput) -> dict:
                 data.target_bitrate,
             )
 
-            # Upload result via proxy to presigned PUT URL
-            upload_proxy_url = f"https://proxy.chutes.ai/misc/proxy?url={quote(data.upload_url, safe='')}"
             with open(output_path, "rb") as f:
                 video_bytes = f.read()
 
-            async with ClientSession() as session:
-                async with session.put(
-                    upload_proxy_url,
-                    data=video_bytes,
-                    headers={"Content-Type": "application/octet-stream"},
-                ) as resp:
-                    resp.raise_for_status()
+            # Upload result -- try presigned URL, fall back to inline base64 in local test
+            uploaded = False
+            if data.upload_url:
+                try:
+                    if LOCAL_TEST:
+                        upload_url = data.upload_url
+                    else:
+                        upload_url = f"https://proxy.chutes.ai/misc/proxy?url={quote(data.upload_url, safe='')}"
+                    async with ClientSession() as session:
+                        async with session.put(
+                            upload_url,
+                            data=video_bytes,
+                            headers={"Content-Type": "application/octet-stream"},
+                        ) as resp:
+                            resp.raise_for_status()
+                    uploaded = True
+                except Exception as upload_err:
+                    if not LOCAL_TEST:
+                        raise
+                    print(f"Upload failed (local test), returning video inline: {upload_err}")
 
-            result = ProcessOutput(success=True, output_url=data.upload_url)
+            if uploaded:
+                result = ProcessOutput(success=True, output_url=data.upload_url)
+            else:
+                result = ProcessOutput(
+                    success=True,
+                    output_video_b64=base64.b64encode(video_bytes).decode(),
+                )
         finally:
             # Cleanup temp files
             input_path.unlink(missing_ok=True)
