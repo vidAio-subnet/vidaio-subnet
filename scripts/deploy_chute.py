@@ -162,7 +162,8 @@ async def build_and_deploy(script_path: Path, chutes_api_key: str) -> None:
         ["chutes", "build", f"{script_path.stem}:chute", 
         #  "--public",   # keep chute private
          "--wait", 
-         "--debug"
+         "--debug",
+         "--include-cwd"
         ],
         chutes_api_key=chutes_api_key,
         cwd=str(script_path.parent),
