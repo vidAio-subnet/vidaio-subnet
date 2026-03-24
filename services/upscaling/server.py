@@ -115,8 +115,13 @@ def upscale_video(payload_video_path: str, task_type: str):
         start_time = time.time()
         # Determine optimal encoder based on available hardware
         # Priority: av1_nvenc (RTX 4090) > hevc_nvenc > libx265 (CPU fallback)
-        import torch
-        if torch.cuda.is_available():
+        try:
+            import torch
+            has_cuda = torch.cuda.is_available()
+        except ImportError:
+            has_cuda = False
+
+        if has_cuda:
             # RTX 4090 detected - use AV1 NVENC for best compression/quality ratio
             codec = "av1_nvenc"
             codec_params = [
@@ -151,6 +156,7 @@ def upscale_video(payload_video_path: str, task_type: str):
             "-e", "colorspace=bt709",
             "-e", "movflags=+faststart",
         ]
+        print(f"Running video2x with codec: {codec}")
         video2x_process = subprocess.run(video2x_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         elapsed_time = time.time() - start_time
         if video2x_process.returncode != 0:

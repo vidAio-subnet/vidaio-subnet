@@ -163,9 +163,12 @@ def get_optimal_codec_choice(target_codec: str) -> tuple[str, bool]:
     Returns:
         tuple: (ffmpeg_codec_name, is_gpu_encoder)
     """
-    import torch
+    try:
+        import torch
+        has_gpu = torch.cuda.is_available()
+    except ImportError:
+        has_gpu = False
 
-    has_gpu = torch.cuda.is_available()
     has_nvenc = check_nvenc_available() if has_gpu else False
 
     # Map of preferred encoders based on hardware
