@@ -2,11 +2,12 @@
 # Configurable parameters for all encoders
 # Base settings, including default AQ where applicable
 ENCODER_SETTINGS = {
-    
+
     "libsvtav1": {  # Changed from "AV1_Optimized"
         # SVT-AV1: hielevel=0 (full hierarchy), lookahead=60 for quality
         # ref-frames=6 enables better temporal compression
-        "codec": "libsvtav1", "preset": "8", "crf": 30, "keyint": 50,
+        # CRF 20: Safe for VMAF 93 threshold (research shows CRF 30 fails)
+        "codec": "libsvtav1", "preset": "8", "crf": 20, "keyint": 50,
         "hielevel": 0, "lookahead": 60, "ref-frames": 6
     },
     "av1_nvenc": {
@@ -14,33 +15,38 @@ ENCODER_SETTINGS = {
         # tluevel 4 enables lookahead for better motion handling
         # rc-lookahead 20 improves scene transitions
         # refs=5, bf=3 provide 5-10% compression improvement via temporal prediction
-        "codec": "av1_nvenc", "preset": "p7", "cq": 30, "keyint": 50,
+        # CQ 20: Safe for VMAF 93 threshold (research shows CQ 30 fails with VMAF ~88)
+        "codec": "av1_nvenc", "preset": "p7", "cq": 20, "keyint": 50,
         'pix_fmt': 'yuv420p', "tune": "hq", "temporal-aq": 1,
         "rc-lookahead": 20, "multipass": "qres", "refs": 5, "bf": 3
     },
     "libvpx_vp9": {  # Changed from "vp9"
-        "codec": "libvpx-vp9", "deadline": "good", "cpu-used": 2, "crf": 32, "keyint": 50,
+        "codec": "libvpx-vp9", "deadline": "good", "cpu-used": 2, "crf": 28, "keyint": 50,
         "aq-mode": 1, "arnr-maxframes": 7, "arnr-strength": 4, "auto-alt-ref": 1,
         "tune": "psnr", "row-mt": 1
     },
     "libx264": {  # Changed from "h264"
-        "codec": "libx264", "preset": "medium", "crf": 23, "keyint": 50,
+        # CRF 18: Safe for VMAF 93 threshold (research shows CRF 23 insufficient)
+        "codec": "libx264", "preset": "medium", "crf": 18, "keyint": 50,
         "aq-mode": 1, "aq-strength": 1.0
     },
     "libvvenc": {  # Changed from "h266_vvc"
-        "codec": "libvvenc", "preset": "medium", "crf": 28, "keyint": 50,
+        "codec": "libvvenc", "preset": "medium", "crf": 24, "keyint": 50,
         # VVC/H.266 encoder
     },
     "libx265": {  # Changed from "hevc"
-        "codec": "libx265", "preset": "medium", "crf": 28, "keyint": 50,
+        # CRF 22: Safe for VMAF 93 threshold (research shows CRF 28 fails with VMAF ~84)
+        "codec": "libx265", "preset": "medium", "crf": 22, "keyint": 50,
         "aq-mode": 2, "aq-strength": 1.0
     },
     "hevc_nvenc": {
-        "codec": "hevc_nvenc", "preset": "p4", "rc": "constqp", "cq": 22, "keyint": 50,
+        # CQ 20: Safe for VMAF 93 threshold
+        "codec": "hevc_nvenc", "preset": "p4", "rc": "constqp", "cq": 20, "keyint": 50,
         "spatial-aq": 1, "temporal-aq": 0
     },
     "h264_nvenc": {
-        "codec": "h264_nvenc", "preset": "p4", "rc": "constqp", "cq": 22, "keyint": 50,
+        # CQ 20: Safe for VMAF 93 threshold
+        "codec": "h264_nvenc", "preset": "p4", "rc": "constqp", "cq": 20, "keyint": 50,
         "spatial-aq": 1, "temporal-aq": 0
     },
     "ffv1": {

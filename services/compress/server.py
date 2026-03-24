@@ -610,30 +610,33 @@ def _get_default_config() -> dict:
             'codec_mode': 'CRF',  # Will be overridden by request
             'target_bitrate': 10.0,  # Will be overridden by request
             'size_increase_protection': True,
-            'conservative_cq_adjustment': 2,
+            'conservative_cq_adjustment': 0,  # Safe base CQ values set in encoder_configs.py
             'max_output_size_ratio': 1.15,
             'max_encoding_retries': 2,
+            # CQ values adjusted based on scientific research (Step 206):
+            # - av1_nvenc/libsvtav1: CQ/CRF 30-32 causes ~88-89 VMAF (FAILS at threshold 93)
+            # - Safe base: AV1 CQ 20 (VMAF ~99), HEVC CQ 20 (VMAF ~98), x265 CRF 22 (VMAF ~96)
             'basic_cq_lookup_by_quality': {
                 'High': {
-                    'animation': 22,
-                    'low-action': 20,
+                    'animation': 21,
+                    'low-action': 19,
                     'medium-action': 18,
                     'high-action': 16,
                     'default': 19
                 },
                 'Medium': {
-                    'animation': 25,
-                    'low-action': 23,
-                    'medium-action': 21,
-                    'high-action': 19,
-                    'default': 22
+                    'animation': 22,
+                    'low-action': 20,
+                    'medium-action': 19,
+                    'high-action': 18,
+                    'default': 20
                 },
                 'Low': {
-                    'animation': 28,
-                    'low-action': 26,
-                    'medium-action': 24,
-                    'high-action': 22,
-                    'default': 25
+                    'animation': 24,
+                    'low-action': 22,
+                    'medium-action': 21,
+                    'high-action': 20,
+                    'default': 22
                 }
             },
         },

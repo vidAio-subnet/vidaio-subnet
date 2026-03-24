@@ -60,30 +60,35 @@ def get_cq_from_lookup_table(scene_type, config, target_vmaf=None, target_qualit
     else:
         quality_tier = 'low'
     
+    # CQ values updated based on scientific research (Step 206):
+    # - av1_nvenc CQ 30 at threshold 93: VMAF ~88 (FAILS - below threshold)
+    # - libsvtav1 CRF 30 at threshold 93: VMAF ~89 (FAILS)
+    # - libx265 CRF 28 at threshold 93: VMAF ~84 (FAILS)
+    # - Safe values for threshold 93: AV1 CQ 20, HEVC CQ 20, x265 CRF 22
     default_cq_map = {
-        # High quality tier (lower CQ = higher quality)
+        # High quality tier (lower CQ = higher quality) - target VMAF 93
         'high': {
-            'animation': 25,      # Cartoons compress well naturally
-            'low-action': 23,     # Text/faces need moderate CQ for clarity
-            'medium-action': 21,  # Balanced CQ for general content
-            'high-action': 19,    # Gaming/sports need lower CQ for quality
-            'default': 22         # Safe middle-ground when unsure
+            'animation': 21,      # Cartoons compress well naturally
+            'low-action': 19,     # Text/faces need moderate CQ for clarity
+            'medium-action': 18,  # Balanced CQ for general content
+            'high-action': 16,    # Gaming/sports need lower CQ for quality
+            'default': 19         # Safe middle-ground when unsure
         },
-        # Medium quality tier (balanced CQ)
+        # Medium quality tier (balanced CQ) - target VMAF 89
         'medium': {
-            'animation': 28,      # Cartoons compress well, can use higher CQ
-            'low-action': 26,     # Text/faces need moderate CQ for clarity
-            'medium-action': 24,  # Balanced CQ for general content
-            'high-action': 22,    # Gaming/sports need lower CQ for quality
-            'default': 25         # Safe middle-ground when unsure
+            'animation': 22,      # Cartoons compress well, can use higher CQ
+            'low-action': 20,     # Text/faces need moderate CQ for clarity
+            'medium-action': 19,  # Balanced CQ for general content
+            'high-action': 18,    # Gaming/sports need lower CQ for quality
+            'default': 20         # Safe middle-ground when unsure
         },
-        # Low quality tier (higher CQ = smaller files)
+        # Low quality tier (higher CQ = smaller files) - target VMAF 85
         'low': {
-            'animation': 31,      # Cartoons compress well, can use higher CQ
-            'low-action': 29,     # Text/faces need moderate CQ for clarity
-            'medium-action': 27,  # Balanced CQ for general content
-            'high-action': 25,    # Gaming/sports need lower CQ for quality
-            'default': 28         # Safe middle-ground when unsure
+            'animation': 24,      # Cartoons compress well, can use higher CQ
+            'low-action': 22,     # Text/faces need moderate CQ for clarity
+            'medium-action': 21,  # Balanced CQ for general content
+            'high-action': 20,    # Gaming/sports need lower CQ for quality
+            'default': 22         # Safe middle-ground when unsure
         }
     }
     
