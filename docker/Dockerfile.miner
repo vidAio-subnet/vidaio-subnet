@@ -1,0 +1,193 @@
+# SN85 (Vidaio) Miner Docker Image
+# Production-grade container with GPU support for video upscaling and compression
+
+FROM nvidia/cuda:12.4.1-devel-ubuntu22.04 AS base
+
+# Prevent interactive prompts during apt installs
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PIP_NO_CACHE_DIR=1
+
+# ==============================================================================
+# Stage 1: System Dependencies
+# ==============================================================================
+FROM base AS system-deps
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Core utilities
+    ca-certificates \
+    curl \
+    wget \
+    git \
+    build-essential \
+    pkg-config \
+    # Python setup
+    python3.10 \
+    python3.10-dev \
+    python3.10-venv \
+    python3-pip \
+    # FFmpeg with full codec support
+    ffmpeg \
+    libavcodec-dev \
+    libavformat-dev \
+    libswscale-dev \
+    libavdevice-dev \
+    libswresample-dev \
+    libpostproc-dev \
+    # Video processing libraries
+    libvpx-dev \
+    libx264-dev \
+    libx265-dev \
+    libvorbis-dev \
+    libopus-dev \
+    libtheora-dev \
+    # Image processing
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    libgl1-mesa-glx \
+    # System monitoring
+    htop \
+    nvtop \
+    # Process management
+    supervisor \
+    cron \
+    # Network utilities
+    net-tools \
+    iputils-ping \
+    # Cleanup
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Set Python 3.10 as default
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1 \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1
+
+# ==============================================================================
+# Stage 2: Node.js and PM2 Installation
+# ==============================================================================
+FROM system-deps AS nodejs-deps
+
+# Install Node.js 20.x for PM2
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install PM2 globally
+RUN npm install -g pm2@latest
+
+# ==============================================================================
+# Stage 3: Python Dependencies
+# ==============================================================================
+FROM nodejs-deps AS python-deps
+
+WORKDIR /app
+
+# Copy requirements first for better layer caching
+COPY requirements.txt .
+
+# Upgrade pip and install Python dependencies
+RUN python -m pip install --upgrade pip setuptools wheel \
+    && pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu124 \
+    && pip install -r requirements.txt
+
+# Install additional packages for Video2X support
+RUN pip install ncnn-python
+
+# ==============================================================================
+# Stage 4: Video2X Installation
+# ==============================================================================
+FROM python-deps AS video2x-install
+
+# Download and install Video2X Debian package
+RUN wget -q https://github.com/k4yt3x/video2x/releases/download/6.3.1/video2x-linux-ubuntu2404-amd64.deb \
+    -O /tmp/video2x.deb \
+    && dpkg -i /tmp/video2x.deb || apt-get install -f -y \
+    && rm /tmp/video2x.deb \
+    && video2x --version
+
+# ==============================================================================
+# Stage 5: Application Setup
+# ==============================================================================
+FROM video2x-install AS app-setup
+
+# Create miner user for security
+RUN useradd -m -s /bin/bash miner \
+    && mkdir -p /app /data /data/temp /data/models /data/output /data/logs \
+    && chown -R miner:miner /app /data
+
+WORKDIR /app
+
+# Copy application code
+COPY --chown=miner:miner . .
+
+# Install the package in editable mode
+RUN pip install -e .
+
+# Create necessary directories
+RUN mkdir -p \
+    services/upscaling/models \
+    services/compress/models \
+    /tmp/video_processing \
+    && chown -R miner:miner /tmp/video_processing
+
+# ==============================================================================
+# Stage 6: Configuration and Scripts
+# ==============================================================================
+FROM app-setup AS final
+
+# Copy entrypoint and health check scripts
+COPY --chown=miner:miner docker/entrypoint.sh /app/entrypoint.sh
+COPY --chown=miner:miner docker/healthcheck.sh /app/healthcheck.sh
+COPY --chown=miner:miner docker/pm2.config.js /app/pm2.config.js
+COPY --chown=miner:miner docker/monitor.sh /app/monitor.sh
+
+RUN chmod +x /app/entrypoint.sh /app/healthcheck.sh /app/monitor.sh
+
+# PM2 configuration for process management
+ENV PM2_HOME=/data/.pm2
+RUN mkdir -p $PM2_HOME && chown -R miner:miner $PM2_HOME
+
+# Environment defaults (override these at runtime)
+ENV USE_CHUTES=false
+ENV CHUTES_API_KEY=""
+ENV CHUTES_SCENE_CHUTE_ID="scene-classifier-v1"
+ENV CHUTES_TIMEOUT=30
+ENV CHUTES_MAX_RETRIES=2
+
+# Redis configuration
+ENV REDIS_HOST=redis
+ENV REDIS_PORT=6379
+
+# Bittensor configuration
+ENV BT_NETWORK=finney
+ENV BT_NETUID=85
+ENV BT_AXON_PORT=8091
+ENV BT_METAGRAPH_SYNC_INTERVAL=300
+
+# Video processing configuration
+ENV MAX_VIDEO_LENGTH=300
+ENV TEMP_DIR=/data/temp
+ENV OUTPUT_DIR=/data/output
+ENV LOG_DIR=/data/logs
+ENV UPLOAD_BUCKET=""
+ENV WORKER_PROCESSES=2
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD /app/healthcheck.sh
+
+# Switch to miner user
+USER miner
+
+# Expose ports
+EXPOSE 8091 8080 8081 8082
+
+# Volume mounts
+VOLUME ["/data", "/app/.bittensor"]
+
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["start"]

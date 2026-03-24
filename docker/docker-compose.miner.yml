@@ -1,0 +1,148 @@
+# SN85 (Vidaio) Miner Docker Compose
+# Production-ready miner deployment with GPU support
+
+version: '3.9'
+
+services:
+  # ============================================================================
+  # Redis - Job Queue and State Management
+  # ============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: sn85_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - sn85_network
+
+  # ============================================================================
+  # Miner - Main Bittensor Miner with Video Processing
+  # ============================================================================
+  miner:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.miner
+    image: sn85-miner:latest
+    container_name: sn85_miner
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      # Bittensor Configuration
+      - BT_NETWORK=${BT_NETWORK:-finney}
+      - BT_NETUID=${BT_NETUID:-85}
+      - BT_AXON_PORT=${BT_AXON_PORT:-8091}
+      - WALLET_NAME=${WALLET_NAME:-default}
+      - WALLET_HOTKEY=${WALLET_HOTKEY:-default}
+
+      # Redis Configuration
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+
+      # Chutes Inference (optional)
+      - USE_CHUTES=${USE_CHUTES:-false}
+      - CHUTES_API_KEY=${CHUTES_API_KEY:-}
+      - CHUTES_SCENE_CHUTE_ID=${CHUTES_SCENE_CHUTE_ID:-scene-classifier-v1}
+      - CHUTES_TIMEOUT=${CHUTES_TIMEOUT:-30}
+      - CHUTES_MAX_RETRIES=${CHUTES_MAX_RETRIES:-2}
+
+      # Storage Configuration
+      - TEMP_DIR=/data/temp
+      - OUTPUT_DIR=/data/output
+      - LOG_DIR=/data/logs
+      - MAX_VIDEO_LENGTH=${MAX_VIDEO_LENGTH:-300}
+
+      # S3/Backblaze Storage (required)
+      - BUCKET_TYPE=${BUCKET_TYPE}
+      - BUCKET_NAME=${BUCKET_NAME}
+      - BUCKET_COMPATIBLE_ENDPOINT=${BUCKET_COMPATIBLE_ENDPOINT}
+      - BUCKET_COMPATIBLE_ACCESS_KEY=${BUCKET_COMPATIBLE_ACCESS_KEY}
+      - BUCKET_COMPATIBLE_SECRET_KEY=${BUCKET_COMPATIBLE_SECRET_KEY}
+
+      # Optional APIs
+      - WANDB_API_KEY=${WANDB_API_KEY:-}
+
+    volumes:
+      # Bittensor wallet (read-only for security)
+      - ${WALLET_PATH:-~/.bittensor/wallets}:/app/.bittensor/wallets:ro
+
+      # Data directories
+      - miner_data:/data
+      - ${TEMP_PATH:-./data/temp}:/data/temp
+      - ${OUTPUT_PATH:-./data/output}:/data/output
+      - ${LOG_PATH:-./data/logs}:/data/logs
+
+      # Model weights (optional - mount if you have local models)
+      - ${MODEL_PATH:-./models}:/app/services/compress/models:ro
+
+    ports:
+      - "${BT_AXON_PORT:-8091}:${BT_AXON_PORT:-8091}"
+      - "8080:8080"  # Upscaler internal
+      - "8081:8081"  # Compressor internal
+      - "8082:8082"  # File deleter internal
+
+    # GPU Resources
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    depends_on:
+      redis:
+        condition: service_healthy
+
+    networks:
+      - sn85_network
+
+    healthcheck:
+      test: ["CMD", "/app/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+        labels: "service"
+        env: "OS_VERSION"
+
+  # ============================================================================
+  # Watchtower - Automatic Container Updates
+  # ============================================================================
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: sn85_watchtower
+    restart: unless-stopped
+    command: --interval 86400 --cleanup --label-enable
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WATCHTOWER_LABEL_ENABLE=true
+      - WATCHTOWER_NOTIFICATIONS=${WATCHTOWER_NOTIFICATIONS:-}
+      - WATCHTOWER_NOTIFICATION_SLACK_HOOK_URL=${SLACK_WEBHOOK:-}
+    networks:
+      - sn85_network
+
+networks:
+  sn85_network:
+    driver: bridge
+
+volumes:
+  redis_data:
+    driver: local
+  miner_data:
+    driver: local
