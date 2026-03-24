@@ -15,6 +15,36 @@ from utils.processing_utils import (
 from utils.encode_video import encode_video
 from utils.classify_scene import load_scene_classifier_model, CombinedModel
 
+
+def _normalize_classification_result(result):
+    """Normalize classify_scene_from_path return value to a consistent tuple format.
+
+    Handles multiple return formats for backward compatibility:
+    - (scene_type, detailed_results, video_features) - current 3-tuple format
+    - (scene_type, detailed_results) - legacy 2-tuple format
+    - dict - fallback format with scene_type/confidence_score keys
+    - other - defaults to 'unclear' with zero confidence
+
+    Args:
+        result: Return value from classify_scene_from_path
+
+    Returns:
+        tuple: (scene_type: str, detailed_results: dict, video_features: dict)
+    """
+    if isinstance(result, tuple):
+        if len(result) == 3:
+            return result[0], result[1], result[2]
+        elif len(result) == 2:
+            return result[0], result[1], {}
+    elif isinstance(result, dict):
+        return (
+            result.get('scene_type', 'default'),
+            {'confidence_score': result.get('confidence_score', 0.0)},
+            {}
+        )
+    return 'default', {'confidence_score': 0.0}, {}
+
+
 def get_cq_from_lookup_table(scene_type, config, target_vmaf=None, target_quality_level=None):
     """
     Look up the recommended CQ (Constant Quality) value for a scene type and target quality.
@@ -640,25 +670,9 @@ def ai_encoding(scene_metadata, config, resources, target_vmaf=None, target_qual
             logging_enabled=logging_enabled,
         )
         
-        # Handle the tuple return from classify_scene_from_path (now returns 3 items)
-        if isinstance(classification_result, tuple) and len(classification_result) == 3:
-            scene_type, detailed_results, video_features = classification_result
-            confidence_score = detailed_results.get('confidence_score', 0.0)
-        elif isinstance(classification_result, tuple) and len(classification_result) == 2:
-            # Fallback for older return format
-            scene_type, detailed_results = classification_result
-            confidence_score = detailed_results.get('confidence_score', 0.0)
-            video_features = {}
-        elif isinstance(classification_result, dict):
-            # Fallback if it returns a dict instead of tuple
-            scene_type = classification_result.get('scene_type', 'default')
-            confidence_score = classification_result.get('confidence_score', 0.0)
-            video_features = {}
-        else:
-            # Unknown return type, use defaults
-            scene_type = 'default'
-            confidence_score = 0.0
-            video_features = {}
+        # Normalize classify_scene_from_path return value to (scene_type, detailed_results, video_features)
+        scene_type, detailed_results, video_features = _normalize_classification_result(classification_result)
+        confidence_score = detailed_results.get('confidence_score', 0.0)
 
         if logging_enabled:
             print(f"   🎭 Scene classified as: '{scene_type}' (Confidence: {confidence_score:.2f})")

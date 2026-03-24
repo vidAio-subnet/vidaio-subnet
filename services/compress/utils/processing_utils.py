@@ -335,7 +335,8 @@ def classify_scene_from_path(scene_path, temp_dir, scene_classifier_model, avail
         try:
             if 'frame_temp_dir' in locals():
                 shutil.rmtree(frame_temp_dir)
-        except:
+        except (OSError, PermissionError):
+            # Ignore cleanup failures (e.g., dir already removed or locked)
             pass
         
         return "unclear", {
