@@ -1,5 +1,5 @@
 from .video_utils import (
-    get_video_duration, 
+    get_video_duration,
 )
 
 from .processing_utils import (
@@ -15,11 +15,20 @@ from .data_preprocessing import (
     ResolutionTransformer, FeatureScaler, FrameRateTransformer
 )
 
+# Import Chutes client for remote inference (GOAL.md requirement)
+from .chutes_client import (
+    ChutesSceneClassifier,
+    ChutesConfig,
+    load_scene_classifier_with_chutes,
+    classify_scene,
+    check_chutes_health,
+)
+
 __all__ = [
     'monitor_memory_usage', 'ProgressTracker',
-    'calculate_perceptual_contrast', 'get_video_duration', 
+    'calculate_perceptual_contrast', 'get_video_duration',
     'calculate_contrast_adjusted_cq', 'sort_scene_files_by_number',
-    'process_scene_analysis_and_cq', 
+    'process_scene_analysis_and_cq',
     'calculate_vmaf_for_scenes_df',
     'analyze_input_compression',
     'calculate_bitrate_aware_cq',
@@ -30,5 +39,9 @@ __all__ = [
     'VideoProcessingLogger',
     # Add preprocessing classes to make them available
     'ColumnDropper', 'VMAFScaler', 'TargetExtractor', 'CQScaler',
-    'ResolutionTransformer', 'FeatureScaler', 'FrameRateTransformer'
+    'ResolutionTransformer', 'FeatureScaler', 'FrameRateTransformer',
+    # Chutes client exports
+    'ChutesSceneClassifier', 'ChutesConfig',
+    'load_scene_classifier_with_chutes', 'classify_scene',
+    'check_chutes_health',
 ]
