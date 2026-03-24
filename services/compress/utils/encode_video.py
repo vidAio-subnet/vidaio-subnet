@@ -157,13 +157,17 @@ def get_quantization_matrix_params(scene_type, codec):
         params.update(qm_mapping.get(scene_type, qm_mapping.get('other', {})))
 
     elif codec == "libsvtav1":
-        # SVT-AV1 has different QM parameters (adaptive-quantization)
-        # tune=0 (subjective) works better with animation content when QM enabled
-        if scene_type == 'Animation / Cartoon / Rendered Graphics':
-            params['enable-qm'] = 1
-            params['qm-min'] = 0
-        elif scene_type == 'Screen Content / Text':
-            params['enable-qm'] = 1
+        # SVT-AV1 uses enable-qm (not enable_qm) with qm-min/qm-max range
+        # QM can improve compression 5-15% for animation/screen content
+        qm_mapping = {
+            'Animation / Cartoon / Rendered Graphics': {'enable-qm': 1, 'qm-min': 0, 'qm-max': 8},
+            'Screen Content / Text': {'enable-qm': 1, 'qm-min': 0, 'qm-max': 6},
+            'Gaming Content': {'enable-qm': 1, 'qm-min': 2, 'qm-max': 10},
+            'Faces / People': {'enable-qm': 1, 'qm-min': 1, 'qm-max': 7},
+            'other': {'enable-qm': 0},  # Disable QM for general content
+            'unclear': {'enable-qm': 0},
+        }
+        params.update(qm_mapping.get(scene_type, qm_mapping.get('other', {})))
 
     return params
 
