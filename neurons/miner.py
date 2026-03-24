@@ -55,6 +55,7 @@ class Miner(BaseMiner):
         except Exception as e:
             logger.error(f"Failed to process upscaling request: {e}")
             traceback.print_exc()
+            synapse.miner_response.error = str(e)
             return synapse
 
     async def forward_compression_requests(self, synapse: VideoCompressionProtocol) -> VideoCompressionProtocol:
@@ -94,6 +95,7 @@ class Miner(BaseMiner):
         except Exception as e:
             logger.error(f"Failed to process compression request: {e}")
             traceback.print_exc()
+            synapse.miner_response.error = str(e)
             return synapse
 
     async def forward_length_check_requests(self, synapse: LengthCheckProtocol) -> LengthCheckProtocol:

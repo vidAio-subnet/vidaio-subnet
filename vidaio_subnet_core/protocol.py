@@ -77,6 +77,10 @@ class MinerResponse(BaseModel):
         description="The URL of the processed video (compressed/upscaled)",
         default="",
     )
+    error: Optional[str] = Field(
+        description="Error message if processing failed",
+        default=None,
+    )
 
 
 class ScoringPayload(BaseModel):
