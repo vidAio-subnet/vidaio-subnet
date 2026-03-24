@@ -194,10 +194,12 @@ You can test your chute locally before deploying. This does **not** require Hugg
    # Compression
    cp chutes/compression/vidaio_compression_chute.py.j2 local_dev/my_chute.py
    cp example_miners/compression/chute_config.yml local_dev/
+   cp example_miners/compression/miner.py local_dev/
 
    # Or upscaling
    cp chutes/upscaling/vidaio_upscaling_chute.py.j2 local_dev/my_chute.py
    cp example_miners/upscaling/chute_config.yml local_dev/
+   cp example_miners/compression/miner.py local_dev/
 
    cd local_dev
    ```
@@ -208,7 +210,6 @@ You can test your chute locally before deploying. This does **not** require Hugg
    HF_REPO_REVISION = "main"
    CHUTES_USERNAME = "local"
    CHUTE_NAME = "my-test-chute"
-   FILENAME = "my_chute.py"
    ```
 
    The template will load `chute_config.yml` from the local directory, skipping the HuggingFace download.
@@ -221,7 +222,7 @@ You can test your chute locally before deploying. This does **not** require Hugg
 
 3. Run the container with `VIDAIO_LOCAL_TEST=1` and start the chute:
    ```bash
-   docker run -p 8000:8000 -e CHUTES_EXECUTION_CONTEXT=REMOTE -e VIDAIO_LOCAL_TEST=1 -it <image-name> /bin/bash
+   docker run -p 8000:8000 -e CHUTES_EXECUTION_CONTEXT=REMOTE -e VIDAIO_LOCAL_TEST=1 -it my-test-chute:latest /bin/bash
    # Inside the container:
    chutes run my_chute:chute --dev --debug
    ```

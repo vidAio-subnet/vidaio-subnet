@@ -3,7 +3,7 @@ Image:
   set_user: root
   run_command:
     - pip install --upgrade setuptools wheel
-    - pip install huggingface_hub==0.19.4
+    - pip install huggingface_hub==0.19.4 minio
     - apt-get update && apt-get install -y ffmpeg
     # video2x requires CUDA-compatible GPU and drivers
     - pip install video2x
