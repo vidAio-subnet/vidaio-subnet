@@ -173,9 +173,13 @@ async def video_upscaler(payload_url: str, task_type: str, session: Optional[aio
         return None
 
 async def video_compressor(payload_url: str, vmaf_threshold: float, target_codec: str = "av1",
-                          codec_mode: str = "CRF", target_bitrate: float = 10.0) -> str | None:
+                          codec_mode: str = "CRF", target_bitrate: float = 10.0,
+                          session: Optional[aiohttp.ClientSession] = None) -> str | None:
     """
     Sends a video file path to the compression service and retrieves the processed video path.
+
+    Uses connection pooling when session is provided for lower latency on
+    repeated internal service calls.
 
     Args:
         payload_url (str): The URL of the video to be compressed.
@@ -183,6 +187,8 @@ async def video_compressor(payload_url: str, vmaf_threshold: float, target_codec
         target_codec (str): The target codec for compression (default: "av1").
         codec_mode (str): Codec mode - CBR, VBR, or CRF (default: "CRF").
         target_bitrate (float): Target bitrate in Mbps (default: 10.0).
+        session (Optional[aiohttp.ClientSession]): Reusable session for connection pooling.
+            If None, uses the global connection pool.
 
     Returns:
         str | None: The URL of the compressed video or None if an error occurs.
@@ -197,15 +203,20 @@ async def video_compressor(payload_url: str, vmaf_threshold: float, target_codec
         "target_bitrate": target_bitrate,
     }
     logger.info(f"🎬 Sending compression request: VMAF={vmaf_threshold}, Codec={target_codec}, Mode={codec_mode}, Bitrate={target_bitrate} Mbps")
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, headers=headers, data=json.dumps(data)) as response:
-            if response.status == 200:
-                result = await response.json()
-                uploaded_video_url = result.get("uploaded_video_url")
-                if uploaded_video_url is None:
-                    logger.info("🩸 Received None response from video compressor 🩸")
-                    return None
-                logger.info("✈️ Received response from video compressor correctly ✈️")
-                return uploaded_video_url
-            logger.error(f"Compression service error: {response.status}")
-            return None
+
+    # Use provided session or get one from the pool
+    if session is None:
+        pool = get_http_pool()
+        session = await pool.get_session()
+
+    async with session.post(url, headers=headers, data=json.dumps(data)) as response:
+        if response.status == 200:
+            result = await response.json()
+            uploaded_video_url = result.get("uploaded_video_url")
+            if uploaded_video_url is None:
+                logger.info("🩸 Received None response from video compressor 🩸")
+                return None
+            logger.info("✈️ Received response from video compressor correctly ✈️")
+            return uploaded_video_url
+        logger.error(f"Compression service error: {response.status}")
+        return None
