@@ -232,8 +232,11 @@ async def deploy(args: argparse.Namespace) -> None:
         chute_name=chute_name,
     )
 
+    # Write rendered template into the model directory so --include-cwd
+    # only picks up the miner files (miner.py, chute_config.yml, etc.)
+    model_dir = Path(args.model_path).resolve() if args.model_path else REPO_ROOT / "example_miners" / task
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".py", prefix=f"vidaio_{task}_", delete=False, dir=REPO_ROOT / "chutes"
+        mode="w", suffix=".py", prefix=f"vidaio_{task}_", delete=False, dir=model_dir
     ) as f:
         f.write(rendered)
         script_path = Path(f.name)
