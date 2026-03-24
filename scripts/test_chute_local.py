@@ -167,7 +167,7 @@ def main() -> None:
         print(f"Generating presigned URLs for '{object_name}' ...")
         put_url_fn, get_url_fn = get_s3_clients(bucket_type, endpoint, access_key, secret_key, bucket_name)
         upload_url = put_url_fn(object_name)
-        print(f"  PUT URL generated")
+        print(f"  PUT URL generated: {upload_url}")
 
     # 3. Send /process request
     payload = build_payload(args.task, args.video_url, upload_url)
