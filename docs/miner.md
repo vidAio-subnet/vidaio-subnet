@@ -188,15 +188,18 @@ Chute:
 
 You can test your chute locally before deploying. This does **not** require HuggingFace or Chutes credentials -- it builds a Docker image from your local files.
 
-1. Copy the chute template and your `chute_config.yml` into the same directory:
+1. Copy the chute template and your `chute_config.yml` into a test directory:
    ```bash
+   mkdir -p local_dev
    # Compression
-   cp chutes/compression/vidaio_compression_chute.py.j2 my_chute.py
-   cp example_miners/compression/chute_config.yml .
+   cp chutes/compression/vidaio_compression_chute.py.j2 local_dev/my_chute.py
+   cp example_miners/compression/chute_config.yml local_dev/
 
    # Or upscaling
-   cp chutes/upscaling/vidaio_upscaling_chute.py.j2 my_chute.py
-   cp example_miners/upscaling/chute_config.yml .
+   cp chutes/upscaling/vidaio_upscaling_chute.py.j2 local_dev/my_chute.py
+   cp example_miners/upscaling/chute_config.yml local_dev/
+
+   cd local_dev
    ```
 
    Edit the top of `my_chute.py` -- set any placeholder values (these are only used to name the local image, not for auth):
@@ -205,13 +208,15 @@ You can test your chute locally before deploying. This does **not** require Hugg
    HF_REPO_REVISION = "main"
    CHUTES_USERNAME = "local"
    CHUTE_NAME = "my-test-chute"
+   FILENAME = "my_chute.py"
    ```
 
    The template will load `chute_config.yml` from the local directory, skipping the HuggingFace download.
 
 2. Build the Docker image locally:
    ```bash
-   chutes build my_chute:chute --local
+   chutes build my_chute:chute --local --include-cwd
+   cd ..
    ```
 
 3. Run the container with `VIDAIO_LOCAL_TEST=1` and start the chute:
