@@ -126,29 +126,75 @@ def apply_rate_mapping(codec, rate, current_settings, logging_enabled=True):
     return current_settings
 
 
+def get_quantization_matrix_params(scene_type, codec):
+    """
+    Get quantization matrix parameters for scene-optimized encoding.
+
+    Quantization matrices (QM) can improve compression efficiency by 5-15%
+    for specific content types like animation and screen content.
+
+    Args:
+        scene_type (str): The classified scene type
+        codec (str): The codec being used
+
+    Returns:
+        dict: Quantization matrix parameters or empty dict if not applicable
+    """
+    params = {}
+
+    # Only certain codecs support quantization matrices
+    if codec == "av1_nvenc":
+        # Map scene types to QM presets for AV1
+        # enable_qm=1 enables quantization matrices
+        # qm_min/qm_max control the quantization matrix range (0-15)
+        qm_mapping = {
+            'Animation / Cartoon / Rendered Graphics': {'enable_qm': 1, 'qm_min': 4, 'qm_max': 10},
+            'Screen Content / Text': {'enable_qm': 1, 'qm_min': 2, 'qm_max': 8},
+            'Gaming Content': {'enable_qm': 1, 'qm_min': 5, 'qm_max': 12},
+            'Faces / People': {'enable_qm': 1, 'qm_min': 3, 'qm_max': 9},
+            'other': {'enable_qm': 1, 'qm_min': 4, 'qm_max': 10},
+        }
+        params.update(qm_mapping.get(scene_type, qm_mapping.get('other', {})))
+
+    elif codec == "libsvtav1":
+        # SVT-AV1 has different QM parameters (adaptive-quantization)
+        # tune=0 (subjective) works better with animation content when QM enabled
+        if scene_type == 'Animation / Cartoon / Rendered Graphics':
+            params['enable-qm'] = 1
+            params['qm-min'] = 0
+        elif scene_type == 'Screen Content / Text':
+            params['enable-qm'] = 1
+
+    return params
+
+
 def get_contrast_optimized_params(scene_type, contrast_value, codec):
     """
     Get contrast-optimized encoding parameters for a specific scene type and codec.
-    
+
     Args:
         scene_type (str): The classified scene type
         contrast_value (float): The calculated perceptual contrast (0.0-1.0)
         codec (str): The codec being used
-        
+
     Returns:
         dict: Additional encoding parameters optimized for contrast
     """
     params = {}
-    
+
     if contrast_value > 0.7:
         contrast_category = "high"
     elif contrast_value < 0.3:
         contrast_category = "low"
     else:
         contrast_category = "medium"
-    
+
+    # Add quantization matrix parameters based on scene type
+    qm_params = get_quantization_matrix_params(scene_type, codec)
+    params.update(qm_params)
+
     # --- NVENC-based codecs (AV1, HEVC, H264) ---
-    if codec in ["av1_nvenc", "hevc_nvenc", "h264_nvenc"]:      
+    if codec in ["av1_nvenc", "hevc_nvenc", "h264_nvenc"]:
         # Set spatial AQ strength based on contrast
         if contrast_category == "high":
             params['spatial-aq'] = 1
