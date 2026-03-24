@@ -111,7 +111,12 @@ def load_chute(
     chutes_username: str,
     chute_name: str,
 ) -> Chute:
-    hf_repo_path = Path(snapshot_download(hf_repo, revision=hf_revision))
+    # Try local config first (for local builds), fall back to HF download
+    local_config = Path(__file__).resolve().parent / config_filename
+    if local_config.exists():
+        hf_repo_path = local_config.parent
+    else:
+        hf_repo_path = Path(snapshot_download(hf_repo, revision=hf_revision))
     config = load_chute_config_from_hf_repo(config_path=hf_repo_path / config_filename)
 
     image_config = config.get("Image", {})
