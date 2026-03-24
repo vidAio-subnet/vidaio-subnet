@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+
+import sys
+from importlib.machinery import PathFinder
+from importlib.util import module_from_spec, spec_from_file_location
+from inspect import signature
+from pathlib import Path
+from site import getsitepackages, getusersitepackages
+from sysconfig import get_paths
+from tempfile import NamedTemporaryFile
+from typing import Any
+from urllib.parse import quote
+
+from aiohttp import ClientSession
+from chutes.chute import Chute, NodeSelector
+from chutes.image import Image
+from huggingface_hub import snapshot_download
+from pydantic import BaseModel
+from yaml import safe_load
+
+## ============ VARIABLES =======================
+HF_REPO_NAME = "{{ huggingface_repository_name }}"
+HF_REPO_REVISION = "{{ huggingface_repository_revision }}"
+CHUTES_USERNAME = "{{ chute_username }}"
+CHUTE_NAME = "{{ chute_name }}"
+FILENAME = "miner.py"
+CLASSNAME = "Miner"
+CHUTE_CONFIG_FILENAME = "chute_config.yml"
+
+
+## ========= DATA CLASSES ================
+class CompressionInput(BaseModel):
+    video_url: str
+    vmaf_threshold: float
+    target_codec: str
+    codec_mode: str
+    target_bitrate: float
+    upload_url: str
+
+
+class ProcessOutput(BaseModel):
+    success: bool
+    output_url: str | None = None
+    error: str | None = None
+
+
+## ========= UTILITY FUNCTIONS =================
+def get_whitelisted_paths() -> set[Path]:
+    STDLIB_ROOT = Path(get_paths()["stdlib"]).resolve()
+    SITE_PACKAGES_ROOTS = {Path(p).resolve() for p in getsitepackages()}
+    SITE_PACKAGES_ROOTS.add(Path(getusersitepackages()).resolve())
+    return {STDLIB_ROOT, *SITE_PACKAGES_ROOTS}
+
+
+def post_check_files_against_whitelist(*, before: set[str], miner_path: Path) -> None:
+    miner_path = miner_path.resolve()
+    WHITELIST = get_whitelisted_paths()
+    after = set(sys.modules.keys()) - before
+    offenders = []
+    for module_loaded_name in sorted(after):
+        module_loaded = sys.modules.get(module_loaded_name)
+        if module_loaded is None:
+            continue
+        module_loaded_file = getattr(module_loaded, "__file__", None)
+        if not module_loaded_file:
+            continue
+        module_loaded_filepath = Path(module_loaded_file).resolve()
+        if module_loaded_filepath == miner_path:
+            continue
+        if any(module_loaded_filepath.is_relative_to(root) for root in WHITELIST):
+            continue
+        offenders.append(module_loaded_name)
+    if offenders:
+        raise ImportError(
+            f"Miner loaded modules outside the whitelist: {', '.join(offenders)}"
+        )
+
+
+def load_chute_config_from_hf_repo(config_path: Path) -> dict:
+    try:
+        if not config_path.exists():
+            raise ValueError("No config file found in repo")
+        with config_path.open() as f:
+            config = safe_load(f)
+            print("Loaded Chutes Configuration")
+            return config or {}
+    except Exception as e:
+        print(f"Failed to load Chutes Configuration, using defaults: {e}")
+        return {}
+
+
+def safe_instantiate(cls, config: dict):
+    params = {k: v for k, v in config.items() if k in signature(cls).parameters}
+    obj = cls(**params)
+    for function_name, value in config.items():
+        if not hasattr(obj, function_name) or not callable(getattr(obj, function_name)):
+            continue
+        method = getattr(obj, function_name)
+        if isinstance(value, list):
+            for v in value:
+                if isinstance(v, (tuple, list)):
+                    method(*v)
+                else:
+                    method(v)
+        else:
+            method(value)
+    return obj
+
+
+def load_chute(
+    hf_repo: str,
+    hf_revision: str,
+    config_filename: str,
+    chutes_username: str,
+    chute_name: str,
+) -> Chute:
+    hf_repo_path = Path(snapshot_download(hf_repo, revision=hf_revision))
+    config = load_chute_config_from_hf_repo(config_path=hf_repo_path / config_filename)
+
+    image_config = config.get("Image", {})
+    image_config.update({
+        "username": chutes_username,
+        "name": chute_name,
+        "tag": "latest",
+        "readme": "README.md",
+    })
+    chute_image = safe_instantiate(cls=Image, config=image_config)
+
+    machine_specs = safe_instantiate(cls=NodeSelector, config=config.get("NodeSelector", {}))
+
+    chute_config = config.get("Chute", {})
+    chute_config.update({
+        "username": chutes_username,
+        "name": chute_name,
+        "image": chute_image,
+        "node_selector": machine_specs,
+        "allow_external_egress": False,
+        "readme": "README.md",
+    })
+    chute = safe_instantiate(cls=Chute, config=chute_config)
+    return chute
+
+
+def load_miner_from_hf_repo(path_hf_repo: Path, filename: str, classname: str):
+    path_hf_repo = path_hf_repo.resolve()
+    path_miner = path_hf_repo / filename
+    if not path_miner.is_file():
+        raise FileNotFoundError(f"Required file '{filename}' not in repo {path_hf_repo}")
+
+    WHITELIST = get_whitelisted_paths()
+
+    class HFRepoImportBlocker(PathFinder):
+        @classmethod
+        def find_spec(cls, fullname, path=None, target=None):
+            spec = super().find_spec(fullname, path, target)
+            if spec is None or spec.origin is None:
+                return spec
+            origin_path = Path(spec.origin).resolve()
+            if any(origin_path.is_relative_to(root) for root in WHITELIST):
+                return spec
+            raise ImportError(
+                f"Import blocked: '{fullname}' (file: {origin_path}) is not in the whitelist. "
+                f"All code related to the miner MUST be inside {filename}"
+            )
+
+    try:
+        before_exec = set(sys.modules.keys())
+        sys.meta_path.insert(0, HFRepoImportBlocker)
+        spec = spec_from_file_location("miner", path_miner)
+        module = module_from_spec(spec)
+        sys.modules["miner"] = module
+        spec.loader.exec_module(module)
+        miner_object = getattr(module, classname)
+        miner = miner_object(path_hf_repo)
+        post_check_files_against_whitelist(before=before_exec, miner_path=path_miner)
+    except Exception as e:
+        raise e
+    finally:
+        sys.meta_path.remove(HFRepoImportBlocker)
+    return miner
+
+
+## ========= ENDPOINTS ================
+chute = load_chute(
+    hf_repo=HF_REPO_NAME,
+    hf_revision=HF_REPO_REVISION,
+    chutes_username=CHUTES_USERNAME,
+    chute_name=CHUTE_NAME,
+    config_filename=CHUTE_CONFIG_FILENAME,
+)
+
+
+@chute.on_startup()
+async def load_model(self) -> None:
+    self.miner = None
+    try:
+        hf_repo_path = Path(snapshot_download(HF_REPO_NAME, revision=HF_REPO_REVISION))
+        self.miner = load_miner_from_hf_repo(
+            path_hf_repo=hf_repo_path, filename=FILENAME, classname=CLASSNAME
+        )
+        print(f"Miner loaded: {self.miner}")
+        self.status = "healthy"
+    except Exception as e:
+        self.status = f"Failed to load miner: {e}"
+        print(self.status)
+
+
+@chute.cord(public_api_path="/health")
+async def health(self, *args, **kwargs) -> dict[str, Any]:
+    return {
+        "status": self.status,
+        "miner": str(self.miner),
+    }
+
+
+@chute.cord(public_api_path="/process")
+async def process(self, data: CompressionInput) -> dict:
+    try:
+        if self.miner is None:
+            raise ValueError("Miner was not properly loaded!")
+
+        # Download video via chutes proxy
+        proxy_url = f"https://proxy.chutes.ai/misc/proxy?url={quote(data.video_url, safe='')}"
+        async with ClientSession() as session:
+            async with session.get(proxy_url) as response:
+                response.raise_for_status()
+                video_content = await response.read()
+
+        # Save to temp file and process
+        with NamedTemporaryFile(prefix="vidaio_comp_", suffix=".mp4", delete=False) as f:
+            f.write(video_content)
+            input_path = Path(f.name)
+
+        try:
+            output_path = self.miner.process_video(
+                input_path,
+                data.vmaf_threshold,
+                data.target_codec,
+                data.codec_mode,
+                data.target_bitrate,
+            )
+
+            # Upload result via proxy to presigned PUT URL
+            upload_proxy_url = f"https://proxy.chutes.ai/misc/proxy?url={quote(data.upload_url, safe='')}"
+            with open(output_path, "rb") as f:
+                video_bytes = f.read()
+
+            async with ClientSession() as session:
+                async with session.put(
+                    upload_proxy_url,
+                    data=video_bytes,
+                    headers={"Content-Type": "application/octet-stream"},
+                ) as resp:
+                    resp.raise_for_status()
+
+            result = ProcessOutput(success=True, output_url=data.upload_url)
+        finally:
+            # Cleanup temp files
+            input_path.unlink(missing_ok=True)
+            if 'output_path' in dir() and output_path.exists():
+                output_path.unlink(missing_ok=True)
+
+    except Exception as e:
+        result = ProcessOutput(success=False, error=f"Error during compression: {e}")
+
+    return result.model_dump(mode="json")

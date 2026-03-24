@@ -4,10 +4,9 @@ from .bandwidth import BandwidthConfig
 from .score import ScoreConfig
 from .sql import SQLConfig
 from .storage import StorageConfig
-from .video_upscaler import VideoUpscalerConfig
 from .organic_gateway import OrganicGatewayConfig
 from .dashboard import DashboardConfig
-from .video_compressor import VideoCompressorConfig
+from .chutes import ChutesConfig
 
 __all__ = [
     "RedisConfig",
@@ -16,8 +15,7 @@ __all__ = [
     "ScoreConfig",
     "SQLConfig",
     "StorageConfig",
-    "VideoUpscalerConfig",
     "OrganicGatewayConfig",
     "DashboardConfig",
-    "VideoCompressorConfig",
+    "ChutesConfig",
 ]

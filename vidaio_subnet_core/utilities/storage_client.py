@@ -111,6 +111,13 @@ class BackblazeClient:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self.executor, func, *args)
 
+    async def get_presigned_put_url(self, object_name, expires=PRESIGNED_URL_TTL):
+        expires_duration = datetime.timedelta(seconds=expires)
+        func = self.client.presigned_put_object
+        args = (self.bucket_name, object_name, expires_duration)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self.executor, func, *args)
+
     def __del__(self):
         try:
             if hasattr(self, 'executor') and self.executor:
@@ -287,6 +294,21 @@ class AmazonS3Client:
             
         return await loop.run_in_executor(self.executor, generate_url)
 
+    async def get_presigned_put_url(self, object_name, expires=PRESIGNED_URL_TTL):
+        loop = asyncio.get_running_loop()
+
+        def generate_url():
+            return self.client.generate_presigned_url(
+                'put_object',
+                Params={
+                    'Bucket': self.bucket_name,
+                    'Key': object_name
+                },
+                ExpiresIn=expires
+            )
+
+        return await loop.run_in_executor(self.executor, generate_url)
+
 
 class CloudflareR2Client:
     def __init__(self, endpoint, access_key, secret_key, bucket_name, secure=True, region="auto"):
@@ -435,7 +457,7 @@ class CloudflareR2Client:
 
     async def get_presigned_url(self, object_name, expires=PRESIGNED_URL_TTL):
         loop = asyncio.get_running_loop()
-        
+
         def generate_url():
             return self.client.generate_presigned_url(
                 'get_object',
@@ -445,7 +467,22 @@ class CloudflareR2Client:
                 },
                 ExpiresIn=expires
             )
-            
+
+        return await loop.run_in_executor(self.executor, generate_url)
+
+    async def get_presigned_put_url(self, object_name, expires=PRESIGNED_URL_TTL):
+        loop = asyncio.get_running_loop()
+
+        def generate_url():
+            return self.client.generate_presigned_url(
+                'put_object',
+                Params={
+                    'Bucket': self.bucket_name,
+                    'Key': object_name
+                },
+                ExpiresIn=expires
+            )
+
         return await loop.run_in_executor(self.executor, generate_url)
 
     def __del__(self):
@@ -603,17 +640,24 @@ class HippiusClient:
     async def get_presigned_url(self, object_name, expires=PRESIGNED_URL_TTL):
         """
         Generate a presigned URL for an object.
-        
+
         Args:
             object_name (str): Name of the object
             expires (int): Expiration time in seconds
-            
+
         Returns:
             str: Presigned URL
         """
         loop = asyncio.get_event_loop()
         url = await loop.run_in_executor(
             self.executor, self.client.presigned_get_object, self.bucket_name, object_name, datetime.timedelta(seconds=expires)
+        )
+        return url
+
+    async def get_presigned_put_url(self, object_name, expires=PRESIGNED_URL_TTL):
+        loop = asyncio.get_event_loop()
+        url = await loop.run_in_executor(
+            self.executor, self.client.presigned_put_object, self.bucket_name, object_name, datetime.timedelta(seconds=expires)
         )
         return url
 

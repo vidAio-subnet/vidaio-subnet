@@ -1,0 +1,17 @@
+Image:
+  from_base: parachutes/python:3.12
+  run_command:
+    - pip install --upgrade setuptools wheel
+    - pip install huggingface_hub==0.19.4
+    - apt-get update && apt-get install -y ffmpeg
+  set_workdir: /app
+
+NodeSelector:
+  gpu_count: 1
+  min_vram_gb_per_gpu: 8
+
+Chute:
+  shutdown_after_seconds: 600
+  concurrency: 2
+  max_instances: 5
+  scaling_threshold: 0.5
