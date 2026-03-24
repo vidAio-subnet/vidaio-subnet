@@ -104,8 +104,20 @@ async def handle_synapse(req: SynapseRequest) -> SynapseResponse:
        (simulates: `chutes chutes share` command in production and
         api.chutes.ai/code/{chute_id} in prod)
     """
-    print(f"[MINER] Synapse received from validator: {req.validator_hotkey}")
-    print(f"[MINER] Responding with chute_id={MINER_CHUTE_ID}, url={MINER_CHUTE_URL}")
+    print()
+    print(f"  [MINER] ── Synapse received ──")
+    print(f"  [MINER] From validator: {req.validator_hotkey}")
+    print(f"  [MINER] Task ID: {req.task_id or '(none)'}")
+    print(f"  [MINER] (prod: this arrives via Bittensor dendrite synapse forward)")
+    print()
+    print(f"  [MINER] ── Preparing response ──")
+    print(f"  [MINER] (i)  chute_api_url = {MINER_CHUTE_URL.rstrip('/')}/score")
+    print(f"  [MINER]       ^ Simulates: validator receiving chute_id in prod")
+    print(f"  [MINER]         Prod equivalent: api.chutes.ai/v1/chutes/{MINER_CHUTE_ID}/run/score")
+    print(f"  [MINER] (ii) chute_code    = miner_chute.py ({len(_CHUTE_SOURCE_CODE)} chars)")
+    print(f"  [MINER]       ^ Simulates: `chutes chutes share` command in production")
+    print(f"  [MINER]         Prod equivalent: api.chutes.ai/code/{MINER_CHUTE_ID}")
+    print(f"  [MINER] Sending response to validator...")
 
     return SynapseResponse(
         status="ok",

@@ -139,73 +139,119 @@ async def validate_miner(
       3. Inspect miner code (validator-only)
       4. Score the result
     """
-    print(f"[ORCH] Miner: {miner_url}")
-    print(f"[ORCH] Input: {input_data}")
+    print()
+    print(f"[ORCH] Miner URL:   {miner_url}")
+    print(f"[ORCH] Input data:  {input_data}")
 
-    # 1. Send synapse to miner (simulates Bittensor dendrite forward)
-    print("[ORCH] Sending synapse to miner...")
+    # ── STEP 1: Send synapse to miner ────────────────────────────────
+    print()
+    print("─" * 60)
+    print("[ORCH] STEP 1: Synapse Forward to Miner")
+    print("─" * 60)
+    print(f"[ORCH] Sending POST {miner_url}/synapse")
+    print(f"[ORCH] (prod: bt.dendrite sends ChuteInfoSynapse to miner's axon)")
     try:
         synapse_resp = await send_synapse(miner_url)
     except httpx.HTTPStatusError as e:
-        print(f"[ORCH] Synapse HTTP {e.response.status_code}: {e.response.text}")
+        print(f"[ORCH] FAILED — HTTP {e.response.status_code}: {e.response.text}")
         return {"status": "error", "error": f"synapse HTTP {e.response.status_code}"}
     except Exception as e:
-        print(f"[ORCH] Failed to reach miner: {e}")
+        print(f"[ORCH] FAILED — could not reach miner: {e}")
         return {"status": "error", "error": str(e)}
 
     if synapse_resp.get("status") != "ok":
-        print(f"[ORCH] Miner synapse error: {synapse_resp}")
+        print(f"[ORCH] FAILED — miner returned: {synapse_resp}")
         return {"status": "error", "error": "miner synapse failed"}
 
     chute_id = synapse_resp.get("chute_id", "")
     chute_api_url = synapse_resp.get("chute_api_url", "")
     chute_code = synapse_resp.get("chute_code", "")
 
-    print(f"[ORCH] Miner chute_id: {chute_id}")
-    # In prod: chute_api_url = https://api.chutes.ai/v1/chutes/{chute_id}/run/score
-    print(f"[ORCH] Chute API URL: {chute_api_url}")
+    print(f"[ORCH] Received synapse response:")
+    print(f"[ORCH]   chute_id:      {chute_id}")
+    print(f"[ORCH]   chute_api_url: {chute_api_url}")
+    print(f"[ORCH]     (prod: api.chutes.ai/v1/chutes/{chute_id}/run/score)")
+    print(f"[ORCH]   chute_code:    {len(chute_code)} chars received")
+    print(f"[ORCH]     (prod: retrieved via api.chutes.ai/code/{chute_id}")
+    print(f"[ORCH]      after miner runs `chutes chutes share {chute_id} <validator>`)")
 
     if not chute_api_url:
         return {"status": "error", "error": "miner did not provide chute_api_url"}
 
-    # 2. Call the miner's chute (simulates calling api.chutes.ai/v1/chutes/{chute_id}/run/score)
-    print("[ORCH] Calling miner's chute...")
+    # ── STEP 2: Call the miner's chute ───────────────────────────────
+    print()
+    print("─" * 60)
+    print("[ORCH] STEP 2: Call Miner's Chute API")
+    print("─" * 60)
+    print(f"[ORCH] Sending POST {chute_api_url}")
+    print(f"[ORCH]   payload: {{input_data: {input_data}}}")
+    print(f"[ORCH] (prod: POST api.chutes.ai/v1/chutes/{chute_id}/run/score)")
     try:
         chute_resp = await call_miner_chute(chute_api_url, input_data)
     except httpx.HTTPStatusError as e:
-        print(f"[ORCH] Chute HTTP {e.response.status_code}: {e.response.text}")
+        print(f"[ORCH] FAILED — HTTP {e.response.status_code}: {e.response.text}")
         return {"status": "error", "error": f"chute HTTP {e.response.status_code}"}
     except Exception as e:
-        print(f"[ORCH] Failed to reach miner chute: {e}")
+        print(f"[ORCH] FAILED — could not reach miner chute: {e}")
         return {"status": "error", "error": str(e)}
 
-    print(f"[ORCH] Chute status: {chute_resp.get('status')}")
-    print(f"[ORCH] Chute result: {chute_resp.get('result')}")
+    print(f"[ORCH] Response status: {chute_resp.get('status')}")
+    print(f"[ORCH] Response result: {chute_resp.get('result')}")
 
     if chute_resp.get("error"):
         print(f"[ORCH] Chute error: {chute_resp['error']}")
 
-    # 3. Inspect miner code (ONLY the validator sees this)
-    # In prod: retrieved via api.chutes.ai/code/{chute_id}
-    # (after miner ran `chutes chutes share <chute_id> <validator_user>`)
+    # ── STEP 3: Inspect miner code ───────────────────────────────────
+    print()
+    print("─" * 60)
+    print("[ORCH] STEP 3: Inspect Miner Code (VALIDATOR-ONLY)")
+    print("─" * 60)
+    print(f"[ORCH] (prod: GET api.chutes.ai/code/{chute_id})")
+    print(f"[ORCH] (requires miner to have run `chutes chutes share`)")
+    print(f"[ORCH] Only the validator can see this code — no other participant has access.")
     if chute_code:
         inspection = inspect_miner_code(chute_code)
-        print(f"[ORCH] Code inspection: {inspection}")
+        print(f"[ORCH] Code inspection results:")
+        for key, value in inspection.items():
+            print(f"[ORCH]   {key}: {value}")
+        # Show a preview of the score function
+        lines = chute_code.split("\n")
+        score_lines = []
+        capture = False
+        for line in lines:
+            if "def score(" in line:
+                capture = True
+            if capture:
+                score_lines.append(line)
+                if line.strip().startswith("return "):
+                    # grab the return block
+                    break
+        if score_lines:
+            print(f"[ORCH] Score function preview:")
+            for line in score_lines:
+                print(f"[ORCH]   | {line}")
     else:
         print("[ORCH] WARNING: no chute code received — cannot inspect")
 
-    # 4. Score the result
+    # ── STEP 4: Score the result ─────────────────────────────────────
+    print()
+    print("─" * 60)
+    print("[ORCH] STEP 4: Score & Validate Result")
+    print("─" * 60)
     if chute_resp.get("status") == "ok" and chute_resp.get("result"):
         result = chute_resp["result"]
         expected_sum = sum(input_data.get("values", []))
         actual_sum = result.get("sum")
+        print(f"[ORCH] Expected sum: {expected_sum}")
+        print(f"[ORCH] Actual sum:   {actual_sum}")
         if actual_sum == expected_sum:
-            print(f"[ORCH] PASS — sum={actual_sum}")
+            print(f"[ORCH] PASS")
             return {"status": "pass", "result": result}
         else:
-            print(f"[ORCH] FAIL — expected {expected_sum}, got {actual_sum}")
+            print(f"[ORCH] FAIL")
             return {"status": "fail", "result": result}
 
+    print(f"[ORCH] ERROR — unexpected chute response")
     return {"status": "error", "result": chute_resp}
 
 
@@ -214,14 +260,31 @@ async def main():
     miner_url = DEFAULT_MINER_URL
     input_data = {"values": [1, 2, 3, 4, 5]}
 
+    print()
     print("=" * 60)
-    print("VALIDATOR ORCHESTRATOR")
-    print(f"  Miner:      {miner_url}")
-    print(f"  Hotkey:     {VALIDATOR_HOTKEY}")
+    print("  VALIDATOR ORCHESTRATOR — Prototype Simulation")
+    print("=" * 60)
+    print(f"  Miner axon:    {miner_url}")
+    print(f"  Hotkey:        {VALIDATOR_HOTKEY}")
+    print(f"  Input data:    {input_data}")
+    print()
+    print("  Simulation steps:")
+    print("    1. Send synapse to miner (simulates bt.dendrite forward)")
+    print("    2. Call miner's chute API (simulates api.chutes.ai call)")
+    print("    3. Inspect miner code (simulates api.chutes.ai/code/{{id}})")
+    print("    4. Score & validate result")
     print("=" * 60)
 
     result = await validate_miner(miner_url, input_data)
-    print(f"\n[ORCH] Final: {result}")
+
+    print()
+    print("=" * 60)
+    print(f"  FINAL RESULT: {result['status'].upper()}")
+    if result.get("result"):
+        print(f"  Result data:  {result['result']}")
+    if result.get("error"):
+        print(f"  Error:        {result['error']}")
+    print("=" * 60)
 
 
 if __name__ == "__main__":

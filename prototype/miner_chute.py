@@ -68,10 +68,17 @@ async def handle_score(req: ScoreRequest) -> ScoreResponse:
       https://api.chutes.ai/v1/chutes/{chute_id}/run/score
     The validator calls this after receiving the chute_id from the miner's axon.
     """
+    print()
+    print(f"  [MINER-CHUTE] ── Score request received ──")
+    print(f"  [MINER-CHUTE] Input data: {req.input_data}")
+    print(f"  [MINER-CHUTE] (prod: this request arrives via api.chutes.ai/v1/chutes/{{chute_id}}/run/score)")
     try:
         result = score(req.input_data)
+        print(f"  [MINER-CHUTE] Computed result: {result}")
+        print(f"  [MINER-CHUTE] Returning result to caller (validator)")
         return ScoreResponse(status="ok", result=result)
     except Exception as e:
+        print(f"  [MINER-CHUTE] ERROR: {e}")
         return ScoreResponse(status="error", error=str(e))
 
 
