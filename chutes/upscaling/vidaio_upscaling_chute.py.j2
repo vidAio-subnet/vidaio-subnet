@@ -91,10 +91,27 @@ def load_chute_config_from_hf_repo(config_path: Path) -> dict:
         return {}
 
 
-def safe_instantiate(cls, config: dict):
-    params = {k: v for k, v in config.items() if k in signature(cls).parameters}
+def safe_instantiate(cls, config: dict | list):
+    params = {}
+    methods_to_call = []
+    
+    if isinstance(config, dict):
+        for k, v in config.items():
+            if k in signature(cls).parameters:
+                params[k] = v
+            else:
+                methods_to_call.append((k, v))
+    elif isinstance(config, list):
+        for item in config:
+            if isinstance(item, dict):
+                for k, v in item.items():
+                    if k in signature(cls).parameters:
+                        params[k] = v
+                    else:
+                        methods_to_call.append((k, v))
+                        
     obj = cls(**params)
-    for function_name, value in config.items():
+    for function_name, value in methods_to_call:
         if not hasattr(obj, function_name) or not callable(getattr(obj, function_name)):
             continue
         method = getattr(obj, function_name)
@@ -125,25 +142,35 @@ def load_chute(
     config = load_chute_config_from_hf_repo(config_path=hf_repo_path / config_filename)
 
     image_config = config.get("Image", {})
-    image_config.update({
+    image_defaults = {
         "username": chutes_username,
         "name": chute_name,
         "tag": "latest",
         "readme": "README.md",
-    })
+    }
+    if isinstance(image_config, dict):
+        image_config.update(image_defaults)
+    elif isinstance(image_config, list):
+        image_config.append(image_defaults)
+        
     chute_image = safe_instantiate(cls=Image, config=image_config)
 
     machine_specs = safe_instantiate(cls=NodeSelector, config=config.get("NodeSelector", {}))
 
     chute_config = config.get("Chute", {})
-    chute_config.update({
+    chute_defaults = {
         "username": chutes_username,
         "name": chute_name,
         "image": chute_image,
         "node_selector": machine_specs,
         "allow_external_egress": False,
         "readme": "README.md",
-    })
+    }
+    if isinstance(chute_config, dict):
+        chute_config.update(chute_defaults)
+    elif isinstance(chute_config, list):
+        chute_config.append(chute_defaults)
+        
     chute = safe_instantiate(cls=Chute, config=chute_config)
     return chute
 
