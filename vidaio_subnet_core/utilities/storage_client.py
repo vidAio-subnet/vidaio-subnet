@@ -16,6 +16,15 @@ class BackblazeClient:
     def __init__(self, endpoint, access_key, secret_key, bucket_name, secure=True, region="us-east-1"):
         self.endpoint = endpoint
         self.bucket_name = bucket_name
+        # Parse endpoint to handle URLs like http://host:port or https://host:port
+        from urllib.parse import urlparse
+        parsed = urlparse(endpoint)
+        if parsed.scheme:
+            # URL format: extract host:port, use scheme to determine secure
+            host = parsed.hostname
+            port = parsed.port
+            endpoint = f"{host}:{port}" if port else host
+            secure = parsed.scheme == "https"
         self.client = Minio(
             endpoint,
             access_key=access_key,
