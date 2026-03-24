@@ -100,10 +100,14 @@ def calculate_vmaf(reference_path: str, distorted_path: str, num_samples: int = 
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode == 0:
-            # Parse VMAF from stderr (libvmaf outputs to stderr)
-            for line in result.stderr.split('\n'):
-                if 'VMAF score:' in line:
-                    return float(line.split('VMAF score:')[1].strip())
+            # Parse VMAF from stderr or stdout (libvmaf outputs differently per version)
+            for output in [result.stderr, result.stdout]:
+                for line in output.split('\n'):
+                    if 'VMAF score:' in line:
+                        try:
+                            return float(line.split('VMAF score:')[1].strip().split()[0])
+                        except (ValueError, IndexError):
+                            continue
     except Exception as e:
         print(f"libvmaf calculation failed: {e}")
 
@@ -223,10 +227,11 @@ def run_benchmark(
             cmd.extend(["-qp", str(cq_value)])
     else:
         # CPU codecs
-        cmd.extend(["-preset", "medium"])
-        if encoder in ['libx265', 'libx264']:
+        if encoder == 'libsvtav1':
+            cmd.extend(["-preset", "6"])  # SVT-AV1 uses numeric presets 0-12
             cmd.extend(["-crf", str(cq_value)])
-        elif encoder == 'libsvtav1':
+        elif encoder in ['libx265', 'libx264']:
+            cmd.extend(["-preset", "medium"])
             cmd.extend(["-crf", str(cq_value)])
 
     # Add output
@@ -345,8 +350,9 @@ def print_summary(results: List[BenchmarkResult]):
     # Best by score
     if sorted_results:
         best = sorted_results[0]
+        vmaf_str = f"{best.vmaf_score:.1f}" if best.vmaf_score else "N/A"
         print(f"\nBest overall: {best.codec} CQ={best.cq_value} "
-              f"Score={best.predicted_score:.3f} (VMAF={best.vmaf_score:.1f}, "
+              f"Score={best.predicted_score:.3f} (VMAF={vmaf_str}, "
               f"{best.compression_ratio:.1f}x compression)")
 
 
