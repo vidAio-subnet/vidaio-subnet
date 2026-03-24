@@ -314,14 +314,38 @@ The script prints the chute slug on completion. You can also check manually:
 ```bash
 chutes chutes list
 chutes chutes get <chute-name>
-
-# Test live endpoint
-curl -X POST https://<YOUR-CHUTE-SLUG>.chutes.ai/health \
-  -d '{}' \
-  -H "Authorization: Bearer $CHUTES_API_KEY"
 ```
 
-Set the chute slug in your miner environment:
+### Testing a Deployed Chute
+
+Use the test script with `--remote` to query a deployed chute on chutes.ai:
+```bash
+export CHUTES_API_KEY="cpk_xxx"
+export CHUTE_SLUG="your-chutes-username/your-chute-name"
+
+# S3 env vars are required in remote mode (the chute uploads results there)
+export BUCKET_TYPE="backblaze"
+export BUCKET_COMPATIBLE_ENDPOINT="s3.us-west-004.backblazeb2.com"
+export BUCKET_COMPATIBLE_ACCESS_KEY="your-access-key"
+export BUCKET_COMPATIBLE_SECRET_KEY="your-secret-key"
+export BUCKET_NAME="your-bucket-name"
+
+python scripts/test_chute_local.py \
+    --task compression \
+    --video-url https://example.com/video.mp4 \
+    --remote
+
+python scripts/test_chute_local.py \
+    --task upscaling \
+    --video-url https://example.com/video.mp4 \
+    --remote
+```
+
+The script generates a presigned PUT URL, sends the request to `https://<CHUTE_SLUG>.chutes.ai/process` with Bearer auth, and prints a presigned GET URL for the result.
+
+### Miner Environment
+
+Set the chute slug in your miner environment so the subnet knows which chute to call:
 ```bash
 export CHUTES__COMPRESSION_SLUG="your-slug"
 # or

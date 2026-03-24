@@ -1,48 +1,49 @@
 #!/usr/bin/env python3
 """
-Test a locally running chute by sending a /process request with a real video URL
-and S3-backed presigned upload URL.
+Test a Vidaio chute — either locally or against a deployed Chute on chutes.ai.
 
-Requires:
-    - A local chute running (e.g. via `chutes run my_chute:chute --dev --debug`)
-    - S3-compatible storage credentials as env vars
-
-Usage:
-    # Compression test
+Local mode (default):
     python scripts/test_chute_local.py \
         --task compression \
         --video-url https://example.com/video.mp4
 
-    # Upscaling test
     python scripts/test_chute_local.py \
         --task upscaling \
-        --video-url https://example.com/video.mp4
+        --video-url https://example.com/video.mp4 \
+        --no-s3
 
-    # Custom chute port
+Remote mode (deployed Chute):
     python scripts/test_chute_local.py \
         --task compression \
         --video-url https://example.com/video.mp4 \
-        --port 9000
+        --remote
 
-Environment variables:
+Environment variables (S3 — local mode with upload, or remote mode):
     BUCKET_TYPE                 backblaze | amazon_s3 | cloudflare | hippius
     BUCKET_COMPATIBLE_ENDPOINT  e.g. s3.us-west-004.backblazeb2.com
     BUCKET_COMPATIBLE_ACCESS_KEY
     BUCKET_COMPATIBLE_SECRET_KEY
     BUCKET_NAME
+
+Environment variables (remote mode):
+    CHUTES_API_KEY              API key for chutes.ai
+    CHUTE_SLUG                  Chute slug (e.g. "username/my-compression-chute")
 """
 
 import argparse
+import base64
 import datetime
 import json
 import os
 import sys
 import uuid
-from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import urljoin
 
 import requests
 
+
+# ---------------------------------------------------------------------------
+# S3 presigned URL helpers
+# ---------------------------------------------------------------------------
 
 def get_s3_clients(bucket_type: str, endpoint: str, access_key: str, secret_key: str, bucket_name: str):
     """Return (presigned_put_fn, presigned_get_fn) callables for the given backend."""
@@ -101,6 +102,27 @@ def get_s3_clients(bucket_type: str, endpoint: str, access_key: str, secret_key:
         return put_url, get_url
 
 
+def require_s3_env():
+    """Read and validate S3 env vars, return the tuple or exit."""
+    bucket_type = os.environ.get("BUCKET_TYPE", "")
+    endpoint = os.environ.get("BUCKET_COMPATIBLE_ENDPOINT", "")
+    access_key = os.environ.get("BUCKET_COMPATIBLE_ACCESS_KEY", "")
+    secret_key = os.environ.get("BUCKET_COMPATIBLE_SECRET_KEY", "")
+    bucket_name = os.environ.get("BUCKET_NAME", "")
+
+    if not all([bucket_type, endpoint, access_key, secret_key, bucket_name]):
+        print("S3 env vars not set. Required:")
+        print("  BUCKET_TYPE, BUCKET_COMPATIBLE_ENDPOINT, BUCKET_COMPATIBLE_ACCESS_KEY,")
+        print("  BUCKET_COMPATIBLE_SECRET_KEY, BUCKET_NAME")
+        sys.exit(1)
+
+    return bucket_type, endpoint, access_key, secret_key, bucket_name
+
+
+# ---------------------------------------------------------------------------
+# Payload construction
+# ---------------------------------------------------------------------------
+
 def build_payload(task: str, video_url: str, upload_url: str) -> dict:
     if task == "compression":
         return {
@@ -119,81 +141,11 @@ def build_payload(task: str, video_url: str, upload_url: str) -> dict:
         }
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Test a locally running Vidaio chute")
-    parser.add_argument("--task", required=True, choices=["compression", "upscaling"])
-    parser.add_argument("--video-url", required=True, help="Public URL of the test video")
-    parser.add_argument("--port", type=int, default=8000, help="Local chute port (default: 8000)")
-    parser.add_argument("--no-s3", action="store_true", help="Skip S3, let chute return base64 inline")
-    args = parser.parse_args()
+# ---------------------------------------------------------------------------
+# Result display
+# ---------------------------------------------------------------------------
 
-    base_url = f"http://localhost:{args.port}"
-
-    # 1. Health check
-    print(f"Checking health at {base_url}/health ...")
-    try:
-        resp = requests.post(f"{base_url}/health", json={}, timeout=10)
-        resp.raise_for_status()
-        health = resp.json()
-        print(f"  Status: {health.get('status')}")
-        print(f"  Miner:  {health.get('miner')}")
-        if health.get("status") != "healthy":
-            print("  WARNING: chute is not healthy, proceeding anyway...")
-    except Exception as e:
-        print(f"  Health check failed: {e}")
-        print("  Is the chute running? Proceeding anyway...")
-
-    # 2. Generate presigned URLs
-    object_name = None
-    upload_url = ""
-    get_url_fn = None
-
-    if not args.no_s3:
-        bucket_type = os.environ.get("BUCKET_TYPE", "")
-        endpoint = os.environ.get("BUCKET_COMPATIBLE_ENDPOINT", "")
-        access_key = os.environ.get("BUCKET_COMPATIBLE_ACCESS_KEY", "")
-        secret_key = os.environ.get("BUCKET_COMPATIBLE_SECRET_KEY", "")
-        bucket_name = os.environ.get("BUCKET_NAME", "")
-
-        if not all([bucket_type, endpoint, access_key, secret_key, bucket_name]):
-            print("S3 env vars not set. Use --no-s3 to skip upload, or set:")
-            print("  BUCKET_TYPE, BUCKET_COMPATIBLE_ENDPOINT, BUCKET_COMPATIBLE_ACCESS_KEY,")
-            print("  BUCKET_COMPATIBLE_SECRET_KEY, BUCKET_NAME")
-            sys.exit(1)
-
-        suffix = "compressed" if args.task == "compression" else "upscaled"
-        object_name = f"test_{uuid.uuid4()}_{suffix}.mp4"
-
-        print(f"Generating presigned URLs for '{object_name}' ...")
-        put_url_fn, get_url_fn = get_s3_clients(bucket_type, endpoint, access_key, secret_key, bucket_name)
-        upload_url = put_url_fn(object_name)
-        print(f"  PUT URL generated: {upload_url}")
-
-    # 3. Send /process request
-    payload = build_payload(args.task, args.video_url, upload_url)
-    print(f"\nSending /process request ({args.task}) ...")
-    print(f"  video_url: {args.video_url}")
-    if args.task == "compression":
-        print(f"  codec: {payload['target_codec']}, mode: {payload['codec_mode']}, vmaf: {payload['vmaf_threshold']}")
-    else:
-        print(f"  task_type: {payload['task_type']}")
-
-    try:
-        resp = requests.post(
-            f"{base_url}/process",
-            json=payload,
-            timeout=600,
-        )
-        resp.raise_for_status()
-        result = resp.json()
-    except requests.Timeout:
-        print("ERROR: Request timed out (600s)")
-        sys.exit(1)
-    except Exception as e:
-        print(f"ERROR: Request failed: {e}")
-        sys.exit(1)
-
-    # 4. Display result
+def display_result(result: dict, task: str, get_url_fn, object_name: str | None) -> None:
     print(f"\nResult:")
     print(f"  success: {result.get('success')}")
 
@@ -207,9 +159,7 @@ def main() -> None:
         print(f"\n  Download URL (presigned, 1h expiry):")
         print(f"  {download_url}")
     elif result.get("output_video_b64"):
-        # Save base64 result to local file
-        import base64
-        out_path = f"test_output_{args.task}.mp4"
+        out_path = f"test_output_{task}.mp4"
         video_bytes = base64.b64decode(result["output_video_b64"])
         with open(out_path, "wb") as f:
             f.write(video_bytes)
@@ -217,6 +167,159 @@ def main() -> None:
     else:
         print(f"  output_url: {result.get('output_url')}")
         print("  (no presigned GET URL generated)")
+
+
+# ---------------------------------------------------------------------------
+# Local mode
+# ---------------------------------------------------------------------------
+
+def run_local(args) -> None:
+    base_url = f"http://localhost:{args.port}"
+
+    # Health check
+    print(f"Checking health at {base_url}/health ...")
+    try:
+        resp = requests.post(f"{base_url}/health", json={}, timeout=10)
+        resp.raise_for_status()
+        health = resp.json()
+        print(f"  Status: {health.get('status')}")
+        print(f"  Miner:  {health.get('miner')}")
+        if health.get("status") != "healthy":
+            print("  WARNING: chute is not healthy, proceeding anyway...")
+    except Exception as e:
+        print(f"  Health check failed: {e}")
+        print("  Is the chute running? Proceeding anyway...")
+
+    # Generate presigned URLs
+    object_name = None
+    upload_url = ""
+    get_url_fn = None
+
+    if not args.no_s3:
+        bucket_type, endpoint, access_key, secret_key, bucket_name = require_s3_env()
+        suffix = "compressed" if args.task == "compression" else "upscaled"
+        object_name = f"test_{uuid.uuid4()}_{suffix}.mp4"
+
+        print(f"Generating presigned URLs for '{object_name}' ...")
+        put_url_fn, get_url_fn = get_s3_clients(bucket_type, endpoint, access_key, secret_key, bucket_name)
+        upload_url = put_url_fn(object_name)
+        print(f"  PUT URL generated: {upload_url}")
+
+    # Send /process request
+    payload = build_payload(args.task, args.video_url, upload_url)
+    print(f"\nSending /process request ({args.task}) ...")
+    print(f"  video_url: {args.video_url}")
+    if args.task == "compression":
+        print(f"  codec: {payload['target_codec']}, mode: {payload['codec_mode']}, vmaf: {payload['vmaf_threshold']}")
+    else:
+        print(f"  task_type: {payload['task_type']}")
+
+    try:
+        resp = requests.post(f"{base_url}/process", json=payload, timeout=600)
+        resp.raise_for_status()
+        result = resp.json()
+    except requests.Timeout:
+        print("ERROR: Request timed out (600s)")
+        sys.exit(1)
+    except Exception as e:
+        print(f"ERROR: Request failed: {e}")
+        sys.exit(1)
+
+    display_result(result, args.task, get_url_fn, object_name)
+
+
+# ---------------------------------------------------------------------------
+# Remote mode — deployed Chute on chutes.ai
+# ---------------------------------------------------------------------------
+
+def run_remote(args) -> None:
+    chutes_api_key = os.environ.get("CHUTES_API_KEY", "")
+    chute_slug = os.environ.get("CHUTE_SLUG", "")
+
+    if not chutes_api_key:
+        print("ERROR: CHUTES_API_KEY env var is required for --remote mode")
+        sys.exit(1)
+    if not chute_slug:
+        print("ERROR: CHUTE_SLUG env var is required for --remote mode")
+        sys.exit(1)
+
+    base_url = f"https://{chute_slug}.chutes.ai"
+
+    # S3 is required for remote — the chute uploads the result there
+    bucket_type, endpoint, access_key, secret_key, bucket_name = require_s3_env()
+    suffix = "compressed" if args.task == "compression" else "upscaled"
+    object_name = f"test_{uuid.uuid4()}_{suffix}.mp4"
+
+    print(f"Generating presigned URLs for '{object_name}' ...")
+    put_url_fn, get_url_fn = get_s3_clients(bucket_type, endpoint, access_key, secret_key, bucket_name)
+    upload_url = put_url_fn(object_name)
+    print(f"  PUT URL generated")
+
+    # Build and send request
+    payload = build_payload(args.task, args.video_url, upload_url)
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {chutes_api_key}",
+    }
+
+    print(f"\nSending /process request to deployed chute ...")
+    print(f"  url:  {base_url}/process")
+    print(f"  slug: {chute_slug}")
+    print(f"  video_url: {args.video_url}")
+    if args.task == "compression":
+        print(f"  codec: {payload['target_codec']}, mode: {payload['codec_mode']}, vmaf: {payload['vmaf_threshold']}")
+    else:
+        print(f"  task_type: {payload['task_type']}")
+
+    try:
+        resp = requests.post(
+            f"{base_url}/process",
+            json=payload,
+            headers=headers,
+            timeout=600,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+    except requests.Timeout:
+        print("ERROR: Request timed out (600s)")
+        sys.exit(1)
+    except requests.HTTPError as e:
+        print(f"ERROR: HTTP {e.response.status_code}")
+        try:
+            print(f"  body: {e.response.text[:500]}")
+        except Exception:
+            pass
+        sys.exit(1)
+    except Exception as e:
+        print(f"ERROR: Request failed: {e}")
+        sys.exit(1)
+
+    display_result(result, args.task, get_url_fn, object_name)
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Test a Vidaio chute (local or remote)")
+    parser.add_argument("--task", required=True, choices=["compression", "upscaling"])
+    parser.add_argument("--video-url", required=True, help="Public URL of the test video")
+    parser.add_argument("--remote", action="store_true",
+                        help="Query a deployed Chute on chutes.ai instead of localhost")
+    parser.add_argument("--port", type=int, default=8000,
+                        help="Local chute port (default: 8000, ignored with --remote)")
+    parser.add_argument("--no-s3", action="store_true",
+                        help="Skip S3, let chute return base64 inline (local mode only)")
+    args = parser.parse_args()
+
+    if args.remote:
+        if args.no_s3:
+            print("WARNING: --no-s3 is ignored in remote mode (S3 upload is required)")
+        run_remote(args)
+    else:
+        run_local(args)
 
 
 if __name__ == "__main__":
