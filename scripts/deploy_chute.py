@@ -25,6 +25,17 @@ Usage:
         --chutes-username your-chutes-username \
         --no-upload
 
+    # Custom HF repo name and chute name
+    python scripts/deploy_chute.py \
+        --task compression \
+        --hf-username your-hf-username \
+        --hf-token hf_xxx \
+        --chutes-api-key cpk_xxx \
+        --chutes-username your-chutes-username \
+        --model-path example_miners/compression \
+        --uploaded-hf-repo-name your-hf-username/my-custom-repo \
+        --uploaded-chute-name my-custom-chute
+
     # Skip warmup
     python scripts/deploy_chute.py ... --no-warmup
 """
@@ -194,8 +205,8 @@ async def deploy(args: argparse.Namespace) -> None:
     chutes_api_key = args.chutes_api_key
     chutes_username = args.chutes_username
 
-    hf_repo_name = get_hf_repo_name(hf_username, task)
-    chute_name = get_chute_name(hf_username, task)
+    hf_repo_name = args.uploaded_hf_repo_name or get_hf_repo_name(hf_username, task)
+    chute_name = args.uploaded_chute_name or get_chute_name(hf_username, task)
     hf_api = HfApi(token=hf_token)
 
     # 1. Upload to HuggingFace
@@ -260,6 +271,10 @@ def main() -> None:
     parser.add_argument("--model-path", default=None, help="Path to miner directory (miner.py + chute_config.yml)")
     parser.add_argument("--no-upload", action="store_true", help="Skip HF upload, use existing repo")
     parser.add_argument("--no-warmup", action="store_true", help="Skip chute warmup after deploy")
+    parser.add_argument("--uploaded-hf-repo-name", default=None,
+                        help="Custom HF repo name instead of auto-generated '{hf_username}/vidaio-{task}'")
+    parser.add_argument("--uploaded-chute-name", default=None,
+                        help="Custom chute name instead of auto-generated 'vidaio-{hf_username}-{task}'")
     args = parser.parse_args()
 
     if not args.no_upload and not args.model_path:

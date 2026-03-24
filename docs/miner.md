@@ -295,6 +295,17 @@ python scripts/deploy_chute.py \
 # Redeploy from existing HF repo (skip upload)
 python scripts/deploy_chute.py --task compression ... --no-upload
 
+# Custom HF repo name and chute name (instead of auto-generated defaults)
+python scripts/deploy_chute.py \
+    --task compression \
+    --hf-username your-hf-username \
+    --hf-token hf_xxx \
+    --chutes-api-key cpk_xxx \
+    --chutes-username your-chutes-username \
+    --model-path example_miners/compression \
+    --uploaded-hf-repo-name your-hf-username/my-custom-repo \
+    --uploaded-chute-name my-custom-chute
+
 # Deploy without warmup
 python scripts/deploy_chute.py --task compression ... --no-warmup
 ```
