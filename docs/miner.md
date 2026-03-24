@@ -226,15 +226,32 @@ You can test your chute locally before deploying. This does **not** require Hugg
    - Downloads videos directly instead of via the chutes proxy
    - `upload_url` is optional -- if omitted or upload fails, the result video is returned inline as base64 in `output_video_b64`
 
-4. Test the endpoints from another terminal:
+4. Test the endpoints from another terminal using the test script:
+   ```bash
+   # With S3 upload (set BUCKET_* env vars first)
+   python scripts/test_chute_local.py \
+       --task compression \
+       --video-url https://example.com/video.mp4
+
+   python scripts/test_chute_local.py \
+       --task upscaling \
+       --video-url https://example.com/video.mp4
+
+   # Without S3 (result returned as base64, saved to local file)
+   python scripts/test_chute_local.py \
+       --task compression \
+       --video-url https://example.com/video.mp4 \
+       --no-s3
+   ```
+
+   The script handles health checks, presigned URL generation, payload construction, and displays the final S3 download link. You can also test manually with curl:
    ```bash
    curl -X POST http://localhost:8000/health -d '{}'
 
-   # Compression example (no upload_url -- result returned as base64)
    curl -X POST http://localhost:8000/process -d '{
      "video_url": "https://example.com/video.mp4",
      "vmaf_threshold": 90.0,
-     "target_codec": "av1",
+     "target_codec": "h264",
      "codec_mode": "CRF",
      "target_bitrate": 10.0
    }'
