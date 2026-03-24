@@ -184,29 +184,42 @@ Chute:
   scaling_threshold: 0.5
 ```
 
-### Deploying Your Chute
+### Local Testing (Optional)
 
-1. Push `miner.py` and `chute_config.yml` to your Hugging Face repo.
+You can test your chute locally before deploying. This does **not** require HuggingFace or Chutes credentials -- it builds a Docker image from your local files.
 
-2. Copy the appropriate Chute template and fill in the variables:
-   ```python
-   # From chutes/compression/vidaio_compression_chute.py.j2
-   # or   chutes/upscaling/vidaio_upscaling_chute.py.j2
-   HF_REPO_NAME = "your-hf-username/your-repo"
-   HF_REPO_REVISION = "main"
-   CHUTES_USERNAME = "your-chutes-username"
-   CHUTE_NAME = "my-compression-chute"
+1. Copy the appropriate chute template as a Python file and hardcode the variables:
+   ```bash
+   cp chutes/compression/vidaio_compression_chute.py.j2 my_chute.py
+   # or
+   cp chutes/upscaling/vidaio_upscaling_chute.py.j2 my_chute.py
    ```
 
-3. Build and deploy:
-   ```bash
-   # Local test
-   chutes build my_chute:chute --local --public
-   docker run -p 8000:8000 -e CHUTES_EXECUTION_CONTEXT=REMOTE -it <image-name> /bin/bash
-   chutes run my_chute:chute --dev --debug
+   Edit the top of `my_chute.py` -- set any placeholder values (these are only used to name the local image, not for auth):
+   ```python
+   HF_REPO_NAME = "local/test"
+   HF_REPO_REVISION = "main"
+   CHUTES_USERNAME = "local"
+   CHUTE_NAME = "my-test-chute"
+   ```
 
-   # Test endpoints locally
+2. Build the Docker image locally:
+   ```bash
+   chutes build my_chute:chute --local
+   ```
+
+3. Run the container and start the chute:
+   ```bash
+   docker run -p 8000:8000 -e CHUTES_EXECUTION_CONTEXT=REMOTE -it <image-name> /bin/bash
+   # Inside the container:
+   chutes run my_chute:chute --dev --debug
+   ```
+
+4. Test the endpoints from another terminal:
+   ```bash
    curl -X POST http://localhost:8000/health -d '{}'
+
+   # Compression example
    curl -X POST http://localhost:8000/process -d '{
      "video_url": "https://example.com/video.mp4",
      "vmaf_threshold": 90.0,
@@ -215,52 +228,62 @@ Chute:
      "target_bitrate": 10.0,
      "upload_url": "https://example.com/presigned-put"
    }'
+
+   # Upscaling example
+   curl -X POST http://localhost:8000/process -d '{
+     "video_url": "https://example.com/video.mp4",
+     "task_type": "SD2HD",
+     "upload_url": "https://example.com/presigned-put"
+   }'
    ```
 
-4. Deploy to Chutes using the deploy script:
-   ```bash
-   # Deploy a compression chute (uploads miner files to HF, builds, deploys, warms up)
-   python scripts/deploy_chute.py \
-       --task compression \
-       --hf-username your-hf-username \
-       --hf-token hf_xxx \
-       --chutes-api-key cpk_xxx \
-       --chutes-username your-chutes-username \
-       --model-path example_miners/compression
+### Deploying Your Chute
 
-   # Deploy an upscaling chute
-   python scripts/deploy_chute.py \
-       --task upscaling \
-       --hf-username your-hf-username \
-       --hf-token hf_xxx \
-       --chutes-api-key cpk_xxx \
-       --chutes-username your-chutes-username \
-       --model-path example_miners/upscaling
+The deploy script handles the full workflow: uploading your miner to HuggingFace, rendering the chute template, building, deploying, and warming up.
 
-   # Redeploy from existing HF repo (skip upload)
-   python scripts/deploy_chute.py --task compression ... --no-upload
+```bash
+# Deploy a compression chute
+python scripts/deploy_chute.py \
+    --task compression \
+    --hf-username your-hf-username \
+    --hf-token hf_xxx \
+    --chutes-api-key cpk_xxx \
+    --chutes-username your-chutes-username \
+    --model-path example_miners/compression
 
-   # Deploy without warmup
-   python scripts/deploy_chute.py --task compression ... --no-warmup
-   ```
+# Deploy an upscaling chute
+python scripts/deploy_chute.py \
+    --task upscaling \
+    --hf-username your-hf-username \
+    --hf-token hf_xxx \
+    --chutes-api-key cpk_xxx \
+    --chutes-username your-chutes-username \
+    --model-path example_miners/upscaling
 
-   The script will print the chute slug at the end. You can also verify manually:
-   ```bash
-   chutes chutes list
-   chutes chutes get <chute-name>
+# Redeploy from existing HF repo (skip upload)
+python scripts/deploy_chute.py --task compression ... --no-upload
 
-   # Test live endpoint
-   curl -X POST https://<YOUR-CHUTE-SLUG>.chutes.ai/health \
-     -d '{}' \
-     -H "Authorization: Bearer $CHUTES_API_KEY"
-   ```
+# Deploy without warmup
+python scripts/deploy_chute.py --task compression ... --no-warmup
+```
 
-5. Set the chute slug in your miner environment:
-   ```bash
-   export CHUTES__COMPRESSION_SLUG="your-slug"
-   # or
-   export CHUTES__UPSCALING_SLUG="your-slug"
-   ```
+The script prints the chute slug on completion. You can also check manually:
+```bash
+chutes chutes list
+chutes chutes get <chute-name>
+
+# Test live endpoint
+curl -X POST https://<YOUR-CHUTE-SLUG>.chutes.ai/health \
+  -d '{}' \
+  -H "Authorization: Bearer $CHUTES_API_KEY"
+```
+
+Set the chute slug in your miner environment:
+```bash
+export CHUTES__COMPRESSION_SLUG="your-slug"
+# or
+export CHUTES__UPSCALING_SLUG="your-slug"
+```
 
 ## Example Miners
 
