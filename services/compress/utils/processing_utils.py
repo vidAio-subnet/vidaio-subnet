@@ -7,6 +7,13 @@ from .encode_video import encode_video
 from .classify_scene import classify_scene_with_model, extract_frames_from_scene
 from .analyze_video_fast import analyze_video_fast
 
+# Import Chutes client for remote inference when USE_CHUTES=true
+try:
+    from .chutes_client import ChutesSceneClassifier, ChutesConfig
+    HAS_CHUTES = True
+except ImportError:
+    HAS_CHUTES = False
+
 def get_video_bitrate(video_path):
     """Get the bitrate of a video file in kbps."""
     try:
@@ -163,14 +170,16 @@ def encode_scene_with_size_check(scene_path, output_path, codec, adjusted_cq, co
     
     return None, 0.0
 
-def classify_scene_from_path(scene_path, temp_dir, scene_classifier_model, available_metrics, 
-                           device='cpu', class_mapping=None, logging_enabled=True, 
+def classify_scene_from_path(scene_path, temp_dir, scene_classifier_model, available_metrics,
+                           device='cpu', class_mapping=None, logging_enabled=True,
                            num_frames=3, metrics_scaler=None):
     """
     Classify a scene directly from video path - wrapper that uses enhanced functions
-    
-    This function is a simplified wrapper that leverages the robust implementations
-    
+
+    This function is a simplified wrapper that leverages the robust implementations.
+    When USE_CHUTES=true environment variable is set, it will use Chutes API for
+    remote inference with automatic fallback to local inference on failure.
+
     Args:
         scene_path: Path to the video file
         temp_dir: Temporary directory for frame extraction
@@ -181,7 +190,7 @@ def classify_scene_from_path(scene_path, temp_dir, scene_classifier_model, avail
         logging_enabled: Whether to enable logging
         num_frames: Number of frames to extract for classification
         metrics_scaler: Metrics scaler (optional)
-        
+
     Returns:
         tuple: (classification_label, detailed_results, video_features)
         classification_label: Scene classification result
@@ -260,16 +269,54 @@ def classify_scene_from_path(scene_path, temp_dir, scene_classifier_model, avail
             for metric in available_metrics:
                 video_features[metric] = 0.5  # Default neutral values
         
-        # Step 5: Classify using the enhanced classification function
-        classification_label, detailed_results = classify_scene_with_model(
-            frame_paths=frame_paths,
-            video_features=video_features,
-            scene_classifier=scene_classifier_model,
-            metrics_scaler=metrics_scaler,
-            available_metrics=available_metrics,
-            device=device,
-            logging_enabled=logging_enabled
-        )
+        # Step 5: Classify using Chutes (if enabled) or local model
+        use_chutes = os.environ.get('USE_CHUTES', 'false').lower() == 'true'
+
+        if use_chutes and HAS_CHUTES:
+            # Try Chutes remote inference with automatic fallback
+            if logging_enabled:
+                print(f"🚀 Using Chutes for scene classification (USE_CHUTES=true)")
+            try:
+                # Load or create Chutes classifier using existing model path
+                classifier = ChutesSceneClassifier(
+                    config=ChutesConfig.from_env(),
+                    local_model_path=None,  # Will use scene_classifier_model below for fallback
+                    device=device,
+                    use_chutes=True
+                )
+                classification_label, detailed_results = classifier.classify(
+                    frame_paths=frame_paths,
+                    video_features=video_features
+                )
+                if logging_enabled:
+                    source = detailed_results.get('source', 'unknown')
+                    print(f"✅ Chutes classification complete (source: {source})")
+            except Exception as e:
+                if logging_enabled:
+                    print(f"⚠️ Chutes inference failed: {e}, falling back to local model")
+                # Fall back to local inference
+                classification_label, detailed_results = classify_scene_with_model(
+                    frame_paths=frame_paths,
+                    video_features=video_features,
+                    scene_classifier=scene_classifier_model,
+                    metrics_scaler=metrics_scaler,
+                    available_metrics=available_metrics,
+                    device=device,
+                    logging_enabled=logging_enabled
+                )
+        else:
+            # Use local PyTorch inference (default behavior)
+            if logging_enabled and use_chutes and not HAS_CHUTES:
+                print(f"⚠️ USE_CHUTES=true but chutes_client not available, using local model")
+            classification_label, detailed_results = classify_scene_with_model(
+                frame_paths=frame_paths,
+                video_features=video_features,
+                scene_classifier=scene_classifier_model,
+                metrics_scaler=metrics_scaler,
+                available_metrics=available_metrics,
+                device=device,
+                logging_enabled=logging_enabled
+            )
         
         # Cleanup temporary frames
         try:
