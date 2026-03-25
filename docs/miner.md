@@ -45,7 +45,13 @@ cd vidaio-subnet
 pip install -e .
 ```
 
-### 2. Configure Environment
+### 2. Setup chute
+Refer to Chute setup section below
+
+
+### 3. Configure Environment
+
+Once the chute is warmed up, set the relevant environment variables. Your chutes slug is formatted as `username-chute-name` if your chute is uploaded as `username/chute-name` as of writing, check the API tab on the private chute on chutes.ai to extract chutes slug.
 
 The miner reads configuration from environment variables. Storage config uses `BUCKET_*` env vars loaded via `dotenv`, and Chutes config uses pydantic-settings with `__` as the nested delimiter.
 
@@ -184,7 +190,7 @@ Chute:
   scaling_threshold: 0.5
 ```
 
-### Local Testing (Optional)
+### Local Testing
 
 You can test your chute locally before deploying. This does **not** require HuggingFace or Chutes credentials -- it builds a Docker image from your local files.
 
@@ -229,7 +235,7 @@ You can test your chute locally before deploying. This does **not** require Hugg
 
    `VIDAIO_LOCAL_TEST=1` enables local testing mode:
    - Loads `miner.py` from the local directory instead of downloading from HuggingFace
-   - Downloads videos directly instead of via the chutes proxy
+   - Downloads and uploads videos directly instead of via the chutes proxy
    - `upload_url` is optional -- if omitted or upload fails, the result video is returned inline as base64 in `output_video_b64`
 
 4. Test the endpoints from another terminal using the test script:
@@ -270,6 +276,8 @@ You can test your chute locally before deploying. This does **not** require Hugg
    ```
 
 ### Deploying Your Chute
+
+Once you are certain that the Chute image and container builds locally and functions as intended, you can deploy the Chute remotely.
 
 The deploy script handles the full workflow: uploading your miner to HuggingFace, rendering the chute template, building, deploying, and warming up.
 
@@ -366,16 +374,3 @@ Validators score miner outputs using:
 - **VMAF** (Video Multi-Method Assessment Fusion) for perceptual quality.
 - **PieAPP** for perceptual image error assessment on upscaling tasks.
 - **Compression ratio** relative to the original file size.
-
-Higher quality and better compression ratios yield higher scores. See `vidaio_subnet_core/configs/score.py` for threshold details.
-
-## Troubleshooting
-
-| Symptom | Likely Cause |
-|---------|-------------|
-| `Chute returned error` in logs | Your `miner.py` crashed inside the Chute. Test locally first. |
-| `Chute HTTP error: 401` | Invalid or missing `CHUTES__API_KEY`. |
-| `Chute request timed out` | Processing exceeded 600s (default). Optimize your pipeline or increase `CHUTES__REQUEST_TIMEOUT`. |
-| `Failed to generate presigned URL` | Bucket credentials or endpoint misconfigured. |
-| `Your Miner is not registered` | Wallet hotkey not registered on subnet 85. Run `btcli register`. |
-| Chute stays cold | Check `chute_config.yml` node requirements match available Chutes hardware. |
