@@ -1745,7 +1745,7 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             try:
                 payload_path, download_time = await download_video(payload_url, request.verbose)
             except Exception as e:
-                error_msg = f"Failed to download payload video from {payload_path}: {str(e)}"
+                error_msg = f"Failed to download payload video from {payload_url}: {str(e)}"
                 logger.error(f"{error_msg}. Assigning score of -100, to be skipped while scoring.")
                 vmaf_scores.append(0.0)
                 pieapp_scores.append(0.0)
