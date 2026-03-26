@@ -13,7 +13,7 @@ from loguru import logger
 
 DATABASE_PATH = "video_subnet_validator.db"
 
-METAGRAPH_REFRESH_INTERVAL = 120  # seconds
+METAGRAPH_REFRESH_INTERVAL = 60 * 5  # every 5 minutes
 
 
 class MetagraphCache:
