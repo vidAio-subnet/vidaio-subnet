@@ -1,16 +1,58 @@
 import os
 import time
 import sqlite3
+import threading
 import uvicorn
 import bittensor as bt
 from fastapi import FastAPI
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 from contextlib import contextmanager
 from vidaio_subnet_core import CONFIG
 from services.dashboard.model import MinerInfo
 from loguru import logger
 
 DATABASE_PATH = "video_subnet_validator.db"
+
+METAGRAPH_REFRESH_INTERVAL = 120  # seconds
+
+
+class MetagraphCache:
+    """Caches the subtensor metagraph and refreshes it periodically in a background thread."""
+
+    def __init__(self, netuid: int, refresh_interval: float):
+        self._netuid = netuid
+        self._refresh_interval = refresh_interval
+        self._metagraph: Optional[bt.Metagraph] = None
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self):
+        self._refresh()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        while not self._stop_event.wait(self._refresh_interval):
+            self._refresh()
+
+    def _refresh(self):
+        try:
+            subtensor = bt.Subtensor()
+            metagraph = subtensor.metagraph(netuid=self._netuid)
+            with self._lock:
+                self._metagraph = metagraph
+            logger.info("Metagraph cache refreshed successfully")
+        except Exception as e:
+            logger.error(f"Failed to refresh metagraph cache: {e}")
+
+    @property
+    def metagraph(self) -> Optional[bt.Metagraph]:
+        with self._lock:
+            return self._metagraph
+
+
+_metagraph_cache = MetagraphCache(netuid=85, refresh_interval=METAGRAPH_REFRESH_INTERVAL)
 
 @contextmanager
 def get_database_connection():
@@ -167,6 +209,12 @@ RETRY_DELAY = 1
 
 app = FastAPI(title="VidaIO Subnet Dashboard API", version="1.0.0")
 
+
+@app.on_event("startup")
+def startup_event():
+    _metagraph_cache.start()
+
+
 @app.get("/health")
 def health_check():
     """Health check endpoint to verify API is running"""
@@ -179,11 +227,12 @@ def health_check():
 def get_filtered_miners(threshold=threshold):
     """Get filtered miners with optimized database operations - reads DB once per request"""
     miner_info = MinerInfo()
-    subtensor = bt.Subtensor()
-    metagraph = subtensor.metagraph(netuid=85)
-    
+    metagraph = _metagraph_cache.metagraph
+    if metagraph is None:
+        raise RuntimeError("Metagraph not yet loaded")
+
     incentives = metagraph.I
-    trusts = metagraph.T
+    # trusts = metagraph.T
     emissions = metagraph.E
     hotkeys = metagraph.hotkeys
     stakes = metagraph.S
@@ -192,8 +241,8 @@ def get_filtered_miners(threshold=threshold):
     
     uid_to_task_type = get_processing_task_types()
     
-    for uid, incentive, trust, emission, hotkey, stake, daily_reward in zip(
-        uids, incentives, trusts, emissions, hotkeys, stakes, daily_rewards
+    for uid, incentive, emission, hotkey, stake, daily_reward in zip(
+        uids, incentives, emissions, hotkeys, stakes, daily_rewards
     ):
         if stake < threshold:
             processing_task_type = uid_to_task_type.get(str(uid), "unknown")
@@ -201,7 +250,7 @@ def get_filtered_miners(threshold=threshold):
             miner_info.append(
                 miner_uid=uid,
                 miner_hotkey=hotkey,
-                trust=trust,
+                trust=0,
                 incentive=incentive,
                 emission=emission,
                 daily_reward=daily_reward,
