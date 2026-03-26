@@ -87,7 +87,7 @@ class Miner:
                 "video2x", "-i", str(padded_path), "-o", str(output_path),
                 "-p", "realesrgan", "-s", scale_factor,
                 "-c", "libx265",
-                "-e", "preset=slow",
+                "-e", "preset=fast",
                 "-e", "crf=20",
                 "-e", "profile=main",
                 "-e", "pix_fmt=yuv420p",
