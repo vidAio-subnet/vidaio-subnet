@@ -288,7 +288,9 @@ async def health(self, *args, **kwargs) -> dict[str, Any]:
 
 @chute.cord(public_api_path="/process")
 async def process(self, data: UpscalingInput) -> dict:
+    import traceback as _tb
     try:
+        print(f"[chute] /process called: task_type={data.task_type}, video_url={data.video_url[:120]}...")
         if self.miner is None:
             raise ValueError("Miner was not properly loaded!")
 
@@ -297,21 +299,27 @@ async def process(self, data: UpscalingInput) -> dict:
             download_url = data.video_url
         else:
             download_url = f"https://proxy.chutes.ai/misc/proxy?url={quote(data.video_url, safe='')}"
+        print(f"[chute] Downloading video from: {download_url[:120]}...")
         async with ClientSession() as session:
             async with session.get(download_url) as response:
                 response.raise_for_status()
                 video_content = await response.read()
+        print(f"[chute] Downloaded {len(video_content)} bytes")
 
         # Save to temp file and process
         with NamedTemporaryFile(prefix="vidaio_up_", suffix=".mp4", delete=False) as f:
             f.write(video_content)
             input_path = Path(f.name)
+        print(f"[chute] Saved input to {input_path}")
 
         try:
+            print(f"[chute] Calling miner.process_video({input_path}, {data.task_type})")
             output_path = self.miner.process_video(input_path, data.task_type)
+            print(f"[chute] Miner returned output: {output_path}, exists={output_path.exists()}")
 
             with open(output_path, "rb") as f:
                 video_bytes = f.read()
+            print(f"[chute] Output video size: {len(video_bytes)} bytes")
 
             # Upload result -- try presigned URL, fall back to inline base64 in local test
             uploaded = False
@@ -321,6 +329,7 @@ async def process(self, data: UpscalingInput) -> dict:
                         upload_url = data.upload_url
                     else:
                         upload_url = f"https://proxy.chutes.ai/misc/proxy?url={quote(data.upload_url, safe='')}"
+                    print(f"[chute] Uploading result to: {upload_url[:120]}...")
                     async with ClientSession() as session:
                         async with session.put(
                             upload_url,
@@ -329,10 +338,11 @@ async def process(self, data: UpscalingInput) -> dict:
                         ) as resp:
                             resp.raise_for_status()
                     uploaded = True
+                    print("[chute] Upload succeeded")
                 except Exception as upload_err:
                     if not LOCAL_TEST:
                         raise
-                    print(f"Upload failed (local test), returning video inline: {upload_err}")
+                    print(f"[chute] Upload failed (local test), returning video inline: {upload_err}")
 
             if uploaded:
                 result = ProcessOutput(success=True, output_url=data.upload_url)
@@ -341,6 +351,7 @@ async def process(self, data: UpscalingInput) -> dict:
                     success=True,
                     output_video_b64=base64.b64encode(video_bytes).decode(),
                 )
+                print(f"[chute] Returning inline base64 ({len(result.output_video_b64)} chars)")
         finally:
             # Cleanup temp files
             input_path.unlink(missing_ok=True)
@@ -348,6 +359,9 @@ async def process(self, data: UpscalingInput) -> dict:
                 output_path.unlink(missing_ok=True)
 
     except Exception as e:
+        print(f"[chute] ERROR during upscaling: {e}")
+        _tb.print_exc()
         result = ProcessOutput(success=False, error=f"Error during upscaling: {e}")
 
+    print(f"[chute] Returning: success={result.success}, error={result.error}")
     return result.model_dump(mode="json")
