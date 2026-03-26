@@ -2,7 +2,7 @@ Image:
   from_base: parachutes/python:3.12
   set_user: root
   run_command:
-    - apt-get update && apt-get install -y ffmpeg curl
+    - apt-get update && apt-get install -y ffmpeg curl libvulkan1
     - curl -L -o /usr/local/bin/video2x https://github.com/k4yt3x/video2x/releases/download/6.4.0/Video2X-x86_64.AppImage && chmod +x /usr/local/bin/video2x
   set_user: chutes
   run_command:
