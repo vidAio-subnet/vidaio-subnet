@@ -2,8 +2,8 @@ Image:
   from_base: parachutes/python:3.12
   set_user: root
   run_command:
-    - apt-get update && apt-get install -y ffmpeg cargo
-    - cargo install just --version=1.39.0
+    - apt-get update && apt-get install -y ffmpeg curl
+    - curl -sSL https://just.systems/install.sh | bash -s -- --to /usr/local/bin --tag 1.39.0
     - git clone --recurse-submodules https://github.com/vidAio-subnet/video2x /tmp/video2x && cd /tmp/video2x && export PATH="$HOME/.cargo/bin:$PATH" && just ubuntu2404 && dpkg -i video2x-linux-ubuntu-amd64.deb && rm -rf /tmp/video2x
   set_user: chutes
   run_command:
