@@ -3,7 +3,7 @@ Image:
   set_user: root
   run_command:
     - apt-get update && apt-get install -y ffmpeg curl libvulkan1 libboost-program-options1.74.0 libomp5
-    - curl -L -o /tmp/video2x.deb https://github.com/k4yt3x/video2x/releases/download/6.3.1/video2x-linux-ubuntu2404-amd64.deb && dpkg -i /tmp/video2x.deb && rm /tmp/video2x.deb
+    - curl -L -o /tmp/video2x.deb https://github.com/k4yt3x/video2x/releases/download/6.2.0/video2x-linux-ubuntu2204-amd64.deb && dpkg -i /tmp/video2x.deb || apt-get install -f -y && rm /tmp/video2x.deb
   set_user: chutes
   run_command:
     - uv pip install --upgrade setuptools wheel
