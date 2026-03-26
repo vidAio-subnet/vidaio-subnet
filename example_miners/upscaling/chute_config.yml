@@ -2,9 +2,8 @@ Image:
   from_base: parachutes/python:3.12
   set_user: root
   run_command:
-    - apt-get update && apt-get install -y ffmpeg curl
-    - curl -sSL https://just.systems/install.sh | bash -s -- --to /usr/local/bin --tag 1.39.0
-    - git clone --recurse-submodules https://github.com/vidAio-subnet/video2x /tmp/video2x && cd /tmp/video2x && export PATH="$HOME/.cargo/bin:$PATH" && just ubuntu2404 && dpkg -i video2x-linux-ubuntu-amd64.deb && rm -rf /tmp/video2x
+    - apt-get update && apt-get install -y ffmpeg build-essential cmake pkg-config ninja-build libavcodec-dev libavdevice-dev libavfilter-dev libavformat-dev libavutil-dev libswscale-dev libvulkan-dev glslang-tools libomp-dev libboost-program-options-dev
+    - git clone --recurse-submodules https://github.com/vidAio-subnet/video2x /tmp/video2x && cd /tmp/video2x && cmake -B build -G Ninja -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=video2x-linux-ubuntu-amd64/usr -DVIDEO2X_USE_EXTERNAL_NCNN=OFF -DVIDEO2X_USE_EXTERNAL_SPDLOG=OFF && cmake --build build --config Release -j$(nproc) && mkdir -p video2x-linux-ubuntu-amd64/DEBIAN && cp packaging/debian/control.ubuntu2404 video2x-linux-ubuntu-amd64/DEBIAN/control && cmake --install build && dpkg-deb --build video2x-linux-ubuntu-amd64 && dpkg -i video2x-linux-ubuntu-amd64.deb && rm -rf /tmp/video2x
   set_user: chutes
   run_command:
     - uv pip install --upgrade setuptools wheel
