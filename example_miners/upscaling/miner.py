@@ -1,5 +1,4 @@
 from pathlib import Path
-import os
 import shutil
 import subprocess
 import re
@@ -42,9 +41,7 @@ class Miner:
     def _run_cmd(cmd: list[str], step_name: str) -> None:
         print(f"[miner] Running {step_name}: {' '.join(cmd)}")
         start = time.time()
-        env = os.environ.copy()
-        env["APPIMAGE_EXTRACT_AND_RUN"] = "1"
-        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        result = subprocess.run(cmd, capture_output=True, text=True)
         elapsed = time.time() - start
         if result.stdout:
             print(f"[miner] {step_name} stdout:\n{result.stdout}")
