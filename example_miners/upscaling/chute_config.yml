@@ -2,13 +2,8 @@ Image:
   from_base: parachutes/python:3.12
   set_user: root
   run_command:
-    - apt-get update && apt-get install -y ffmpeg build-essential clang cmake pkg-config ninja-build libavcodec-dev libavdevice-dev libavfilter-dev libavformat-dev libavutil-dev libswscale-dev libvulkan-dev glslang-tools libomp-dev libboost-program-options-dev
-    - git clone --recurse-submodules https://github.com/vidAio-subnet/video2x /tmp/video2x
-    - cd /tmp/video2x && cmake -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=video2x-linux-ubuntu-amd64/usr -DVIDEO2X_USE_EXTERNAL_NCNN=OFF -DVIDEO2X_USE_EXTERNAL_SPDLOG=OFF -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF
-    - cd /tmp/video2x && cmake --build build --config Release -j$(nproc)
-    - cd /tmp/video2x && mkdir -p video2x-linux-ubuntu-amd64/DEBIAN && cp packaging/debian/control.ubuntu2404 video2x-linux-ubuntu-amd64/DEBIAN/control && cmake --install build
-    - cd /tmp/video2x && dpkg-deb --build video2x-linux-ubuntu-amd64 && dpkg -i video2x-linux-ubuntu-amd64.deb
-    - rm -rf /tmp/video2x
+    - apt-get update && apt-get install -y ffmpeg curl libvulkan1 libboost-program-options1.74.0 libomp5
+    - curl -L -o /tmp/video2x.deb https://github.com/k4yt3x/video2x/releases/download/6.3.1/video2x-linux-ubuntu2404-amd64.deb && dpkg -i /tmp/video2x.deb && rm /tmp/video2x.deb
   set_user: chutes
   run_command:
     - uv pip install --upgrade setuptools wheel
