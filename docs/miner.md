@@ -210,7 +210,7 @@ You can test your chute locally before deploying. This does **not** require Hugg
    # Or upscaling
    cp chutes/upscaling/vidaio_upscaling_chute.py.j2 local_dev/my_chute.py
    cp example_miners/upscaling/chute_config.yml local_dev/
-   cp example_miners/compression/miner.py local_dev/
+   cp example_miners/upscaling/miner.py local_dev/
 
    cd local_dev
    ```
