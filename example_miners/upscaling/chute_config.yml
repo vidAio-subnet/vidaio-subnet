@@ -2,9 +2,8 @@ Image:
   from_base: parachutes/python:3.12
   set_user: root
   run_command:
-    - apt-get update && apt-get install -y ffmpeg cargo curl
-    - curl -sSL https://just.systems/install.sh | bash -s -- --to /usr/local/bin
-    - git clone --recurse-submodules https://github.com/vidAio-subnet/video2x /tmp/video2x && cd /tmp/video2x && just ubuntu2404 && dpkg -i video2x-linux-ubuntu-amd64.deb && rm -rf /tmp/video2x
+    - apt-get update && apt-get install -y ffmpeg curl
+    - curl -L -o /usr/local/bin/video2x https://github.com/k4yt3x/video2x/releases/download/6.4.0/Video2X-x86_64.AppImage && chmod +x /usr/local/bin/video2x
   set_user: chutes
   run_command:
     - uv pip install --upgrade setuptools wheel
