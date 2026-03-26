@@ -152,9 +152,9 @@ class Miner:
 Image:
   from_base: parachutes/python:3.12
   run_command:
-    - pip install --upgrade setuptools wheel
-    - pip install huggingface_hub==0.19.4
-    - apt-get update && apt-get install -y ffmpeg
+    - uv pip install --upgrade setuptools wheel
+    - uv pip install huggingface_hub==0.19.4
+    - uv apt-get update && apt-get install -y ffmpeg
   set_workdir: /app
 
 NodeSelector:
@@ -172,11 +172,16 @@ Chute:
 ```yaml
 Image:
   from_base: parachutes/python:3.12
+  set_user: root
   run_command:
-    - pip install --upgrade setuptools wheel
-    - pip install huggingface_hub==0.19.4
-    - apt-get update && apt-get install -y ffmpeg
-    - pip install video2x
+    - apt-get update && apt-get install -y ffmpeg cargo
+    - cargo install just --version=1.39.0
+    - git clone --recurse-submodules https://github.com/vidAio-subnet/video2x /tmp/video2x && cd /tmp/video2x && export PATH="$HOME/.cargo/bin:$PATH" && just ubuntu2404 && dpkg -i video2x-linux-ubuntu-amd64.deb && rm -rf /tmp/video2x
+  set_user: chutes
+  run_command:
+    - uv pip install --upgrade setuptools wheel
+    - uv pip install huggingface_hub==0.19.4 minio
+  set_user: chutes
   set_workdir: /app
 
 NodeSelector:

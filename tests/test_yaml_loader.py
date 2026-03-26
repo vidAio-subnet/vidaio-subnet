@@ -40,8 +40,8 @@ Image:
   from_base: parachutes/python:3.12
   set_user: root
   run_command:
-    - pip install --upgrade setuptools wheel
-    - pip install huggingface_hub==0.19.4 minio
+    - uv pip install --upgrade setuptools wheel
+    - uv pip install huggingface_hub==0.19.4 minio
     - apt-get update && apt-get install -y ffmpeg
   set_user: chutes
   set_workdir: /app
