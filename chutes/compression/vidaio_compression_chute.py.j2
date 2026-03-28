@@ -290,7 +290,9 @@ async def health(self, *args, **kwargs) -> dict[str, Any]:
     }
 
 
-@chute.cord(public_api_path="/process")
+@chute.cord(public_api_path="/process", 
+    input_schema=CompressionInput
+)
 async def process(self, data: CompressionInput) -> dict:
     try:
         if self.miner is None:
