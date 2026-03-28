@@ -205,6 +205,9 @@ def run_local(args) -> None:
         upload_url = put_url_fn(object_name)
         print(f"  PUT URL generated: {upload_url}")
 
+    if args.only_put_url:
+        print("Only generating presigned URLs, exiting...")
+        sys.exit(0)
     # Send /process request
     payload = build_payload(args.task, args.video_url, upload_url)
     print(f"\nSending /process request ({args.task}) ...")
@@ -312,6 +315,8 @@ def main() -> None:
                         help="Local chute port (default: 8000, ignored with --remote)")
     parser.add_argument("--no-s3", action="store_true",
                         help="Skip S3, let chute return base64 inline (local mode only)")
+    parser.add_argument("--only-put-url", action="store_true",
+                        help="Only print the S3 upload URL (local mode only)")
     args = parser.parse_args()
 
     if args.remote:
