@@ -52,6 +52,7 @@ class Miner:
     def _run_cmd(cmd: list[str], step_name: str) -> None:
         print(f"[miner] Running {step_name}: {' '.join(cmd)}")
         start = time.time()
+        # NOTE: `close_fds` is required for Chutes, else it would trigger `aegis[integ] FATAL: security violation (secure authorization fd not valid)`
         result = subprocess.run(cmd, capture_output=True, text=True, close_fds=False)
         elapsed = time.time() - start
         if result.stdout:
