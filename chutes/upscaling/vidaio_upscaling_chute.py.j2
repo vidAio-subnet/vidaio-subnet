@@ -290,6 +290,7 @@ async def health(self, *args, **kwargs) -> dict[str, Any]:
     input_schema=UpscalingInput
 )
 async def process(self, data: UpscalingInput) -> dict:
+    import subprocess as _subprocess
     import traceback as _tb
     try:
         print(f"[chute] /process called: task_type={data.task_type}, video_url={data.video_url[:120]}...")
@@ -360,6 +361,15 @@ async def process(self, data: UpscalingInput) -> dict:
             if 'output_path' in dir() and output_path.exists():
                 output_path.unlink(missing_ok=True)
 
+    except _subprocess.CalledProcessError as e:
+        error_msg = (
+            f"Error during upscaling: {e}\n"
+            f"  stdout: {e.stdout}\n"
+            f"  stderr: {e.stderr}"
+        )
+        print(f"[chute] SUBPROCESS ERROR:\n{error_msg}")
+        _tb.print_exc()
+        result = ProcessOutput(success=False, error=error_msg)
     except Exception as e:
         print(f"[chute] ERROR during upscaling: {e}")
         _tb.print_exc()
