@@ -6,7 +6,7 @@ Image:
   set_user: root
   run_command:
     # Core build tools + runtime deps
-    - apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y software-properties-common curl build-essential cmake ninja-build nasm clang g++ pkg-config git wget unzip libvulkan1 libvulkan-dev glslang-tools glslang-dev vulkan-validationlayers libboost-program-options1.74.0 libboost-program-options-dev libspdlog-dev libomp-dev libx264-dev libx265-dev libvpx-dev nvidia-cuda-dev nvidia-cuda-toolkit python3-pip python3-venv && rm -rf /var/lib/apt/lists/*
+    - apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y software-properties-common curl build-essential cmake ninja-build nasm clang g++ pkg-config git wget unzip perl libvulkan1 libvulkan-dev glslang-tools glslang-dev vulkan-validationlayers libboost-program-options1.74.0 libboost-program-options-dev libspdlog-dev libomp-dev libx264-dev libx265-dev libvpx-dev nvidia-cuda-dev nvidia-cuda-toolkit python3-pip python3-venv && rm -rf /var/lib/apt/lists/*
 
     # Install nv-codec-headers (pinned commit)
     - wget -q https://github.com/FFmpeg/nv-codec-headers/archive/876af32a202d0de83bd1d36fe74ee0f7fcf86b0d.zip && unzip -q 876af32a202d0de83bd1d36fe74ee0f7fcf86b0d.zip && cd nv-codec-headers-876af32a202d0de83bd1d36fe74ee0f7fcf86b0d && make && make install && cd / && rm -rf nv-codec-headers-* 876af32a202d0de83bd1d36fe74ee0f7fcf86b0d.zip
@@ -17,17 +17,17 @@ Image:
     # Build ffmpeg (pinned commit 33b215d) with CUDA + x264 + dav1d
     - export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH" && git init ffmpeg && cd ffmpeg && git remote add origin https://github.com/FFmpeg/FFmpeg.git && git fetch --depth 1 origin 33b215d1554a14e87416a24f8e6034312e629af7 && git checkout FETCH_HEAD && ./configure --enable-gpl --enable-libx264 --enable-libx265 --enable-libvpx --enable-libdav1d --enable-nonfree --enable-cuda-nvcc --extra-cflags="-I/usr/local/cuda/include" --extra-ldflags="-L/usr/local/cuda/lib64" --disable-static --enable-shared --nvccflags="-gencode arch=compute_75,code=sm_75 -gencode arch=compute_75,code=compute_75 -O2" && make -j$(nproc) && make install && ldconfig && cd / && rm -rf ffmpeg
 
-    # Build Video2X from vidAio fork — KEY FIXES:
-    #   1. VIDEO2X_USE_EXTERNAL_NCNN=OFF — build ncnn from submodules for version compatibility
-    #   2. Patch missing <thread> include in libvideo2x.cpp (same as original Dockerfile)
-    #   3. Use ninja -j1 fallback so any remaining errors are visible in build logs
-    - export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH" && git clone --recurse-submodules https://github.com/vidAio-subnet/video2x.git && cd video2x && sed -i '1i #include <thread>' src/libvideo2x.cpp && mkdir build && cd build && cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_CXX_COMPILER=g++ -DVIDEO2X_USE_EXTERNAL_NCNN=OFF -DVIDEO2X_USE_EXTERNAL_SPDLOG=OFF .. && ninja -j$(nproc) || ninja -j1 && ninja install && ldconfig && cd / && rm -rf video2x
+    # Build Video2X from vidAio fork
+    # Patch 1: missing <thread> include
+    # Patch 2: strip __attribute__((target_clones(...))) using perl (handles nested parens)
+    # Patch 3: also strip TARGET_CLONES macro definitions if used as a wrapper
+    - export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH" && git clone --recurse-submodules https://github.com/vidAio-subnet/video2x.git && cd video2x && sed -i "1i \x23include \x3cthread\x3e" src/libvideo2x.cpp && find src include -type f \( -name "*.cpp" -o -name "*.h" \) -exec perl -0777 -pi -e "s/__attribute__\s*\(\(target_clones\s*\(.*?\)\)\)//gs" {} + && mkdir build && cd build && cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_CXX_COMPILER=g++ -DVIDEO2X_USE_EXTERNAL_NCNN=OFF -DVIDEO2X_USE_EXTERNAL_SPDLOG=OFF .. && ninja -j$(nproc) && ninja install && ldconfig && cd / && rm -rf video2x
 
-    # Vulkan ICD for NVIDIA GPU detection — create fallback at both search paths
-    - mkdir -p /usr/share/vulkan/icd.d /etc/vulkan/icd.d && printf '{"file_format_version":"1.0.0","ICD":{"library_path":"libGLX_nvidia.so.0","api_version":"1.3.0"}}\n' | tee /usr/share/vulkan/icd.d/nvidia_icd.json /etc/vulkan/icd.d/nvidia_icd.json > /dev/null
+    # Vulkan ICD for NVIDIA GPU detection
+    - mkdir -p /usr/share/vulkan/icd.d /etc/vulkan/icd.d && echo "{\"file_format_version\":\"1.0.0\",\"ICD\":{\"library_path\":\"libGLX_nvidia.so.0\",\"api_version\":\"1.3.0\"}}" | tee /usr/share/vulkan/icd.d/nvidia_icd.json /etc/vulkan/icd.d/nvidia_icd.json > /dev/null
 
-    # Set Vulkan env vars for all shells
-    - echo 'export VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd.json:/usr/share/vulkan/icd.d/nvidia_icd.json' >> /etc/environment && echo 'export NVIDIA_DRIVER_CAPABILITIES=all' >> /etc/environment
+    # Set Vulkan env vars
+    - echo "export VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd.json:/usr/share/vulkan/icd.d/nvidia_icd.json" >> /etc/environment && echo "export NVIDIA_DRIVER_CAPABILITIES=all" >> /etc/environment
 
   set_user: chutes
   run_command:
