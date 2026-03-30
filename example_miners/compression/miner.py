@@ -18,10 +18,10 @@ class Miner:
     """
 
     CODEC_MAP = {
-        "av1": "libsvtav1",
-        "hevc": "libx265",
-        "h264": "libx264",
-        "vp9": "libvpx-vp9",
+        "av1": "av1_nvenc",      # hardware, needs Ada Lovelace+
+        "hevc": "hevc_nvenc",    # hardware, or "libx265" as software fallback
+        "h264": "libx264",       # or "h264_nvenc" for hardware
+        "vp9": "libvpx-vp9",    # software only, no NVENC support for VP9
     }
 
     def __init__(self, path_hf_repo: Path) -> None:
