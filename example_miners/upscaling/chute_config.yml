@@ -6,7 +6,7 @@ Image:
   set_user: root
   run_command:
     # Core build tools + runtime deps
-    - apt-get update && apt-get install -y software-properties-common curl libvulkan1 libboost-program-options1.74.0 build-essential ninja-build nasm python3-pip python3-venv clang wget unzip nvidia-cuda-dev nvidia-cuda-toolkit pkg-config libx264-dev libx265-dev libvpx-dev libspdlog-dev libboost-program-options-dev libomp-dev libvulkan-dev vulkan-validationlayers glslang-tools glslang-dev git
+    - apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y software-properties-common curl build-essential cmake ninja-build nasm clang g++ pkg-config git wget unzip libvulkan1 libvulkan-dev glslang-tools glslang-dev vulkan-validationlayers libboost-program-options1.74.0 libboost-program-options-dev libspdlog-dev libomp-dev libx264-dev libx265-dev libvpx-dev nvidia-cuda-dev nvidia-cuda-toolkit python3-pip python3-venv && rm -rf /var/lib/apt/lists/*
 
     # Install nv-codec-headers (pinned commit)
     - wget -q https://github.com/FFmpeg/nv-codec-headers/archive/876af32a202d0de83bd1d36fe74ee0f7fcf86b0d.zip && unzip -q 876af32a202d0de83bd1d36fe74ee0f7fcf86b0d.zip && cd nv-codec-headers-876af32a202d0de83bd1d36fe74ee0f7fcf86b0d && make && make install && cd / && rm -rf nv-codec-headers-* 876af32a202d0de83bd1d36fe74ee0f7fcf86b0d.zip
@@ -14,17 +14,19 @@ Image:
     # Build dav1d v1.4.2 (AV1 decoder)
     - git clone --branch 1.4.2 --depth 1 https://code.videolan.org/videolan/dav1d.git && cd dav1d && mkdir build && cd build && meson setup .. --default-library=static --buildtype release && ninja && ninja install && ldconfig && cd / && rm -rf dav1d
 
-    # Build ffmpeg (pinned commit 33b215d) with CUDA + x264 + dav1d, no VMAF, no libnpp
+    # Build ffmpeg (pinned commit 33b215d) with CUDA + x264 + dav1d
     - export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH" && git init ffmpeg && cd ffmpeg && git remote add origin https://github.com/FFmpeg/FFmpeg.git && git fetch --depth 1 origin 33b215d1554a14e87416a24f8e6034312e629af7 && git checkout FETCH_HEAD && ./configure --enable-gpl --enable-libx264 --enable-libx265 --enable-libvpx --enable-libdav1d --enable-nonfree --enable-cuda-nvcc --extra-cflags="-I/usr/local/cuda/include" --extra-ldflags="-L/usr/local/cuda/lib64" --disable-static --enable-shared --nvccflags="-gencode arch=compute_75,code=sm_75 -gencode arch=compute_75,code=compute_75 -O2" && make -j$(nproc) && make install && ldconfig && cd / && rm -rf ffmpeg
-    
-    # Build ncnn v20231027 with Vulkan (compatible with video2x 6.2.0 submodules)
-    - git clone --branch 20231027 --depth 1 https://github.com/Tencent/ncnn.git && cd ncnn && git submodule update --init --depth 1 && mkdir build && cd build && cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DNCNN_VULKAN=ON -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_EXAMPLES=OFF -DNCNN_BUILD_BENCHMARK=OFF -DNCNN_SHARED_LIB=ON -DNCNN_INSTALL_SDK=ON .. && ninja && ninja install && ldconfig && cd / && rm -rf ncnn
 
-    # Build video2x v6.2.0 (only init needed submodules, patch missing <thread> include, use Makefiles for ExternalProject)
-    - export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH" && git clone --branch 6.2.0 --depth 1 https://github.com/k4yt3x/video2x.git && cd video2x && git submodule update --init --depth 1 third_party/librealesrgan_ncnn_vulkan third_party/librife_ncnn_vulkan && sed -i '1i \#include \x3cthread\x3e' src/libvideo2x.cpp && mkdir build && cd build && cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_PREFIX_PATH=/usr/local -Dncnn_DIR=/usr/local/lib/cmake/ncnn .. && make -j$(nproc) && make install && ldconfig && cd / && rm -rf video2x
-    
-    # Vulkan ICD for NVIDIA GPU detection
-    - echo 'export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json' >> /etc/environment
+    # Build Video2X from vidAio fork — KEY FIX: VIDEO2X_USE_EXTERNAL_NCNN=OFF
+    # This lets video2x build its own ncnn from submodules, guaranteeing version
+    # compatibility with realesrgan/rife ncnn-vulkan wrappers. No separate ncnn needed.
+    - export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH" && git clone --recurse-submodules https://github.com/vidAio-subnet/video2x.git && cd video2x && mkdir build && cd build && cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_CXX_COMPILER=g++ -DVIDEO2X_USE_EXTERNAL_NCNN=OFF -DVIDEO2X_USE_EXTERNAL_SPDLOG=OFF .. && ninja && ninja install && ldconfig && cd / && rm -rf video2x
+
+    # Vulkan ICD for NVIDIA GPU detection — create fallback at both search paths
+    - mkdir -p /usr/share/vulkan/icd.d /etc/vulkan/icd.d && printf '{"file_format_version":"1.0.0","ICD":{"library_path":"libGLX_nvidia.so.0","api_version":"1.3.0"}}\n' | tee /usr/share/vulkan/icd.d/nvidia_icd.json /etc/vulkan/icd.d/nvidia_icd.json > /dev/null
+
+    # Set Vulkan env vars for all shells
+    - echo 'export VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd.json:/usr/share/vulkan/icd.d/nvidia_icd.json' >> /etc/environment && echo 'export NVIDIA_DRIVER_CAPABILITIES=all' >> /etc/environment
 
   set_user: chutes
   run_command:
