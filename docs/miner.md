@@ -150,7 +150,7 @@ class Miner:
 **Compression:**
 ```yaml
 Image:
-  from_base: parachutes/python:3.12
+  from_base: parachutes/python:3.12-cu13
   run_command:
     - uv pip install --upgrade setuptools wheel
     - uv pip install huggingface_hub==0.19.4
@@ -171,7 +171,7 @@ Chute:
 **Upscaling** (more resource-intensive, lower concurrency):
 ```yaml
 Image:
-  from_base: parachutes/python:3.12
+  from_base: parachutes/python:3.12-cu13
   set_user: root
   run_command:
     - apt-get update && apt-get install -y ffmpeg cargo

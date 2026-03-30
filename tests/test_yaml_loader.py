@@ -37,7 +37,7 @@ DuplicatePreservingLoader.add_constructor(
 
 yaml_string = """
 Image:
-  from_base: parachutes/python:3.12
+  from_base: parachutes/python:3.12-cu13
   set_user: root
   run_command:
     - uv pip install --upgrade setuptools wheel
