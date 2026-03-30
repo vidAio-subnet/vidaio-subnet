@@ -234,6 +234,7 @@ async def deploy(args: argparse.Namespace) -> None:
         chutes_username=chutes_username,
         chute_name=chute_name,
     )
+    print(f"{task} chute template:\n{rendered}\n")
 
     # Write rendered template into the model directory so --include-cwd
     # only picks up the miner files (miner.py, chute_config.yml, etc.)
