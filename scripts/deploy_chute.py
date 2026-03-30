@@ -217,6 +217,9 @@ async def deploy(args: argparse.Namespace) -> None:
             sys.exit(1)
         print(f"Uploading {model_path} to HF repo '{hf_repo_name}'...")
         hf_revision = await upload_to_hf(hf_api, hf_repo_name, model_path)
+        if args.only_upload:
+            print("Exiting after uploading HF repo")
+            sys.exit(1)
     else:
         info = hf_api.repo_info(repo_id=hf_repo_name, repo_type="model")
         hf_revision = getattr(info, "sha", "") or ""
@@ -269,10 +272,11 @@ def main() -> None:
     parser.add_argument("--task", required=True, choices=["compression", "upscaling"])
     parser.add_argument("--hf-username", required=True, help="HuggingFace username")
     parser.add_argument("--hf-token", required=True, help="HuggingFace API token")
-    parser.add_argument("--chutes-api-key", required=True, help="Chutes API key")
-    parser.add_argument("--chutes-username", required=True, help="Chutes username")
+    parser.add_argument("--chutes-api-key", help="Chutes API key", default=None)
+    parser.add_argument("--chutes-username", help="Chutes username", default=None)
     parser.add_argument("--model-path", default=None, help="Path to miner directory (miner.py + chute_config.yml)")
     parser.add_argument("--no-upload", action="store_true", help="Skip HF upload, use existing repo")
+    parser.add_argument("--only-upload", action="store_true", help="Only upload HF repo and exit")
     parser.add_argument("--no-warmup", action="store_true", help="Skip chute warmup after deploy")
     parser.add_argument("--uploaded-hf-repo-name", default=None,
                         help="Custom HF repo name instead of auto-generated '{hf_username}/vidaio-{task}'")
