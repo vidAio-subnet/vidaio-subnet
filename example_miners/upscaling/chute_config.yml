@@ -5,7 +5,7 @@ Image:
     - apt-get update && apt-get install -y software-properties-common curl libvulkan1 libboost-program-options1.74.0 build-essential ninja-build nasm python3-pip python3-venv clang wget unzip nvidia-cuda-dev nvidia-cuda-toolkit pkg-config libx264-dev git
   set_user: chutes 
   run_command:
-    - pip3 install meson
+    - uv pip install meson
   set_user: root
   run_command:
     - wget https://github.com/FFmpeg/nv-codec-headers/archive/876af32a202d0de83bd1d36fe74ee0f7fcf86b0d.zip && unzip 876af32a202d0de83bd1d36fe74ee0f7fcf86b0d.zip && cd nv-codec-headers-876af32a202d0de83bd1d36fe74ee0f7fcf86b0d && make && make install && cd / && rm -rf nv-codec-headers-* 876af32a202d0de83bd1d36fe74ee0f7fcf86b0d.zip
