@@ -18,10 +18,10 @@ Image:
     - export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH" && git init ffmpeg && cd ffmpeg && git remote add origin https://github.com/FFmpeg/FFmpeg.git && git fetch --depth 1 origin 33b215d1554a14e87416a24f8e6034312e629af7 && git checkout FETCH_HEAD && ./configure --enable-gpl --enable-libx264 --enable-libx265 --enable-libvpx --enable-libdav1d --enable-nonfree --enable-cuda-nvcc --extra-cflags="-I/usr/local/cuda/include" --extra-ldflags="-L/usr/local/cuda/lib64" --disable-static --enable-shared --nvccflags="-gencode arch=compute_75,code=sm_75 -gencode arch=compute_75,code=compute_75 -O2" && make -j$(nproc) && make install && ldconfig && cd / && rm -rf ffmpeg
 
     # Build Video2X from vidAio fork
-    # Patch 1: missing <thread> include
-    # Patch 2: strip __attribute__((target_clones(...))) using perl (handles nested parens)
-    # Patch 3: also strip TARGET_CLONES macro definitions if used as a wrapper
-    - export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH" && git clone --recurse-submodules https://github.com/vidAio-subnet/video2x.git && cd video2x && sed -i "1i \x23include \x3cthread\x3e" src/libvideo2x.cpp && find src include -type f \( -name "*.cpp" -o -name "*.h" \) -exec perl -0777 -pi -e "s/__attribute__\s*\(\(target_clones\s*\(.*?\)\)\)//gs" {} + && mkdir build && cd build && cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_CXX_COMPILER=g++ -DVIDEO2X_USE_EXTERNAL_NCNN=OFF -DVIDEO2X_USE_EXTERNAL_SPDLOG=OFF .. && ninja -j$(nproc) && ninja install && ldconfig && cd / && rm -rf video2x
+    # Patch 1: Add missing <thread> include
+    # Patch 2: Strip [[gnu::target_clones(...)]] using perl (handles nested brackets)
+    #          GCC 11/12 in the base image can't resolve target_clones dispatchers
+    - export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH" && git clone --recurse-submodules https://github.com/vidAio-subnet/video2x.git && cd video2x && sed -i "1i \x23include \x3cthread\x3e" src/libvideo2x.cpp && find src include -type f \( -name "*.cpp" -o -name "*.h" \) -exec perl -pi -e "s/\[\[gnu::target_clones\([^)]*\)\]\]//g" {} + && mkdir build && cd build && cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_CXX_COMPILER=g++ -DVIDEO2X_USE_EXTERNAL_NCNN=OFF -DVIDEO2X_USE_EXTERNAL_SPDLOG=OFF .. && ninja -j$(nproc) && ninja install && ldconfig && cd / && rm -rf video2x
 
     # Vulkan ICD for NVIDIA GPU detection
     - mkdir -p /usr/share/vulkan/icd.d /etc/vulkan/icd.d && echo "{\"file_format_version\":\"1.0.0\",\"ICD\":{\"library_path\":\"libGLX_nvidia.so.0\",\"api_version\":\"1.3.0\"}}" | tee /usr/share/vulkan/icd.d/nvidia_icd.json /etc/vulkan/icd.d/nvidia_icd.json > /dev/null
