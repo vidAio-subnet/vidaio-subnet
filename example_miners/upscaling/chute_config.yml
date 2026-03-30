@@ -1,12 +1,12 @@
 Image:
-  from_base: parachutes/python:3.12
+  from_base: parachutes/python:3.12-cu13
   set_user: chutes
   run_command:
     - uv pip install meson==1.5.1
   set_user: root
   run_command:
     # Core build tools + runtime deps
-    - apt-get update && apt-get install -y build-essential git cmake ninja-build nasm pkg-config clang wget unzip curl python3-pip libx264-dev libspdlog-dev libboost-program-options-dev libomp-dev nvidia-cuda-dev nvidia-cuda-toolkit libvulkan-dev vulkan-validationlayers glslang-tools glslang-dev
+    - apt-get update && apt-get install -y software-properties-common curl libvulkan1 libboost-program-options1.74.0 build-essential ninja-build nasm python3-pip python3-venv clang wget unzip nvidia-cuda-dev nvidia-cuda-toolkit pkg-config libx264-dev libx265-dev libvpx-dev libspdlog-dev libboost-program-options-dev libomp-dev libvulkan-dev vulkan-validationlayers glslang-tools glslang-dev git
 
     # Install nv-codec-headers (pinned commit)
     - wget -q https://github.com/FFmpeg/nv-codec-headers/archive/876af32a202d0de83bd1d36fe74ee0f7fcf86b0d.zip && unzip -q 876af32a202d0de83bd1d36fe74ee0f7fcf86b0d.zip && cd nv-codec-headers-876af32a202d0de83bd1d36fe74ee0f7fcf86b0d && make && make install && cd / && rm -rf nv-codec-headers-* 876af32a202d0de83bd1d36fe74ee0f7fcf86b0d.zip
@@ -14,9 +14,9 @@ Image:
     # Build dav1d v1.4.2 (AV1 decoder)
     - git clone --branch 1.4.2 --depth 1 https://code.videolan.org/videolan/dav1d.git && cd dav1d && mkdir build && cd build && meson setup .. --default-library=static --buildtype release && ninja && ninja install && ldconfig && cd / && rm -rf dav1d
 
-    # Build ffmpeg (pinned commit 33b215d) with CUDA + x264 + dav1d, no VMAF
-    - export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH" && git init ffmpeg && cd ffmpeg && git remote add origin https://github.com/FFmpeg/FFmpeg.git && git fetch --depth 1 origin 33b215d1554a14e87416a24f8e6034312e629af7 && git checkout FETCH_HEAD && ./configure --enable-gpl --enable-libx264 --enable-libdav1d --enable-nonfree --enable-cuda-nvcc --enable-libnpp --extra-cflags="-I/usr/local/cuda/include" --extra-ldflags="-L/usr/local/cuda/lib64" --disable-static --enable-shared --nvccflags="-gencode arch=compute_75,code=sm_75 -gencode arch=compute_75,code=compute_75 -O2" && make -j$(nproc) && make install && ldconfig && cd / && rm -rf ffmpeg
-
+    # Build ffmpeg (pinned commit 33b215d) with CUDA + x264 + dav1d, no VMAF, no libnpp
+    - export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH" && git init ffmpeg && cd ffmpeg && git remote add origin https://github.com/FFmpeg/FFmpeg.git && git fetch --depth 1 origin 33b215d1554a14e87416a24f8e6034312e629af7 && git checkout FETCH_HEAD && ./configure --enable-gpl --enable-libx264 --enable-libx265 --enable-libvpx --enable-libdav1d --enable-nonfree --enable-cuda-nvcc --extra-cflags="-I/usr/local/cuda/include" --extra-ldflags="-L/usr/local/cuda/lib64" --disable-static --enable-shared --nvccflags="-gencode arch=compute_75,code=sm_75 -gencode arch=compute_75,code=compute_75 -O2" && make -j$(nproc) && make install && ldconfig && cd / && rm -rf ffmpeg
+    
     # Build ncnn v20231027 with Vulkan (compatible with video2x 6.2.0 submodules)
     - git clone --branch 20231027 --depth 1 https://github.com/Tencent/ncnn.git && cd ncnn && git submodule update --init --depth 1 && mkdir build && cd build && cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DNCNN_VULKAN=ON -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_EXAMPLES=OFF -DNCNN_BUILD_BENCHMARK=OFF -DNCNN_SHARED_LIB=ON -DNCNN_INSTALL_SDK=ON .. && ninja && ninja install && ldconfig && cd / && rm -rf ncnn
 
