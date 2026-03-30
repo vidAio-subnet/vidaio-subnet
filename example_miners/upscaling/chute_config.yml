@@ -17,10 +17,11 @@ Image:
     # Build ffmpeg (pinned commit 33b215d) with CUDA + x264 + dav1d
     - export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH" && git init ffmpeg && cd ffmpeg && git remote add origin https://github.com/FFmpeg/FFmpeg.git && git fetch --depth 1 origin 33b215d1554a14e87416a24f8e6034312e629af7 && git checkout FETCH_HEAD && ./configure --enable-gpl --enable-libx264 --enable-libx265 --enable-libvpx --enable-libdav1d --enable-nonfree --enable-cuda-nvcc --extra-cflags="-I/usr/local/cuda/include" --extra-ldflags="-L/usr/local/cuda/lib64" --disable-static --enable-shared --nvccflags="-gencode arch=compute_75,code=sm_75 -gencode arch=compute_75,code=compute_75 -O2" && make -j$(nproc) && make install && ldconfig && cd / && rm -rf ffmpeg
 
-    # Build Video2X from vidAio fork — KEY FIX: VIDEO2X_USE_EXTERNAL_NCNN=OFF
-    # This lets video2x build its own ncnn from submodules, guaranteeing version
-    # compatibility with realesrgan/rife ncnn-vulkan wrappers. No separate ncnn needed.
-    - export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH" && git clone --recurse-submodules https://github.com/vidAio-subnet/video2x.git && cd video2x && mkdir build && cd build && cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_CXX_COMPILER=g++ -DVIDEO2X_USE_EXTERNAL_NCNN=OFF -DVIDEO2X_USE_EXTERNAL_SPDLOG=OFF .. && ninja && ninja install && ldconfig && cd / && rm -rf video2x
+    # Build Video2X from vidAio fork — KEY FIXES:
+    #   1. VIDEO2X_USE_EXTERNAL_NCNN=OFF — build ncnn from submodules for version compatibility
+    #   2. Patch missing <thread> include in libvideo2x.cpp (same as original Dockerfile)
+    #   3. Use ninja -j1 fallback so any remaining errors are visible in build logs
+    - export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH" && git clone --recurse-submodules https://github.com/vidAio-subnet/video2x.git && cd video2x && sed -i '1i #include <thread>' src/libvideo2x.cpp && mkdir build && cd build && cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_CXX_COMPILER=g++ -DVIDEO2X_USE_EXTERNAL_NCNN=OFF -DVIDEO2X_USE_EXTERNAL_SPDLOG=OFF .. && ninja -j$(nproc) || ninja -j1 && ninja install && ldconfig && cd / && rm -rf video2x
 
     # Vulkan ICD for NVIDIA GPU detection — create fallback at both search paths
     - mkdir -p /usr/share/vulkan/icd.d /etc/vulkan/icd.d && printf '{"file_format_version":"1.0.0","ICD":{"library_path":"libGLX_nvidia.so.0","api_version":"1.3.0"}}\n' | tee /usr/share/vulkan/icd.d/nvidia_icd.json /etc/vulkan/icd.d/nvidia_icd.json > /dev/null
