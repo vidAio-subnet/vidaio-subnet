@@ -30,6 +30,10 @@ class Miner:
     def __repr__(self) -> str:
         return "CompressionMiner(ffmpeg)"
 
+    @staticmethod
+    def _is_nvenc(encoder: str) -> bool:
+        return "nvenc" in encoder
+
     def _vmaf_to_crf(self, vmaf: float, encoder: str) -> int:
         if "x264" in encoder or "x265" in encoder:
             if vmaf >= 93:
@@ -38,6 +42,14 @@ class Miner:
                 crf = 23
             else:
                 crf = 28
+        elif self._is_nvenc(encoder):
+            # NVENC uses -cq values (0-51 scale, lower = better quality)
+            if vmaf >= 93:
+                crf = 19
+            elif vmaf >= 89:
+                crf = 24
+            else:
+                crf = 30
         else:
             if vmaf >= 93:
                 crf = 25
@@ -45,7 +57,7 @@ class Miner:
                 crf = 30
             else:
                 crf = 35
-        print(f"[miner] VMAF threshold {vmaf} with encoder {encoder} -> CRF {crf}")
+        print(f"[miner] VMAF threshold {vmaf} with encoder {encoder} -> CRF/CQ {crf}")
         return crf
 
     @staticmethod
@@ -89,8 +101,12 @@ class Miner:
 
         if codec_mode == "CRF":
             crf = self._vmaf_to_crf(vmaf_threshold, encoder)
-            cmd += ["-c:v", encoder, "-crf", str(crf)]
-            print(f"[miner] Using CRF mode: crf={crf}")
+            if self._is_nvenc(encoder):
+                cmd += ["-c:v", encoder, "-rc", "vbr", "-cq", str(crf)]
+                print(f"[miner] Using NVENC CQ mode: cq={crf}")
+            else:
+                cmd += ["-c:v", encoder, "-crf", str(crf)]
+                print(f"[miner] Using CRF mode: crf={crf}")
         elif codec_mode == "CBR":
             cmd += ["-c:v", encoder, "-b:v", f"{target_bitrate}M"]
             print(f"[miner] Using CBR mode: bitrate={target_bitrate}M")

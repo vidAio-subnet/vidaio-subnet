@@ -233,7 +233,9 @@ You can test your chute locally before deploying. This does **not** require Hugg
 
 3. Run the container with `VIDAIO_LOCAL_TEST=1` and start the chute:
    ```bash
-   docker run --gpus all -p 8000:8000 -e CHUTES_EXECUTION_CONTEXT=REMOTE -e VIDAIO_LOCAL_TEST=1 -it my-test-chute:latest /bin/bash
+   docker run --gpus all -p 8000:8000 -e NVIDIA_DRIVER_CAPABILITIES=compute,video,utility \
+   -e CHUTES_EXECUTION_CONTEXT=REMOTE \
+   -e VIDAIO_LOCAL_TEST=1 -it my-test-chute:latest /bin/bash
    # Inside the container:
    chutes run my_chute:chute --dev --debug
    ```
