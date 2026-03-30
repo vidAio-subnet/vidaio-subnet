@@ -271,7 +271,9 @@ async def load_model(self) -> None:
             hf_repo_path = Path(__file__).resolve().parent
             print(f"LOCAL_TEST mode: loading miner from {hf_repo_path}")
         else:
+            print(f"loading miner from {HF_REPO_NAME} with revision {HF_REPO_REVISION}")
             hf_repo_path = Path(snapshot_download(HF_REPO_NAME, revision=HF_REPO_REVISION))
+            print(f"loaded miner from {HF_REPO_NAME} with revision {HF_REPO_REVISION}")
         self.miner = load_miner_from_hf_repo(
             path_hf_repo=hf_repo_path, filename=FILENAME, classname=CLASSNAME
         )

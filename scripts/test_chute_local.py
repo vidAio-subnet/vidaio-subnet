@@ -37,7 +37,7 @@ import json
 import os
 import sys
 import uuid
-
+import random
 import requests
 
 
@@ -128,7 +128,7 @@ def build_payload(task: str, video_url: str, upload_url: str) -> dict:
         return {
             "video_url": video_url,
             "vmaf_threshold": 90.0,
-            "target_codec": "h264",
+            "target_codec": random.choice(["av1", "vp9", "hevc", "h264"]),
             "codec_mode": "CRF",
             "target_bitrate": 10.0,
             "upload_url": upload_url,
