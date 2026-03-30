@@ -17,11 +17,11 @@ Image:
     # Build ffmpeg (pinned commit 33b215d) with CUDA + x264 + dav1d, no VMAF
     - export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH" && git init ffmpeg && cd ffmpeg && git remote add origin https://github.com/FFmpeg/FFmpeg.git && git fetch --depth 1 origin 33b215d1554a14e87416a24f8e6034312e629af7 && git checkout FETCH_HEAD && ./configure --enable-gpl --enable-libx264 --enable-libdav1d --enable-nonfree --enable-cuda-nvcc --enable-libnpp --extra-cflags="-I/usr/local/cuda/include" --extra-ldflags="-L/usr/local/cuda/lib64" --disable-static --enable-shared --nvccflags="-gencode arch=compute_75,code=sm_75 -gencode arch=compute_75,code=compute_75 -O2" && make -j$(nproc) && make install && ldconfig && cd / && rm -rf ffmpeg
 
-    # Build ncnn v20240820 with Vulkan (explicit install prefix)
-    - git clone --branch 20240820 --depth 1 https://github.com/Tencent/ncnn.git && cd ncnn && git submodule update --init --depth 1 && mkdir build && cd build && cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DNCNN_VULKAN=ON -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_EXAMPLES=OFF -DNCNN_BUILD_BENCHMARK=OFF -DNCNN_SHARED_LIB=ON -DNCNN_INSTALL_SDK=ON .. && ninja && ninja install && ldconfig && find /usr/local -name "ncnnConfig.cmake" && cd / && rm -rf ncnn
+    # Build ncnn v20231027 with Vulkan (compatible with video2x 6.2.0 submodules)
+    - git clone --branch 20231027 --depth 1 https://github.com/Tencent/ncnn.git && cd ncnn && git submodule update --init --depth 1 && mkdir build && cd build && cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DNCNN_VULKAN=ON -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_EXAMPLES=OFF -DNCNN_BUILD_BENCHMARK=OFF -DNCNN_SHARED_LIB=ON -DNCNN_INSTALL_SDK=ON .. && ninja && ninja install && ldconfig && cd / && rm -rf ncnn
 
-    # Build video2x v6.2.0 from source against our ffmpeg
-    - export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH" && git clone --branch 6.2.0 --depth 1 https://github.com/k4yt3x/video2x.git && cd video2x && git submodule update --init --recursive --depth 1 && mkdir build && cd build && cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_PREFIX_PATH=/usr/local -Dncnn_DIR=/usr/local/lib/cmake/ncnn .. && ninja && ninja install && ldconfig && cd / && rm -rf video2x
+    # Build video2x v6.2.0 (must use Makefiles, not Ninja — ExternalProject needs it)
+    - export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH" && git clone --branch 6.2.0 --depth 1 https://github.com/k4yt3x/video2x.git && cd video2x && git submodule update --init --recursive --depth 1 && mkdir build && cd build && cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_PREFIX_PATH=/usr/local -Dncnn_DIR=/usr/local/lib/cmake/ncnn .. && make -j$(nproc) && make install && ldconfig && cd / && rm -rf video2x
     
     # Vulkan ICD for NVIDIA GPU detection
     - echo 'export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json' >> /etc/environment
