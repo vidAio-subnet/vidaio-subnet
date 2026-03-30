@@ -20,9 +20,9 @@ Image:
     # Build ncnn v20231027 with Vulkan (compatible with video2x 6.2.0 submodules)
     - git clone --branch 20231027 --depth 1 https://github.com/Tencent/ncnn.git && cd ncnn && git submodule update --init --depth 1 && mkdir build && cd build && cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DNCNN_VULKAN=ON -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_EXAMPLES=OFF -DNCNN_BUILD_BENCHMARK=OFF -DNCNN_SHARED_LIB=ON -DNCNN_INSTALL_SDK=ON .. && ninja && ninja install && ldconfig && cd / && rm -rf ncnn
 
-    # Build video2x v6.2.0 (patch missing <thread> include, use Makefiles for ExternalProject)
-    - export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH" && git clone --branch 6.2.0 --depth 1 https://github.com/k4yt3x/video2x.git && cd video2x && git submodule update --init --recursive --depth 1 && sed -i '1i \#include \x3cthread\x3e' src/libvideo2x.cpp && mkdir build && cd build && cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_PREFIX_PATH=/usr/local -Dncnn_DIR=/usr/local/lib/cmake/ncnn .. && make -j$(nproc) && make install && ldconfig && cd / && rm -rf video2x
-
+    # Build video2x v6.2.0 (only init needed submodules, patch missing <thread> include, use Makefiles for ExternalProject)
+    - export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH" && git clone --branch 6.2.0 --depth 1 https://github.com/k4yt3x/video2x.git && cd video2x && git submodule update --init --depth 1 third_party/librealesrgan_ncnn_vulkan third_party/librife_ncnn_vulkan && sed -i '1i \#include \x3cthread\x3e' src/libvideo2x.cpp && mkdir build && cd build && cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_PREFIX_PATH=/usr/local -Dncnn_DIR=/usr/local/lib/cmake/ncnn .. && make -j$(nproc) && make install && ldconfig && cd / && rm -rf video2x
+    
     # Vulkan ICD for NVIDIA GPU detection
     - echo 'export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json' >> /etc/environment
 
