@@ -41,7 +41,7 @@ class Miner(BaseMiner):
         try:
             object_name = f"{uuid.uuid4()}_upscaled.mp4"
             upload_url = await storage_client.get_presigned_put_url(object_name)
-
+            logger.info(f"Calling upscaling chute with payload_url: {payload_url}, upload_url: {upload_url}, task_type: {task_type}")
             processed_video_url = await call_chute_upscaling(
                 video_url=payload_url,
                 task_type=task_type,
@@ -80,7 +80,7 @@ class Miner(BaseMiner):
         try:
             object_name = f"{uuid.uuid4()}_compressed.mp4"
             upload_url = await storage_client.get_presigned_put_url(object_name)
-
+            logger.info(f"Calling compression chute with payload_url: {payload_url}, upload_url: {upload_url}, target_codec: {target_codec}, codec_mode: {codec_mode}, target_bitrate: {target_bitrate}")
             processed_video_url = await call_chute_compression(
                 video_url=payload_url,
                 vmaf_threshold=vmaf_threshold,

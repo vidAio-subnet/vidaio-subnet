@@ -48,6 +48,7 @@ async def call_chute_upscaling(
     upload_url: str,
 ) -> str | None:
     config = CONFIG.chutes
+    logger.info(f"upscaling slug: {config.upscaling_slug}")
     result = await _call_chute(
         slug=config.upscaling_slug,
         payload={
@@ -70,6 +71,7 @@ async def call_chute_compression(
     upload_url: str,
 ) -> str | None:
     config = CONFIG.chutes
+    logger.info(f"compression_slug: {config.compression_slug}")
     result = await _call_chute(
         slug=config.compression_slug,
         payload={

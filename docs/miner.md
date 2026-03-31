@@ -71,7 +71,19 @@ export BUCKET_COMPATIBLE_SECRET_KEY="your-secret-key"
 export BUCKET_NAME="your-bucket-name"
 ```
 
-### 3. Run the Miner
+### 4. Configure task type
+
+Miners declare which task they handle via the `TaskWarrantProtocol`. Set the `warrant_task` variable in `neurons/miner.py`:
+
+| Value | Task | Description |
+|-------|------|-------------|
+| `TaskType.COMPRESSION` | Compression | Reduce file size while preserving quality (VMAF-aware) |
+| `TaskType.UPSCALING` | Upscaling | Increase resolution (SD->HD, HD->4K, etc.) |
+
+Miners also declare their max content length via `LengthCheckProtocol` (currently 5 or 10 seconds).
+
+
+### 5. Run the Miner
 
 ```bash
 python neurons/miner.py \
@@ -84,16 +96,6 @@ python neurons/miner.py \
 
 The miner will register its axon on the network and begin listening for validator requests.
 
-## Task Types
-
-Miners declare which task they handle via the `TaskWarrantProtocol`. Set the `warrant_task` variable in `neurons/miner.py`:
-
-| Value | Task | Description |
-|-------|------|-------------|
-| `TaskType.COMPRESSION` | Compression | Reduce file size while preserving quality (VMAF-aware) |
-| `TaskType.UPSCALING` | Upscaling | Increase resolution (SD->HD, HD->4K, etc.) |
-
-Miners also declare their max content length via `LengthCheckProtocol` (currently 5 or 10 seconds).
 
 ## Chute Setup
 
