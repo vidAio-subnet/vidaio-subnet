@@ -52,8 +52,7 @@ class Miner(BaseMiner):
                 logger.info("Failed to upscale video via chute")
                 return synapse
 
-            download_url = await storage_client.get_presigned_url(object_name)
-            synapse.miner_response.optimized_video_url = download_url
+            synapse.miner_response.optimized_video_url = processed_video_url
 
             logger.info(f"Upscaling completed in {time.time() - start_time:.2f}s")
             return synapse
@@ -94,8 +93,7 @@ class Miner(BaseMiner):
                 logger.info("Failed to compress video via chute")
                 return synapse
 
-            download_url = await storage_client.get_presigned_url(object_name)
-            synapse.miner_response.optimized_video_url = download_url
+            synapse.miner_response.optimized_video_url = processed_video_url
 
             logger.info(f"Compression completed in {time.time() - start_time:.2f}s")
             return synapse
