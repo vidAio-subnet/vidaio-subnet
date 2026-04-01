@@ -53,6 +53,9 @@ class Miner:
         ffmpeg_path = shutil.which("ffmpeg")
         print(f"[miner] ffmpeg location: {ffmpeg_path or 'NOT FOUND'}")
 
+        # Use hevc_nvenc to avoid h264_nvenc 4096px width limit
+        codec = "hevc_nvenc"
+
         # GPU-accelerated upscale: CUDA decode -> scale_cuda -> NVENC encode
         self._run_cmd(
             [
@@ -61,7 +64,7 @@ class Miner:
                 "-hwaccel_output_format", "cuda",
                 "-i", str(input_path),
                 "-vf", f"scale_cuda=iw*{scale_factor}:ih*{scale_factor}",
-                "-c:v", "h264_nvenc", "-preset", "p4", "-cq", "23",
+                "-c:v", codec, "-preset", "p4", "-cq", "23",
                 "-c:a", "copy",
                 str(output_path),
             ],
