@@ -176,7 +176,9 @@ class Validator(base.BaseValidator):
             start_time = time.time()  # Record start time
 
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(video_url) as response:
+                async with session.get(video_url, allow_redirects=False) as response:
+                    if response.status in (301, 302, 303, 307, 308):
+                        raise Exception(f"Redirect blocked: {response.status} -> {response.headers.get('Location')}") 
                     if response.status != 200:
                         raise Exception(f"Failed to download video. HTTP status: {response.status}")
 
@@ -710,7 +712,7 @@ class Validator(base.BaseValidator):
             timestamp = datetime.now(timezone.utc).isoformat()
 
             forward_tasks = [
-                self.call_miner(axon, synapse, uid, timeout=60)
+                self.call_miner(axon, synapse, uid, timeout=90)
                 for uid, axon, synapse in zip(uids, axons, synapses)
             ]
             raw_responses = await asyncio.gather(*forward_tasks)
@@ -766,7 +768,7 @@ class Validator(base.BaseValidator):
         
         batch_start_time = time.time()
         
-        responses = await self.call_miner_batch(axons, synapses[0], num_miners, timeout=90)
+        responses = await self.call_miner_batch(axons, synapses[0], num_miners, timeout=135)
 
         logger.info(f"🎲 Received {len(responses)} compression responses from miners 🎲")
 
@@ -783,10 +785,10 @@ class Validator(base.BaseValidator):
         semaphore = asyncio.Semaphore(15)
 
         async def _download_with_semaphore(uid_val, url_str):
-            logger.info(f"UID {uid_val}: Queuing download for distorted video from {url_str}")
+            logger.info(f"UID {uid_val}: Queuing download for distorted video")
             async with semaphore:
                 try:
-                    logger.info(f"UID {uid_val}: Starting download for distorted video from {url_str}")
+                    logger.info(f"UID {uid_val}: Starting download for distorted video")
                     return await self.download_video(url_str)
                 except Exception as e:
                     return e
@@ -935,7 +937,7 @@ class Validator(base.BaseValidator):
                 "content_lengths": content_lengths,
                 "task_types": task_types
             },
-            timeout=300
+            timeout=600
         )
 
         response_data = score_response.json()
@@ -1049,7 +1051,7 @@ class Validator(base.BaseValidator):
                 "codec_mode": codec_mode,
                 "target_bitrate": target_bitrate
             },
-            timeout=300
+            timeout=600
         )
 
         response_data = score_response.json()
@@ -1149,7 +1151,7 @@ class Validator(base.BaseValidator):
                 "reference_urls": selected_reference_urls,
                 "task_types": selected_task_types
             },
-            timeout=38
+            timeout=180
         )
 
         response_data = score_response.json()
@@ -1238,7 +1240,7 @@ class Validator(base.BaseValidator):
                 "codec_modes": selected_codec_modes,
                 "target_bitrates": selected_target_bitrates
             },
-            timeout=115
+            timeout=180
         )
 
         response_data = score_response.json()

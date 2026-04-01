@@ -28,7 +28,11 @@ class MinerManager:
 
         self.config = config
         self.subtensor = bt.Subtensor(config=self.config)
-        self.burn_proportion = float(1/3)   # 1 of miner emissions burnt
+        self.burn_proportion = float(4/5)   # 80% of miner emissions burnt
+
+        # top X compression & upscaling miners getting non-zero emissions
+        self.top_n_compression_miners_cutoff_rank = 50
+        self.top_n_upscaling_miners_cutoff_rank = 50
 
         self.metagraph = metagraph
         self.config_url = CONFIG.sql.url
@@ -1223,40 +1227,84 @@ class MinerManager:
         scores = []
         compression_count = len(compression_miners)
         upscaling_count = len(upscaling_miners)
-        alloc_comp, alloc_up = 0.6, 0.4
 
+        # Emission allocations (must sum to 1.0):
+        #   top-10 compression  : 30%   mid (11-50) compression: 30%
+        #   top-10 upscaling    : 20%   mid (11-50) upscaling  : 20%
+        # When one task category is absent, redistribute its share to the other.
         if compression_count == 0 and upscaling_count > 0:
-            alloc_comp, alloc_up = 0.0, 1.0
+            alloc_comp_top, alloc_comp_mid = 0.0, 0.0
+            alloc_up_top,   alloc_up_mid   = 0.5, 0.5  # 100% to upscaling, split evenly between tiers
         elif upscaling_count == 0 and compression_count > 0:
-            alloc_comp, alloc_up = 1.0, 0.0
+            alloc_up_top, alloc_up_mid   = 0.0, 0.0
+            alloc_comp_top, alloc_comp_mid = 0.5, 0.5
+        else:
+            alloc_comp_top, alloc_comp_mid = 0.30, 0.30
+            alloc_up_top,   alloc_up_mid   = 0.20, 0.20
 
-        # Process compression miners (60% of total rewards)
+        TOP_N = 10  # boundary between "top" and "mid" tiers
+
+        def _apply_tier_weights(sorted_scores, alloc_top, alloc_mid, cutoff_rank):
+            """
+            Given scores sorted descending, split into top-10 and rank-11 to cutoff_rank
+            tiers and assign weights proportionally within each tier.
+            Returns a weight array aligned with sorted_scores.
+            """
+            n = len(sorted_scores)
+            weights = np.zeros(n)
+
+            # Zero out anything beyond the hard cutoff rank
+            active_scores = sorted_scores.copy()
+            if n > cutoff_rank:
+                active_scores[cutoff_rank:] = 0
+
+            # Top tier: indices 0 .. min(TOP_N, cutoff_rank) - 1
+            top_end = min(TOP_N, cutoff_rank, n)
+            top_scores = active_scores[:top_end]
+            top_sum = top_scores.sum()
+            if top_sum > 0:
+                weights[:top_end] = (top_scores / top_sum) * alloc_top
+            elif top_end > 0 and alloc_top > 0:
+                weights[:top_end] = alloc_top / top_end
+
+            # Mid tier: indices TOP_N .. cutoff_rank - 1
+            mid_start = TOP_N
+            mid_end = min(cutoff_rank, n)
+            if mid_start < mid_end:
+                mid_scores = active_scores[mid_start:mid_end]
+                mid_sum = mid_scores.sum()
+                if mid_sum > 0:
+                    weights[mid_start:mid_end] = (mid_scores / mid_sum) * alloc_mid
+                elif alloc_mid > 0:
+                    weights[mid_start:mid_end] = alloc_mid / (mid_end - mid_start)
+
+            return weights
+
+        # Process compression miners
         if compression_miners:
+            compression_miners.sort(key=lambda x: x[1], reverse=True)
             compression_uids, compression_scores = zip(*compression_miners)
             compression_scores = np.array(compression_scores)
-            
-            # Normalize compression scores and apply 60% allocation
-            if compression_scores.sum() > 0:
-                compression_weights = (compression_scores / compression_scores.sum()) * alloc_comp
-            else:
-                # If no scores, distribute 60% equally among compression miners
-                compression_weights = np.full(len(compression_scores), alloc_comp / len(compression_scores))
-            
+
+            compression_weights = _apply_tier_weights(
+                compression_scores, alloc_comp_top, alloc_comp_mid,
+                self.top_n_compression_miners_cutoff_rank
+            )
+
             uids.extend(compression_uids)
             scores.extend(compression_weights)
-        
-        # Process upscaling miners (40% of total rewards)
+
+        # Process upscaling miners
         if upscaling_miners:
+            upscaling_miners.sort(key=lambda x: x[1], reverse=True)
             upscaling_uids, upscaling_scores = zip(*upscaling_miners)
             upscaling_scores = np.array(upscaling_scores)
-            
-            # Normalize upscaling scores and apply 40% allocation
-            if upscaling_scores.sum() > 0:
-                upscaling_weights = (upscaling_scores / upscaling_scores.sum()) * alloc_up
-            else:
-                # If no scores, distribute 40% equally among upscaling miners
-                upscaling_weights = np.full(len(upscaling_scores), alloc_up / len(upscaling_scores))
-            
+
+            upscaling_weights = _apply_tier_weights(
+                upscaling_scores, alloc_up_top, alloc_up_mid,
+                self.top_n_upscaling_miners_cutoff_rank
+            )
+
             uids.extend(upscaling_uids)
             scores.extend(upscaling_weights)
         
