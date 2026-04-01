@@ -197,6 +197,11 @@ Chute:
   scaling_threshold: 0.5
 ```
 
+### API Keys
+You need a write & read access Huggingface API key from https://huggingface.co/settings/tokens and a Chutes API key with dev access.
+
+Install Chutes CLI (check README at https://github.com/chutesai/chutes) and bittensor-cli (`uv pip install bittensor-cli`), migrate your mining hotkey and coldkey with `btcli`, run `chutes register`, copy fingerprint from the registration output to log into chutes.ai, add balance in either USD or in TAO to deposit address, generate API key from settings token.
+
 ### Local Testing
 
 You can test your chute locally before deploying. This does **not** require HuggingFace or Chutes credentials -- it builds a Docker image from your local files.
