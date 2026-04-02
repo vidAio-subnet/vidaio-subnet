@@ -198,7 +198,7 @@ def load_chute(
         "name": chute_name,
         "image": chute_image,
         "node_selector": machine_specs,
-        "allow_external_egress": False,
+        "allow_external_egress": True, # TODO: restore to False when using in secure mode
         "readme": "README.md",
     }
     if isinstance(chute_config, dict):
@@ -298,10 +298,10 @@ async def process(self, data: UpscalingInput) -> dict:
             raise ValueError("Miner was not properly loaded!")
 
         # Download video -- direct in local test, via chutes proxy in production
-        if LOCAL_TEST:
-            download_url = data.video_url
-        else:
-            download_url = f"https://proxy.chutes.ai/misc/proxy?url={quote(data.video_url, safe='')}"
+        #if LOCAL_TEST:
+        download_url = data.video_url
+        #else:
+        #    download_url = f"https://proxy.chutes.ai/misc/proxy?url={quote(data.video_url, safe='')}"
         print(f"[chute] Downloading video from: {download_url[:120]}...")
         async with ClientSession() as session:
             async with session.get(download_url) as response:
@@ -328,10 +328,10 @@ async def process(self, data: UpscalingInput) -> dict:
             uploaded = False
             if data.upload_url:
                 try:
-                    if LOCAL_TEST:
-                        upload_url = data.upload_url
-                    else:
-                        upload_url = f"https://proxy.chutes.ai/misc/proxy?url={quote(data.upload_url, safe='')}"
+                    #if LOCAL_TEST:
+                    upload_url = data.upload_url
+                    #else:
+                    #    upload_url = f"https://proxy.chutes.ai/misc/proxy?url={quote(data.upload_url, safe='')}"
                     print(f"[chute] Uploading result to: {upload_url[:120]}...")
                     async with ClientSession() as session:
                         async with session.put(
