@@ -7,6 +7,8 @@ from .storage import StorageConfig
 from .organic_gateway import OrganicGatewayConfig
 from .dashboard import DashboardConfig
 from .chutes import ChutesConfig
+from .video_upscaler import VideoUpscalerConfig
+from .video_compressor import VideoCompressorConfig
 
 __all__ = [
     "RedisConfig",
@@ -15,7 +17,9 @@ __all__ = [
     "ScoreConfig",
     "SQLConfig",
     "StorageConfig",
+    "VideoUpscalerConfig",
     "OrganicGatewayConfig",
     "DashboardConfig",
+    "VideoCompressorConfig",
     "ChutesConfig",
 ]

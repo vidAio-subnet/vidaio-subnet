@@ -6,8 +6,10 @@ from .configs import (
     ScoreConfig,
     SQLConfig,
     StorageConfig,
+    VideoUpscalerConfig,
     OrganicGatewayConfig,
     DashboardConfig,
+    VideoCompressorConfig,
     ChutesConfig,
 )
 from loguru import logger
@@ -20,8 +22,10 @@ class GlobalConfig(BaseSettings):
     score: ScoreConfig = ScoreConfig()
     sql: SQLConfig = SQLConfig(url="sqlite:///video_subnet_validator.db")
     storage: StorageConfig = StorageConfig()
+    video_upscaler: VideoUpscalerConfig = VideoUpscalerConfig()
     organic_gateway: OrganicGatewayConfig = OrganicGatewayConfig()
     dashboard: DashboardConfig = DashboardConfig()
+    video_compressor: VideoCompressorConfig = VideoCompressorConfig()
     chutes: ChutesConfig = ChutesConfig()
     SUBNET_TEMPO: int = 100
 
