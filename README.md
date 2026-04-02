@@ -68,7 +68,7 @@ Real-world video data uploaded by users is processed as follows:
 
 ## 3. Setup
 - [Validator Setup Guide](docs/validator_setup.md)
-- [Miner Setup Guide](docs/miner_setup.md)
+- [Chutes Miner Setup Guide](docs/chutes_miner_setup.md) (or) [Local Miner Setup Guide](docs/miner_setup.md)
 
 ## 4. Roadmap
 

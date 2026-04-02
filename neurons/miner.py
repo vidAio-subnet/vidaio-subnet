@@ -1,14 +1,16 @@
 import time
 import uuid
 import traceback
-import os
 from typing import Tuple
+
 from loguru import logger
 import bittensor as bt
+from vidaio_subnet_core import CONFIG
 from vidaio_subnet_core.base.miner import BaseMiner
 from vidaio_subnet_core.protocol import VideoUpscalingProtocol, LengthCheckProtocol, ContentLength, VideoCompressionProtocol, TaskWarrantProtocol, TaskType
 from services.miner_utilities.miner_utils import video_upscaler, video_compressor
-
+from services.miner_utilities.chutes_client import call_chute_upscaling, call_chute_compression
+from vidaio_subnet_core.utilities import storage_client
 from vidaio_subnet_core.utilities.version import check_version
 
 MAX_CONTENT_LEN = ContentLength.FIVE
@@ -26,10 +28,10 @@ class Miner(BaseMiner):
         Processes a video upscaling request by downloading, upscaling,
         uploading, and returning a sharing link.
         """
-        
+
         start_time = time.time()
 
-        task_type: str = synapse.miner_payload.task_type      
+        task_type: str = synapse.miner_payload.task_type
         payload_url: str = synapse.miner_payload.reference_video_url
         validator_uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
 
@@ -38,12 +40,22 @@ class Miner(BaseMiner):
         check_version(synapse.version)
 
         try:
-            processed_video_url = await video_upscaler(payload_url, task_type)
-            
+            if CONFIG.chutes.api_key != "": # if chutes api key is set, use the upscaling chute
+                object_name = f"{uuid.uuid4()}_upscaled.mp4"
+                upload_url = await storage_client.get_presigned_put_url(object_name)
+                logger.info(f"Calling upscaling chute with payload_url: {payload_url}, upload_url: {upload_url}, task_type: {task_type}")
+                processed_video_url = await call_chute_upscaling(
+                    video_url=payload_url,
+                    task_type=task_type,
+                    upload_url=upload_url,
+                )
+            else:
+                processed_video_url = await video_upscaler(payload_url, task_type)
+
             if processed_video_url is None:
                 logger.info(f"💔 Failed to upscaling video 💔")
                 return synapse
-            
+
             synapse.miner_response.optimized_video_url = processed_video_url
 
             processed_time = time.time() - start_time
@@ -51,7 +63,8 @@ class Miner(BaseMiner):
             logger.info(f"💜 Returning Response, Processed in {processed_time:.2f} seconds 💜")
             
             return synapse
-            
+
+
         except Exception as e:
             logger.error(f"Failed to process upscaling request: {e}")
             traceback.print_exc()
@@ -73,11 +86,23 @@ class Miner(BaseMiner):
         validator_uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
 
         logger.info(f"🛜🛜🛜 Receiving CompressionRequest from validator: {synapse.dendrite.hotkey} with uid: {validator_uid} | VMAF: {vmaf_threshold} | Codec: {target_codec} | Mode: {codec_mode} | Bitrate: {target_bitrate} Mbps 🛜🛜🛜")
-
         check_version(synapse.version)
 
         try:
-            processed_video_url = await video_compressor(payload_url, vmaf_threshold, target_codec, codec_mode, target_bitrate)
+            if CONFIG.chutes.api_key != "": # if chutes api key is set, use the compression chute
+                object_name = f"{uuid.uuid4()}_compressed.mp4"
+                upload_url = await storage_client.get_presigned_put_url(object_name)
+                logger.info(f"Calling compression chute with payload_url: {payload_url}, upload_url: {upload_url}, target_codec: {target_codec}, codec_mode: {codec_mode}, target_bitrate: {target_bitrate}")
+                processed_video_url = await call_chute_compression(
+                    video_url=payload_url,
+                    vmaf_threshold=vmaf_threshold,
+                    target_codec=target_codec,
+                    codec_mode=codec_mode,
+                    target_bitrate=target_bitrate,
+                    upload_url=upload_url,
+                )
+            else:
+                processed_video_url = await video_compressor(payload_url, vmaf_threshold, target_codec, codec_mode, target_bitrate)
 
             if processed_video_url is None:
                 logger.info(f"💔 Failed to compress video 💔")
@@ -88,7 +113,6 @@ class Miner(BaseMiner):
             processed_time = time.time() - start_time
 
             logger.info(f"💜 Returning Response, Processed in {processed_time:.2f} seconds 💜")
-
             return synapse
 
         except Exception as e:
@@ -149,7 +173,7 @@ class Miner(BaseMiner):
 
         caller_uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
         priority: float = float(self.metagraph.S[caller_uid])
-        
+
         logger.trace(f"Prioritizing {synapse.dendrite.hotkey} with value: {priority}")
         return priority
 
@@ -181,7 +205,7 @@ class Miner(BaseMiner):
 
         caller_uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
         priority: float = float(self.metagraph.S[caller_uid])
-        
+
         logger.trace(f"Prioritizing {synapse.dendrite.hotkey} with value: {priority}")
         return priority
 
@@ -213,7 +237,7 @@ class Miner(BaseMiner):
 
         caller_uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
         priority: float = float(self.metagraph.S[caller_uid])
-        
+
         logger.trace(f"Prioritizing {synapse.dendrite.hotkey} with value: {priority}")
         return priority
 
@@ -248,6 +272,7 @@ class Miner(BaseMiner):
 
         logger.trace(f"Prioritizing {synapse.dendrite.hotkey} with value: {priority}")
         return priority
+
 
 if __name__ == "__main__":
     with Miner() as miner:

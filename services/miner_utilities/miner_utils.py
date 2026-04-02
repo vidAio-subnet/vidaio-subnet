@@ -25,11 +25,11 @@ async def download_video(video_url: str) -> Path:
     try:
         video_dir = Path(__file__).parent.parent / "upscaling" / "videos"
         video_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Generate a unique filename
         filename = f"{uuid.uuid4()}.mp4"
         output_path = video_dir / filename
-        
+
         logger.info(f"Downloading video from {video_url} to {output_path}")
         start_time = time.time()
         # Download the file using aiohttp
@@ -73,7 +73,7 @@ async def video_upscaler(payload_url: str, task_type: str) -> str | None:
         "payload_url": payload_url,
         "task_type": task_type,
     }
-    
+
     async with aiohttp.ClientSession() as session:
         async with session.post(url, headers=headers, data=json.dumps(data)) as response:
             if response.status == 200:
@@ -92,14 +92,12 @@ async def video_compressor(payload_url: str, vmaf_threshold: float, target_codec
                           codec_mode: str = "CRF", target_bitrate: float = 10.0) -> str | None:
     """
     Sends a video file path to the compression service and retrieves the processed video path.
-
     Args:
         payload_url (str): The URL of the video to be compressed.
         vmaf_threshold (float): The VMAF threshold for quality control.
         target_codec (str): The target codec for compression (default: "av1").
         codec_mode (str): Codec mode - CBR, VBR, or CRF (default: "CRF").
         target_bitrate (float): Target bitrate in Mbps (default: 10.0).
-
     Returns:
         str | None: The URL of the compressed video or None if an error occurs.
     """
@@ -125,3 +123,4 @@ async def video_compressor(payload_url: str, vmaf_threshold: float, target_codec
                 return uploaded_video_url
             logger.error(f"Compression service error: {response.status}")
             return None
+	

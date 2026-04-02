@@ -10,6 +10,7 @@ from .configs import (
     OrganicGatewayConfig,
     DashboardConfig,
     VideoCompressorConfig,
+    ChutesConfig,
 )
 from loguru import logger
 
@@ -25,6 +26,7 @@ class GlobalConfig(BaseSettings):
     organic_gateway: OrganicGatewayConfig = OrganicGatewayConfig()
     dashboard: DashboardConfig = DashboardConfig()
     video_compressor: VideoCompressorConfig = VideoCompressorConfig()
+    chutes: ChutesConfig = ChutesConfig()
     SUBNET_TEMPO: int = 100
 
     class Config:
