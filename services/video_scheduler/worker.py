@@ -367,7 +367,7 @@ async def get_synthetic_requests_paths(num_needed: int, redis_conn: redis.Redis,
         enable_color_transform = os.getenv("ENABLE_COLOR_TRANSFORM", "true").lower() == "true"
         
         # Number of transformations to apply per chunk (default: 3)
-        transformations_per_chunk = int(os.getenv("TRANSFORMATIONS_PER_CHUNK", "3"))
+        transformations_per_chunk = int(os.getenv("TRANSFORMATIONS_PER_CHUNK", "1"))
         
         
         challenge_local_paths, video_ids, reference_trim_paths, task_type = download_transform_and_trim_downscale_video(
