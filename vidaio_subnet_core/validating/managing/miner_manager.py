@@ -844,8 +844,21 @@ class MinerManager:
 
     def step_organic_upscaling(self, scores: list[float], total_uids: list[int], round_id: str = None):
         """
-        Process scores from organic mining step and update miner records
-        Organic scoring should be more lenient than synthetic scoring
+        Process scores from organic upscaling and update miner records.
+
+        Organic scoring uses a penalties-only model:
+          - score > 0  (pass)  -> no change to accumulate_score
+          - score <= 0 (fail)  -> -15% penalty to accumulate_score
+          - score == -1 (skip) -> ignored (naturalness check rejection, not miner's fault)
+
+        Organic content is user-controlled (untrusted), so it can only penalize
+        bad behavior, never reward. Positive incentive comes exclusively from
+        synthetic challenges where the validator controls the input content.
+        This prevents incentive inflation attacks where a miner or colluding user
+        crafts organic inputs that guarantee high scores to boost rankings.
+
+        Scores are floats (0.0 to 3.0) produced by the scoring server:
+          tier (0-3 integer) * vmaf_factor (0.0-1.0 float)
         """
         logger.info(f"Updating organic scores for {len(total_uids)} miners")
         
@@ -886,48 +899,32 @@ class MinerManager:
                     )
                     self.session.add(miner)
                 
-                # Convert organic scores to synthetic-like format
-
-                acc_score = 0.0
+                # ── Penalties-only organic scoring ────────────────────────
+                # score > 0:  miner produced acceptable output -> neutral (no boost)
+                # score <= 0: miner output was worse than bilinear upscale,
+                #             or VMAF factor drove it to zero -> penalize -15%
+                #
+                # This is a binary pass/fail — the fractional score value
+                # (e.g. 2.1 from tier 3 * vmaf_factor 0.7) doesn't matter
+                # for incentive purposes, only whether it's above zero.
                 current_score = miner.accumulate_score
 
-                if score == 3.0:
-                    organic_s_f = 0.4
-                    organic_s_q = 0.5
-                    organic_s_l = 0.5
-                    success = True
-
-                    boost_percentage = 0.03
-                    boost_amount = current_score * boost_percentage
-                    acc_score = current_score + boost_amount
-
-                elif score == 2.0:
+                if score > 0:
                     organic_s_f = 0.3
                     organic_s_q = 0.5
                     organic_s_l = 0.5
                     success = True
-
-                    acc_score = miner.accumulate_score
-
-                elif score == 1.0:  # Failure
-                    organic_s_f = 0.2  # Moderate success score
-                    organic_s_q = 0.5   # Moderate quality score
-                    organic_s_l = 0.5   # Moderate length score
-                    success = False
-
-                    panelty_percentage = 0.01  # Deduct 1% of current score
-                    panelty_amount = current_score * panelty_percentage
-                    acc_score = current_score - panelty_amount
-
-                elif score == 0.0:  # Failure
+                    acc_score = current_score
+                    logger.info(f"UID {uid}: organic PASS (score={score:.2f}) — accumulate_score unchanged at {acc_score:.4f}")
+                else:
                     organic_s_f = 0.0
                     organic_s_q = 0.0
                     organic_s_l = 0.0
                     success = False
-
-                    panelty_percentage = 0.15  # Deduct 15% of current score
-                    panelty_amount = current_score * panelty_percentage
-                    acc_score = current_score - panelty_amount
+                    penalty_percentage = 0.15
+                    penalty_amount = current_score * penalty_percentage
+                    acc_score = current_score - penalty_amount
+                    logger.warning(f"UID {uid}: organic FAIL (score={score:.2f}) — accumulate_score {current_score:.4f} -> {acc_score:.4f} (-15%)")
 
                 # Add performance record for organic scoring
                 self._add_performance_record(

@@ -16,9 +16,9 @@ from pydantic import BaseModel
 from typing import Optional, List
 from firerequests import FireRequests
 from vidaio_subnet_core import CONFIG
-from torchvision.models import resnet50
+import pyiqa
+from lpips_metric import calculate_lpips
 from fastapi import FastAPI, HTTPException
-import torchvision.transforms as transforms
 from pieapp_metric import calculate_pieapp_score
 from vidaio_subnet_core.utilities.storage_client import storage_client
 from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video, trim_video_select, vmaf_metric_ffmpeg, is_vmaf_ffmpeg_available
@@ -149,13 +149,21 @@ class OrganicsCompressionScoringResponse(BaseModel):
     final_scores: List[float]
     reasons: List[str]
 
-# Load pre-trained model for feature extraction
-def load_quality_model():
-    """Load ResNet50 model for quality assessment"""
-    from torchvision.models import ResNet50_Weights
-    model = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
-    model.eval()
-    return model
+# ──────────────────────────────────────────────────────────────────────────────
+# CLIP-IQA+ — No-Reference Image Quality Assessment (pyiqa)
+#
+# Replaces the old custom ResNet50-based "ClipIQ" formula that was vulnerable
+# to adversarial inputs (binary patterns could max out its 4 fixed components).
+#
+# CLIP-IQA+ is a learned metric trained on human quality opinion scores.
+# It evaluates perceptual quality — adversarial/synthetic patterns score LOW
+# because they don't look like natural high-quality images.
+#
+# Used in organic upscaling scoring to compare miner output quality against
+# the bilinear-upscaled reference. Higher score = better perceived quality.
+# ──────────────────────────────────────────────────────────────────────────────
+_clipiqa_device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+_clipiqa_metric = pyiqa.create_metric('clipiqa+', device=_clipiqa_device)
 
 _shared_session: Optional[aiohttp.ClientSession] = None
 
@@ -370,6 +378,68 @@ import cv2
 
 import numpy as np
 import cv2
+
+# ──────────────────────────────────────────────────────────────────────────────
+# NATURALNESS CHECK — Defense-in-depth against adversarial organic inputs
+#
+# Runs BEFORE the main scoring pipeline to reject obviously non-natural content.
+# Returns score -1 (skip) on rejection — the miner is NOT penalized because
+# adversarial content is the submitter's fault, not the miner's.
+#
+# Three statistical heuristics, each targeting specific attack patterns:
+#   1. Unique pixel count   — binary patterns have exactly 2 values
+#   2. Histogram bin count  — adversarial content uses very few intensity levels
+#   3. Periodicity ratio    — Nyquist-frequency checkerboards have extreme
+#                             Laplacian variance relative to pixel variance
+#
+# Thresholds are conservative (< 8 unique values, < 8 bins, ratio > 8.0)
+# to avoid false positives on legitimate dark/low-contrast video content.
+# ──────────────────────────────────────────────────────────────────────────────
+def is_natural_content(video_path, num_frames=3):
+    """
+    Check if video content appears natural (not adversarial).
+
+    Args:
+        video_path: Path to the video file to check.
+        num_frames: Number of randomly sampled frames to analyze.
+
+    Returns:
+        Tuple of (is_natural: bool, reason: str).
+        If False, reason describes which check failed and on which frame.
+    """
+    frames = extract_frames(video_path, num_frames)
+
+    for i, frame in enumerate(frames):
+        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+
+        # Check 1: Unique pixel values
+        # Natural video has hundreds-thousands of unique values per frame.
+        # Binary adversarial patterns (black/white blocks) have exactly 2.
+        unique_values = len(np.unique(gray))
+        if unique_values < 8:
+            return False, f"frame {i}: only {unique_values} unique pixel values (likely synthetic pattern)"
+
+        # Check 2: Histogram sparsity
+        # Natural content spreads across many intensity bins.
+        # Adversarial patterns concentrate at very few specific levels.
+        hist = np.histogram(gray, bins=256, range=(0, 256))[0]
+        nonzero_bins = np.count_nonzero(hist)
+        if nonzero_bins < 8:
+            return False, f"frame {i}: only {nonzero_bins} histogram bins used (likely synthetic pattern)"
+
+        # Check 3: Spatial periodicity ratio (Laplacian variance / pixel variance)
+        # High-frequency patterns at the Nyquist limit (e.g. 2px checkerboards)
+        # produce extreme Laplacian variance relative to overall pixel variance.
+        # Natural images: ratio is typically 0.01 - 2.0
+        # Adversarial checkerboards: ratio >> 10
+        laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+        pixel_var = np.var(gray.astype(np.float64))
+        if pixel_var > 0:
+            periodicity_ratio = laplacian_var / pixel_var
+            if periodicity_ratio > 8.0:
+                return False, f"frame {i}: periodicity ratio {periodicity_ratio:.1f} (likely adversarial pattern)"
+
+    return True, "content appears natural"
 
 def validate_color_channels_on_frames(
     ref_frames,
@@ -866,61 +936,31 @@ def validate_chroma_quality_ffmpeg(ref_stats, dist_stats, threshold=0.7):
         logger.error(f"Error validating chroma quality (ffmpeg): {e}")
         return False, f"Error validating chroma: {str(e)}"
 
-# Calculate ClipIQA+ inspired score
 def calculate_clipiqa_plus_score(frames):
-    """Calculate ClipIQA+ inspired score for given frames"""
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = load_quality_model().to(device)
-    
-    # Preprocessing pipeline
-    preprocess = transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
-    
+    """
+    Calculate perceptual quality score using real CLIP-IQA+ from pyiqa.
+
+    This is a no-reference metric — it evaluates the quality of a single image
+    without needing a reference. Higher score = better perceived quality.
+
+    Used to compare three versions during organic upscaling scoring:
+      - ref_clipiqa:          quality of the original low-res input
+      - dist_clipiqa:         quality of the miner's upscaled output
+      - ref_upscaled_clipiqa: quality of the FFmpeg bilinear-upscaled reference
+
+    Args:
+        frames: List of RGB numpy arrays (H, W, 3) as returned by extract_frames().
+
+    Returns:
+        float: Average CLIP-IQA+ score across all frames (range ~0.0 to 1.0).
+    """
     scores = []
     for frame in frames:
-        # Preprocess frame
-        frame_tensor = preprocess(frame).unsqueeze(0).to(device)
-        
+        # Convert RGB uint8 (H,W,3) -> float32 tensor (1,3,H,W) normalized to [0,1]
+        frame_tensor = torch.from_numpy(frame).permute(2, 0, 1).unsqueeze(0).float().to(_clipiqa_device) / 255.0
         with torch.no_grad():
-            # Extract features using ResNet50
-            features = model(frame_tensor)
-            
-            # Calculate quality metrics
-            # 1. Feature magnitude (higher = more complex/rich content)
-            feature_magnitude = torch.norm(features, p=2).item()
-            
-            # 2. Feature variance (higher = more diverse content)
-            feature_variance = torch.var(features).item()
-            
-            # 3. Sharpness estimation using Laplacian variance
-            gray_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-            laplacian_var = cv2.Laplacian(gray_frame, cv2.CV_64F).var()
-            
-            # 4. Contrast estimation
-            contrast = np.std(gray_frame)
-            
-            # Combine metrics with weights (inspired by ClipIQA+ approach)
-            # Normalize each metric to [0, 1] range
-            norm_magnitude = min(1.0, feature_magnitude / 100.0)
-            norm_variance = min(1.0, feature_variance / 1000.0)
-            norm_sharpness = min(1.0, laplacian_var / 1000.0)
-            norm_contrast = min(1.0, contrast / 100.0)
-            
-            # Weighted combination (ClipIQA+ inspired weights)
-            quality_score = (
-                0.3 * norm_magnitude +
-                0.25 * norm_variance +
-                0.25 * norm_sharpness +
-                0.2 * norm_contrast
-            )
-            
-            scores.append(quality_score)
-    
-    # Return the average score across all frames
+            score = _clipiqa_metric(frame_tensor)
+        scores.append(score.item())
     return np.mean(scores)
 
 def calculate_psnr(ref_frame: np.ndarray, dist_frame: np.ndarray) -> float:
@@ -2633,6 +2673,21 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             final_scores.append(0.0)  # 0 = miner penalty
             continue
 
+        # === NATURALNESS CHECK ===
+        is_natural, natural_reason = is_natural_content(ref_path, num_frames=3)
+        if is_natural:
+            logger.info(f"Naturalness check passed")
+        else:
+            logger.warning(f"NATURALNESS REJECTED: {natural_reason}. Skipping (not miner's fault).")
+        if not is_natural:
+            vmaf_scores.append(-1)
+            pieapp_scores.append(-1)
+            quality_scores.append(-1)
+            length_scores.append(-1)
+            final_scores.append(-1)  # -1 = skip, don't penalize miner
+            reasons.append(f"reference failed naturalness check: {natural_reason}")
+            continue
+
         # === MAIN SCORING LOGIC ===
         try:
             # Calculate 0.25 second clip using frame-accurate extraction
@@ -2653,15 +2708,13 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             ref_upscaled_clip_path = upscale_video(ref_clip_path, scale_factor)
             logger.info(f"Created upscaled reference clip: {ref_upscaled_clip_path}")
             
-            # Calculate ClipIQ scores
-            logger.info("Calculating ClipIQ scores...")
+            # Calculate CLIP-IQA+ scores (real metric from pyiqa)
+            logger.info("Calculating CLIP-IQA+ scores (pyiqa)...")
             ref_clipiqa_score = get_clipiqa_score(ref_clip_path, num_frames=3)
             dist_clipiqa_score = get_clipiqa_score(dist_clip_path, num_frames=3)
             ref_upscaled_clipiqa_score = get_clipiqa_score(ref_upscaled_clip_path, num_frames=3)
-            
-            logger.info(f"Reference ClipIQ score: {ref_clipiqa_score:.4f}")
-            logger.info(f"Distorted ClipIQ score: {dist_clipiqa_score:.4f}")
-            logger.info(f"Upscaled reference ClipIQ score: {ref_upscaled_clipiqa_score:.4f}")
+
+            logger.info(f"CLIP-IQA+ ref={ref_clipiqa_score:.4f} | dist={dist_clipiqa_score:.4f} | ref_upscaled={ref_upscaled_clipiqa_score:.4f}")
             
             # Calculate VMAF — Docker-first with Y4M fallback
             logger.info("Calculating VMAF score...")
@@ -2694,18 +2747,57 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             
             logger.info(f"VMAF score: {vmaf_score:.4f}")
             
-            # Check VMAF threshold
-            if vmaf_score < 50:
-                logger.info(f"VMAF score below threshold (50): {vmaf_score}. Assigning score 0.")
-                vmaf_scores.append(vmaf_score)
-                pieapp_scores.append(0.0)
-                quality_scores.append(0.0)
-                length_scores.append(0.0)
-                final_scores.append(0.0)
-                reasons.append(f"VMAF score too low: {vmaf_score}")
-                continue
-            
-            # Final scoring based on ClipIQ scores
+            # ── Soft VMAF penalty ─────────────────────────────────────────
+            # Replaces the old hard gate (VMAF < 50 = instant score 0).
+            # VMAF measures similarity between the bilinear-upscaled reference
+            # and the miner's NN output. For adversarial content, bilinear and
+            # NN upscaling diverge — VMAF tanks even though the NN output is fine.
+            #
+            # Soft curve:
+            #   VMAF >= 70  ->  factor = 1.0   (no penalty, normal content)
+            #   VMAF 30-70  ->  factor = 0.0-1.0  (linear ramp, partial credit)
+            #   VMAF < 30   ->  factor = 0.0   (extreme divergence, truly broken)
+            if vmaf_score >= 70:
+                vmaf_factor = 1.0
+            elif vmaf_score >= 30:
+                vmaf_factor = (vmaf_score - 30) / 40.0
+            else:
+                vmaf_factor = 0.0
+
+            logger.info(f"VMAF factor: {vmaf_factor:.2f} (vmaf={vmaf_score:.2f})")
+
+            # ── LPIPS safety valve ────────────────────────────────────────
+            # When VMAF gives a low factor, get a second opinion from LPIPS.
+            # LPIPS uses deep VGG features and is more tolerant of outputs that
+            # are perceptually similar but structurally different (which is
+            # exactly what happens when comparing bilinear vs NN upscaling).
+            #
+            # If LPIPS says the outputs are similar (< 0.4), raise the
+            # vmaf_factor floor to 0.7 — partial credit, not full override.
+            # Only runs when vmaf_factor < 1.0 to keep the common case fast.
+            if vmaf_factor < 1.0 and vmaf_score >= 10:
+                try:
+                    ref_upscaled_frames = extract_frames(ref_upscaled_clip_path, num_frames=1)
+                    dist_check_frames = extract_frames(dist_clip_path, num_frames=1)
+                    ref_bgr = cv2.cvtColor(ref_upscaled_frames[0], cv2.COLOR_RGB2BGR)
+                    dist_bgr = cv2.cvtColor(dist_check_frames[0], cv2.COLOR_RGB2BGR)
+                    lpips_score = calculate_lpips(ref_bgr, dist_bgr)
+                    logger.info(f"LPIPS safety valve: lpips={lpips_score:.4f}")
+                    if lpips_score < 0.4:
+                        vmaf_factor = max(vmaf_factor, 0.7)
+                        logger.info(f"LPIPS override: vmaf_factor raised to {vmaf_factor:.2f}")
+                except Exception as e:
+                    logger.warning(f"LPIPS safety valve failed: {e}")
+
+            # ── Quality tier assignment (CLIP-IQA+ comparison) ────────────
+            # Compare miner output quality against two baselines:
+            #   - ref_clipiqa:          original low-res input quality
+            #   - ref_upscaled_clipiqa: FFmpeg bilinear-upscaled reference quality
+            #
+            # Tier 3: miner output beats the original (best possible result)
+            # Tier 2: miner output is 5%+ better than bilinear upscale
+            # Tier 1: miner output is better than bilinear upscale
+            # Tier 0: miner output is worse than bilinear upscale
             if dist_clipiqa_score > ref_clipiqa_score:
                 final_score = 3
                 reason = "upscaled better than reference"
@@ -2718,12 +2810,23 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             else:
                 final_score = 0
                 reason = "Worse than ffmpeg upscaled"
-            
-            logger.info(f"Final score: {final_score} ({reason})")
-            
+
+            # ── Apply VMAF soft penalty to tier score ─────────────────────
+            # final_score = tier (0-3) * vmaf_factor (0.0-1.0)
+            #
+            # In the miner_manager, this is interpreted as binary pass/fail:
+            #   score > 0   ->  pass (no change to accumulate_score)
+            #   score <= 0  ->  fail (-15% penalty to accumulate_score)
+            # Organic scoring can hurt miners but never boost them.
+            raw_tier = final_score
+            final_score = final_score * vmaf_factor
+            reason = f"{reason} (vmaf_factor={vmaf_factor:.2f})"
+
+            logger.info(f"Scoring: tier={raw_tier} x vmaf_factor={vmaf_factor:.2f} = final_score={final_score:.2f} | {reason}")
+
             vmaf_scores.append(vmaf_score)
-            pieapp_scores.append(0.0)  
-            quality_scores.append(0.0)  
+            pieapp_scores.append(0.0)
+            quality_scores.append(0.0)
             length_scores.append(0.0)
             final_scores.append(final_score)
             reasons.append(f"{reason}")
@@ -2758,14 +2861,16 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
     logger.info(f"completed one batch scoring within {processed_time:.2f} seconds")
     
     # Summary statistics
-    successful_miners = sum(1 for score in final_scores if score >= 1)
+    successful_miners = sum(1 for score in final_scores if score > 0)
+    partial_miners = sum(1 for score in final_scores if 0 < score < 1)
     failed_miners = sum(1 for score in final_scores if score == 0.0)
     skipped_miners = sum(1 for score in final_scores if score == -1)
-    
-    logger.info(f"📊 SCORING SUMMARY:")
-    logger.info(f"  ✅ Successful miners: {successful_miners}")
-    logger.info(f"  ❌ Failed miners: {failed_miners}")
-    logger.info(f"  ⏭️ Skipped miners: {skipped_miners}")
+    naturalness_rejected = sum(1 for r in reasons if "naturalness check" in r)
+
+    logger.info(f"📊 ORGANIC UPSCALING SCORING SUMMARY (CLIP-IQA+ / soft VMAF / penalties-only):")
+    logger.info(f"  ✅ Passed (score > 0): {successful_miners} ({partial_miners} with VMAF penalty)")
+    logger.info(f"  ❌ Failed (score = 0): {failed_miners}")
+    logger.info(f"  ⏭️ Skipped: {skipped_miners} ({naturalness_rejected} naturalness rejections)")
     
     return OrganicsUpscalingScoringResponse(
         vmaf_scores=vmaf_scores,

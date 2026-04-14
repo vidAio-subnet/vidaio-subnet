@@ -35,3 +35,4 @@ test.py
 ignore/
 test_outputs/
 unit_tests/
+claude.md
