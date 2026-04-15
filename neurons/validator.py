@@ -638,6 +638,7 @@ class Validator(base.BaseValidator):
             
             # sleep_time = random.uniform(SLEEP_TIME_LOW, SLEEP_TIME_HIGH) - batch_processed_time
             logger.info(f"Completed upscaling batch within {batch_processed_time:.2f} seconds")
+            logger.info(f"Scored {batch_idx * batch_size + len(batch)} upscaling miners")
             # logger.info(f"Sleeping for 5-6 minutes before next upscaling batch")
             
             # await asyncio.sleep(sleep_time)
@@ -771,6 +772,7 @@ class Validator(base.BaseValidator):
                         logger.error(f"Error deleting distorted video file {path}: {e}")
             
             logger.info(f"Completed scoring compression batch {batch_uids} within {batch_processed_time:.2f} seconds")
+            logger.info(f"Scored {i + len(batch_uids)} of {num_miners} compression miners")
             # await asyncio.sleep(sleep_time)
 
         try:
