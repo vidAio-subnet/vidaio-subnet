@@ -90,6 +90,20 @@ class Validator(base.BaseValidator):
         logger.info(
             f"💧 Initialized compression score client with base URL: http://{CONFIG.score.host}:{CONFIG.score.compression_score_port} 💧"
         )
+
+        self.score_client_upscaling_organics = httpx.AsyncClient(
+            base_url=f"http://{CONFIG.score.host}:{CONFIG.score.upscaling_organics_score_port}"
+        )
+        logger.info(
+            f"💧 Initialized upscaling score client with base URL: http://{CONFIG.score.host}:{CONFIG.score.upscaling_score_port} 💧"
+        )
+        
+        self.score_client_compression_organics = httpx.AsyncClient(
+            base_url=f"http://{CONFIG.score.host}:{CONFIG.score.compression_organics_score_port}"
+        )
+        logger.info(
+            f"💧 Initialized compression score client with base URL: http://{CONFIG.score.host}:{CONFIG.score.compression_score_port} 💧"
+        )
         
         self.set_weights_executor = ThreadPoolExecutor(max_workers=1)
         logger.info("💙 Initialized setting weights executor 💙")
@@ -1034,7 +1048,7 @@ class Validator(base.BaseValidator):
 
         logger.info(f"Randomly selected {len(selected_uids)} pairs out of {len(uids)} total pairs for validation")
 
-        score_response = await self.score_client_upscaling.post(
+        score_response = await self.score_client_upscaling_organics.post(
             "/score_organics_upscaling",
             json={
                 "uids": selected_uids,
@@ -1120,7 +1134,7 @@ class Validator(base.BaseValidator):
 
         logger.info(f"Randomly selected {len(selected_uids)} pairs out of {len(uids)} total pairs for compression validation")
 
-        score_response = await self.score_client_compression.post(
+        score_response = await self.score_client_compression_organics.post(
             "/score_organics_compression",
             json={
                 "uids": selected_uids,

@@ -206,6 +206,8 @@ check_package_installed "jq"
 
 # pm2 start "PYTHONPATH=. python services/scoring/server.py --port 8201" --name scoring_endpoint_upscaling
 # pm2 start "PYTHONPATH=. python services/scoring/server.py --port 8202" --name scoring_endpoint_compression
+# pm2 start "PYTHONPATH=. python services/scoring/server.py --port 8203" --name scoring_endpoint_upscaling_organics
+# pm2 start "PYTHONPATH=. python services/scoring/server.py --port 8204" --name scoring_endpoint_compression_organics
 
 # pm2 start "PYTHONPATH=. python services/video_scheduler/worker.py" --name video_scheduler_worker
 # pm2 start "PYTHONPATH=. python services/video_scheduler/server.py" --name video_scheduler_endpoint
@@ -218,6 +220,8 @@ check_package_installed "jq"
 # 🚀 START THE ADDITIONAL PM2 PROCESSES
 ensure_process "scoring_endpoint_upscaling" "bash -c 'PYTHONPATH=. python services/scoring/server.py --port 8201'" "true"
 ensure_process "scoring_endpoint_compression" "bash -c 'PYTHONPATH=. python services/scoring/server.py --port 8202'" "true"
+ensure_process "scoring_endpoint_upscaling_organics" "bash -c 'PYTHONPATH=. python services/scoring/server.py --port 8203'" "true"
+ensure_process "scoring_endpoint_compression_organics" "bash -c 'PYTHONPATH=. python services/scoring/server.py --port 8204'" "true"
 ensure_process "video_scheduler_worker" "bash -c 'PYTHONPATH=. python services/video_scheduler/worker.py'" "$restart_video_scheduler"
 ensure_process "video_scheduler_endpoint" "bash -c 'PYTHONPATH=. python services/video_scheduler/server.py'" "$restart_video_scheduler"
 ensure_process "organic-gateway" "bash -c 'PYTHONPATH=. python services/organic_gateway/server.py'" "true"
