@@ -150,20 +150,26 @@ class OrganicsCompressionScoringResponse(BaseModel):
     reasons: List[str]
 
 # ──────────────────────────────────────────────────────────────────────────────
-# CLIP-IQA+ — No-Reference Image Quality Assessment (pyiqa)
+# TOPIQ-NR — No-Reference Image Quality Assessment (pyiqa)
 #
 # Replaces the old custom ResNet50-based "ClipIQ" formula that was vulnerable
 # to adversarial inputs (binary patterns could max out its 4 fixed components).
 #
-# CLIP-IQA+ is a learned metric trained on human quality opinion scores.
+# TOPIQ-NR is a learned metric trained on human quality opinion scores.
 # It evaluates perceptual quality — adversarial/synthetic patterns score LOW
 # because they don't look like natural high-quality images.
+#
+# NOTE: We use `topiq_nr` instead of `clipiqa+` because the latter depends on
+# the OpenAI CLIP package, which has a broken import under setuptools >= 70.0
+# (`from pkg_resources import packaging` was removed in newer setuptools).
+# TOPIQ-NR is a modern learned metric with no CLIP dependency and equivalent
+# robustness for our purposes.
 #
 # Used in organic upscaling scoring to compare miner output quality against
 # the bilinear-upscaled reference. Higher score = better perceived quality.
 # ──────────────────────────────────────────────────────────────────────────────
 _clipiqa_device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-_clipiqa_metric = pyiqa.create_metric('clipiqa+', device=_clipiqa_device)
+_clipiqa_metric = pyiqa.create_metric('topiq_nr', device=_clipiqa_device)
 
 _shared_session: Optional[aiohttp.ClientSession] = None
 
@@ -938,7 +944,7 @@ def validate_chroma_quality_ffmpeg(ref_stats, dist_stats, threshold=0.7):
 
 def calculate_clipiqa_plus_score(frames):
     """
-    Calculate perceptual quality score using real CLIP-IQA+ from pyiqa.
+    Calculate perceptual quality score using TOPIQ-NR from pyiqa.
 
     This is a no-reference metric — it evaluates the quality of a single image
     without needing a reference. Higher score = better perceived quality.
@@ -948,11 +954,14 @@ def calculate_clipiqa_plus_score(frames):
       - dist_clipiqa:         quality of the miner's upscaled output
       - ref_upscaled_clipiqa: quality of the FFmpeg bilinear-upscaled reference
 
+    Function/variable names keep the 'clipiqa' prefix for backward compatibility
+    with existing call sites, but the underlying metric is TOPIQ-NR.
+
     Args:
         frames: List of RGB numpy arrays (H, W, 3) as returned by extract_frames().
 
     Returns:
-        float: Average CLIP-IQA+ score across all frames (range ~0.0 to 1.0).
+        float: Average TOPIQ-NR score across all frames (range ~0.0 to 1.0).
     """
     scores = []
     for frame in frames:
@@ -2708,13 +2717,13 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             ref_upscaled_clip_path = upscale_video(ref_clip_path, scale_factor)
             logger.info(f"Created upscaled reference clip: {ref_upscaled_clip_path}")
             
-            # Calculate CLIP-IQA+ scores (real metric from pyiqa)
-            logger.info("Calculating CLIP-IQA+ scores (pyiqa)...")
+            # Calculate TOPIQ-NR quality scores (pyiqa)
+            logger.info("Calculating TOPIQ-NR scores (pyiqa)...")
             ref_clipiqa_score = get_clipiqa_score(ref_clip_path, num_frames=3)
             dist_clipiqa_score = get_clipiqa_score(dist_clip_path, num_frames=3)
             ref_upscaled_clipiqa_score = get_clipiqa_score(ref_upscaled_clip_path, num_frames=3)
 
-            logger.info(f"CLIP-IQA+ ref={ref_clipiqa_score:.4f} | dist={dist_clipiqa_score:.4f} | ref_upscaled={ref_upscaled_clipiqa_score:.4f}")
+            logger.info(f"TOPIQ-NR ref={ref_clipiqa_score:.4f} | dist={dist_clipiqa_score:.4f} | ref_upscaled={ref_upscaled_clipiqa_score:.4f}")
             
             # Calculate VMAF — Docker-first with Y4M fallback
             logger.info("Calculating VMAF score...")
@@ -2789,7 +2798,7 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
                 except Exception as e:
                     logger.warning(f"LPIPS safety valve failed: {e}")
 
-            # ── Quality tier assignment (CLIP-IQA+ comparison) ────────────
+            # ── Quality tier assignment (TOPIQ-NR comparison) ─────────────
             # Compare miner output quality against two baselines:
             #   - ref_clipiqa:          original low-res input quality
             #   - ref_upscaled_clipiqa: FFmpeg bilinear-upscaled reference quality
@@ -2867,7 +2876,7 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
     skipped_miners = sum(1 for score in final_scores if score == -1)
     naturalness_rejected = sum(1 for r in reasons if "naturalness check" in r)
 
-    logger.info(f"📊 ORGANIC UPSCALING SCORING SUMMARY (CLIP-IQA+ / soft VMAF / penalties-only):")
+    logger.info(f"📊 ORGANIC UPSCALING SCORING SUMMARY (TOPIQ-NR / soft VMAF / penalties-only):")
     logger.info(f"  ✅ Passed (score > 0): {successful_miners} ({partial_miners} with VMAF penalty)")
     logger.info(f"  ❌ Failed (score = 0): {failed_miners}")
     logger.info(f"  ⏭️ Skipped: {skipped_miners} ({naturalness_rejected} naturalness rejections)")
