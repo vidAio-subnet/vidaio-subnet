@@ -1536,10 +1536,14 @@ class WeightSynthesizer:
         self.validator = validator
 
     async def run(self):
+        dev_mode = os.getenv("DEV_MODE", "False").lower() == "true"
         while True:
             try:
-                logger.info("Running weight_manager...")
-                await self.validator.set_weights()  
+                if dev_mode:
+                    logger.info("Not running weight_manager (DEV_MODE)...")
+                else:
+                    logger.info("Running weight_manager...")
+                    await self.validator.set_weights()
             except Exception as e:
                 logger.error(f"Error in WeightSynthesizer: {e}", exc_info=True)
             await asyncio.sleep(1200)  
@@ -1548,7 +1552,8 @@ class WeightSynthesizer:
 if __name__ == "__main__":
     validator = Validator()
     weight_synthesizer = WeightSynthesizer(validator)
-    time.sleep(1300) # wait till the video scheduler is ready
+    dev_mode = os.getenv("DEV_MODE", "False").lower() == "true"
+    time.sleep(10 if dev_mode else 1300) # wait till the video scheduler is ready
 
     set_scheduler_ready(validator.redis_conn, False)
     logger.info("Set scheduler readiness flag to False")
