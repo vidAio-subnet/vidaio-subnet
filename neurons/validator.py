@@ -641,7 +641,7 @@ class Validator(base.BaseValidator):
         # The validator owns the job_id — assign it before sending.
         job_id = str(uuid.uuid4())
         synapse_job.job_id = job_id
-        logger.info(f"UID {uid} → sending job kick-off | job_id={job_id} | synapse=\n{synapse_job}")
+        logger.info(f"UID {uid} → sending job kick-off | job_id={job_id} ")
         try:
             raw = await self.dendrite.forward(
                 axons=[axon], synapse=synapse_job, timeout=60
