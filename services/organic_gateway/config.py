@@ -1,6 +1,10 @@
+import os
 import logging
 from functools import lru_cache
+from dotenv import load_dotenv
 from vidaio_subnet_core import CONFIG
+
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(
@@ -25,6 +29,7 @@ class Settings:
         self.REDIS_SERVICE_ENDPOINT = f"{protocol}{CONFIG.video_scheduler.host}:{CONFIG.video_scheduler.port}"
         self.DATA_RETENTION_DAYS = 3
         self.CLEANUP_INTERVAL_HOURS = 72  # hours
+        self.ORGANIC_API_KEY = os.getenv("ORGANIC_API_KEY", "")
 
 @lru_cache()
 def get_settings():
