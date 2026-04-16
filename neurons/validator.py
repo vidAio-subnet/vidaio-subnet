@@ -340,7 +340,7 @@ class Validator(base.BaseValidator):
         
         disable_synthetics = os.getenv("DISABLE_SYNTHETICS", "False").lower() == "true"
         if disable_synthetics:
-            logger.info("Synthetic epoch disabled by DISABLE_SYNTHETICS env var, only ran TaskWarrant requests to gauge miner tasks, sleeping for 30 minutes before refreshing")
+            logger.info("Synthetic epoch disabled by DISABLE_SYNTHETICS env var, only ran TaskWarrant requests to gauge miner task types necessary to execute organics, sleeping for 30 minutes before refreshing")
             await asyncio.sleep(1800)
             return
 
