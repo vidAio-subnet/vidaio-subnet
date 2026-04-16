@@ -1,16 +1,20 @@
+import os
+
 from pydantic import BaseModel, Field
+
+_DEV_MODE = os.getenv("DEV_MODE", "False").lower() == "true"
 
 
 class VideoSchedulerConfig(BaseModel):
     host: str = Field(default="localhost")
     port: int = Field(default=8000)
-    max_synthetic_queue_size: int = Field(default=20) 
-    refill_target: int = Field(default=100)
-    refill_threshold: int = Field(default=100) 
+    max_synthetic_queue_size: int = Field(default=20)
+    refill_target: int = Field(default=20 if _DEV_MODE else 100)
+    refill_threshold: int = Field(default=20 if _DEV_MODE else 100)
     min_video_len: int = Field(default=29.7)
     max_video_len: int = Field(default=40)
-    pexels_max_size: int = Field(default=50)
-    pexels_threshold: int = Field(default=50)
+    pexels_max_size: int = Field(default=30 if _DEV_MODE else 50)
+    pexels_threshold: int = Field(default=30 if _DEV_MODE else 50)
     weight_hd_to_4k: float = Field(default=0.4)
     weight_sd_to_hd: float = Field(default=0.3)
     weight_sd_to_4k: float = Field(default=0.3)
