@@ -42,7 +42,7 @@ def get_organic_forward_uids(self, count: int = None, task_type : str = None, vp
     """
     exclude = exclude or []
 
-    # Get top 20 hotkeys for this task type from MinerMetadata, ordered by accumulate_score desc
+    # Get top 10 hotkeys for this task type from MinerMetadata, ordered by accumulate_score desc
     top_hotkeys = self.miner_manager.get_top_hotkeys_by_task(task_type, limit=10)
 
     if not top_hotkeys:
