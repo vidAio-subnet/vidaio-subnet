@@ -338,6 +338,12 @@ class Validator(base.BaseValidator):
         if unknown_task_miners:
             logger.info(f"❓ Unknown task UIDs processed: {unknown_task_miners}")
         
+        disable_synthetics = os.getenv("DISABLE_SYNTHETICS", "False").lower() == "true"
+        if disable_synthetics:
+            logger.info("Synthetic epoch disabled by DISABLE_SYNTHETICS env var, only ran TaskWarrant requests to gauge miner tasks, sleeping for 30 minutes before refreshing")
+            await asyncio.sleep(1800)
+            return
+
         logger.info("Sleeping for 3 minutes before starting epoch")
         await asyncio.sleep(180)
 
@@ -1555,23 +1561,18 @@ if __name__ == "__main__":
     validator = Validator()
     weight_synthesizer = WeightSynthesizer(validator)
     dev_mode = os.getenv("DEV_MODE", "False").lower() == "true"
-    disable_synthetics = os.getenv("DISABLE_SYNTHETICS", "False").lower() == "true"
     time.sleep(10 if dev_mode else 1300) # wait till the video scheduler is ready
 
     set_scheduler_ready(validator.redis_conn, False)
     logger.info("Set scheduler readiness flag to False")
 
     async def main():
-        if not disable_synthetics:
-            validator_synthetic_task = asyncio.create_task(validator.run_synthetic())
-            validator_organic_task = asyncio.create_task(validator.run_organic())
-            weight_setter = asyncio.create_task(weight_synthesizer.run())
+        validator_synthetic_task = asyncio.create_task(validator.run_synthetic())
+        validator_organic_task = asyncio.create_task(validator.run_organic())
+        weight_setter = asyncio.create_task(weight_synthesizer.run())
 
-            await asyncio.gather(validator_synthetic_task, validator_organic_task, weight_setter)
-        else:
-            validator_organic_task = asyncio.create_task(validator.run_organic())
-            weight_setter = asyncio.create_task(weight_synthesizer.run())
-            await asyncio.gather(validator_organic_task, weight_setter)
+        await asyncio.gather(validator_synthetic_task, validator_organic_task, weight_setter)
+
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
