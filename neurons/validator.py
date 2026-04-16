@@ -104,14 +104,14 @@ class Validator(base.BaseValidator):
             base_url=f"http://{CONFIG.score.host}:{CONFIG.score.upscaling_organics_score_port}"
         )
         logger.info(
-            f"💧 Initialized upscaling score client with base URL: http://{CONFIG.score.host}:{CONFIG.score.upscaling_score_port} 💧"
+            f"💧 Initialized organic upscaling score client with base URL: http://{CONFIG.score.host}:{CONFIG.score.upscaling_organics_score_port} 💧"
         )
         
         self.score_client_compression_organics = httpx.AsyncClient(
             base_url=f"http://{CONFIG.score.host}:{CONFIG.score.compression_organics_score_port}"
         )
         logger.info(
-            f"💧 Initialized compression score client with base URL: http://{CONFIG.score.host}:{CONFIG.score.compression_score_port} 💧"
+            f"💧 Initialized organic compression score client with base URL: http://{CONFIG.score.host}:{CONFIG.score.compression_organics_score_port} 💧"
         )
         
         self.set_weights_executor = ThreadPoolExecutor(max_workers=1)
