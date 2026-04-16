@@ -1555,18 +1555,23 @@ if __name__ == "__main__":
     validator = Validator()
     weight_synthesizer = WeightSynthesizer(validator)
     dev_mode = os.getenv("DEV_MODE", "False").lower() == "true"
+    disable_synthetics = os.getenv("DISABLE_SYNTHETICS", "False").lower() == "true"
     time.sleep(10 if dev_mode else 1300) # wait till the video scheduler is ready
 
     set_scheduler_ready(validator.redis_conn, False)
     logger.info("Set scheduler readiness flag to False")
 
     async def main():
-        validator_synthetic_task = asyncio.create_task(validator.run_synthetic())
-        validator_organic_task = asyncio.create_task(validator.run_organic())
-        weight_setter = asyncio.create_task(weight_synthesizer.run())
+        if not disable_synthetics:
+            validator_synthetic_task = asyncio.create_task(validator.run_synthetic())
+            validator_organic_task = asyncio.create_task(validator.run_organic())
+            weight_setter = asyncio.create_task(weight_synthesizer.run())
 
-        await asyncio.gather(validator_synthetic_task, validator_organic_task, weight_setter)
-
+            await asyncio.gather(validator_synthetic_task, validator_organic_task, weight_setter)
+        else:
+            validator_organic_task = asyncio.create_task(validator.run_organic())
+            weight_setter = asyncio.create_task(weight_synthesizer.run())
+            await asyncio.gather(validator_organic_task, weight_setter)
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
