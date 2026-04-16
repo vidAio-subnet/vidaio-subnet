@@ -338,15 +338,15 @@ class Validator(base.BaseValidator):
         if unknown_task_miners:
             logger.info(f"❓ Unknown task UIDs processed: {unknown_task_miners}")
         
-        logger.info("Sleeping for 2 minutes before starting epoch")
-        await asyncio.sleep(120)
+        logger.info("Sleeping for 3 minutes before starting epoch")
+        await asyncio.sleep(180)
 
         # ---- Run upscaling & compression epochs in parallel ---- #
         async def _run_upscaling():
             if not upscaling_miners:
                 return
             
-            logger.info("🧩 Sleeping for 3 minute before starting upscaling epoch")
+            logger.info("🧩 Sleeping for 3 minutes before starting upscaling epoch")
             await asyncio.sleep(180)
             
             logger.info(f"Sending LengthCheckProtocol requests to {len(upscaling_miners)} upscaling miners")
@@ -375,8 +375,8 @@ class Validator(base.BaseValidator):
                 content_length = upscaling_content_lengths[i] if i < len(upscaling_content_lengths) else 10
                 upscaling_miners_with_lengths.append((axon, uid, content_length))
 
-            logger.info(f"Sleeping for 2 minute before querying upscaling miners")
-            await asyncio.sleep(120)
+            logger.info(f"Sleeping for 3 minutes before querying upscaling miners")
+            await asyncio.sleep(180)
 
             await self.process_upscaling_miners(upscaling_miners_with_lengths, version)
 
@@ -405,9 +405,11 @@ class Validator(base.BaseValidator):
         logger.info(f"Completed one epoch within {epoch_processed_time:.2f} seconds")
 
         if epoch_processed_time < 60: # if epoch completed within 60 seconds in case of no miners requiring synth checking, sleep for 10 minutes
+            logger.info(f"Sleeping for 10 minutes before starting next cycle")
             await asyncio.sleep(60 * 10)
         else:
-            await asyncio.sleep(2)
+            logger.info(f"Sleeping for 3 minutes before starting next cycle")
+            await asyncio.sleep(180) 
 
     #   --------------------------------------------------------------------------- #
     #  Helper – turn the raw list of (axon, uid) into a dict {uid: (axon, uid)}
