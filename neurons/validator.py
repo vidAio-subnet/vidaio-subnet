@@ -99,6 +99,20 @@ class Validator(base.BaseValidator):
         logger.info(
             f"💧 Initialized compression score client with base URL: http://{CONFIG.score.host}:{CONFIG.score.compression_score_port} 💧"
         )
+
+        self.score_client_upscaling_organics = httpx.AsyncClient(
+            base_url=f"http://{CONFIG.score.host}:{CONFIG.score.upscaling_organics_score_port}"
+        )
+        logger.info(
+            f"💧 Initialized upscaling score client with base URL: http://{CONFIG.score.host}:{CONFIG.score.upscaling_score_port} 💧"
+        )
+        
+        self.score_client_compression_organics = httpx.AsyncClient(
+            base_url=f"http://{CONFIG.score.host}:{CONFIG.score.compression_organics_score_port}"
+        )
+        logger.info(
+            f"💧 Initialized compression score client with base URL: http://{CONFIG.score.host}:{CONFIG.score.compression_score_port} 💧"
+        )
         
         self.set_weights_executor = ThreadPoolExecutor(max_workers=1)
         logger.info("💙 Initialized setting weights executor 💙")
@@ -733,6 +747,7 @@ class Validator(base.BaseValidator):
             
             # sleep_time = random.uniform(SLEEP_TIME_LOW, SLEEP_TIME_HIGH) - batch_processed_time
             logger.info(f"Completed upscaling batch within {batch_processed_time:.2f} seconds")
+            logger.info(f"Scored {batch_idx * batch_size + len(batch)} upscaling miners")
             # logger.info(f"Sleeping for 5-6 minutes before next upscaling batch")
             
             # await asyncio.sleep(sleep_time)
@@ -866,6 +881,7 @@ class Validator(base.BaseValidator):
                         logger.error(f"Error deleting distorted video file {path}: {e}")
             
             logger.info(f"Completed scoring compression batch {batch_uids} within {batch_processed_time:.2f} seconds")
+            logger.info(f"Scored {i + len(batch_uids)} of {num_miners} compression miners")
             # await asyncio.sleep(sleep_time)
 
         try:
@@ -1143,7 +1159,7 @@ class Validator(base.BaseValidator):
 
         logger.info(f"Randomly selected {len(selected_uids)} pairs out of {len(uids)} total pairs for validation")
 
-        score_response = await self.score_client_upscaling.post(
+        score_response = await self.score_client_upscaling_organics.post(
             "/score_organics_upscaling",
             json={
                 "uids": selected_uids,
@@ -1229,7 +1245,7 @@ class Validator(base.BaseValidator):
 
         logger.info(f"Randomly selected {len(selected_uids)} pairs out of {len(uids)} total pairs for compression validation")
 
-        score_response = await self.score_client_compression.post(
+        score_response = await self.score_client_compression_organics.post(
             "/score_organics_compression",
             json={
                 "uids": selected_uids,
