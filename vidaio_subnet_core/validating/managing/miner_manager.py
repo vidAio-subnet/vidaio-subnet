@@ -858,8 +858,8 @@ class MinerManager:
         try:
             for uid, score in zip(total_uids, scores):
                 # Skip processing if score is -1 (skipped)
-                if score == -1:
-                    logger.debug(f"Skipping UID {uid} due to score -1")
+                if score == -1 or score >= 2.0:
+                    logger.debug(f"Skipping UID {uid} due to score -1 or score >= 2")
                     # Get current miner state for return values
                     miner = self.query([uid]).get(uid, None)
                     if miner:
@@ -994,7 +994,7 @@ class MinerManager:
                 # Skip processing if score is -1 (skipped) or success is true
                 success = score > 0.5
                 if score == -1 or success:
-                    logger.debug(f"Skipping UID {uid} due to score -1 (skipped)")
+                    logger.debug(f"Skipping UID {uid} due to score -1 or success (skipped)")
                     # Get current miner state for return values
                     miner = self.query([uid]).get(uid, None)
                     if miner:
