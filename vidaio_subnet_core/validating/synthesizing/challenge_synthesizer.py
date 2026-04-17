@@ -1,7 +1,14 @@
 import asyncio
 import httpx
 from typing import Tuple, Dict, List
-from ...protocol import VideoUpscalingProtocol, UpscalingMinerPayload, VideoCompressionProtocol, CompressionMinerPayload
+from ...protocol import (
+    VideoUpscalingProtocol,
+    UpscalingMinerPayload,
+    VideoCompressionProtocol,
+    CompressionMinerPayload,
+    VideoCompressionJobProtocol,
+    VideoUpscalingJobProtocol,
+)
 from ...global_config import CONFIG
 from loguru import logger
 from enum import IntEnum
@@ -347,7 +354,7 @@ class Synthesizer:
                 task_types = []
 
                 for chunk in chunks:
-                    synapse = VideoUpscalingProtocol(
+                    synapse = VideoUpscalingJobProtocol(
                         miner_payload=UpscalingMinerPayload(
                             reference_video_url=chunk["url"],
                             task_type=chunk["resolution_type"],
@@ -419,7 +426,7 @@ class Synthesizer:
                     codec_mode = chunk.get("codec_mode", "CRF")
                     target_bitrate = chunk.get("target_bitrate", 10.0)
 
-                    synapse = VideoCompressionProtocol(
+                    synapse = VideoCompressionJobProtocol(
                         miner_payload=CompressionMinerPayload(
                             reference_video_url=chunk["url"],
                             vmaf_threshold=vmaf_threshold,
