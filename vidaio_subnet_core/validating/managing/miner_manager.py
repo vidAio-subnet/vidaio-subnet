@@ -858,8 +858,8 @@ class MinerManager:
         try:
             for uid, score in zip(total_uids, scores):
                 # Skip processing if score is -1 (skipped)
-                if score == -1:
-                    logger.debug(f"Skipping UID {uid} due to score -1")
+                if score == -1 or score >= 2.0:
+                    logger.debug(f"Skipping UID {uid} due to score -1 or score >= 2")
                     # Get current miner state for return values
                     miner = self.query([uid]).get(uid, None)
                     if miner:
@@ -891,25 +891,27 @@ class MinerManager:
                 acc_score = 0.0
                 current_score = miner.accumulate_score
 
-                if score == 3.0:
-                    organic_s_f = 0.4
-                    organic_s_q = 0.5
-                    organic_s_l = 0.5
-                    success = True
+                # Disabled positive scoring for organics
 
-                    boost_percentage = 0.03
-                    boost_amount = current_score * boost_percentage
-                    acc_score = current_score + boost_amount
+                # if score == 3.0:
+                #     organic_s_f = 0.4
+                #     organic_s_q = 0.5
+                #     organic_s_l = 0.5
+                #     success = True
 
-                elif score == 2.0:
-                    organic_s_f = 0.3
-                    organic_s_q = 0.5
-                    organic_s_l = 0.5
-                    success = True
+                #     boost_percentage = 0.03
+                #     boost_amount = current_score * boost_percentage
+                #     acc_score = current_score + boost_amount
 
-                    acc_score = miner.accumulate_score
+                # elif score == 2.0:
+                #     organic_s_f = 0.3
+                #     organic_s_q = 0.5
+                #     organic_s_l = 0.5
+                #     success = True
 
-                elif score == 1.0:  # Failure
+                #     acc_score = miner.accumulate_score
+
+                if score == 1.0:  # Failure
                     organic_s_f = 0.2  # Moderate success score
                     organic_s_q = 0.5   # Moderate quality score
                     organic_s_l = 0.5   # Moderate length score
@@ -989,9 +991,10 @@ class MinerManager:
 
         try:
             for uid, score, vmaf_score, compression_rate, vmaf_threshold in zip(total_uids, scores, vmaf_scores, compression_rates, vmaf_thresholds):
-                # Skip processing if score is -1 (skipped)
-                if score == -1:
-                    logger.debug(f"Skipping UID {uid} due to score -1 (skipped)")
+                # Skip processing if score is -1 (skipped) or success is true
+                success = score > 0.5
+                if score == -1 or success:
+                    logger.debug(f"Skipping UID {uid} due to score -1 or success (skipped)")
                     # Get current miner state for return values
                     miner = self.query([uid]).get(uid, None)
                     if miner:
@@ -1018,7 +1021,7 @@ class MinerManager:
                     )
                     self.session.add(miner)
 
-                success = score > 0.5
+                
 
                 # Add performance record for organic scoring
                 self._add_performance_record(

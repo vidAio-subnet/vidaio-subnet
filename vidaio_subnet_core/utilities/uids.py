@@ -28,7 +28,8 @@ def check_uid_availability(metagraph: "bt.metagraph.Metagraph", uid: int, vpermi
 def get_organic_forward_uids(self, count: int = None, task_type : str = None, vpermit_tao_limit: int = 100000000, exclude: List[int] = None) -> np.ndarray:
     """
     Get a list of UIDs that are available for forwarding, selected from
-    the top 20 miners by accumulate_score for the given task_type.
+    the top 10 miners by accumulate_score for the given task_type. 
+    The top x miners chosen here is consistent with `TOP_N` in the miner manager.
 
     Args:
         count (int): Number of UIDs to return
@@ -41,8 +42,8 @@ def get_organic_forward_uids(self, count: int = None, task_type : str = None, vp
     """
     exclude = exclude or []
 
-    # Get top 20 hotkeys for this task type from MinerMetadata, ordered by accumulate_score desc
-    top_hotkeys = self.miner_manager.get_top_hotkeys_by_task(task_type, limit=20)
+    # Get top 10 hotkeys for this task type from MinerMetadata, ordered by accumulate_score desc
+    top_hotkeys = self.miner_manager.get_top_hotkeys_by_task(task_type, limit=10)
 
     if not top_hotkeys:
         logger.warning(f"No hotkeys found for task_type={task_type}")
