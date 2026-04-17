@@ -1,6 +1,10 @@
+import os
+
 import pandas as pd
 from ..global_config import CONFIG
 from loguru import logger
+
+_DEV_MODE = os.getenv("DEV_MODE", "False").lower() == "true"
 
 def build_rate_limit(metagraph, uid: int) -> int:
     """
@@ -20,7 +24,7 @@ def build_rate_limit(metagraph, uid: int) -> int:
     valid_uids_stakes = [(i, stake) for i, stake in enumerate(stake_array) if stake > min_stake]
 
     if not valid_uids_stakes or uid not in [uid for uid, _ in valid_uids_stakes]:
-        return 0  # UID is not eligible for rate limiting
+        return 10000 if _DEV_MODE else 0  # UID is not eligible for rate limiting
 
     # Separate UID list and stakes
     uids, stakes = zip(*valid_uids_stakes)
@@ -30,11 +34,11 @@ def build_rate_limit(metagraph, uid: int) -> int:
     logger.info(f"Validator currentl stake: {stakes[uids.index(uid)]}")
 
     if total_stake == 0:
-        return 0  # Avoid division by zero
+        return 10000 if _DEV_MODE else 0  # Avoid division by zero
 
     # Compute normalized stake
     normalized_stake = stakes[uids.index(uid)] / total_stake
-    vali_rate_limit = int(CONFIG.bandwidth.total_requests * normalized_stake)
+    vali_rate_limit = 10000 if _DEV_MODE else int(CONFIG.bandwidth.total_requests * normalized_stake)
     logger.info(f"Validator rate limit: {vali_rate_limit}")
 
     return vali_rate_limit

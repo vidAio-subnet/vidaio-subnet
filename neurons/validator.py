@@ -104,14 +104,14 @@ class Validator(base.BaseValidator):
             base_url=f"http://{CONFIG.score.host}:{CONFIG.score.upscaling_organics_score_port}"
         )
         logger.info(
-            f"💧 Initialized upscaling score client with base URL: http://{CONFIG.score.host}:{CONFIG.score.upscaling_score_port} 💧"
+            f"💧 Initialized organic upscaling score client with base URL: http://{CONFIG.score.host}:{CONFIG.score.upscaling_organics_score_port} 💧"
         )
         
         self.score_client_compression_organics = httpx.AsyncClient(
             base_url=f"http://{CONFIG.score.host}:{CONFIG.score.compression_organics_score_port}"
         )
         logger.info(
-            f"💧 Initialized compression score client with base URL: http://{CONFIG.score.host}:{CONFIG.score.compression_score_port} 💧"
+            f"💧 Initialized organic compression score client with base URL: http://{CONFIG.score.host}:{CONFIG.score.compression_organics_score_port} 💧"
         )
         
         self.set_weights_executor = ThreadPoolExecutor(max_workers=1)
@@ -338,15 +338,21 @@ class Validator(base.BaseValidator):
         if unknown_task_miners:
             logger.info(f"❓ Unknown task UIDs processed: {unknown_task_miners}")
         
-        logger.info("Sleeping for 2 minutes before starting epoch")
-        await asyncio.sleep(120)
+        disable_synthetics = os.getenv("DISABLE_SYNTHETICS", "False").lower() == "true"
+        if disable_synthetics:
+            logger.info("Synthetic epoch disabled by DISABLE_SYNTHETICS env var, only ran TaskWarrant requests to gauge miner task types necessary to execute organics, sleeping for 30 minutes before refreshing")
+            await asyncio.sleep(1800)
+            return
+
+        logger.info("Sleeping for 3 minutes before starting epoch")
+        await asyncio.sleep(180)
 
         # ---- Run upscaling & compression epochs in parallel ---- #
         async def _run_upscaling():
             if not upscaling_miners:
                 return
             
-            logger.info("🧩 Sleeping for 3 minute before starting upscaling epoch")
+            logger.info("🧩 Sleeping for 3 minutes before starting upscaling epoch")
             await asyncio.sleep(180)
             
             logger.info(f"Sending LengthCheckProtocol requests to {len(upscaling_miners)} upscaling miners")
@@ -375,8 +381,8 @@ class Validator(base.BaseValidator):
                 content_length = upscaling_content_lengths[i] if i < len(upscaling_content_lengths) else 10
                 upscaling_miners_with_lengths.append((axon, uid, content_length))
 
-            logger.info(f"Sleeping for 2 minute before querying upscaling miners")
-            await asyncio.sleep(120)
+            logger.info(f"Sleeping for 3 minutes before querying upscaling miners")
+            await asyncio.sleep(180)
 
             await self.process_upscaling_miners(upscaling_miners_with_lengths, version)
 
@@ -405,9 +411,11 @@ class Validator(base.BaseValidator):
         logger.info(f"Completed one epoch within {epoch_processed_time:.2f} seconds")
 
         if epoch_processed_time < 60: # if epoch completed within 60 seconds in case of no miners requiring synth checking, sleep for 10 minutes
+            logger.info(f"Sleeping for 10 minutes before starting next cycle")
             await asyncio.sleep(60 * 10)
         else:
-            await asyncio.sleep(2)
+            logger.info(f"Sleeping for 3 minutes before starting next cycle")
+            await asyncio.sleep(180) 
 
     #   --------------------------------------------------------------------------- #
     #  Helper – turn the raw list of (axon, uid) into a dict {uid: (axon, uid)}
@@ -641,7 +649,7 @@ class Validator(base.BaseValidator):
         # The validator owns the job_id — assign it before sending.
         job_id = str(uuid.uuid4())
         synapse_job.job_id = job_id
-        logger.info(f"UID {uid} → sending job kick-off | job_id={job_id} | synapse=\n{synapse_job}")
+        logger.info(f"UID {uid} → sending job kick-off | job_id={job_id} ")
         try:
             raw = await self.dendrite.forward(
                 axons=[axon], synapse=synapse_job, timeout=60
@@ -1536,10 +1544,14 @@ class WeightSynthesizer:
         self.validator = validator
 
     async def run(self):
+        dev_mode = os.getenv("DEV_MODE", "False").lower() == "true"
         while True:
             try:
-                logger.info("Running weight_manager...")
-                await self.validator.set_weights()  
+                if dev_mode:
+                    logger.info("Not running weight_manager (DEV_MODE)...")
+                else:
+                    logger.info("Running weight_manager...")
+                    await self.validator.set_weights()
             except Exception as e:
                 logger.error(f"Error in WeightSynthesizer: {e}", exc_info=True)
             await asyncio.sleep(1200)  
@@ -1548,7 +1560,8 @@ class WeightSynthesizer:
 if __name__ == "__main__":
     validator = Validator()
     weight_synthesizer = WeightSynthesizer(validator)
-    time.sleep(1300) # wait till the video scheduler is ready
+    dev_mode = os.getenv("DEV_MODE", "False").lower() == "true"
+    time.sleep(10 if dev_mode else 1300) # wait till the video scheduler is ready
 
     set_scheduler_ready(validator.redis_conn, False)
     logger.info("Set scheduler readiness flag to False")

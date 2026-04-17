@@ -1,16 +1,27 @@
 import uuid
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Security
+from fastapi.security import APIKeyHeader
 from typing import Optional
 
 from config import logger
 from models import (
-    UpscaleRequest, UpscaleResponse, CompressionRequest, CompressionResponse, StatusResponse, 
+    UpscaleRequest, UpscaleResponse, CompressionRequest, CompressionResponse, StatusResponse,
     ResultResponse, TaskStatus, UpdateTaskStatusRequest, TaskCountResponse
 )
 from services import get_task_service, get_redis_service, TaskService
 from config import get_settings
 
-router = APIRouter()
+api_key_header = APIKeyHeader(name="X-API-Key")
+
+async def verify_api_key(api_key: str = Security(api_key_header)):
+    settings = get_settings()
+    if not settings.ORGANIC_API_KEY:
+        return None
+    if not api_key or api_key != settings.ORGANIC_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return api_key
+
+router = APIRouter(dependencies=[Depends(verify_api_key)])
 
 @router.get("/ping")
 async def ping():
