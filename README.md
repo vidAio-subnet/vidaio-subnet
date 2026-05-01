@@ -3,7 +3,7 @@
 # **Vidaio Subnet**: Revolutionizing Video Processing with AI-Driven Decentralization <!-- omit in toc -->
 
 
-Please check our [Tweet](https://x.com/vidaio_τ) to follow us.
+Please check our [Tweet]([https://x.com/vidaio_τ](https://x.com/vidaio_)) to follow us.
 [Website](https://vidaio.io)
 [![vidAio](./docs/images/banner.png)](https://vidaio.io)
 
