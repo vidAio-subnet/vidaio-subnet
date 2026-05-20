@@ -1,5 +1,5 @@
 """
-Compression microservice — wraps ffmpeg via the processing Docker image.
+Compression microservice — wraps the ffmpeg binary installed in this container.
 
 Accepts a video path (on shared volume) OR a URL, codec, and quality settings,
 runs GPU-accelerated ffmpeg compression, returns the output path or S3 URL.
@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import subprocess
 import uuid
 from typing import Optional
 
@@ -31,9 +30,7 @@ log = logging.getLogger("compression")
 
 app = FastAPI(title="Video Compression Service")
 
-PROCESSING_IMAGE = os.getenv("PROCESSING_IMAGE", "organic-proxy-processing:latest")
 SHARED_VOLUME_PATH = os.getenv("SHARED_VOLUME_PATH", "/tmp/organic-proxy")
-DOCKER_VOLUME_NAME = os.getenv("DOCKER_VOLUME_NAME", "")
 MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_COMPRESSION", "2"))
 
 # Storage provider: "hippius" or "s3" (default)
@@ -156,39 +153,6 @@ class CompressResponse(BaseModel):
     queued_tasks: Optional[int] = None
 
 
-def _detect_volume_name() -> str:
-    if DOCKER_VOLUME_NAME:
-        return DOCKER_VOLUME_NAME
-    hostname = os.environ.get("HOSTNAME", "")
-    if hostname:
-        try:
-            result = subprocess.run(
-                ["docker", "inspect", "--format",
-                 '{{range .Mounts}}{{if eq .Destination "' + SHARED_VOLUME_PATH + '"}}{{.Name}}{{end}}{{end}}',
-                 hostname],
-                capture_output=True, text=True, timeout=10,
-            )
-            vol = result.stdout.strip()
-            if vol:
-                log.info(f"Auto-detected volume name: {vol}")
-                return vol
-        except Exception as e:
-            log.warning(f"Volume auto-detect failed: {e}")
-    fallback = "organic-proxy_video-tmp"
-    log.warning(f"Using fallback volume name: {fallback}")
-    return fallback
-
-
-_resolved_volume: Optional[str] = None
-
-
-def _get_volume_name() -> str:
-    global _resolved_volume
-    if _resolved_volume is None:
-        _resolved_volume = _detect_volume_name()
-    return _resolved_volume
-
-
 @app.get("/health")
 async def health():
     return {
@@ -215,6 +179,8 @@ async def compress(req: CompressRequest):
     remote_mode = _is_url(req.video_path)
     encoder = CODEC_MAP.get(req.codec.upper(), "av1_nvenc")
 
+    os.makedirs(SHARED_VOLUME_PATH, exist_ok=True)
+
     # --- Resolve input to local path ---
     if remote_mode:
         local_input = os.path.join(SHARED_VOLUME_PATH, f"{task_label}_input.mp4")
@@ -231,15 +197,11 @@ async def compress(req: CompressRequest):
     output_filename = f"{basename}_compressed.mp4"
     output_path = os.path.join(SHARED_VOLUME_PATH, output_filename)
 
-    # Build paths relative to shared volume
-    rel_input = os.path.relpath(local_input, SHARED_VOLUME_PATH)
-    rel_output = os.path.relpath(output_path, SHARED_VOLUME_PATH)
-
     # Build ffmpeg command
     ffmpeg_args = [
         "ffmpeg", "-y",
         "-hwaccel", "cuda",
-        "-i", f"/workspace/{rel_input}",
+        "-i", local_input,
     ]
 
     ffmpeg_args.extend(["-c:v", encoder])
@@ -257,16 +219,9 @@ async def compress(req: CompressRequest):
         ffmpeg_args.extend(["-vf", f"scale={w}:{h}"])
 
     ffmpeg_args.extend(["-c:a", "copy"])
-    ffmpeg_args.append(f"/workspace/{rel_output}")
+    ffmpeg_args.append(output_path)
 
-    cmd = [
-        "docker", "run",
-        "--gpus", "all",
-        "-e", "NVIDIA_DRIVER_CAPABILITIES=video,compute,utility",
-        "--rm",
-        "-v", f"{_get_volume_name()}:/workspace",
-        PROCESSING_IMAGE,
-    ] + ffmpeg_args
+    cmd = ffmpeg_args
 
     global _queue_size, _active_count
 
