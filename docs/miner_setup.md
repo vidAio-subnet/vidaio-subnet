@@ -80,7 +80,7 @@ pip install -e .
 
 ## Configure Storage
 
-The container services download validator payload URLs, process videos locally, upload outputs to S3-compatible storage, and return presigned URLs to the miner.
+The miner process downloads validator payload URLs, places local files in a shared work directory, forwards local paths to the processing containers, uploads processed outputs to S3-compatible storage, and returns presigned URLs. The processing containers run without egress.
 
 Create a miner service environment file:
 
@@ -92,6 +92,7 @@ Edit `miner/.env` with your storage credentials:
 
 ```env
 COMPOSE_PROJECT_NAME=miner
+ORGANIC_PROXY_SHARED_DIR=/tmp/vidaio-miner-video-tmp
 ORGANIC_PROXY_STORAGE_PROVIDER=backblaze
 ORGANIC_PROXY_STORAGE_S3_ACCESS_KEY_ID=your-access-key
 ORGANIC_PROXY_STORAGE_S3_SECRET_ACCESS_KEY=your-secret-key
@@ -101,6 +102,13 @@ ORGANIC_PROXY_STORAGE_S3_ENDPOINT_URL=https://s3.us-east-005.backblazeb2.com
 ```
 
 For AWS S3, use the same variable names and leave `ORGANIC_PROXY_STORAGE_S3_ENDPOINT_URL` blank.
+
+Create the shared work directory before starting the miner and containers:
+
+```bash
+mkdir -p /tmp/vidaio-miner-video-tmp
+chmod 777 /tmp/vidaio-miner-video-tmp
+```
 
 ---
 
@@ -169,12 +177,14 @@ cd ..
 ```bash
 export MINER_UPSCALING_SERVICE_URL=http://localhost:8003
 export MINER_COMPRESSION_SERVICE_URL=http://localhost:8004
+export MINER_SHARED_VOLUME_PATH=/tmp/vidaio-miner-video-tmp
 ```
 
 Defaults:
 
 - `MINER_UPSCALING_SERVICE_URL` defaults to `http://localhost:8003` for Video2X upscaling.
 - `MINER_COMPRESSION_SERVICE_URL` defaults to `http://localhost:8004`.
+- `MINER_SHARED_VOLUME_PATH` defaults to `ORGANIC_PROXY_SHARED_DIR`, then `/tmp/vidaio-miner-video-tmp`.
 - For FFmpeg upscaling, override `MINER_UPSCALING_SERVICE_URL` to `http://localhost:8005`.
 
 Useful service checks:
@@ -249,6 +259,7 @@ pm2 stop video-miner
 
 - Run either `upscaling-video2x` or `upscaling-ffmpeg` for an upscaling miner. They expose different host ports but both implement `/upscale`.
 - Run `compression` for a compression miner. It implements `/compress`.
+- Processing containers are attached to the internal `no-egress` Docker network and have `DISABLE_REMOTE_IO=true`; they only process local files from the shared work directory.
 - The old PM2 service scripts for upscaling and compression are redundant with this container framework.
 - For Video2X-specific preparation, use `miner/upscaling/SETUP.md`.
 - For FFmpeg upscaling build/runtime notes, use `miner/upscaling/ffmpeg/SETUP.md`.

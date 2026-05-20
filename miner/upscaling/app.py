@@ -32,6 +32,8 @@ app = FastAPI(title="Video Upscaling Service")
 VIDEO2X_IMAGE = os.getenv("VIDEO2X_IMAGE", "ghcr.io/k4yt3x/video2x:6.4.0")
 SHARED_VOLUME_PATH = os.getenv("SHARED_VOLUME_PATH", "/tmp/organic-proxy")
 DOCKER_VOLUME_NAME = os.getenv("DOCKER_VOLUME_NAME", "")
+HOST_SHARED_VOLUME_PATH = os.getenv("HOST_SHARED_VOLUME_PATH", "").strip()
+DISABLE_REMOTE_IO = os.getenv("DISABLE_REMOTE_IO", "false").lower() in ("1", "true", "yes")
 MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_UPSCALING", "2"))
 
 # Storage provider label only. Uploads use one S3-compatible code path.
@@ -175,6 +177,12 @@ def _get_volume_name() -> str:
     return _resolved_volume
 
 
+def _get_docker_mount_source() -> str:
+    if HOST_SHARED_VOLUME_PATH:
+        return HOST_SHARED_VOLUME_PATH
+    return _get_volume_name()
+
+
 @app.get("/health")
 async def health():
     return {
@@ -204,6 +212,9 @@ async def upscale(req: UpscaleRequest):
     task_label = req.task_id or uuid.uuid4().hex[:8]
     remote_mode = _is_url(req.video_path)
 
+    if remote_mode and DISABLE_REMOTE_IO:
+        return UpscaleResponse(success=False, error="Remote URL input is disabled for this no-egress service")
+
     # --- Resolve input to local path ---
     if remote_mode:
         local_input = os.path.join(SHARED_VOLUME_PATH, f"{task_label}_input.mp4")
@@ -228,8 +239,10 @@ async def upscale(req: UpscaleRequest):
         "docker", "run",
         "--gpus", "all",
         "-e", "NVIDIA_DRIVER_CAPABILITIES=video,compute,utility",
+        "--network", "none",
+        "--pull", "never",
         "--rm",
-        "-v", f"{_get_volume_name()}:/host",
+        "-v", f"{_get_docker_mount_source()}:/host",
         VIDEO2X_IMAGE,
         "-i", f"/host/{rel_input}",
         "-o", f"/host/{rel_output}",

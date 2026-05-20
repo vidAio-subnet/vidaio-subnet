@@ -2,10 +2,14 @@ x-upscaling-video2x-base: &upscaling-video2x-base
   build: ./upscaling
   restart: unless-stopped
   profiles: ["upscaling-video2x"]
+  networks:
+    - no-egress
   environment:
     - VIDEO2X_IMAGE=ghcr.io/k4yt3x/video2x:6.4.0
     - SHARED_VOLUME_PATH=/tmp/organic-proxy
+    - HOST_SHARED_VOLUME_PATH=${ORGANIC_PROXY_SHARED_DIR:-/tmp/vidaio-miner-video-tmp}
     - DOCKER_VOLUME_NAME=${COMPOSE_PROJECT_NAME:-organic-proxy}_video-tmp
+    - DISABLE_REMOTE_IO=true
     - MAX_CONCURRENT_UPSCALING=2
     - ORGANIC_PROXY_STORAGE_PROVIDER=${ORGANIC_PROXY_STORAGE_PROVIDER:-s3}
     - ORGANIC_PROXY_STORAGE_S3_REGION=${ORGANIC_PROXY_STORAGE_S3_REGION:-us-east-1}
@@ -15,7 +19,7 @@ x-upscaling-video2x-base: &upscaling-video2x-base
     - ORGANIC_PROXY_STORAGE_S3_ENDPOINT_URL=${ORGANIC_PROXY_STORAGE_S3_ENDPOINT_URL:-${ORGANIC_PROXY_STORAGE_S3_ENDPOINT:-}}
     - ORGANIC_PROXY_STORAGE_S3_PRESIGNED_EXPIRY=${ORGANIC_PROXY_STORAGE_S3_PRESIGNED_EXPIRY:-${S3_PRESIGNED_EXPIRY:-3600}}
   volumes:
-    - video-tmp:/tmp/organic-proxy
+    - ${ORGANIC_PROXY_SHARED_DIR:-/tmp/vidaio-miner-video-tmp}:/tmp/organic-proxy
     - /var/run/docker.sock:/var/run/docker.sock
   healthcheck:
     test: ["CMD", "curl", "-sf", "http://localhost:8003/health"]
@@ -29,10 +33,13 @@ x-upscaling-ffmpeg-base: &upscaling-ffmpeg-base
   restart: unless-stopped
   profiles: ["upscaling-ffmpeg"]
   gpus: all
+  networks:
+    - no-egress
   environment:
     - NVIDIA_VISIBLE_DEVICES=all
     - NVIDIA_DRIVER_CAPABILITIES=video,compute,utility
     - SHARED_VOLUME_PATH=/tmp/organic-proxy
+    - DISABLE_REMOTE_IO=true
     - MAX_CONCURRENT_UPSCALING=2
     - ORGANIC_PROXY_STORAGE_PROVIDER=${ORGANIC_PROXY_STORAGE_PROVIDER:-s3}
     - ORGANIC_PROXY_STORAGE_S3_REGION=${ORGANIC_PROXY_STORAGE_S3_REGION:-us-east-1}
@@ -42,7 +49,7 @@ x-upscaling-ffmpeg-base: &upscaling-ffmpeg-base
     - ORGANIC_PROXY_STORAGE_S3_ENDPOINT_URL=${ORGANIC_PROXY_STORAGE_S3_ENDPOINT_URL:-${ORGANIC_PROXY_STORAGE_S3_ENDPOINT:-}}
     - ORGANIC_PROXY_STORAGE_S3_PRESIGNED_EXPIRY=${ORGANIC_PROXY_STORAGE_S3_PRESIGNED_EXPIRY:-${S3_PRESIGNED_EXPIRY:-3600}}
   volumes:
-    - video-tmp:/tmp/organic-proxy
+    - ${ORGANIC_PROXY_SHARED_DIR:-/tmp/vidaio-miner-video-tmp}:/tmp/organic-proxy
   healthcheck:
     test: ["CMD", "curl", "-sf", "http://localhost:8003/health"]
     interval: 30s
@@ -54,10 +61,13 @@ x-compression-base: &compression-base
   build: ./compression
   restart: unless-stopped
   gpus: all
+  networks:
+    - no-egress
   environment:
     - NVIDIA_VISIBLE_DEVICES=all
     - NVIDIA_DRIVER_CAPABILITIES=video,compute,utility
     - SHARED_VOLUME_PATH=/tmp/organic-proxy
+    - DISABLE_REMOTE_IO=true
     - MAX_CONCURRENT_COMPRESSION=2
     - ORGANIC_PROXY_STORAGE_PROVIDER=${ORGANIC_PROXY_STORAGE_PROVIDER:-s3}
     - ORGANIC_PROXY_STORAGE_S3_REGION=${ORGANIC_PROXY_STORAGE_S3_REGION:-us-east-1}
@@ -67,7 +77,7 @@ x-compression-base: &compression-base
     - ORGANIC_PROXY_STORAGE_S3_ENDPOINT_URL=${ORGANIC_PROXY_STORAGE_S3_ENDPOINT_URL:-${ORGANIC_PROXY_STORAGE_S3_ENDPOINT:-}}
     - ORGANIC_PROXY_STORAGE_S3_PRESIGNED_EXPIRY=${ORGANIC_PROXY_STORAGE_S3_PRESIGNED_EXPIRY:-${S3_PRESIGNED_EXPIRY:-3600}}
   volumes:
-    - video-tmp:/tmp/organic-proxy
+    - ${ORGANIC_PROXY_SHARED_DIR:-/tmp/vidaio-miner-video-tmp}:/tmp/organic-proxy
   healthcheck:
     test: ["CMD", "curl", "-sf", "http://localhost:8004/health"]
     interval: 30s
@@ -91,5 +101,6 @@ services:
     ports:
       - "8004:8004"
 
-volumes:
-  video-tmp:
+networks:
+  no-egress:
+    internal: true

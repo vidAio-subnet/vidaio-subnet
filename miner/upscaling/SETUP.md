@@ -11,3 +11,5 @@ sudo systemctl restart docker
 # Pull video2x image
 docker pull ghcr.io/k4yt3x/video2x:6.4.0
 ```
+
+The Video2X worker runs with `--network none` and `--pull never`, so this image must be present locally before starting the `upscaling-video2x` profile.

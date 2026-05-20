@@ -3,11 +3,15 @@ import os
 import time
 import traceback
 import uuid
+from pathlib import Path
 from typing import Tuple
 
+import boto3
 import httpx
-from loguru import logger
 import bittensor as bt
+from botocore.config import Config as BotoConfig
+from dotenv import load_dotenv
+from loguru import logger
 from vidaio_subnet_core.base.miner import BaseMiner
 from vidaio_subnet_core.protocol import (
     VideoUpscalingProtocol,
@@ -26,6 +30,9 @@ from vidaio_subnet_core.protocol import (
 
 from vidaio_subnet_core.utilities.version import check_version
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(REPO_ROOT / "miner" / ".env", override=False)
+
 MAX_CONTENT_LEN = ContentLength.FIVE
 warrant_task = TaskType.UPSCALING
 
@@ -33,6 +40,26 @@ UPSCALING_SERVICE_URL = os.getenv("MINER_UPSCALING_SERVICE_URL", "http://localho
 COMPRESSION_SERVICE_URL = os.getenv("MINER_COMPRESSION_SERVICE_URL", "http://localhost:8004").rstrip("/")
 UPSCALING_SERVICE_TIMEOUT_SECONDS = float(os.getenv("MINER_UPSCALING_SERVICE_TIMEOUT_SECONDS", "1200"))
 COMPRESSION_SERVICE_TIMEOUT_SECONDS = float(os.getenv("MINER_COMPRESSION_SERVICE_TIMEOUT_SECONDS", "600"))
+MINER_DOWNLOAD_TIMEOUT_SECONDS = float(os.getenv("MINER_DOWNLOAD_TIMEOUT_SECONDS", "600"))
+MINER_UPLOAD_URL_EXPIRY_SECONDS = int(os.getenv("ORGANIC_PROXY_STORAGE_S3_PRESIGNED_EXPIRY", os.getenv("S3_PRESIGNED_EXPIRY", "3600")))
+
+HOST_SHARED_VOLUME_PATH = Path(
+    os.getenv("MINER_SHARED_VOLUME_PATH")
+    or os.getenv("ORGANIC_PROXY_SHARED_DIR", "/tmp/vidaio-miner-video-tmp")
+).expanduser()
+if not HOST_SHARED_VOLUME_PATH.is_absolute():
+    HOST_SHARED_VOLUME_PATH = REPO_ROOT / HOST_SHARED_VOLUME_PATH
+CONTAINER_SHARED_VOLUME_PATH = os.getenv("MINER_CONTAINER_SHARED_VOLUME_PATH", "/tmp/organic-proxy").rstrip("/")
+
+S3_REGION = os.getenv("ORGANIC_PROXY_STORAGE_S3_REGION", "us-east-1").strip() or "us-east-1"
+S3_BUCKET = os.getenv("ORGANIC_PROXY_STORAGE_S3_BUCKET_NAME", "").strip()
+S3_ACCESS_KEY_ID = os.getenv("ORGANIC_PROXY_STORAGE_S3_ACCESS_KEY_ID", "").strip()
+S3_SECRET_ACCESS_KEY = os.getenv("ORGANIC_PROXY_STORAGE_S3_SECRET_ACCESS_KEY", "").strip()
+S3_ENDPOINT_URL = (
+    os.getenv("ORGANIC_PROXY_STORAGE_S3_ENDPOINT_URL")
+    or os.getenv("ORGANIC_PROXY_STORAGE_S3_ENDPOINT")
+    or ""
+).strip()
 
 TASK_TYPE_TO_SCALE = {
     "SD24K": 4,
@@ -48,6 +75,10 @@ COMPRESSION_CQ_BY_TYPE = {
 }
 
 
+def _is_url(path: str) -> bool:
+    return path.startswith("http://") or path.startswith("https://")
+
+
 class Miner(BaseMiner):
     def __init__(self, config: dict | None = None) -> None:
         """
@@ -58,15 +89,89 @@ class Miner(BaseMiner):
         # Structure: { job_id: {"task": asyncio.Task, "result": str | None, "error": str | None} }
         self._jobs: dict[str, dict] = {}
 
-    def _upscaling_service_payload(self, payload_url: str, task_type: str) -> dict:
+    def _container_shared_path(self, host_path: Path) -> str:
+        return f"{CONTAINER_SHARED_VOLUME_PATH}/{host_path.name}"
+
+    def _host_shared_path(self, container_path: str) -> Path:
+        relative_path = container_path
+        if container_path.startswith(CONTAINER_SHARED_VOLUME_PATH):
+            relative_path = container_path[len(CONTAINER_SHARED_VOLUME_PATH):].lstrip("/")
+        return HOST_SHARED_VOLUME_PATH / relative_path
+
+    async def _download_to_shared_volume(self, video_url: str, task_id: str) -> tuple[Path, str]:
+        HOST_SHARED_VOLUME_PATH.mkdir(parents=True, exist_ok=True)
+        host_path = HOST_SHARED_VOLUME_PATH / f"{task_id}_input.mp4"
+
+        logger.info(f"Downloading validator payload to shared volume: {host_path}")
+        timeout = httpx.Timeout(MINER_DOWNLOAD_TIMEOUT_SECONDS)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            async with client.stream("GET", video_url) as response:
+                response.raise_for_status()
+                with open(host_path, "wb") as file:
+                    async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
+                        file.write(chunk)
+
+        return host_path, self._container_shared_path(host_path)
+
+    def _get_s3_client(self):
+        client_kwargs = {
+            "region_name": S3_REGION,
+            "aws_access_key_id": S3_ACCESS_KEY_ID or None,
+            "aws_secret_access_key": S3_SECRET_ACCESS_KEY or None,
+            "config": BotoConfig(signature_version="s3v4"),
+        }
+        if S3_ENDPOINT_URL:
+            client_kwargs["endpoint_url"] = S3_ENDPOINT_URL
+        return boto3.client("s3", **client_kwargs)
+
+    async def _upload_processed_video(self, host_path: Path, service_name: str, task_id: str) -> str | None:
+        missing = []
+        if not S3_BUCKET:
+            missing.append("ORGANIC_PROXY_STORAGE_S3_BUCKET_NAME")
+        if not S3_ACCESS_KEY_ID:
+            missing.append("ORGANIC_PROXY_STORAGE_S3_ACCESS_KEY_ID")
+        if not S3_SECRET_ACCESS_KEY:
+            missing.append("ORGANIC_PROXY_STORAGE_S3_SECRET_ACCESS_KEY")
+
+        if missing:
+            logger.error(f"Missing storage configuration: {', '.join(missing)}")
+            return None
+
+        if not host_path.exists():
+            logger.error(f"Processed file not found on shared volume: {host_path}")
+            return None
+
+        object_key = f"processing/{service_name}/{task_id}/{host_path.name}"
+
+        def _upload_and_sign() -> str:
+            client = self._get_s3_client()
+            client.upload_file(str(host_path), S3_BUCKET, object_key)
+            return client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": S3_BUCKET, "Key": object_key},
+                ExpiresIn=min(MINER_UPLOAD_URL_EXPIRY_SECONDS, 604800),
+            )
+
+        logger.info(f"Uploading processed {service_name} output: {object_key}")
+        return await asyncio.to_thread(_upload_and_sign)
+
+    def _cleanup_shared_files(self, *paths: Path | None):
+        for path in paths:
+            if path and path.exists():
+                try:
+                    path.unlink()
+                except OSError as e:
+                    logger.warning(f"Failed to remove shared file {path}: {e}")
+
+    def _upscaling_service_payload(self, video_path: str, task_type: str, task_id: str) -> dict:
         scale = TASK_TYPE_TO_SCALE.get(task_type, 2)
         if task_type not in TASK_TYPE_TO_SCALE:
             logger.warning(f"Unknown upscaling task_type={task_type}, defaulting to 2x scale")
 
         return {
-            "video_path": payload_url,
+            "video_path": video_path,
             "scale": scale,
-            "task_id": uuid.uuid4().hex[:12],
+            "task_id": task_id,
         }
 
     def _compression_type_from_payload(self, payload) -> str:
@@ -82,11 +187,11 @@ class Miner(BaseMiner):
             return "Medium"
         return "Low"
 
-    def _compression_service_payload(self, payload) -> dict:
+    def _compression_service_payload(self, payload, video_path: str, task_id: str) -> dict:
         compression_type = self._compression_type_from_payload(payload)
         compression_config = {
-            "video_path": payload.reference_video_url,
-            "task_id": uuid.uuid4().hex[:12],
+            "video_path": video_path,
+            "task_id": task_id,
             "codec": payload.target_codec,
             "codec_mode": payload.codec_mode.upper(),
             "target_bitrate": int(float(payload.target_bitrate) * 1_000_000),
@@ -134,22 +239,52 @@ class Miner(BaseMiner):
         return processed_video_url
 
     async def _forward_upscaling_to_service(self, payload_url: str, task_type: str) -> str | None:
-        return await self._post_processing_service(
-            "upscaling",
-            UPSCALING_SERVICE_URL,
-            "/upscale",
-            self._upscaling_service_payload(payload_url, task_type),
-            UPSCALING_SERVICE_TIMEOUT_SECONDS,
-        )
+        task_id = uuid.uuid4().hex[:12]
+        input_host_path = None
+        output_host_path = None
+        try:
+            input_host_path, input_container_path = await self._download_to_shared_volume(payload_url, task_id)
+            processed_ref = await self._post_processing_service(
+                "upscaling",
+                UPSCALING_SERVICE_URL,
+                "/upscale",
+                self._upscaling_service_payload(input_container_path, task_type, task_id),
+                UPSCALING_SERVICE_TIMEOUT_SECONDS,
+            )
+            if processed_ref is None:
+                return None
+            if _is_url(processed_ref):
+                return processed_ref
+
+            output_host_path = self._host_shared_path(processed_ref)
+            return await self._upload_processed_video(output_host_path, "upscaling", task_id)
+        finally:
+            self._cleanup_shared_files(input_host_path, output_host_path)
 
     async def _forward_compression_to_service(self, payload) -> str | None:
-        return await self._post_processing_service(
-            "compression",
-            COMPRESSION_SERVICE_URL,
-            "/compress",
-            self._compression_service_payload(payload),
-            COMPRESSION_SERVICE_TIMEOUT_SECONDS,
-        )
+        task_id = uuid.uuid4().hex[:12]
+        input_host_path = None
+        output_host_path = None
+        try:
+            input_host_path, input_container_path = await self._download_to_shared_volume(
+                payload.reference_video_url, task_id
+            )
+            processed_ref = await self._post_processing_service(
+                "compression",
+                COMPRESSION_SERVICE_URL,
+                "/compress",
+                self._compression_service_payload(payload, input_container_path, task_id),
+                COMPRESSION_SERVICE_TIMEOUT_SECONDS,
+            )
+            if processed_ref is None:
+                return None
+            if _is_url(processed_ref):
+                return processed_ref
+
+            output_host_path = self._host_shared_path(processed_ref)
+            return await self._upload_processed_video(output_host_path, "compression", task_id)
+        finally:
+            self._cleanup_shared_files(input_host_path, output_host_path)
 
     async def forward_upscaling_requests(self, synapse: VideoUpscalingProtocol) -> VideoUpscalingProtocol:
         """

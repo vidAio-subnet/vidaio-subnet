@@ -23,6 +23,7 @@ MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_UPSCALING", "2"))
 FFMPEG_CODEC = os.getenv("FFMPEG_CODEC", "av1_nvenc")
 FFMPEG_PRESET = os.getenv("FFMPEG_PRESET", "p4")
 FFMPEG_CQ = int(os.getenv("FFMPEG_CQ", "25"))
+DISABLE_REMOTE_IO = os.getenv("DISABLE_REMOTE_IO", "false").lower() in ("1", "true", "yes")
 
 STORAGE_PROVIDER = os.getenv("ORGANIC_PROXY_STORAGE_PROVIDER", "s3").lower()
 S3_REGION = os.getenv("ORGANIC_PROXY_STORAGE_S3_REGION", "us-east-1").strip() or "us-east-1"
@@ -107,6 +108,9 @@ async def upscale(req: UpscaleRequest):
 
     task = req.task_id or uuid.uuid4().hex[:8]
     remote = _is_url(req.video_path)
+    if remote and DISABLE_REMOTE_IO:
+        return UpscaleResponse(success=False, error="Remote URL input is disabled for this no-egress service")
+
     local_input = os.path.join(SHARED_VOLUME_PATH, f"{task}_input.mp4") if remote else req.video_path
     if remote:
         await _download_url(req.video_path, local_input)

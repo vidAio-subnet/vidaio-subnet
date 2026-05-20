@@ -30,6 +30,7 @@ app = FastAPI(title="Video Compression Service")
 
 SHARED_VOLUME_PATH = os.getenv("SHARED_VOLUME_PATH", "/tmp/organic-proxy")
 MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_COMPRESSION", "2"))
+DISABLE_REMOTE_IO = os.getenv("DISABLE_REMOTE_IO", "false").lower() in ("1", "true", "yes")
 
 # Storage provider label only. Uploads use one S3-compatible code path.
 STORAGE_PROVIDER = os.getenv("ORGANIC_PROXY_STORAGE_PROVIDER", "s3").lower()
@@ -185,6 +186,9 @@ async def compress(req: CompressRequest):
     task_label = req.task_id or uuid.uuid4().hex[:8]
     remote_mode = _is_url(req.video_path)
     encoder = CODEC_MAP.get(req.codec.upper(), "av1_nvenc")
+
+    if remote_mode and DISABLE_REMOTE_IO:
+        return CompressResponse(success=False, error="Remote URL input is disabled for this no-egress service")
 
     os.makedirs(SHARED_VOLUME_PATH, exist_ok=True)
 
