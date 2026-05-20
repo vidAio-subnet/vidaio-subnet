@@ -1,5 +1,6 @@
 import asyncio
 import os
+import posixpath
 import time
 import traceback
 import uuid
@@ -93,10 +94,22 @@ class Miner(BaseMiner):
         return f"{CONTAINER_SHARED_VOLUME_PATH}/{host_path.name}"
 
     def _host_shared_path(self, container_path: str) -> Path:
-        relative_path = container_path
-        if container_path.startswith(CONTAINER_SHARED_VOLUME_PATH):
-            relative_path = container_path[len(CONTAINER_SHARED_VOLUME_PATH):].lstrip("/")
-        return HOST_SHARED_VOLUME_PATH / relative_path
+        shared_mount = posixpath.normpath(CONTAINER_SHARED_VOLUME_PATH)
+        normalized_path = posixpath.normpath(container_path)
+
+        if normalized_path == shared_mount or not normalized_path.startswith(f"{shared_mount}/"):
+            raise ValueError(f"Service returned path outside shared volume: {container_path}")
+
+        relative_path = posixpath.relpath(normalized_path, shared_mount)
+        host_path = (HOST_SHARED_VOLUME_PATH / relative_path).resolve()
+        shared_root = HOST_SHARED_VOLUME_PATH.resolve()
+
+        try:
+            host_path.relative_to(shared_root)
+        except ValueError:
+            raise ValueError(f"Mapped host path escapes shared volume: {host_path}") from None
+
+        return host_path
 
     async def _download_to_shared_volume(self, video_url: str, task_id: str) -> tuple[Path, str]:
         HOST_SHARED_VOLUME_PATH.mkdir(parents=True, exist_ok=True)
@@ -104,12 +117,16 @@ class Miner(BaseMiner):
 
         logger.info(f"Downloading validator payload to shared volume: {host_path}")
         timeout = httpx.Timeout(MINER_DOWNLOAD_TIMEOUT_SECONDS)
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            async with client.stream("GET", video_url) as response:
-                response.raise_for_status()
-                with open(host_path, "wb") as file:
-                    async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
-                        file.write(chunk)
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                async with client.stream("GET", video_url) as response:
+                    response.raise_for_status()
+                    with open(host_path, "wb") as file:
+                        async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
+                            file.write(chunk)
+        except Exception:
+            self._cleanup_shared_files(host_path)
+            raise
 
         return host_path, self._container_shared_path(host_path)
 
