@@ -33,15 +33,15 @@ MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_COMPRESSION", "2"))
 
 # Storage provider label only. Uploads use one S3-compatible code path.
 STORAGE_PROVIDER = os.getenv("ORGANIC_PROXY_STORAGE_PROVIDER", "s3").lower()
-S3_REGION = os.getenv("ORGANIC_PROXY_STORAGE_S3_REGION", "us-east-1")
-S3_BUCKET = os.getenv("ORGANIC_PROXY_STORAGE_S3_BUCKET_NAME", "")
-S3_ACCESS_KEY_ID = os.getenv("ORGANIC_PROXY_STORAGE_S3_ACCESS_KEY_ID", "")
-S3_SECRET_ACCESS_KEY = os.getenv("ORGANIC_PROXY_STORAGE_S3_SECRET_ACCESS_KEY", "")
+S3_REGION = os.getenv("ORGANIC_PROXY_STORAGE_S3_REGION", "us-east-1").strip() or "us-east-1"
+S3_BUCKET = os.getenv("ORGANIC_PROXY_STORAGE_S3_BUCKET_NAME", "").strip()
+S3_ACCESS_KEY_ID = os.getenv("ORGANIC_PROXY_STORAGE_S3_ACCESS_KEY_ID", "").strip()
+S3_SECRET_ACCESS_KEY = os.getenv("ORGANIC_PROXY_STORAGE_S3_SECRET_ACCESS_KEY", "").strip()
 S3_ENDPOINT_URL = (
     os.getenv("ORGANIC_PROXY_STORAGE_S3_ENDPOINT_URL")
     or os.getenv("ORGANIC_PROXY_STORAGE_S3_ENDPOINT")
     or ""
-)
+).strip()
 S3_PRESIGNED_EXPIRY = int(
     os.getenv("ORGANIC_PROXY_STORAGE_S3_PRESIGNED_EXPIRY")
     or os.getenv("S3_PRESIGNED_EXPIRY")
@@ -81,6 +81,30 @@ def _get_s3_client():
     return boto3.client("s3", **client_kwargs)
 
 
+def _storage_config_status() -> dict[str, object]:
+    return {
+        "provider": STORAGE_PROVIDER,
+        "region": S3_REGION,
+        "bucket_configured": bool(S3_BUCKET),
+        "access_key_configured": bool(S3_ACCESS_KEY_ID),
+        "secret_key_configured": bool(S3_SECRET_ACCESS_KEY),
+        "endpoint_configured": bool(S3_ENDPOINT_URL),
+    }
+
+
+def _validate_s3_config():
+    missing = []
+    if not S3_BUCKET:
+        missing.append("ORGANIC_PROXY_STORAGE_S3_BUCKET_NAME")
+    if not S3_ACCESS_KEY_ID:
+        missing.append("ORGANIC_PROXY_STORAGE_S3_ACCESS_KEY_ID")
+    if not S3_SECRET_ACCESS_KEY:
+        missing.append("ORGANIC_PROXY_STORAGE_S3_SECRET_ACCESS_KEY")
+
+    if missing:
+        raise RuntimeError(f"Missing storage configuration: {', '.join(missing)}")
+
+
 async def _download_url(url: str, dest: str):
     log.info(f"Downloading {url[:80]}... → {dest}")
     async with httpx.AsyncClient(timeout=600.0, follow_redirects=True) as client:
@@ -93,9 +117,7 @@ async def _download_url(url: str, dest: str):
 
 
 def _upload_to_s3(local_path: str, key: str) -> str:
-    if not S3_BUCKET:
-        raise RuntimeError("Missing ORGANIC_PROXY_STORAGE_S3_BUCKET_NAME")
-
+    _validate_s3_config()
     client = _get_s3_client()
     client.upload_file(local_path, S3_BUCKET, key)
     url = client.generate_presigned_url(
@@ -144,6 +166,7 @@ async def health():
         "max_concurrent": MAX_CONCURRENT,
         "active_tasks": _active_count,
         "queued_tasks": max(0, _queue_size - _active_count),
+        "storage": _storage_config_status(),
     }
 
 
