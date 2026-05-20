@@ -1,19 +1,69 @@
-services:
-  compression:
-    build: ./compression
-    ports:
-      - "8004:8004"
-    volumes:
-      - video-tmp:/tmp/organic-proxy
-      - /var/run/docker.sock:/var/run/docker.sock
+x-upscaling-base: &upscaling-base
+  build: ./upscaling
+  restart: unless-stopped
+  environment:
+    - VIDEO2X_IMAGE=ghcr.io/k4yt3x/video2x:6.4.0
+    - SHARED_VOLUME_PATH=/tmp/organic-proxy
+    - DOCKER_VOLUME_NAME=${COMPOSE_PROJECT_NAME:-organic-proxy}_video-tmp
+    - MAX_CONCURRENT_UPSCALING=2
+    - ORGANIC_PROXY_STORAGE_PROVIDER=${ORGANIC_PROXY_STORAGE_PROVIDER:-s3}
+    - ORGANIC_PROXY_STORAGE_S3_REGION=${ORGANIC_PROXY_STORAGE_S3_REGION}
+    - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+    - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+    - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+    - S3_BUCKET=${S3_BUCKET}
+    - HIPPIUS_ACCESS_KEY=${HIPPIUS_ACCESS_KEY}
+    - HIPPIUS_SECRET_KEY=${HIPPIUS_SECRET_KEY}
+    - HIPPIUS_ENDPOINT=${HIPPIUS_ENDPOINT}
+    - HIPPIUS_BUCKET_NAME=${HIPPIUS_BUCKET_NAME}
+  volumes:
+    - video-tmp:/tmp/organic-proxy
+    - /var/run/docker.sock:/var/run/docker.sock
+  healthcheck:
+    test: ["CMD", "curl", "-sf", "http://localhost:8003/health"]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 10s
 
+x-compression-base: &compression-base
+  build: ./compression
+  restart: unless-stopped
+  gpus: all
+  environment:
+    - NVIDIA_VISIBLE_DEVICES=all
+    - NVIDIA_DRIVER_CAPABILITIES=video,compute,utility
+    - SHARED_VOLUME_PATH=/tmp/organic-proxy
+    - MAX_CONCURRENT_COMPRESSION=2
+    - ORGANIC_PROXY_STORAGE_PROVIDER=${ORGANIC_PROXY_STORAGE_PROVIDER:-s3}
+    - ORGANIC_PROXY_STORAGE_S3_REGION=${ORGANIC_PROXY_STORAGE_S3_REGION}
+    - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+    - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+    - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+    - S3_BUCKET=${S3_BUCKET}
+    - HIPPIUS_ACCESS_KEY=${HIPPIUS_ACCESS_KEY}
+    - HIPPIUS_SECRET_KEY=${HIPPIUS_SECRET_KEY}
+    - HIPPIUS_ENDPOINT=${HIPPIUS_ENDPOINT}
+    - HIPPIUS_BUCKET_NAME=${HIPPIUS_BUCKET_NAME}
+  volumes:
+    - video-tmp:/tmp/organic-proxy
+  healthcheck:
+    test: ["CMD", "curl", "-sf", "http://localhost:8004/health"]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 10s
+
+services:
   upscaling:
-    build: ./upscaling
+    <<: *upscaling-base
     ports:
       - "8003:8003"
-    volumes:
-      - video-tmp:/tmp/organic-proxy
-      - /var/run/docker.sock:/var/run/docker.sock
+
+  compression:
+    <<: *compression-base
+    ports:
+      - "8004:8004"
 
 volumes:
   video-tmp:
