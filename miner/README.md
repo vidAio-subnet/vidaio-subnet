@@ -17,6 +17,10 @@ This project includes three miner services:
    ```bash
    docker compose --profile upscaling-video2x up -d upscaling-video2x
    ```
+3. Point the miner at the FFmpeg profile port:
+   ```bash
+   export MINER_UPSCALING_SERVICE_URL=http://localhost:8003
+   ```
 
 ## FFmpeg Upscaling Miner
 1. (Optional) Review build/runtime notes in `miner/upscaling/ffmpeg/SETUP.md`.
@@ -24,8 +28,17 @@ This project includes three miner services:
    ```bash
    docker compose --profile upscaling-ffmpeg up -d upscaling-ffmpeg
    ```
+3. Point the miner at the FFmpeg profile port:
+   ```bash
+   export MINER_UPSCALING_SERVICE_URL=http://localhost:8005
+   ```
 
 ## Compression Miner
 ```bash
 docker compose up -d compression
 ```
+
+## Miner Forwarding
+`neurons/miner.py` forwards directly to the container services:
+- `MINER_UPSCALING_SERVICE_URL` defaults to `http://localhost:8003`.
+- `MINER_COMPRESSION_SERVICE_URL` defaults to `http://localhost:8004`.

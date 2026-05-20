@@ -1,9 +1,11 @@
-import time
-import uuid
-import traceback
-import os
 import asyncio
+import os
+import time
+import traceback
+import uuid
 from typing import Tuple
+
+import httpx
 from loguru import logger
 import bittensor as bt
 from vidaio_subnet_core.base.miner import BaseMiner
@@ -21,12 +23,30 @@ from vidaio_subnet_core.protocol import (
     JobKickoffResponse,
     PollResponse,
 )
-from services.miner_utilities.miner_utils import video_upscaler, video_compressor
 
 from vidaio_subnet_core.utilities.version import check_version
 
 MAX_CONTENT_LEN = ContentLength.FIVE
 warrant_task = TaskType.UPSCALING
+
+UPSCALING_SERVICE_URL = os.getenv("MINER_UPSCALING_SERVICE_URL", "http://localhost:8003").rstrip("/")
+COMPRESSION_SERVICE_URL = os.getenv("MINER_COMPRESSION_SERVICE_URL", "http://localhost:8004").rstrip("/")
+UPSCALING_SERVICE_TIMEOUT_SECONDS = float(os.getenv("MINER_UPSCALING_SERVICE_TIMEOUT_SECONDS", "1200"))
+COMPRESSION_SERVICE_TIMEOUT_SECONDS = float(os.getenv("MINER_COMPRESSION_SERVICE_TIMEOUT_SECONDS", "600"))
+
+TASK_TYPE_TO_SCALE = {
+    "SD24K": 4,
+    "HD24K": 2,
+    "SD2HD": 2,
+    "4K28K": 2,
+}
+
+COMPRESSION_CQ_BY_TYPE = {
+    "Low": 40,
+    "Medium": 35,
+    "High": 30,
+}
+
 
 class Miner(BaseMiner):
     def __init__(self, config: dict | None = None) -> None:
@@ -37,6 +57,99 @@ class Miner(BaseMiner):
         # Shared in-memory job store for polling-based organic requests.
         # Structure: { job_id: {"task": asyncio.Task, "result": str | None, "error": str | None} }
         self._jobs: dict[str, dict] = {}
+
+    def _upscaling_service_payload(self, payload_url: str, task_type: str) -> dict:
+        scale = TASK_TYPE_TO_SCALE.get(task_type, 2)
+        if task_type not in TASK_TYPE_TO_SCALE:
+            logger.warning(f"Unknown upscaling task_type={task_type}, defaulting to 2x scale")
+
+        return {
+            "video_path": payload_url,
+            "scale": scale,
+            "task_id": uuid.uuid4().hex[:12],
+        }
+
+    def _compression_type_from_payload(self, payload) -> str:
+        task_data = payload.model_dump() if hasattr(payload, "model_dump") else {}
+        compression_type = task_data.get("compression_type") or getattr(payload, "compression_type", None)
+        if compression_type in COMPRESSION_CQ_BY_TYPE:
+            return compression_type
+
+        vmaf_threshold = float(payload.vmaf_threshold)
+        if vmaf_threshold >= 93:
+            return "High"
+        if vmaf_threshold >= 89:
+            return "Medium"
+        return "Low"
+
+    def _compression_service_payload(self, payload) -> dict:
+        compression_type = self._compression_type_from_payload(payload)
+        compression_config = {
+            "video_path": payload.reference_video_url,
+            "task_id": uuid.uuid4().hex[:12],
+            "codec": payload.target_codec,
+            "codec_mode": payload.codec_mode.upper(),
+            "target_bitrate": int(float(payload.target_bitrate) * 1_000_000),
+        }
+
+        if compression_type == "Low":
+            compression_config["cq"] = 40
+        elif compression_type == "Medium":
+            compression_config["cq"] = 35
+        elif compression_type == "High":
+            compression_config["cq"] = 30
+
+        return compression_config
+
+    async def _post_processing_service(
+        self,
+        service_name: str,
+        service_url: str,
+        endpoint: str,
+        payload: dict,
+        timeout_seconds: float,
+    ) -> str | None:
+        url = f"{service_url}{endpoint}"
+        timeout = httpx.Timeout(timeout_seconds)
+
+        logger.info(f"Forwarding {service_name} request to {url}")
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(url, json=payload)
+
+        if response.status_code != 200:
+            logger.error(f"{service_name} service error {response.status_code}: {response.text[:1000]}")
+            return None
+
+        result = response.json()
+        if not result.get("success", False):
+            logger.error(f"{service_name} service failed: {result.get('error')}")
+            return None
+
+        processed_video_url = result.get("output_url") or result.get("output_path")
+        if not processed_video_url:
+            logger.error(f"{service_name} service returned no output URL/path")
+            return None
+
+        logger.info(f"Received {service_name} result from container service")
+        return processed_video_url
+
+    async def _forward_upscaling_to_service(self, payload_url: str, task_type: str) -> str | None:
+        return await self._post_processing_service(
+            "upscaling",
+            UPSCALING_SERVICE_URL,
+            "/upscale",
+            self._upscaling_service_payload(payload_url, task_type),
+            UPSCALING_SERVICE_TIMEOUT_SECONDS,
+        )
+
+    async def _forward_compression_to_service(self, payload) -> str | None:
+        return await self._post_processing_service(
+            "compression",
+            COMPRESSION_SERVICE_URL,
+            "/compress",
+            self._compression_service_payload(payload),
+            COMPRESSION_SERVICE_TIMEOUT_SECONDS,
+        )
 
     async def forward_upscaling_requests(self, synapse: VideoUpscalingProtocol) -> VideoUpscalingProtocol:
         """
@@ -55,7 +168,7 @@ class Miner(BaseMiner):
         check_version(synapse.version)
 
         try:
-            processed_video_url = await video_upscaler(payload_url, task_type)
+            processed_video_url = await self._forward_upscaling_to_service(payload_url, task_type)
             
             if processed_video_url is None:
                 logger.info(f"💔 Failed to upscaling video 💔")
@@ -82,7 +195,6 @@ class Miner(BaseMiner):
 
         start_time = time.time()
 
-        payload_url: str = synapse.miner_payload.reference_video_url
         vmaf_threshold: float = synapse.miner_payload.vmaf_threshold
         target_codec: str = synapse.miner_payload.target_codec
         codec_mode: str = synapse.miner_payload.codec_mode
@@ -94,7 +206,7 @@ class Miner(BaseMiner):
         check_version(synapse.version)
 
         try:
-            processed_video_url = await video_compressor(payload_url, vmaf_threshold, target_codec, codec_mode, target_bitrate)
+            processed_video_url = await self._forward_compression_to_service(synapse.miner_payload)
 
             if processed_video_url is None:
                 logger.info(f"💔 Failed to compress video 💔")
@@ -159,16 +271,8 @@ class Miner(BaseMiner):
                 synapse.job_response = JobKickoffResponse(accepted=False)
                 return synapse
 
-            payload_url = synapse.miner_payload.reference_video_url
-            vmaf_threshold = synapse.miner_payload.vmaf_threshold
-            target_codec = synapse.miner_payload.target_codec
-            codec_mode = synapse.miner_payload.codec_mode
-            target_bitrate = synapse.miner_payload.target_bitrate
-
             async def _run_compression():
-                return await video_compressor(
-                    payload_url, vmaf_threshold, target_codec, codec_mode, target_bitrate
-                )
+                return await self._forward_compression_to_service(synapse.miner_payload)
 
             task = asyncio.create_task(_run_compression())
             self._jobs[job_id] = {"task": task, "result": None, "error": None}
@@ -275,7 +379,7 @@ class Miner(BaseMiner):
             task_type = synapse.miner_payload.task_type
 
             async def _run_upscaling():
-                return await video_upscaler(payload_url, task_type)
+                return await self._forward_upscaling_to_service(payload_url, task_type)
 
             task = asyncio.create_task(_run_upscaling())
             self._jobs[job_id] = {"task": task, "result": None, "error": None}
