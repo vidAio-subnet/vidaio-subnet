@@ -9,7 +9,7 @@ This project includes three miner services:
 - Run `sudo apt update`
 - Docker + Docker Compose
 - NVIDIA drivers and `nvidia-container-toolkit`
-- Storage environment variables (S3-compatible)
+- Storage environment variables (S3-compatible) in a new `miner/.env` file derived from `miner/.env.template`
 
 ## Video2X Upscaling Miner
 1. Complete host/container preparation in `miner/upscaling/SETUP.md`.
