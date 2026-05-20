@@ -129,7 +129,7 @@ class UpscaleRequest(BaseModel):
     task_id: str = Field("", description="Task ID for logging")
     model: str = Field("realesr-animevideov3", description="RealESRGAN model name")
     codec: str = Field("av1_nvenc", description="Output video codec")
-    cq: int = Field(20, description="Constant quality value")
+    cq: int = Field(28, description="Constant quality value")
 
 
 class UpscaleResponse(BaseModel):
@@ -237,7 +237,7 @@ async def upscale(req: UpscaleRequest):
         "-s", str(req.scale),
         "--realesrgan-model", req.model,
         "-c", req.codec,
-        "-e", "preset=p4",
+        "-e", "preset=p7",
         "-e", f"cq={req.cq}",
         "-e", "profile=main",
         "-e", "pix_fmt=yuv420p",
