@@ -13,11 +13,9 @@ import os
 import uuid
 from typing import Optional
 
-import datetime
-
 import boto3
 import httpx
-from minio import Minio
+from botocore.config import Config
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
@@ -33,23 +31,22 @@ app = FastAPI(title="Video Compression Service")
 SHARED_VOLUME_PATH = os.getenv("SHARED_VOLUME_PATH", "/tmp/organic-proxy")
 MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_COMPRESSION", "2"))
 
-# Storage provider: "hippius" or "s3" (default)
+# Storage provider label only. Uploads use one S3-compatible code path.
 STORAGE_PROVIDER = os.getenv("ORGANIC_PROXY_STORAGE_PROVIDER", "s3").lower()
-
-# Hippius S3-compatible config
-HIPPIUS_ACCESS_KEY = os.getenv("HIPPIUS_ACCESS_KEY", "")
-HIPPIUS_SECRET_KEY = os.getenv("HIPPIUS_SECRET_KEY", "")
-HIPPIUS_ENDPOINT = os.getenv("HIPPIUS_ENDPOINT", "s3.hippius.com")
-HIPPIUS_BUCKET = os.getenv("HIPPIUS_BUCKET_NAME", "")
-
-# AWS S3 config
-AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "")
-AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "")
-AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
-S3_BUCKET = os.getenv("S3_BUCKET", "")
-
-S3_REGION = os.getenv("ORGANIC_PROXY_STORAGE_S3_REGION", "")
-S3_PRESIGNED_EXPIRY = int(os.getenv("S3_PRESIGNED_EXPIRY", "3600"))
+S3_REGION = os.getenv("ORGANIC_PROXY_STORAGE_S3_REGION", "us-east-1")
+S3_BUCKET = os.getenv("ORGANIC_PROXY_STORAGE_S3_BUCKET_NAME", "")
+S3_ACCESS_KEY_ID = os.getenv("ORGANIC_PROXY_STORAGE_S3_ACCESS_KEY_ID", "")
+S3_SECRET_ACCESS_KEY = os.getenv("ORGANIC_PROXY_STORAGE_S3_SECRET_ACCESS_KEY", "")
+S3_ENDPOINT_URL = (
+    os.getenv("ORGANIC_PROXY_STORAGE_S3_ENDPOINT_URL")
+    or os.getenv("ORGANIC_PROXY_STORAGE_S3_ENDPOINT")
+    or ""
+)
+S3_PRESIGNED_EXPIRY = int(
+    os.getenv("ORGANIC_PROXY_STORAGE_S3_PRESIGNED_EXPIRY")
+    or os.getenv("S3_PRESIGNED_EXPIRY")
+    or "3600"
+)
 
 _semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 _queue_size = 0
@@ -73,23 +70,15 @@ def _is_url(path: str) -> bool:
 
 
 def _get_s3_client():
-    if STORAGE_PROVIDER == "hippius":
-        endpoint = HIPPIUS_ENDPOINT.replace("https://", "").replace("http://", "")
-        secure = not HIPPIUS_ENDPOINT.startswith("http://")
-        return Minio(
-            endpoint,
-            access_key=HIPPIUS_ACCESS_KEY,
-            secret_key=HIPPIUS_SECRET_KEY,
-            region=S3_REGION,
-            secure=secure,
-        )
-    else:
-        return boto3.client(
-            "s3",
-            region_name=AWS_DEFAULT_REGION,
-            aws_access_key_id=AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-        )
+    client_kwargs = {
+        "region_name": S3_REGION,
+        "aws_access_key_id": S3_ACCESS_KEY_ID or None,
+        "aws_secret_access_key": S3_SECRET_ACCESS_KEY or None,
+        "config": Config(signature_version="s3v4"),
+    }
+    if S3_ENDPOINT_URL:
+        client_kwargs["endpoint_url"] = S3_ENDPOINT_URL
+    return boto3.client("s3", **client_kwargs)
 
 
 async def _download_url(url: str, dest: str):
@@ -104,22 +93,17 @@ async def _download_url(url: str, dest: str):
 
 
 def _upload_to_s3(local_path: str, key: str) -> str:
+    if not S3_BUCKET:
+        raise RuntimeError("Missing ORGANIC_PROXY_STORAGE_S3_BUCKET_NAME")
+
     client = _get_s3_client()
-    if STORAGE_PROVIDER == "hippius":
-        client.fput_object(HIPPIUS_BUCKET, key, local_path)
-        expires = min(S3_PRESIGNED_EXPIRY, 604800)  # Minio max 7 days
-        url = client.presigned_get_object(
-            HIPPIUS_BUCKET, key, expires=datetime.timedelta(seconds=expires),
-        )
-        log.info(f"Uploaded to S3: s3://{HIPPIUS_BUCKET}/{key}")
-    else:
-        client.upload_file(local_path, S3_BUCKET, key)
-        url = client.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": S3_BUCKET, "Key": key},
-            ExpiresIn=S3_PRESIGNED_EXPIRY,
-        )
-        log.info(f"Uploaded to S3: s3://{S3_BUCKET}/{key}")
+    client.upload_file(local_path, S3_BUCKET, key)
+    url = client.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": S3_BUCKET, "Key": key},
+        ExpiresIn=min(S3_PRESIGNED_EXPIRY, 604800),
+    )
+    log.info(f"Uploaded to {STORAGE_PROVIDER} storage: s3://{S3_BUCKET}/{key}")
     return url
 
 
