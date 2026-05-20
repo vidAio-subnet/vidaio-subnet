@@ -1,6 +1,12 @@
 # Running Miner
 
-A high-performance decentralized video processing miner that leverages **Video2X** for AI-powered video upscaling. This guide provides detailed instructions to set up, configure, and run the miner effectively
+A high-performance decentralized video processing miner that forwards validator requests to containerized video services. The current miner framework supports:
+
+- **Video2X upscaling** through the `upscaling-video2x` Docker Compose profile.
+- **FFmpeg upscaling** through the `upscaling-ffmpeg` Docker Compose profile.
+- **FFmpeg compression** through the `compression` Docker Compose service.
+
+`neurons/miner.py` no longer needs the old PM2-managed `services/upscaling/server.py` or `services/compress/server.py` workers. It forwards directly to the service container ports.
 
 ---
 
@@ -10,264 +16,239 @@ To achieve optimal results, we recommend the following setup:
 
 - **Operating System**: Ubuntu 24.04 LTS or higher  
   [Learn more about Ubuntu 24.04 LTS](https://ubuntu.com/blog/tag/ubuntu-24-04-lts)
-- **GPU**: NVIDIA RTX 4090 or higher  
-  (Required for efficient video upscaling using Video2X)
+- **GPU**: NVIDIA RTX 4090 or higher
+- **VRAM**: At least 16 GB per GPU
+- **Docker** and **Docker Compose**
+- **NVIDIA drivers** and `nvidia-container-toolkit`
+- **Python**: Version 3.10 or higher for running the miner process
 
 ---
 
-## Install PM2 (Process Manager)
+## Install System Dependencies
 
-**PM2** is used to manage and monitor the miner process. If you haven’t installed PM2 yet, follow these steps:
+Install common host dependencies:
 
-1. Install `npm` and PM2:
-   ```bash
-   sudo apt update
-   sudo apt install npm -y
-   sudo npm install pm2 -g
-   pm2 update
-   ```
+```bash
+sudo apt update
+sudo apt install -y git curl npm python3 python3-venv python3-pip
+```
 
-2. For more details, refer to the [PM2 Documentation](https://pm2.io/docs/runtime/guide/installation/).
+Install Docker and Docker Compose using the official Docker instructions for your host, then install NVIDIA Container Toolkit so Compose services can access the GPU.
+
+Verify Docker can see the GPU:
+
+```bash
+docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+```
 
 ---
 
-## Install Redis
+## Install PM2
 
-1. Install 'redis'
-   ```bash
-   sudo apt update
-   sudo apt install redis-server
-   sudo systemctl start redis
-   sudo systemctl enable redis-server
-   sudo systemctl status redis
-   ```
+PM2 is optional for the processing containers, but useful for managing the miner process itself.
+
+```bash
+sudo npm install pm2 -g
+pm2 update
+```
+
+---
 
 ## Install Project Dependencies
 
-### Prerequisites
-
-- **Python**: Version 3.10 or higher
-- **pip**: Python package manager
-- **virtualenv** (optional): For dependency isolation
-
----
-
 ### 1. Clone the Repository
 
-Clone the project repository to your local machine:
 ```bash
 git clone https://github.com/vidaio-subnet/vidaio-subnet.git
 cd vidaio-subnet
 ```
 
----
+### 2. Set Up a Virtual Environment
 
-### 2. Set Up a Virtual Environment (Recommended)
-
-Create and activate a virtual environment to isolate project dependencies:
 ```bash
 python3 -m venv venv
-source venv/bin/activate  
+source venv/bin/activate
 ```
 
----
+### 3. Install the Package
 
-### 3. Install the Package and Dependencies
-
-Install the project and its dependencies using `pip`:
 ```bash
 pip install -e .
 ```
 
 ---
 
-### 4. Configure Environment Variables
+## Configure Storage
 
-To configure environment variables, follow these steps:
+The container services download validator payload URLs, process videos locally, upload outputs to S3-compatible storage, and return presigned URLs to the miner.
 
-1. Create a `.env` file in the project root directory by referencing the provided `.env.template` file:
-   ```bash
-   cp .env.template .env
-   ```
+Create a miner service environment file:
 
-2. Set up a bucket in cloud storage. The base miner code utilizes MinIO to connect with cloud storage services, so you'll need to prepare your bucket using a platform that supports MinIO integration, such as Backblaze. Alternatively, you can modify the code to suit your specific requirements.
-3. Add the required variables to the `.env` file. For example:
-   ```env
-   BUCKET_NAME="S3 buckent name"
-   BUCKET_COMPATIBLE_ENDPOINT="S3 bucket endpoint"
-   BUTKET_COMPATIBLE_ACCESS_KEY="S3 bucket personal access key"
-   BUCKET_COMPATIBLE_SECRET_KEY="S3 bucket personal secret key"
-   PEXELS_API_KEY="Your Pexels account api key"
-   WANDB_API_KEY="Your WANDB account api key"
-   ```
+```bash
+cp miner/.env.template miner/.env
+```
 
-4. Ensure that the bucket is configured with the appropriate permissions to allow file uploads and enable public access for downloads via presigned URLs.
+Edit `miner/.env` with your storage credentials:
 
-5. Once the `.env` file is properly configured, the application will use the specified credentials for S3 bucket and Pexels.
+```env
+COMPOSE_PROJECT_NAME=miner
+ORGANIC_PROXY_STORAGE_PROVIDER=backblaze
+ORGANIC_PROXY_STORAGE_S3_ACCESS_KEY_ID=your-access-key
+ORGANIC_PROXY_STORAGE_S3_SECRET_ACCESS_KEY=your-secret-key
+ORGANIC_PROXY_STORAGE_S3_REGION=us-east-005
+ORGANIC_PROXY_STORAGE_S3_BUCKET_NAME=your-bucket-name
+ORGANIC_PROXY_STORAGE_S3_ENDPOINT_URL=https://s3.us-east-005.backblazeb2.com
+```
 
+For AWS S3, use the same variable names and leave `ORGANIC_PROXY_STORAGE_S3_ENDPOINT_URL` blank.
 
 ---
 
-## Install Video2X
+## Start Processing Services
 
-The miner requires **Video2X** for AI-powered video upscaling. Follow the steps below to install and configure Video2X.
+Run Docker Compose commands from the `miner` directory:
 
----
-
-### Step 1: Install FFMPEG
-
-FFMPEG is required for processing video files. Install it using the following commands:
 ```bash
-sudo apt update
-sudo apt install ffmpeg -y
+cd miner
 ```
 
-For more details, refer to the [FFMPEG Documentation](https://www.ffmpeg.org/download.html#build-linux).
+### Option A: Video2X Upscaling Miner
 
----
+Use this profile if you want Video2X-based upscaling. Complete the host/container setup first:
 
-### Step 2: Install CUDA and NVCC
-
-Ensure your CUDA drivers and NVCC (NVIDIA Compiler) are properly installed and configured to support GPU acceleration.
-
-1. Verify your CUDA installation:
-   ```bash
-   nvcc --version
-   ```
-
-2. Ensure you CUDA driver is installed correctly
-   <!-- Install or update the CUDA drivers if they are not already installed:
-   ```bash
-   sudo apt update
-   sudo apt install nvidia-cuda-toolkit -y
-   ``` -->
-
-For more information, refer to the [CUDA Toolkit Installation Guide](https://developer.nvidia.com/cuda-toolkit).
-
----
-
-### Step 3: Install Video2X
-
----
-
-### Option 1: Install Video2X by downloading Debian Package:
-
-
-1. **Download the Video2X `.deb` package**:
-   ```bash
-   wget -P services/upscaling/models https://github.com/k4yt3x/video2x/releases/download/6.3.1/video2x-linux-ubuntu2404-amd64.deb
-   ```
-
-2. **Install the package using `dpkg`**:
-   ```bash
-   sudo dpkg -i services/upscaling/models/video2x-linux-ubuntu2404-amd64.deb
-   ```
-
-3. **Resolve dependencies** (if any):
-   ```bash
-   sudo apt-get install -f
-   ```
-
-### Option 2: Install Video2X by Building Debian Package:
-
-1. Install Cargo
-Cargo is required to build the Video2X package:
 ```bash
-sudo apt-get update
-sudo apt-get install cargo -y
-cargo install just --version=1.39.0
+cat upscaling/SETUP.md 
 ```
 
-2. Clone the Video2X Repository
-you can clone this repository within the current vidaio-subnet package
+After running all the commands listed above, start the Video2X upscaling service:
+
 ```bash
-git clone --recurse-submodules https://github.com/vidAio-subnet/video2x
-cd video2x
+docker compose --profile upscaling-video2x up -d upscaling-video2x
 ```
 
-3. Build the Video2X Project
-Before building, ensure `~/.cargo/bin` is included in your `PATH` environment variable:
+The service is exposed on `http://localhost:8003`.
+
+### Option B: FFmpeg Upscaling Miner
+
+Use this profile if you want FFmpeg-based upscaling instead of Video2X:
+
 ```bash
-export PATH="$HOME/.cargo/bin:$PATH"
+docker compose --profile upscaling-ffmpeg up -d upscaling-ffmpeg
 ```
 
-Run the following command to build the package:
+The FFmpeg upscaling service is exposed on `http://localhost:8005`.
+
+Before starting `neurons/miner.py`, point the miner at that port:
+
 ```bash
-just ubuntu2404
+export MINER_UPSCALING_SERVICE_URL=http://localhost:8005
 ```
 
-Once the build is complete, the `.deb` package will be located in the current directory.
+### Option C: Compression Miner
 
-4. Install the Built Package
-Install the `.deb` package using:
+Start the compression service:
+
 ```bash
-sudo dpkg -i video2x-linux-ubuntu-amd64.deb
+docker compose up -d compression
 ```
 
----
-For additional details, refer to the [Video2X Documentation](https://docs.video2x.org/building/linux.html).
+The compression service is exposed on `http://localhost:8004`.
 
-## Running the Video Upscaling Endpoint
-
-You can run the video upscaling endpoint using **PM2** to manage the process:
+Return to the repository root before launching the miner:
 
 ```bash
-pm2 start "python services/upscaling/server.py" --name video-upscaler
-```
-
-### Notes:
-- The `video-upscaler` process will handle video upscaling requests.
-- Use the following PM2 commands to manage the process:
-  - **View Logs**: `pm2 logs video-upscaler`
-  - **Restart**: `pm2 restart video-upscaler`
-  - **Stop**: `pm2 stop video-upscaler`
-
----
-
-## Running the Video Compression Endpoint
-
-You can also run the video Compression endpoint using **PM2** to manage the process:
-
-```bash
-pm2 start "python services/compress/server.py" --name video-compressor
+cd ..
 ```
 
 ---
 
-## Running the file deletion process
+## Miner Forwarding Configuration
 
-You can run the file deletion process using **PM2** to manage the process:
+`neurons/miner.py` forwards requests to these service URLs:
 
 ```bash
-pm2 start "python services/miner_utilities/file_deletion_server.py" --name video-deleter
+export MINER_UPSCALING_SERVICE_URL=http://localhost:8003
+export MINER_COMPRESSION_SERVICE_URL=http://localhost:8004
 ```
 
-## Running the Miner with PM2
+Defaults:
 
-To run the miner, use the following command:
+- `MINER_UPSCALING_SERVICE_URL` defaults to `http://localhost:8003` for Video2X upscaling.
+- `MINER_COMPRESSION_SERVICE_URL` defaults to `http://localhost:8004`.
+- For FFmpeg upscaling, override `MINER_UPSCALING_SERVICE_URL` to `http://localhost:8005`.
+
+Useful service checks:
+
+```bash
+curl -sf http://localhost:8003/health
+curl -sf http://localhost:8004/health
+curl -sf http://localhost:8005/health
+```
+
+Only the services you started need to pass health checks.
+
+---
+
+## Run the Miner
+
+Start the miner from the repository root:
+
+```bash
+python3 neurons/miner.py \
+  --wallet.name [Your_Wallet_Name] \
+  --wallet.hotkey [Your_Hotkey_Name] \
+  --subtensor.network finney \
+  --netuid 85 \
+  --axon.port [port] \
+  --logging.debug
+```
+
+### Run the Miner with PM2
+
+Export any `MINER_*_SERVICE_URL` overrides in the same shell before starting PM2. If you change those variables later, restart with `--update-env`.
 
 ```bash
 pm2 start "python3 neurons/miner.py --wallet.name [Your_Wallet_Name] --wallet.hotkey [Your_Hotkey_Name] --subtensor.network finney --netuid 85 --axon.port [port] --logging.debug" --name video-miner
 ```
 
-### Parameters:
-- **`--wallet.name`**: Replace `[Your_Wallet_Name]` with your wallet name.
-- **`--wallet.hotkey`**: Replace `[Your_Hotkey_Name]` with your hotkey name.
-- **`--subtensor.network`**: Specify the target network (e.g., `finney`).
-- **`--netuid`**: Specify the network UID (e.g., `292`).
-- **`--axon.port`**: Replace `[port]` with the desired port number.
-- **`--logging.debug`**: Enables debug-level logging for detailed output.
+### Parameters
 
-### Managing the Miner Process:
-- **Start the Miner**: The above command will start the miner as a PM2 process named `video-miner`.
-- **View Logs**: Use `pm2 logs video-miner` to monitor miner logs in real time.
-- **Restart the Miner**: Use `pm2 restart video-miner` to restart the process.
-- **Stop the Miner**: Use `pm2 stop video-miner` to stop the process.
+- `--wallet.name`: Replace `[Your_Wallet_Name]` with your wallet name.
+- `--wallet.hotkey`: Replace `[Your_Hotkey_Name]` with your hotkey name.
+- `--subtensor.network`: Specify the target network, usually `finney`.
+- `--netuid`: Specify the network UID, currently `85`.
+- `--axon.port`: Replace `[port]` with the desired public axon port.
+- `--logging.debug`: Enables debug-level logging.
+
+---
+
+## Managing Services
+
+Processing containers:
+
+```bash
+cd miner
+docker compose ps
+docker compose logs -f upscaling-video2x
+docker compose logs -f upscaling-ffmpeg
+docker compose logs -f compression
+docker compose down
+```
+
+Miner process:
+
+```bash
+pm2 logs video-miner
+pm2 restart video-miner --update-env
+pm2 stop video-miner
+```
 
 ---
 
 ## Additional Notes
 
-- Ensure all dependencies are installed and configured correctly before running the miner.
-- Use a high-performance GPU and sufficient system resources for optimal performance.
-- For troubleshooting and debugging, refer to the logs available in PM2.
+- Run either `upscaling-video2x` or `upscaling-ffmpeg` for an upscaling miner. They expose different host ports but both implement `/upscale`.
+- Run `compression` for a compression miner. It implements `/compress`.
+- The old PM2 service scripts for upscaling and compression are redundant with this container framework.
+- For Video2X-specific preparation, use `miner/upscaling/SETUP.md`.
+- For FFmpeg upscaling build/runtime notes, use `miner/upscaling/ffmpeg/SETUP.md`.
