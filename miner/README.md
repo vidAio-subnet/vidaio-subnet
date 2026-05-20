@@ -6,6 +6,7 @@ This project includes three miner services:
 - `compression`: Compression microservice.
 
 ## Prerequisites
+- Run `sudo apt update`
 - Docker + Docker Compose
 - NVIDIA drivers and `nvidia-container-toolkit`
 - Storage environment variables (S3-compatible)
