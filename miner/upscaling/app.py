@@ -1,0 +1,314 @@
+"""
+Upscaling microservice — wraps video2x (ghcr.io/k4yt3x/video2x:6.4.0).
+
+Accepts a video path (on shared volume) OR a URL and scale factor (2 or 4),
+runs video2x via Docker CLI, returns the output path or uploaded S3 URL.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import subprocess
+import uuid
+from typing import Optional
+from urllib.parse import urlparse
+
+import datetime
+
+import boto3
+import httpx
+from minio import Minio
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-7s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("upscaling")
+
+app = FastAPI(title="Video Upscaling Service")
+
+VIDEO2X_IMAGE = os.getenv("VIDEO2X_IMAGE", "ghcr.io/k4yt3x/video2x:6.4.0")
+SHARED_VOLUME_PATH = os.getenv("SHARED_VOLUME_PATH", "/tmp/organic-proxy")
+DOCKER_VOLUME_NAME = os.getenv("DOCKER_VOLUME_NAME", "")
+MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_UPSCALING", "2"))
+
+# Storage provider: "hippius" or "s3" (default)
+STORAGE_PROVIDER = os.getenv("ORGANIC_PROXY_STORAGE_PROVIDER", "s3").lower()
+
+# Hippius S3-compatible config
+HIPPIUS_ACCESS_KEY = os.getenv("HIPPIUS_ACCESS_KEY", "")
+HIPPIUS_SECRET_KEY = os.getenv("HIPPIUS_SECRET_KEY", "")
+HIPPIUS_ENDPOINT = os.getenv("HIPPIUS_ENDPOINT", "s3.hippius.com")
+HIPPIUS_BUCKET = os.getenv("HIPPIUS_BUCKET_NAME", "")
+
+# AWS S3 config
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "")
+AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+S3_BUCKET = os.getenv("S3_BUCKET", "")
+
+S3_REGION = os.getenv("ORGANIC_PROXY_STORAGE_S3_REGION", "")
+S3_PRESIGNED_EXPIRY = int(os.getenv("S3_PRESIGNED_EXPIRY", "3600"))
+
+_semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+_queue_size = 0
+_active_count = 0
+_lock = asyncio.Lock()
+
+
+def _is_url(path: str) -> bool:
+    return path.startswith("http://") or path.startswith("https://")
+
+
+def _get_s3_client():
+    if STORAGE_PROVIDER == "hippius":
+        endpoint = HIPPIUS_ENDPOINT.replace("https://", "").replace("http://", "")
+        secure = not HIPPIUS_ENDPOINT.startswith("http://")
+        return Minio(
+            endpoint,
+            access_key=HIPPIUS_ACCESS_KEY,
+            secret_key=HIPPIUS_SECRET_KEY,
+            region=S3_REGION,
+            secure=secure,
+        )
+    else:
+        return boto3.client(
+            "s3",
+            region_name=AWS_DEFAULT_REGION,
+            aws_access_key_id=AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+        )
+
+
+async def _download_url(url: str, dest: str):
+    """Download a URL (presigned S3 or direct) to local path."""
+    log.info(f"Downloading {url[:80]}... → {dest}")
+    async with httpx.AsyncClient(timeout=600.0, follow_redirects=True) as client:
+        async with client.stream("GET", url) as resp:
+            resp.raise_for_status()
+            with open(dest, "wb") as f:
+                async for chunk in resp.aiter_bytes(chunk_size=8192):
+                    f.write(chunk)
+    log.info(f"Downloaded {os.path.getsize(dest) / (1024*1024):.1f} MB → {dest}")
+
+
+def _upload_to_s3(local_path: str, key: str) -> str:
+    """Upload file to storage and return presigned URL."""
+    client = _get_s3_client()
+    if STORAGE_PROVIDER == "hippius":
+        client.fput_object(HIPPIUS_BUCKET, key, local_path)
+        expires = min(S3_PRESIGNED_EXPIRY, 604800)  # Minio max 7 days
+        url = client.presigned_get_object(
+            HIPPIUS_BUCKET, key, expires=datetime.timedelta(seconds=expires),
+        )
+        log.info(f"Uploaded to S3: s3://{HIPPIUS_BUCKET}/{key}")
+    else:
+        client.upload_file(local_path, S3_BUCKET, key)
+        url = client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": S3_BUCKET, "Key": key},
+            ExpiresIn=S3_PRESIGNED_EXPIRY,
+        )
+        log.info(f"Uploaded to S3: s3://{S3_BUCKET}/{key}")
+    return url
+
+
+class UpscaleRequest(BaseModel):
+    video_path: str = Field(..., description="Local path or URL to input video")
+    scale: int = Field(..., description="Upscaling factor: 2 or 4")
+    task_id: str = Field("", description="Task ID for logging")
+    model: str = Field("realesr-animevideov3", description="RealESRGAN model name")
+    codec: str = Field("av1_nvenc", description="Output video codec")
+    cq: int = Field(20, description="Constant quality value")
+
+
+class UpscaleResponse(BaseModel):
+    output_path: str = Field("", description="Local path (local mode) or empty (remote mode)")
+    output_url: str = Field("", description="S3 presigned URL (remote mode) or empty (local mode)")
+    success: bool
+    error: Optional[str] = None
+    queue_position: Optional[int] = None
+    active_tasks: Optional[int] = None
+    queued_tasks: Optional[int] = None
+
+
+def _detect_volume_name() -> str:
+    if DOCKER_VOLUME_NAME:
+        return DOCKER_VOLUME_NAME
+    hostname = os.environ.get("HOSTNAME", "")
+    if hostname:
+        try:
+            result = subprocess.run(
+                ["docker", "inspect", "--format",
+                 '{{range .Mounts}}{{if eq .Destination "' + SHARED_VOLUME_PATH + '"}}{{.Name}}{{end}}{{end}}',
+                 hostname],
+                capture_output=True, text=True, timeout=10,
+            )
+            vol = result.stdout.strip()
+            if vol:
+                log.info(f"Auto-detected volume name: {vol}")
+                return vol
+        except Exception as e:
+            log.warning(f"Volume auto-detect failed: {e}")
+    fallback = "organic-proxy_video-tmp"
+    log.warning(f"Using fallback volume name: {fallback}")
+    return fallback
+
+
+_resolved_volume: Optional[str] = None
+
+
+def _get_volume_name() -> str:
+    global _resolved_volume
+    if _resolved_volume is None:
+        _resolved_volume = _detect_volume_name()
+    return _resolved_volume
+
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "ok",
+        "max_concurrent": MAX_CONCURRENT,
+        "active_tasks": _active_count,
+        "queued_tasks": max(0, _queue_size - _active_count),
+    }
+
+
+@app.get("/queue")
+async def queue_status():
+    return {
+        "max_concurrent": MAX_CONCURRENT,
+        "active_tasks": _active_count,
+        "queued_tasks": max(0, _queue_size - _active_count),
+        "total_pending": _queue_size,
+    }
+
+
+@app.post("/upscale", response_model=UpscaleResponse)
+async def upscale(req: UpscaleRequest):
+    if req.scale not in (2, 4):
+        raise HTTPException(status_code=400, detail="scale must be 2 or 4")
+
+    task_label = req.task_id or uuid.uuid4().hex[:8]
+    remote_mode = _is_url(req.video_path)
+
+    # --- Resolve input to local path ---
+    if remote_mode:
+        local_input = os.path.join(SHARED_VOLUME_PATH, f"{task_label}_input.mp4")
+        try:
+            await _download_url(req.video_path, local_input)
+        except Exception as e:
+            return UpscaleResponse(success=False, error=f"Failed to download input: {e}")
+    else:
+        local_input = req.video_path
+        if not os.path.exists(local_input):
+            raise HTTPException(status_code=400, detail=f"Input file not found: {local_input}")
+
+    basename = os.path.splitext(os.path.basename(local_input))[0]
+    output_filename = f"{basename}_upscaled_{req.scale}x.mp4"
+    output_path = os.path.join(SHARED_VOLUME_PATH, output_filename)
+
+    # Build paths relative to container mount point
+    rel_input = os.path.relpath(local_input, SHARED_VOLUME_PATH)
+    rel_output = os.path.relpath(output_path, SHARED_VOLUME_PATH)
+
+    cmd = [
+        "docker", "run",
+        "--gpus", "all",
+        "-e", "NVIDIA_DRIVER_CAPABILITIES=video,compute,utility",
+        "--rm",
+        "-v", f"{_get_volume_name()}:/host",
+        VIDEO2X_IMAGE,
+        "-i", f"/host/{rel_input}",
+        "-o", f"/host/{rel_output}",
+        "-p", "realesrgan",
+        "-s", str(req.scale),
+        "--realesrgan-model", req.model,
+        "-c", req.codec,
+        "-e", "preset=p4",
+        "-e", f"cq={req.cq}",
+        "-e", "profile=main",
+        "-e", "pix_fmt=yuv420p",
+        "-e", "sar=1:1",
+        "-e", "color_primaries=bt709",
+        "-e", "color_trc=bt709",
+        "-e", "colorspace=bt709",
+        "-e", "movflags=+faststart",
+    ]
+
+    global _queue_size, _active_count
+
+    async with _lock:
+        _queue_size += 1
+        position = _queue_size
+        queued = max(0, _queue_size - _active_count)
+
+    log.info(f"[{task_label}] Queued {req.scale}x upscale (position={position}, waiting={queued}, remote={remote_mode})")
+
+    try:
+        async with _semaphore:
+            async with _lock:
+                _active_count += 1
+                queued_now = max(0, _queue_size - _active_count)
+
+            log.info(f"[{task_label}] Starting {req.scale}x upscale (active={_active_count}/{MAX_CONCURRENT}, queued={queued_now})")
+            log.info(f"[{task_label}] Command: {' '.join(cmd)}")
+
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+
+            async with _lock:
+                _active_count -= 1
+    finally:
+        async with _lock:
+            _queue_size -= 1
+
+    stats = dict(active_tasks=_active_count, queued_tasks=max(0, _queue_size - _active_count))
+
+    if proc.returncode != 0:
+        err_msg = stderr.decode(errors="replace").strip()
+        log.error(f"[{task_label}] video2x failed (rc={proc.returncode}): {err_msg}")
+        if remote_mode:
+            _cleanup(local_input)
+        return UpscaleResponse(success=False, error=err_msg, **stats)
+
+    if not os.path.exists(output_path):
+        log.error(f"[{task_label}] Output file not found after video2x: {output_path}")
+        if remote_mode:
+            _cleanup(local_input)
+        return UpscaleResponse(success=False, error="Output file not created", **stats)
+
+    # --- Remote mode: upload result to S3, return URL ---
+    if remote_mode:
+        try:
+            s3_key = f"processing/{task_label}/{output_filename}"
+            output_url = _upload_to_s3(output_path, s3_key)
+            log.info(f"[{task_label}] Upscaling complete (remote): {output_url}")
+            return UpscaleResponse(output_url=output_url, success=True, **stats)
+        except Exception as e:
+            log.error(f"[{task_label}] S3 upload failed: {e}")
+            return UpscaleResponse(success=False, error=f"S3 upload failed: {e}", **stats)
+        finally:
+            _cleanup(local_input, output_path)
+
+    log.info(f"[{task_label}] Upscaling complete (local): {output_path}")
+    return UpscaleResponse(output_path=output_path, success=True, **stats)
+
+
+def _cleanup(*paths: str):
+    for p in paths:
+        if p and os.path.exists(p):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
