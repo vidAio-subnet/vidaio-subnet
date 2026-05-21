@@ -20,9 +20,9 @@ app = FastAPI(title="FFmpeg Upscaling Service")
 
 SHARED_VOLUME_PATH = os.getenv("SHARED_VOLUME_PATH", "/tmp/organic-proxy")
 MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_UPSCALING", "2"))
-FFMPEG_CODEC = os.getenv("FFMPEG_CODEC", "av1_nvenc")
-FFMPEG_PRESET = os.getenv("FFMPEG_PRESET", "p4")
-FFMPEG_CQ = int(os.getenv("FFMPEG_CQ", "25"))
+FFMPEG_CODEC = os.getenv("FFMPEG_CODEC", "hevc_nvenc")
+FFMPEG_PRESET = os.getenv("FFMPEG_PRESET", "p7")
+FFMPEG_CQ = int(os.getenv("FFMPEG_CQ", "35"))
 DISABLE_REMOTE_IO = os.getenv("DISABLE_REMOTE_IO", "false").lower() in ("1", "true", "yes")
 
 STORAGE_PROVIDER = os.getenv("ORGANIC_PROXY_STORAGE_PROVIDER", "s3").lower()

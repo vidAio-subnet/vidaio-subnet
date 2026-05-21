@@ -130,8 +130,8 @@ class UpscaleRequest(BaseModel):
     scale: int = Field(..., description="Upscaling factor: 2 or 4")
     task_id: str = Field("", description="Task ID for logging")
     model: str = Field("realesr-animevideov3", description="RealESRGAN model name")
-    codec: str = Field("av1_nvenc", description="Output video codec")
-    cq: int = Field(28, description="Constant quality value")
+    codec: str = Field("hevc_nvenc", description="Output video codec")
+    cq: int = Field(35, description="Constant quality value")
 
 
 class UpscaleResponse(BaseModel):
