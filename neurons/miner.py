@@ -424,7 +424,9 @@ class Miner(BaseMiner):
                 return synapse
 
             async def _run_compression():
-                return await self._forward_compression_to_service(synapse.miner_payload)
+                result = await self._forward_compression_to_service(synapse.miner_payload)
+                logger.info(f"CompressionJob processed successfully | job_id={job_id} | result={result}")
+                return result
 
             task = asyncio.create_task(_run_compression())
             self._jobs[job_id] = {"task": task, "result": None, "error": None}
@@ -531,7 +533,9 @@ class Miner(BaseMiner):
             task_type = synapse.miner_payload.task_type
 
             async def _run_upscaling():
-                return await self._forward_upscaling_to_service(payload_url, task_type)
+                result = await self._forward_upscaling_to_service(payload_url, task_type)
+                logger.info(f"UpscalingJob processed successfully | job_id={job_id} | result={result}")
+                return result
 
             task = asyncio.create_task(_run_upscaling())
             self._jobs[job_id] = {"task": task, "result": None, "error": None}
