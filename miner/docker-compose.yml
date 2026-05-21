@@ -3,7 +3,7 @@ x-upscaling-video2x-base: &upscaling-video2x-base
   restart: unless-stopped
   profiles: ["upscaling-video2x"]
   networks:
-    - no-egress
+    - miner-local
   environment:
     - VIDEO2X_IMAGE=ghcr.io/k4yt3x/video2x:6.4.0
     - SHARED_VOLUME_PATH=/tmp/organic-proxy
@@ -34,7 +34,7 @@ x-upscaling-ffmpeg-base: &upscaling-ffmpeg-base
   profiles: ["upscaling-ffmpeg"]
   gpus: all
   networks:
-    - no-egress
+    - miner-local
   environment:
     - NVIDIA_VISIBLE_DEVICES=all
     - NVIDIA_DRIVER_CAPABILITIES=video,compute,utility
@@ -62,7 +62,7 @@ x-compression-base: &compression-base
   restart: unless-stopped
   gpus: all
   networks:
-    - no-egress
+    - miner-local
   environment:
     - NVIDIA_VISIBLE_DEVICES=all
     - NVIDIA_DRIVER_CAPABILITIES=video,compute,utility
@@ -89,18 +89,18 @@ services:
   upscaling-video2x:
     <<: *upscaling-video2x-base
     ports:
-      - "8003:8003"
+      - "127.0.0.1:8003:8003"
 
   upscaling-ffmpeg:
     <<: *upscaling-ffmpeg-base
     ports:
-      - "8005:8003"
+      - "127.0.0.1:8005:8003"
 
   compression:
     <<: *compression-base
     ports:
-      - "8004:8004"
+      - "127.0.0.1:8004:8004"
 
 networks:
-  no-egress:
-    internal: true
+  miner-local:
+    driver: bridge

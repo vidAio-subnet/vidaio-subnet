@@ -188,7 +188,7 @@ async def compress(req: CompressRequest):
     encoder = CODEC_MAP.get(req.codec.upper(), "av1_nvenc")
 
     if remote_mode and DISABLE_REMOTE_IO:
-        return CompressResponse(success=False, error="Remote URL input is disabled for this no-egress service")
+        return CompressResponse(success=False, error="Remote URL input is disabled for this local-only service")
 
     os.makedirs(SHARED_VOLUME_PATH, exist_ok=True)
 

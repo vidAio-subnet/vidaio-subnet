@@ -109,7 +109,7 @@ async def upscale(req: UpscaleRequest):
     task = req.task_id or uuid.uuid4().hex[:8]
     remote = _is_url(req.video_path)
     if remote and DISABLE_REMOTE_IO:
-        return UpscaleResponse(success=False, error="Remote URL input is disabled for this no-egress service")
+        return UpscaleResponse(success=False, error="Remote URL input is disabled for this local-only service")
 
     local_input = os.path.join(SHARED_VOLUME_PATH, f"{task}_input.mp4") if remote else req.video_path
     if remote:

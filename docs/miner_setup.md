@@ -259,7 +259,7 @@ pm2 stop video-miner
 
 - Run either `upscaling-video2x` or `upscaling-ffmpeg` for an upscaling miner. They expose different host ports but both implement `/upscale`.
 - Run `compression` for a compression miner. It implements `/compress`.
-- Processing containers are attached to the internal `no-egress` Docker network and have `DISABLE_REMOTE_IO=true`; they only process local files from the shared work directory.
+- Processing containers publish localhost-only service ports and have `DISABLE_REMOTE_IO=true`; they only process local files from the shared work directory by default.
 - The old PM2 service scripts for upscaling and compression are redundant with this container framework.
 - For Video2X-specific preparation, use `miner/upscaling/SETUP.md`.
 - For FFmpeg upscaling build/runtime notes, use `miner/upscaling/ffmpeg/SETUP.md`.

@@ -12,7 +12,7 @@ This project includes three miner services:
 - Storage environment variables (S3-compatible) in a new `miner/.env` file derived from `miner/.env.template`
 - A shared local work directory. The default is `/tmp/vidaio-miner-video-tmp` via `ORGANIC_PROXY_SHARED_DIR`.
 
-The service containers run on an internal Docker network with no egress. `neurons/miner.py` downloads validator payloads, places local files in `ORGANIC_PROXY_SHARED_DIR`, forwards local paths to the containers, uploads processed outputs, and returns presigned URLs.
+The service APIs are published on localhost-only Docker ports. `neurons/miner.py` downloads validator payloads, places local files in `ORGANIC_PROXY_SHARED_DIR`, forwards local paths to the containers, uploads processed outputs, and returns presigned URLs. Remote URL input is disabled inside the service containers by default.
 
 ```bash
 mkdir -p /tmp/vidaio-miner-video-tmp

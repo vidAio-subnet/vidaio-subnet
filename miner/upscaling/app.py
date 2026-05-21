@@ -213,7 +213,7 @@ async def upscale(req: UpscaleRequest):
     remote_mode = _is_url(req.video_path)
 
     if remote_mode and DISABLE_REMOTE_IO:
-        return UpscaleResponse(success=False, error="Remote URL input is disabled for this no-egress service")
+        return UpscaleResponse(success=False, error="Remote URL input is disabled for this local-only service")
 
     # --- Resolve input to local path ---
     if remote_mode:
