@@ -88,15 +88,26 @@ class WandbManager:
                 console_chunk_max_seconds=self.console_chunk_seconds,
                 console_chunk_max_bytes=self.console_chunk_bytes,
             )
-        except TypeError as e:
+        except Exception as e:
             logger.warning(
-                f"Wandb multipart console logs are unsupported in this SDK: {e}"
+                "Wandb multipart console chunk settings are unsupported in this SDK; "
+                f"falling back without chunk controls ({type(e).__name__})."
+            )
+
+        try:
+            return wandb.Settings(silent=True, console_multipart=True)
+        except Exception as e:
+            logger.warning(
+                "Wandb multipart console logs are unsupported in this SDK; "
+                f"falling back to silent mode only ({type(e).__name__})."
             )
 
         try:
             return wandb.Settings(silent=True)
-        except TypeError as e:
-            logger.warning(f"Wandb silent setting is unsupported in this SDK: {e}")
+        except Exception as e:
+            logger.warning(
+                f"Wandb silent setting is unsupported in this SDK ({type(e).__name__})."
+            )
             return None
 
     def init_wandb(self, reason="manual"):
