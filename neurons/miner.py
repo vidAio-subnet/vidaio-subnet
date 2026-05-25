@@ -42,23 +42,23 @@ COMPRESSION_SERVICE_URL = os.getenv("MINER_COMPRESSION_SERVICE_URL", "http://loc
 UPSCALING_SERVICE_TIMEOUT_SECONDS = float(os.getenv("MINER_UPSCALING_SERVICE_TIMEOUT_SECONDS", "1200"))
 COMPRESSION_SERVICE_TIMEOUT_SECONDS = float(os.getenv("MINER_COMPRESSION_SERVICE_TIMEOUT_SECONDS", "600"))
 MINER_DOWNLOAD_TIMEOUT_SECONDS = float(os.getenv("MINER_DOWNLOAD_TIMEOUT_SECONDS", "600"))
-MINER_UPLOAD_URL_EXPIRY_SECONDS = int(os.getenv("ORGANIC_PROXY_STORAGE_S3_PRESIGNED_EXPIRY", os.getenv("S3_PRESIGNED_EXPIRY", "3600")))
+MINER_UPLOAD_URL_EXPIRY_SECONDS = int(os.getenv("MINER_STORAGE_S3_PRESIGNED_EXPIRY", os.getenv("S3_PRESIGNED_EXPIRY", "3600")))
 
 HOST_SHARED_VOLUME_PATH = Path(
     os.getenv("MINER_SHARED_VOLUME_PATH")
-    or os.getenv("ORGANIC_PROXY_SHARED_DIR", "/tmp/vidaio-miner-video-tmp")
+    or os.getenv("MINER_SHARED_DIR", "/tmp/vidaio-miner-video-tmp")
 ).expanduser()
 if not HOST_SHARED_VOLUME_PATH.is_absolute():
     HOST_SHARED_VOLUME_PATH = REPO_ROOT / HOST_SHARED_VOLUME_PATH
 CONTAINER_SHARED_VOLUME_PATH = os.getenv("MINER_CONTAINER_SHARED_VOLUME_PATH", "/tmp/organic-proxy").rstrip("/")
 
-S3_REGION = os.getenv("ORGANIC_PROXY_STORAGE_S3_REGION", "us-east-1").strip() or "us-east-1"
-S3_BUCKET = os.getenv("ORGANIC_PROXY_STORAGE_S3_BUCKET_NAME", "").strip()
-S3_ACCESS_KEY_ID = os.getenv("ORGANIC_PROXY_STORAGE_S3_ACCESS_KEY_ID", "").strip()
-S3_SECRET_ACCESS_KEY = os.getenv("ORGANIC_PROXY_STORAGE_S3_SECRET_ACCESS_KEY", "").strip()
+S3_REGION = os.getenv("MINER_STORAGE_S3_REGION", "us-east-1").strip() or "us-east-1"
+S3_BUCKET = os.getenv("MINER_STORAGE_S3_BUCKET_NAME", "").strip()
+S3_ACCESS_KEY_ID = os.getenv("MINER_STORAGE_S3_ACCESS_KEY_ID", "").strip()
+S3_SECRET_ACCESS_KEY = os.getenv("MINER_STORAGE_S3_SECRET_ACCESS_KEY", "").strip()
 S3_ENDPOINT_URL = (
-    os.getenv("ORGANIC_PROXY_STORAGE_S3_ENDPOINT_URL")
-    or os.getenv("ORGANIC_PROXY_STORAGE_S3_ENDPOINT")
+    os.getenv("MINER_STORAGE_S3_ENDPOINT_URL")
+    or os.getenv("MINER_STORAGE_S3_ENDPOINT")
     or ""
 ).strip()
 
@@ -144,11 +144,11 @@ class Miner(BaseMiner):
     async def _upload_processed_video(self, host_path: Path, service_name: str, task_id: str) -> str | None:
         missing = []
         if not S3_BUCKET:
-            missing.append("ORGANIC_PROXY_STORAGE_S3_BUCKET_NAME")
+            missing.append("MINER_STORAGE_S3_BUCKET_NAME")
         if not S3_ACCESS_KEY_ID:
-            missing.append("ORGANIC_PROXY_STORAGE_S3_ACCESS_KEY_ID")
+            missing.append("MINER_STORAGE_S3_ACCESS_KEY_ID")
         if not S3_SECRET_ACCESS_KEY:
-            missing.append("ORGANIC_PROXY_STORAGE_S3_SECRET_ACCESS_KEY")
+            missing.append("MINER_STORAGE_S3_SECRET_ACCESS_KEY")
 
         if missing:
             logger.error(f"Missing storage configuration: {', '.join(missing)}")

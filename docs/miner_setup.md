@@ -92,16 +92,16 @@ Edit `miner/.env` with your storage credentials:
 
 ```env
 COMPOSE_PROJECT_NAME=miner
-ORGANIC_PROXY_SHARED_DIR=/tmp/vidaio-miner-video-tmp
-ORGANIC_PROXY_STORAGE_PROVIDER=backblaze
-ORGANIC_PROXY_STORAGE_S3_ACCESS_KEY_ID=your-access-key
-ORGANIC_PROXY_STORAGE_S3_SECRET_ACCESS_KEY=your-secret-key
-ORGANIC_PROXY_STORAGE_S3_REGION=us-east-005
-ORGANIC_PROXY_STORAGE_S3_BUCKET_NAME=your-bucket-name
-ORGANIC_PROXY_STORAGE_S3_ENDPOINT_URL=https://s3.us-east-005.backblazeb2.com
+MINER_SHARED_DIR=/tmp/vidaio-miner-video-tmp
+MINER_STORAGE_PROVIDER=backblaze
+MINER_STORAGE_S3_ACCESS_KEY_ID=your-access-key
+MINER_STORAGE_S3_SECRET_ACCESS_KEY=your-secret-key
+MINER_STORAGE_S3_REGION=us-east-005
+MINER_STORAGE_S3_BUCKET_NAME=your-bucket-name
+MINER_STORAGE_S3_ENDPOINT_URL=https://s3.us-east-005.backblazeb2.com
 ```
 
-For AWS S3, use the same variable names and leave `ORGANIC_PROXY_STORAGE_S3_ENDPOINT_URL` blank.
+For AWS S3, use the same variable names and leave `MINER_STORAGE_S3_ENDPOINT_URL` blank.
 
 Create the shared work directory before starting the miner and containers:
 
@@ -184,7 +184,7 @@ Defaults:
 
 - `MINER_UPSCALING_SERVICE_URL` defaults to `http://localhost:8003` for Video2X upscaling.
 - `MINER_COMPRESSION_SERVICE_URL` defaults to `http://localhost:8004`.
-- `MINER_SHARED_VOLUME_PATH` defaults to `ORGANIC_PROXY_SHARED_DIR`, then `/tmp/vidaio-miner-video-tmp`.
+- `MINER_SHARED_VOLUME_PATH` defaults to `MINER_SHARED_DIR`, then `/tmp/vidaio-miner-video-tmp`.
 - For FFmpeg upscaling, override `MINER_UPSCALING_SERVICE_URL` to `http://localhost:8005`.
 
 Useful service checks:

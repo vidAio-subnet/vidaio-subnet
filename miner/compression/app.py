@@ -33,18 +33,18 @@ MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_COMPRESSION", "2"))
 DISABLE_REMOTE_IO = os.getenv("DISABLE_REMOTE_IO", "false").lower() in ("1", "true", "yes")
 
 # Storage provider label only. Uploads use one S3-compatible code path.
-STORAGE_PROVIDER = os.getenv("ORGANIC_PROXY_STORAGE_PROVIDER", "s3").lower()
-S3_REGION = os.getenv("ORGANIC_PROXY_STORAGE_S3_REGION", "us-east-1").strip() or "us-east-1"
-S3_BUCKET = os.getenv("ORGANIC_PROXY_STORAGE_S3_BUCKET_NAME", "").strip()
-S3_ACCESS_KEY_ID = os.getenv("ORGANIC_PROXY_STORAGE_S3_ACCESS_KEY_ID", "").strip()
-S3_SECRET_ACCESS_KEY = os.getenv("ORGANIC_PROXY_STORAGE_S3_SECRET_ACCESS_KEY", "").strip()
+STORAGE_PROVIDER = os.getenv("MINER_STORAGE_PROVIDER", "s3").lower()
+S3_REGION = os.getenv("MINER_STORAGE_S3_REGION", "us-east-1").strip() or "us-east-1"
+S3_BUCKET = os.getenv("MINER_STORAGE_S3_BUCKET_NAME", "").strip()
+S3_ACCESS_KEY_ID = os.getenv("MINER_STORAGE_S3_ACCESS_KEY_ID", "").strip()
+S3_SECRET_ACCESS_KEY = os.getenv("MINER_STORAGE_S3_SECRET_ACCESS_KEY", "").strip()
 S3_ENDPOINT_URL = (
-    os.getenv("ORGANIC_PROXY_STORAGE_S3_ENDPOINT_URL")
-    or os.getenv("ORGANIC_PROXY_STORAGE_S3_ENDPOINT")
+    os.getenv("MINER_STORAGE_S3_ENDPOINT_URL")
+    or os.getenv("MINER_STORAGE_S3_ENDPOINT")
     or ""
 ).strip()
 S3_PRESIGNED_EXPIRY = int(
-    os.getenv("ORGANIC_PROXY_STORAGE_S3_PRESIGNED_EXPIRY")
+    os.getenv("MINER_STORAGE_S3_PRESIGNED_EXPIRY")
     or os.getenv("S3_PRESIGNED_EXPIRY")
     or "3600"
 )
@@ -96,11 +96,11 @@ def _storage_config_status() -> dict[str, object]:
 def _validate_s3_config():
     missing = []
     if not S3_BUCKET:
-        missing.append("ORGANIC_PROXY_STORAGE_S3_BUCKET_NAME")
+        missing.append("MINER_STORAGE_S3_BUCKET_NAME")
     if not S3_ACCESS_KEY_ID:
-        missing.append("ORGANIC_PROXY_STORAGE_S3_ACCESS_KEY_ID")
+        missing.append("MINER_STORAGE_S3_ACCESS_KEY_ID")
     if not S3_SECRET_ACCESS_KEY:
-        missing.append("ORGANIC_PROXY_STORAGE_S3_SECRET_ACCESS_KEY")
+        missing.append("MINER_STORAGE_S3_SECRET_ACCESS_KEY")
 
     if missing:
         raise RuntimeError(f"Missing storage configuration: {', '.join(missing)}")
