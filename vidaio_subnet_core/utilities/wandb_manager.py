@@ -5,6 +5,7 @@ import hashlib
 import asyncio
 import datetime
 import threading
+from urllib.parse import quote, urlsplit, urlunsplit
 import wandb
 from dotenv import load_dotenv
 from loguru import logger
@@ -80,6 +81,17 @@ class WandbManager:
         value = re.sub(r"[^A-Za-z0-9_.-]+", "-", value)
         return value.strip("-") or "validator"
 
+    def _get_public_run_url(self, wandb_entity, wandb_project):
+        run_url = getattr(self.wandb, "url", None)
+        if run_url:
+            parsed = urlsplit(run_url)
+            return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+
+        entity = quote(wandb_entity, safe="")
+        project = quote(wandb_project, safe="")
+        run_id = quote(self.run_id, safe="")
+        return f"https://wandb.ai/{entity}/{project}/runs/{run_id}"
+
     def _build_settings(self):
         try:
             return wandb.Settings(
@@ -89,7 +101,7 @@ class WandbManager:
                 console_chunk_max_bytes=self.console_chunk_bytes,
             )
         except Exception as e:
-            logger.warning(
+            logger.debug(
                 "Wandb multipart console chunk settings are unsupported in this SDK; "
                 f"falling back without chunk controls ({type(e).__name__})."
             )
@@ -156,6 +168,9 @@ class WandbManager:
             return
 
         logger.info(f"Init Wandb run {self.run_id}: {self.run_name} ({reason})")
+        logger.info(
+            f"Wandb run URL: {self._get_public_run_url(wandb_entity, wandb_project)}"
+        )
 
     def _finish_locked(self):
         if self.wandb is None and wandb.run is None:
