@@ -17,7 +17,7 @@ load_dotenv()
 
 DEFAULT_ROTATION_DAYS = 0
 DEFAULT_HEARTBEAT_SECONDS = 300
-DEFAULT_CONSOLE_CHUNK_SECONDS = 24 * 60 * 60
+DEFAULT_CONSOLE_CHUNK_SECONDS = 60 * 60
 DEFAULT_CONSOLE_CHUNK_BYTES = 25 * 1024 * 1024
 
 
@@ -139,7 +139,6 @@ class WandbManager:
         logger.info("Initializing wandb entity and project.")
         try:
             init_kwargs = {
-                "anonymous": "never",
                 "id": self.run_id,
                 "resume": "allow",
                 "name": self.run_name,
