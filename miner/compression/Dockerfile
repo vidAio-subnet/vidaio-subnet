@@ -26,7 +26,7 @@ RUN git clone --depth 1 --branch 1.4.2 https://code.videolan.org/videolan/dav1d.
     && cd ../.. && rm -rf dav1d
 
 # SVT-AV1 (AV1 encoder for libsvtav1)
-RUN git clone --depth 1 --branch v2.3.0 https://gitlab.com/AOMediaCodec/SVT-AV1.git \
+RUN git clone --depth 1 --branch v4.1.0 https://gitlab.com/AOMediaCodec/SVT-AV1.git \
     && cd SVT-AV1 && mkdir build && cd build \
     && cmake .. -G"Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
     && make -j$(nproc) && make install && ldconfig \
