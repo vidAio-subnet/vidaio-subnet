@@ -1,0 +1,106 @@
+x-upscaling-video2x-base: &upscaling-video2x-base
+  build: ./upscaling
+  restart: unless-stopped
+  profiles: ["upscaling-video2x"]
+  networks:
+    - miner-local
+  environment:
+    - VIDEO2X_IMAGE=ghcr.io/k4yt3x/video2x:6.4.0
+    - SHARED_VOLUME_PATH=/tmp/organic-proxy
+    - HOST_SHARED_VOLUME_PATH=${MINER_SHARED_DIR:-/tmp/vidaio-miner-video-tmp}
+    - DOCKER_VOLUME_NAME=${COMPOSE_PROJECT_NAME:-organic-proxy}_video-tmp
+    - DISABLE_REMOTE_IO=true
+    - MAX_CONCURRENT_UPSCALING=2
+    - MINER_STORAGE_PROVIDER=${MINER_STORAGE_PROVIDER:-s3}
+    - MINER_STORAGE_S3_REGION=${MINER_STORAGE_S3_REGION:-us-east-1}
+    - MINER_STORAGE_S3_BUCKET_NAME=${MINER_STORAGE_S3_BUCKET_NAME:-}
+    - MINER_STORAGE_S3_ACCESS_KEY_ID=${MINER_STORAGE_S3_ACCESS_KEY_ID:-}
+    - MINER_STORAGE_S3_SECRET_ACCESS_KEY=${MINER_STORAGE_S3_SECRET_ACCESS_KEY:-}
+    - MINER_STORAGE_S3_ENDPOINT_URL=${MINER_STORAGE_S3_ENDPOINT_URL:-${MINER_STORAGE_S3_ENDPOINT:-}}
+    - MINER_STORAGE_S3_PRESIGNED_EXPIRY=${MINER_STORAGE_S3_PRESIGNED_EXPIRY:-${S3_PRESIGNED_EXPIRY:-3600}}
+  volumes:
+    - ${MINER_SHARED_DIR:-/tmp/vidaio-miner-video-tmp}:/tmp/organic-proxy
+    - /var/run/docker.sock:/var/run/docker.sock
+  healthcheck:
+    test: ["CMD", "curl", "-sf", "http://localhost:8003/health"]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 10s
+
+x-upscaling-ffmpeg-base: &upscaling-ffmpeg-base
+  build: ./upscaling/ffmpeg
+  restart: unless-stopped
+  profiles: ["upscaling-ffmpeg"]
+  gpus: all
+  networks:
+    - miner-local
+  environment:
+    - NVIDIA_VISIBLE_DEVICES=all
+    - NVIDIA_DRIVER_CAPABILITIES=video,compute,utility
+    - SHARED_VOLUME_PATH=/tmp/organic-proxy
+    - DISABLE_REMOTE_IO=true
+    - MAX_CONCURRENT_UPSCALING=2
+    - MINER_STORAGE_PROVIDER=${MINER_STORAGE_PROVIDER:-s3}
+    - MINER_STORAGE_S3_REGION=${MINER_STORAGE_S3_REGION:-us-east-1}
+    - MINER_STORAGE_S3_BUCKET_NAME=${MINER_STORAGE_S3_BUCKET_NAME:-}
+    - MINER_STORAGE_S3_ACCESS_KEY_ID=${MINER_STORAGE_S3_ACCESS_KEY_ID:-}
+    - MINER_STORAGE_S3_SECRET_ACCESS_KEY=${MINER_STORAGE_S3_SECRET_ACCESS_KEY:-}
+    - MINER_STORAGE_S3_ENDPOINT_URL=${MINER_STORAGE_S3_ENDPOINT_URL:-${MINER_STORAGE_S3_ENDPOINT:-}}
+    - MINER_STORAGE_S3_PRESIGNED_EXPIRY=${MINER_STORAGE_S3_PRESIGNED_EXPIRY:-${S3_PRESIGNED_EXPIRY:-3600}}
+  volumes:
+    - ${MINER_SHARED_DIR:-/tmp/vidaio-miner-video-tmp}:/tmp/organic-proxy
+  healthcheck:
+    test: ["CMD", "curl", "-sf", "http://localhost:8003/health"]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 10s
+
+x-compression-base: &compression-base
+  build: ./compression
+  restart: unless-stopped
+  gpus: all
+  networks:
+    - miner-local
+  environment:
+    - NVIDIA_VISIBLE_DEVICES=all
+    - NVIDIA_DRIVER_CAPABILITIES=video,compute,utility
+    - SHARED_VOLUME_PATH=/tmp/organic-proxy
+    - DISABLE_REMOTE_IO=true
+    - MAX_CONCURRENT_COMPRESSION=2
+    - MINER_STORAGE_PROVIDER=${MINER_STORAGE_PROVIDER:-s3}
+    - MINER_STORAGE_S3_REGION=${MINER_STORAGE_S3_REGION:-us-east-1}
+    - MINER_STORAGE_S3_BUCKET_NAME=${MINER_STORAGE_S3_BUCKET_NAME:-}
+    - MINER_STORAGE_S3_ACCESS_KEY_ID=${MINER_STORAGE_S3_ACCESS_KEY_ID:-}
+    - MINER_STORAGE_S3_SECRET_ACCESS_KEY=${MINER_STORAGE_S3_SECRET_ACCESS_KEY:-}
+    - MINER_STORAGE_S3_ENDPOINT_URL=${MINER_STORAGE_S3_ENDPOINT_URL:-${MINER_STORAGE_S3_ENDPOINT:-}}
+    - MINER_STORAGE_S3_PRESIGNED_EXPIRY=${MINER_STORAGE_S3_PRESIGNED_EXPIRY:-${S3_PRESIGNED_EXPIRY:-3600}}
+  volumes:
+    - ${MINER_SHARED_DIR:-/tmp/vidaio-miner-video-tmp}:/tmp/organic-proxy
+  healthcheck:
+    test: ["CMD", "curl", "-sf", "http://localhost:8004/health"]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 10s
+
+services:
+  upscaling-video2x:
+    <<: *upscaling-video2x-base
+    ports:
+      - "127.0.0.1:8003:8003"
+
+  upscaling-ffmpeg:
+    <<: *upscaling-ffmpeg-base
+    ports:
+      - "127.0.0.1:8005:8003"
+
+  compression:
+    <<: *compression-base
+    ports:
+      - "127.0.0.1:8004:8004"
+
+networks:
+  miner-local:
+    driver: bridge

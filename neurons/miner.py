@@ -1,11 +1,18 @@
-import time
-import uuid
-import traceback
-import os
 import asyncio
+import os
+import posixpath
+import time
+import traceback
+import uuid
+from pathlib import Path
 from typing import Tuple
-from loguru import logger
+
+import boto3
+import httpx
 import bittensor as bt
+from botocore.config import Config as BotoConfig
+from dotenv import load_dotenv
+from loguru import logger
 from vidaio_subnet_core.base.miner import BaseMiner
 from vidaio_subnet_core.protocol import (
     VideoUpscalingProtocol,
@@ -21,12 +28,57 @@ from vidaio_subnet_core.protocol import (
     JobKickoffResponse,
     PollResponse,
 )
-from services.miner_utilities.miner_utils import video_upscaler, video_compressor
 
 from vidaio_subnet_core.utilities.version import check_version
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(REPO_ROOT / "miner" / ".env", override=False)
+
 MAX_CONTENT_LEN = ContentLength.FIVE
 warrant_task = TaskType.UPSCALING
+
+UPSCALING_SERVICE_URL = os.getenv("MINER_UPSCALING_SERVICE_URL", "http://localhost:8003").rstrip("/")
+COMPRESSION_SERVICE_URL = os.getenv("MINER_COMPRESSION_SERVICE_URL", "http://localhost:8004").rstrip("/")
+UPSCALING_SERVICE_TIMEOUT_SECONDS = float(os.getenv("MINER_UPSCALING_SERVICE_TIMEOUT_SECONDS", "1200"))
+COMPRESSION_SERVICE_TIMEOUT_SECONDS = float(os.getenv("MINER_COMPRESSION_SERVICE_TIMEOUT_SECONDS", "600"))
+MINER_DOWNLOAD_TIMEOUT_SECONDS = float(os.getenv("MINER_DOWNLOAD_TIMEOUT_SECONDS", "600"))
+MINER_UPLOAD_URL_EXPIRY_SECONDS = int(os.getenv("MINER_STORAGE_S3_PRESIGNED_EXPIRY", os.getenv("S3_PRESIGNED_EXPIRY", "3600")))
+
+HOST_SHARED_VOLUME_PATH = Path(
+    os.getenv("MINER_SHARED_VOLUME_PATH")
+    or os.getenv("MINER_SHARED_DIR", "/tmp/vidaio-miner-video-tmp")
+).expanduser()
+if not HOST_SHARED_VOLUME_PATH.is_absolute():
+    HOST_SHARED_VOLUME_PATH = REPO_ROOT / HOST_SHARED_VOLUME_PATH
+CONTAINER_SHARED_VOLUME_PATH = os.getenv("MINER_CONTAINER_SHARED_VOLUME_PATH", "/tmp/organic-proxy").rstrip("/")
+
+S3_REGION = os.getenv("MINER_STORAGE_S3_REGION", "us-east-1").strip() or "us-east-1"
+S3_BUCKET = os.getenv("MINER_STORAGE_S3_BUCKET_NAME", "").strip()
+S3_ACCESS_KEY_ID = os.getenv("MINER_STORAGE_S3_ACCESS_KEY_ID", "").strip()
+S3_SECRET_ACCESS_KEY = os.getenv("MINER_STORAGE_S3_SECRET_ACCESS_KEY", "").strip()
+S3_ENDPOINT_URL = (
+    os.getenv("MINER_STORAGE_S3_ENDPOINT_URL")
+    or os.getenv("MINER_STORAGE_S3_ENDPOINT")
+    or ""
+).strip()
+
+TASK_TYPE_TO_SCALE = {
+    "SD24K": 4,
+    "HD24K": 2,
+    "SD2HD": 2,
+    "4K28K": 2,
+}
+
+COMPRESSION_CQ_BY_TYPE = {
+    "Low": 40,
+    "Medium": 35,
+    "High": 30,
+}
+
+
+def _is_url(path: str) -> bool:
+    return path.startswith("http://") or path.startswith("https://")
+
 
 class Miner(BaseMiner):
     def __init__(self, config: dict | None = None) -> None:
@@ -37,6 +89,219 @@ class Miner(BaseMiner):
         # Shared in-memory job store for polling-based organic requests.
         # Structure: { job_id: {"task": asyncio.Task, "result": str | None, "error": str | None} }
         self._jobs: dict[str, dict] = {}
+
+    def _container_shared_path(self, host_path: Path) -> str:
+        return f"{CONTAINER_SHARED_VOLUME_PATH}/{host_path.name}"
+
+    def _host_shared_path(self, container_path: str) -> Path:
+        shared_mount = posixpath.normpath(CONTAINER_SHARED_VOLUME_PATH)
+        normalized_path = posixpath.normpath(container_path)
+
+        if normalized_path == shared_mount or not normalized_path.startswith(f"{shared_mount}/"):
+            raise ValueError(f"Service returned path outside shared volume: {container_path}")
+
+        relative_path = posixpath.relpath(normalized_path, shared_mount)
+        host_path = (HOST_SHARED_VOLUME_PATH / relative_path).resolve()
+        shared_root = HOST_SHARED_VOLUME_PATH.resolve()
+
+        try:
+            host_path.relative_to(shared_root)
+        except ValueError:
+            raise ValueError(f"Mapped host path escapes shared volume: {host_path}") from None
+
+        return host_path
+
+    async def _download_to_shared_volume(self, video_url: str, task_id: str) -> tuple[Path, str]:
+        HOST_SHARED_VOLUME_PATH.mkdir(parents=True, exist_ok=True)
+        host_path = HOST_SHARED_VOLUME_PATH / f"{task_id}_input.mp4"
+
+        logger.info(f"Downloading validator payload to shared volume: {host_path}")
+        timeout = httpx.Timeout(MINER_DOWNLOAD_TIMEOUT_SECONDS)
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                async with client.stream("GET", video_url) as response:
+                    response.raise_for_status()
+                    with open(host_path, "wb") as file:
+                        async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
+                            file.write(chunk)
+        except Exception:
+            self._cleanup_shared_files(host_path)
+            raise
+
+        return host_path, self._container_shared_path(host_path)
+
+    def _get_s3_client(self):
+        client_kwargs = {
+            "region_name": S3_REGION,
+            "aws_access_key_id": S3_ACCESS_KEY_ID or None,
+            "aws_secret_access_key": S3_SECRET_ACCESS_KEY or None,
+            "config": BotoConfig(signature_version="s3v4"),
+        }
+        if S3_ENDPOINT_URL:
+            client_kwargs["endpoint_url"] = S3_ENDPOINT_URL
+        return boto3.client("s3", **client_kwargs)
+
+    async def _upload_processed_video(self, host_path: Path, service_name: str, task_id: str) -> str | None:
+        missing = []
+        if not S3_BUCKET:
+            missing.append("MINER_STORAGE_S3_BUCKET_NAME")
+        if not S3_ACCESS_KEY_ID:
+            missing.append("MINER_STORAGE_S3_ACCESS_KEY_ID")
+        if not S3_SECRET_ACCESS_KEY:
+            missing.append("MINER_STORAGE_S3_SECRET_ACCESS_KEY")
+
+        if missing:
+            logger.error(f"Missing storage configuration: {', '.join(missing)}")
+            return None
+
+        if not host_path.exists():
+            logger.error(f"Processed file not found on shared volume: {host_path}")
+            return None
+
+        object_key = f"processing/{service_name}/{task_id}/{host_path.name}"
+
+        def _upload_and_sign() -> str:
+            client = self._get_s3_client()
+            client.upload_file(str(host_path), S3_BUCKET, object_key)
+            return client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": S3_BUCKET, "Key": object_key},
+                ExpiresIn=min(MINER_UPLOAD_URL_EXPIRY_SECONDS, 604800),
+            )
+
+        logger.info(f"Uploading processed {service_name} output: {object_key}")
+        return await asyncio.to_thread(_upload_and_sign)
+
+    def _cleanup_shared_files(self, *paths: Path | None):
+        for path in paths:
+            if path and path.exists():
+                try:
+                    path.unlink()
+                except OSError as e:
+                    logger.warning(f"Failed to remove shared file {path}: {e}")
+
+    def _upscaling_service_payload(self, video_path: str, task_type: str, task_id: str) -> dict:
+        scale = TASK_TYPE_TO_SCALE.get(task_type, 2)
+        if task_type not in TASK_TYPE_TO_SCALE:
+            logger.warning(f"Unknown upscaling task_type={task_type}, defaulting to 2x scale")
+
+        return {
+            "video_path": video_path,
+            "scale": scale,
+            "task_id": task_id,
+        }
+
+    def _compression_type_from_payload(self, payload) -> str:
+        task_data = payload.model_dump() if hasattr(payload, "model_dump") else {}
+        compression_type = task_data.get("compression_type") or getattr(payload, "compression_type", None)
+        if compression_type in COMPRESSION_CQ_BY_TYPE:
+            return compression_type
+
+        vmaf_threshold = float(payload.vmaf_threshold)
+        if vmaf_threshold >= 93:
+            return "High"
+        if vmaf_threshold >= 89:
+            return "Medium"
+        return "Low"
+
+    def _compression_service_payload(self, payload, video_path: str, task_id: str) -> dict:
+        compression_type = self._compression_type_from_payload(payload)
+        compression_config = {
+            "video_path": video_path,
+            "task_id": task_id,
+            "codec": payload.target_codec,
+            "codec_mode": payload.codec_mode.upper(),
+            "target_bitrate": int(float(payload.target_bitrate) * 1_000_000),
+        }
+
+        if compression_type == "Low":
+            compression_config["cq"] = 40
+        elif compression_type == "Medium":
+            compression_config["cq"] = 35
+        elif compression_type == "High":
+            compression_config["cq"] = 30
+
+        return compression_config
+
+    async def _post_processing_service(
+        self,
+        service_name: str,
+        service_url: str,
+        endpoint: str,
+        payload: dict,
+        timeout_seconds: float,
+    ) -> str | None:
+        url = f"{service_url}{endpoint}"
+        timeout = httpx.Timeout(timeout_seconds)
+
+        logger.info(f"Forwarding {service_name} request to {url}")
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(url, json=payload)
+
+        if response.status_code != 200:
+            logger.error(f"{service_name} service error {response.status_code}: {response.text[:1000]}")
+            return None
+
+        result = response.json()
+        if not result.get("success", False):
+            logger.error(f"{service_name} service failed: {result.get('error')}")
+            return None
+
+        processed_video_url = result.get("output_url") or result.get("output_path")
+        if not processed_video_url:
+            logger.error(f"{service_name} service returned no output URL/path")
+            return None
+
+        logger.info(f"Received {service_name} result from container service")
+        return processed_video_url
+
+    async def _forward_upscaling_to_service(self, payload_url: str, task_type: str) -> str | None:
+        task_id = uuid.uuid4().hex[:12]
+        input_host_path = None
+        output_host_path = None
+        try:
+            input_host_path, input_container_path = await self._download_to_shared_volume(payload_url, task_id)
+            processed_ref = await self._post_processing_service(
+                "upscaling",
+                UPSCALING_SERVICE_URL,
+                "/upscale",
+                self._upscaling_service_payload(input_container_path, task_type, task_id),
+                UPSCALING_SERVICE_TIMEOUT_SECONDS,
+            )
+            if processed_ref is None:
+                return None
+            if _is_url(processed_ref):
+                return processed_ref
+
+            output_host_path = self._host_shared_path(processed_ref)
+            return await self._upload_processed_video(output_host_path, "upscaling", task_id)
+        finally:
+            self._cleanup_shared_files(input_host_path, output_host_path)
+
+    async def _forward_compression_to_service(self, payload) -> str | None:
+        task_id = uuid.uuid4().hex[:12]
+        input_host_path = None
+        output_host_path = None
+        try:
+            input_host_path, input_container_path = await self._download_to_shared_volume(
+                payload.reference_video_url, task_id
+            )
+            processed_ref = await self._post_processing_service(
+                "compression",
+                COMPRESSION_SERVICE_URL,
+                "/compress",
+                self._compression_service_payload(payload, input_container_path, task_id),
+                COMPRESSION_SERVICE_TIMEOUT_SECONDS,
+            )
+            if processed_ref is None:
+                return None
+            if _is_url(processed_ref):
+                return processed_ref
+
+            output_host_path = self._host_shared_path(processed_ref)
+            return await self._upload_processed_video(output_host_path, "compression", task_id)
+        finally:
+            self._cleanup_shared_files(input_host_path, output_host_path)
 
     async def forward_upscaling_requests(self, synapse: VideoUpscalingProtocol) -> VideoUpscalingProtocol:
         """
@@ -55,7 +320,7 @@ class Miner(BaseMiner):
         check_version(synapse.version)
 
         try:
-            processed_video_url = await video_upscaler(payload_url, task_type)
+            processed_video_url = await self._forward_upscaling_to_service(payload_url, task_type)
             
             if processed_video_url is None:
                 logger.info(f"💔 Failed to upscaling video 💔")
@@ -82,7 +347,6 @@ class Miner(BaseMiner):
 
         start_time = time.time()
 
-        payload_url: str = synapse.miner_payload.reference_video_url
         vmaf_threshold: float = synapse.miner_payload.vmaf_threshold
         target_codec: str = synapse.miner_payload.target_codec
         codec_mode: str = synapse.miner_payload.codec_mode
@@ -94,7 +358,7 @@ class Miner(BaseMiner):
         check_version(synapse.version)
 
         try:
-            processed_video_url = await video_compressor(payload_url, vmaf_threshold, target_codec, codec_mode, target_bitrate)
+            processed_video_url = await self._forward_compression_to_service(synapse.miner_payload)
 
             if processed_video_url is None:
                 logger.info(f"💔 Failed to compress video 💔")
@@ -159,16 +423,10 @@ class Miner(BaseMiner):
                 synapse.job_response = JobKickoffResponse(accepted=False)
                 return synapse
 
-            payload_url = synapse.miner_payload.reference_video_url
-            vmaf_threshold = synapse.miner_payload.vmaf_threshold
-            target_codec = synapse.miner_payload.target_codec
-            codec_mode = synapse.miner_payload.codec_mode
-            target_bitrate = synapse.miner_payload.target_bitrate
-
             async def _run_compression():
-                return await video_compressor(
-                    payload_url, vmaf_threshold, target_codec, codec_mode, target_bitrate
-                )
+                result = await self._forward_compression_to_service(synapse.miner_payload)
+                logger.info(f"CompressionJob processed successfully | job_id={job_id} | result={result}")
+                return result
 
             task = asyncio.create_task(_run_compression())
             self._jobs[job_id] = {"task": task, "result": None, "error": None}
@@ -275,7 +533,9 @@ class Miner(BaseMiner):
             task_type = synapse.miner_payload.task_type
 
             async def _run_upscaling():
-                return await video_upscaler(payload_url, task_type)
+                result = await self._forward_upscaling_to_service(payload_url, task_type)
+                logger.info(f"UpscalingJob processed successfully | job_id={job_id} | result={result}")
+                return result
 
             task = asyncio.create_task(_run_upscaling())
             self._jobs[job_id] = {"task": task, "result": None, "error": None}
