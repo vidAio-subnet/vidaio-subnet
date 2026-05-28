@@ -1570,8 +1570,16 @@ if __name__ == "__main__":
         validator_synthetic_task = asyncio.create_task(validator.run_synthetic())
         validator_organic_task = asyncio.create_task(validator.run_organic())
         weight_setter = asyncio.create_task(weight_synthesizer.run())
+        wandb_maintenance_task = asyncio.create_task(
+            validator.wandb_manager.run_maintenance()
+        )
 
-        await asyncio.gather(validator_synthetic_task, validator_organic_task, weight_setter)
+        await asyncio.gather(
+            validator_synthetic_task,
+            validator_organic_task,
+            weight_setter,
+            wandb_maintenance_task,
+        )
 
     try:
         asyncio.run(main())
@@ -1579,5 +1587,5 @@ if __name__ == "__main__":
         logger.info("Program terminated by user.")
     except Exception as e:
         logger.error(f"Unhandled exception: {e}", exc_info=True)
-
-
+    finally:
+        validator.wandb_manager.finish()
