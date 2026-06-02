@@ -31,6 +31,10 @@ COMPRESSION_VMAF_WEIGHT = 0.3  # w_vmaf
 SOFT_THRESHOLD_MARGIN = 5.0  # Margin below VMAF threshold for soft scoring zone
 
 FRAME_TOLERANCE = 5  # Tolerance in frames for fast ffprobe frame count read
+UPSCALING_FILE_SIZE_MULTIPLIERS = {
+    2: 4,
+    4: 16,
+}
 
 
 app = FastAPI()
@@ -43,6 +47,21 @@ VMAF_SAMPLE_COUNT = CONFIG.score.vmaf_sample_count
 
 # Check if vmaf_ffmpeg Docker image with libvmaf_cuda is available
 VMAF_FFMPEG_AVAILABLE = is_vmaf_ffmpeg_available()
+
+def validate_upscaling_file_size(reference_path, distorted_path, scale_factor):
+    """Validate that an upscaled video stays within the allowed file size."""
+    max_multiplier = UPSCALING_FILE_SIZE_MULTIPLIERS[scale_factor]
+    reference_file_size = os.path.getsize(reference_path)
+    distorted_file_size = os.path.getsize(distorted_path)
+    max_distorted_file_size = reference_file_size * max_multiplier
+
+    logger.info(
+        f"Upscaling file size check: distorted={distorted_file_size} bytes, "
+        f"reference={reference_file_size} bytes, "
+        f"limit={max_distorted_file_size} bytes ({max_multiplier}x)"
+    )
+
+    return distorted_file_size <= max_distorted_file_size, max_multiplier
 
 class UpscalingScoringRequest(BaseModel):
     """
@@ -1755,6 +1774,25 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 reasons.append(error_msg)
                 continue
 
+            is_valid_file_size, max_file_size_multiplier = validate_upscaling_file_size(
+                payload_path, dist_path, scale_factor
+            )
+            if not is_valid_file_size:
+                logger.info(
+                    f"Distorted video file size exceeds {max_file_size_multiplier}x reference "
+                    "file size limit. Penalizing miner."
+                )
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(0.0)
+                reasons.append(
+                    f"MINER FAILURE: distorted video file size exceeds "
+                    f"{max_file_size_multiplier}x reference file size limit"
+                )
+                continue
+
             step_time = time.time() - uid_start_time
 
             # Validate video using ffprobe (avoids AV1 warnings)
@@ -2546,6 +2584,29 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
                 quality_scores.append(0.0)
                 length_scores.append(0.0)
                 final_scores.append(0.0)  # 0 = miner penalty
+                continue
+
+            is_valid_file_size, max_file_size_multiplier = validate_upscaling_file_size(
+                ref_path, dist_path, scale_factor
+            )
+            if not is_valid_file_size:
+                logger.info(
+                    f"distorted video file size exceeds {max_file_size_multiplier}x reference "
+                    "file size limit. penalizing miner."
+                )
+                reasons.append(
+                    f"MINER FAILURE: distorted video file size exceeds "
+                    f"{max_file_size_multiplier}x reference file size limit"
+                )
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(0.0)  # 0 = miner penalty
+                if ref_path and os.path.exists(ref_path):
+                    os.unlink(ref_path)
+                if dist_path and os.path.exists(dist_path):
+                    os.unlink(dist_path)
                 continue
 
             # Check if miner's output can be opened (using ffprobe to avoid AV1 warnings)
