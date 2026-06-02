@@ -191,6 +191,8 @@ async def verify_organic_proxy_download(video_url: str, session: Optional[aiohtt
                 f"Organic proxy download verification failed. HTTP status: {response.status}, "
                 f"response: {response_text[:500]}"
             )
+        else:
+            logger.info(f"Organic proxy download verification succeeded for {video_url}")
 
         response_data = await response.json()
         downloadable = response_data.get("downloadable")
