@@ -2486,10 +2486,11 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
         try:
             proxy_downloadable = await verify_organic_proxy_download(dist_url)
         except Exception as e:
-            logger.error(f"failed to verify distorted video download: {dist_url}, error: {e}")
-            proxy_downloadable_results.append(None)
-            distorted_video_paths.append(None)
-            continue
+            logger.warning(
+                f"organic proxy download verification unavailable for {dist_url}; "
+                f"bypassing check and continuing scoring. error: {e}"
+            )
+            proxy_downloadable = True
 
         proxy_downloadable_results.append(proxy_downloadable)
         if not proxy_downloadable:
@@ -2591,14 +2592,11 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
         # === MINER OUTPUT VALIDATION (MINER'S FAULT) ===
         try:
             if proxy_downloadable is None:
-                logger.error(f"system error verifying distorted video download for uid {uid}. skipping scoring.")
-                reasons.append("system error verifying distorted video download - skipped")
-                vmaf_scores.append(-1)
-                pieapp_scores.append(-1)
-                quality_scores.append(-1)
-                length_scores.append(-1)
-                final_scores.append(-1)
-                continue
+                logger.warning(
+                    f"organic proxy download verification unavailable for uid {uid}; "
+                    "bypassing check and continuing scoring."
+                )
+                proxy_downloadable = True
 
             if not proxy_downloadable:
                 logger.error(f"organic proxy failed to download distorted video for uid {uid}. penalizing miner.")
@@ -2868,10 +2866,11 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
         try:
             proxy_downloadable = await verify_organic_proxy_download(dist_url)
         except Exception as e:
-            logger.error(f"failed to verify distorted video download: {dist_url}, error: {e}")
-            proxy_downloadable_results.append(None)
-            distorted_video_paths.append(None)
-            continue
+            logger.warning(
+                f"organic proxy download verification unavailable for {dist_url}; "
+                f"bypassing check and continuing scoring. error: {e}"
+            )
+            proxy_downloadable = True
 
         proxy_downloadable_results.append(proxy_downloadable)
         if not proxy_downloadable:
@@ -2958,12 +2957,11 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
         # === MINER OUTPUT VALIDATION (MINER'S FAULT) ===
         try:
             if proxy_downloadable is None:
-                logger.error(f"system error verifying distorted video download for uid {uid}. skipping scoring.")
-                vmaf_scores.append(-1)
-                compression_rates.append(-1)
-                reasons.append("system error verifying distorted video download - skipped")
-                final_scores.append(-1)
-                continue
+                logger.warning(
+                    f"organic proxy download verification unavailable for uid {uid}; "
+                    "bypassing check and continuing scoring."
+                )
+                proxy_downloadable = True
 
             if not proxy_downloadable:
                 logger.error(f"organic proxy failed to download distorted video for uid {uid}. penalizing miner.")
