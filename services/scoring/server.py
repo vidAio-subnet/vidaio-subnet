@@ -56,9 +56,9 @@ def validate_upscaling_file_size(reference_path, distorted_path, scale_factor):
     max_distorted_file_size = reference_file_size * max_multiplier
 
     logger.info(
-        f"Upscaling file size check: distorted={distorted_file_size} bytes, "
-        f"reference={reference_file_size} bytes, "
-        f"limit={max_distorted_file_size} bytes ({max_multiplier}x)"
+        f"Upscaling file size check: distorted={distorted_file_size / (1024 * 1024):.2f} MB, "
+        f"reference={reference_file_size / (1024 * 1024):.2f} MB, "
+        f"limit={max_distorted_file_size / (1024 * 1024):.2f} MB ({max_multiplier}x)"
     )
 
     return distorted_file_size <= max_distorted_file_size, max_multiplier
