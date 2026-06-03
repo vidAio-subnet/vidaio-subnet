@@ -2,6 +2,9 @@ x-upscaling-video2x-base: &upscaling-video2x-base
   build: ./upscaling
   restart: unless-stopped
   profiles: ["upscaling-video2x"]
+  depends_on:
+    video2x-image:
+      condition: service_completed_successfully
   networks:
     - miner-local
   environment:
@@ -86,6 +89,15 @@ x-compression-base: &compression-base
     start_period: 10s
 
 services:
+  video2x-image:
+    image: ghcr.io/k4yt3x/video2x:6.4.0
+    profiles: ["upscaling-video2x"]
+    network_mode: none
+    entrypoint: ["echo"]
+    command: ["Video2X image pulled!"]
+    restart: "no"
+    # This ensures the container shuts down after its task is done.
+
   upscaling-video2x:
     <<: *upscaling-video2x-base
     ports:
