@@ -71,7 +71,7 @@ docker compose up -d compression
    - `miner/upscaling/ffmpeg` exports only the FFmpeg upscaling service.
    - `miner/compression` exports only compression.
 
-By default the exporter creates or uses private Docker Hub repositories named like `DOCKERHUB_NAMESPACE/vidaio-miner-compression:<tag>`. It verifies the write API key by creating/using the private repositories and pushing the built images. It verifies the read-only API key by confirming repository read access, inspecting the pushed image manifests, and checking that the token cannot push.
+By default the exporter creates or uses private Docker Hub repositories named like `DOCKERHUB_NAMESPACE/vidaio-miner-compression:<tag>`. It verifies the write API key by creating/using the private repositories and pushing the built images. If the private repositories do not already exist, the write key must also be allowed to create repositories in that namespace, such as a Docker Hub token with `repo:admin` scope or equivalent namespace permission. It verifies the read-only API key by confirming repository read access, inspecting the pushed image manifests, and checking that the token cannot push.
 
 Useful non-interactive example:
 ```bash

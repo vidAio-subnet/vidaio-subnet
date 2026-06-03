@@ -8,6 +8,7 @@ and writes a docker-compose.yml that contains image references only.
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as dt
 import getpass
 import json
@@ -222,13 +223,41 @@ def image_reference(registry: str, namespace: str, repository: str, tag: str) ->
     return ref
 
 
-def dockerhub_login(username: str, api_key: str) -> str:
-    body = {"username": username, "password": api_key}
-    data, _ = dockerhub_request("POST", "/v2/users/login/", body=body, bearer=None)
+def decode_bearer_payload(token: str) -> dict[str, Any]:
+    parts = token.split(".")
+    if len(parts) < 2:
+        return {}
+    payload = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(payload.encode("ascii")).decode("utf-8")
+        return json.loads(decoded)
+    except (ValueError, json.JSONDecodeError):
+        return {}
+
+
+def summarize_bearer_payload(token: str) -> str:
+    payload = decode_bearer_payload(token)
+    if not payload:
+        return "unavailable"
+    interesting = {
+        key: payload[key]
+        for key in ("sub", "aud", "iss", "scopes", "scope", "access", "permissions")
+        if key in payload
+    }
+    if not interesting:
+        return "no explicit scope claims found"
+    return json.dumps(interesting, sort_keys=True)
+
+
+def dockerhub_login(username: str, api_key: str, label: str) -> str:
+    body = {"identifier": username, "secret": api_key}
+    data, _ = dockerhub_request("POST", "/v2/auth/token", body=body, bearer=None)
     token = data.get("token") or data.get("access_token")
     if not token:
         raise ExportError("Docker Hub login succeeded but no bearer token was returned.")
-    return str(token)
+    token = str(token)
+    print(f"Docker Hub {label} bearer claims: {summarize_bearer_payload(token)}")
+    return token
 
 
 def dockerhub_request(
@@ -290,13 +319,23 @@ def create_repository(namespace: str, repository: str, bearer: str, private: boo
         "registry": "docker.io",
         "is_private": private,
     }
-    dockerhub_request(
-        "POST",
-        f"/v2/namespaces/{escaped_namespace}/repositories",
-        body=body,
-        bearer=bearer,
-        expected={200, 201},
-    )
+    try:
+        dockerhub_request(
+            "POST",
+            f"/v2/namespaces/{escaped_namespace}/repositories",
+            body=body,
+            bearer=bearer,
+            expected={200, 201},
+        )
+    except ExportError as exc:
+        if "403" in str(exc) and "insufficient scope" in str(exc).lower():
+            raise ExportError(
+                f"{exc}\n"
+                "Docker Hub accepted the credentials, but the bearer token cannot create repositories "
+                f"in namespace {namespace}. Try a token with repo:admin scope, check Docker Hub "
+                "namespace access policies, or create the repository as private in Docker Hub and rerun."
+            ) from exc
+        raise
 
 
 def ensure_repositories(namespace: str, repositories: list[str], bearer: str, private: bool) -> None:
@@ -547,7 +586,7 @@ def verify_readonly_token(
     *,
     skip_push_checks: bool,
 ) -> None:
-    bearer = dockerhub_login(username, api_key)
+    bearer = dockerhub_login(username, api_key, "read-only")
     for repository in repositories:
         existing, status = get_repository(namespace, repository, bearer)
         if status != 200:
@@ -691,13 +730,13 @@ def main() -> int:
                     "DOCKERHUB_READONLY_API_KEY in miner/.env or the environment."
                 )
             print("Verifying Docker Hub write API key.")
-            write_bearer = dockerhub_login(username, write_key)
+            write_bearer = dockerhub_login(username, write_key, "write")
             ensure_repositories(namespace, list(repositories.values()), write_bearer, private)
             docker_login_cli(registry, username, write_key, docker_env)
         else:
             print("Skipping Docker Hub API key verification.")
             write_key = env_value(env_file, "DOCKERHUB_WRITE_API_KEY")
-            if write_key:
+            if write_key and not args.skip_build and not args.skip_push:
                 docker_login_cli(registry, username, write_key, docker_env)
 
         build_and_push(
