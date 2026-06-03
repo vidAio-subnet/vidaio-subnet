@@ -545,6 +545,35 @@ def referenced_networks(services: dict[str, Any]) -> set[str]:
     return names
 
 
+def service_dependencies(service: dict[str, Any]) -> list[str]:
+    depends_on = service.get("depends_on")
+    if isinstance(depends_on, dict):
+        return list(depends_on.keys())
+    if isinstance(depends_on, list):
+        return [str(item) for item in depends_on]
+    return []
+
+
+def expand_with_dependencies(config: dict[str, Any], services: list[str]) -> list[str]:
+    all_services = config.get("services", {})
+    expanded: list[str] = []
+    seen: set[str] = set()
+
+    def visit(service_name: str) -> None:
+        if service_name in seen:
+            return
+        if service_name not in all_services:
+            raise ExportError(f"Service {service_name} references missing dependency.")
+        seen.add(service_name)
+        expanded.append(service_name)
+        for dependency in service_dependencies(all_services[service_name]):
+            visit(dependency)
+
+    for service_name in services:
+        visit(service_name)
+    return expanded
+
+
 def export_compose_data(
     config: dict[str, Any],
     services: list[str],
@@ -552,10 +581,14 @@ def export_compose_data(
     *,
     include_build: bool,
 ) -> dict[str, Any]:
-    exported_services = {
-        service_name: normalize_service(config["services"][service_name], images[service_name], include_build)
-        for service_name in services
-    }
+    expanded_services = expand_with_dependencies(config, services)
+    exported_services = {}
+    for service_name in expanded_services:
+        source = config["services"][service_name]
+        image = images.get(service_name) or source.get("image")
+        if not image:
+            raise ExportError(f"Service {service_name} has no exported image reference.")
+        exported_services[service_name] = normalize_service(source, image, include_build)
     data: dict[str, Any] = {"services": exported_services}
 
     used_networks = referenced_networks(exported_services)
