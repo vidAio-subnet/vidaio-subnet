@@ -59,8 +59,8 @@ docker compose up -d compression
 2. Fill in the Docker Hub export settings:
    - `DOCKERHUB_USERNAME`
    - `DOCKERHUB_NAMESPACE`
-   - `DOCKERHUB_WRITE_API_KEY`
-   - `DOCKERHUB_READONLY_API_KEY`
+   - `DOCKERHUB_WRITE_API_KEY` with Docker Hub `repo:admin` scope.
+   - `DOCKERHUB_READONLY_API_KEY` with Docker Hub `repo:read` scope.
 3. Run the exporter:
    ```bash
    python3 miner/export_compose.py
@@ -71,7 +71,7 @@ docker compose up -d compression
    - `miner/upscaling/ffmpeg` exports only the FFmpeg upscaling service.
    - `miner/compression` exports only compression.
 
-By default the exporter creates or uses private Docker Hub repositories named like `DOCKERHUB_NAMESPACE/vidaio-miner-compression:<tag>`. It verifies the write API key by creating/using the private repositories and pushing the built images. If the private repositories do not already exist, the write key must also be allowed to create repositories in that namespace, such as a Docker Hub token with `repo:admin` scope or equivalent namespace permission. It verifies the read-only API key by confirming repository read access, inspecting the pushed image manifests, and checking that the token cannot push.
+By default the exporter creates or uses private Docker Hub repositories named like `DOCKERHUB_NAMESPACE/vidaio-miner-compression:<tag>`. It verifies the publishing key has `repo:admin`, then creates/uses the private repositories and pushes the built images. Docker Hub `repo:write` can push to existing repositories but does not satisfy this export flow because missing private repositories must be created first. It verifies the read-only API key has `repo:read`, confirms repository read access, inspects the pushed image manifests, and checks that the token cannot push.
 
 Useful non-interactive example:
 ```bash

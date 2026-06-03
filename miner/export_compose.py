@@ -249,6 +249,54 @@ def summarize_bearer_payload(token: str) -> str:
     return json.dumps(interesting, sort_keys=True)
 
 
+def bearer_scopes(token: str) -> set[str]:
+    payload = decode_bearer_payload(token)
+    scopes: set[str] = set()
+    for key in ("scope", "scopes"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            scopes.update(scope for scope in re.split(r"[\s,]+", value) if scope)
+        elif isinstance(value, list):
+            scopes.update(str(scope) for scope in value if scope)
+    return scopes
+
+
+def has_repo_scope(scopes: set[str], required: str) -> bool:
+    if required in scopes:
+        return True
+    if required == "repo:public_read":
+        return bool(scopes & {"repo:read", "repo:write", "repo:admin"})
+    if required == "repo:read":
+        return bool(scopes & {"repo:write", "repo:admin"})
+    if required == "repo:write":
+        return "repo:admin" in scopes
+    return False
+
+
+def require_bearer_scopes(
+    token: str,
+    *,
+    label: str,
+    required: tuple[str, ...],
+    forbidden: tuple[str, ...] = (),
+) -> None:
+    scopes = bearer_scopes(token)
+    if not scopes:
+        raise ExportError(f"Docker Hub {label} bearer token did not include parseable scope claims.")
+    missing = [scope for scope in required if not has_repo_scope(scopes, scope)]
+    if missing:
+        raise ExportError(
+            f"Docker Hub {label} token has scopes {sorted(scopes)}, but exporter requires "
+            f"{list(required)}."
+        )
+    blocked = [scope for scope in forbidden if has_repo_scope(scopes, scope)]
+    if blocked:
+        raise ExportError(
+            f"Docker Hub {label} token has scopes {sorted(scopes)}, but must not grant "
+            f"{list(forbidden)}."
+        )
+
+
 def dockerhub_login(username: str, api_key: str, label: str) -> str:
     body = {"identifier": username, "secret": api_key}
     data, _ = dockerhub_request("POST", "/v2/auth/token", body=body, bearer=None)
@@ -587,6 +635,12 @@ def verify_readonly_token(
     skip_push_checks: bool,
 ) -> None:
     bearer = dockerhub_login(username, api_key, "read-only")
+    require_bearer_scopes(
+        bearer,
+        label="read-only",
+        required=("repo:read",),
+        forbidden=("repo:write", "repo:admin"),
+    )
     for repository in repositories:
         existing, status = get_repository(namespace, repository, bearer)
         if status != 200:
@@ -731,6 +785,11 @@ def main() -> int:
                 )
             print("Verifying Docker Hub write API key.")
             write_bearer = dockerhub_login(username, write_key, "write")
+            require_bearer_scopes(
+                write_bearer,
+                label="write",
+                required=("repo:admin",),
+            )
             ensure_repositories(namespace, list(repositories.values()), write_bearer, private)
             docker_login_cli(registry, username, write_key, docker_env)
         else:
