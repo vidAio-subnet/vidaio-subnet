@@ -42,6 +42,7 @@ DOCKER_ENV_NAMES = (
     "DOCKER_EXPORT_IMAGE_PREFIX",
     "DOCKER_EXPORT_TAG",
     "DOCKER_EXPORT_VISIBILITY",
+    "DOCKER_EXPORT_FALLBACK_PUBLIC",
     "DOCKER_EXPORT_OUTPUT_DIR",
 )
 
@@ -69,6 +70,13 @@ def load_env_file(path: Path) -> dict[str, str]:
 
 def env_value(env_file: dict[str, str], name: str, default: str = "") -> str:
     return os.environ.get(name) or env_file.get(name) or default
+
+
+def env_bool(env_file: dict[str, str], name: str, default: bool = False) -> bool:
+    value = env_value(env_file, name)
+    if value == "":
+        return default
+    return value.lower() in {"1", "true", "yes", "y", "on"}
 
 
 def is_placeholder(value: str) -> bool:
@@ -386,24 +394,59 @@ def create_repository(namespace: str, repository: str, bearer: str, private: boo
         raise
 
 
-def ensure_repositories(namespace: str, repositories: list[str], bearer: str, private: bool) -> None:
+def is_private_plan_limit_error(error: Exception) -> bool:
+    message = str(error).lower()
+    return (
+        "no more private repositories" in message
+        or ("private repositories" in message and "current plan" in message)
+    )
+
+
+def ensure_repositories(
+    namespace: str,
+    repositories: list[str],
+    bearer: str,
+    private: bool,
+    *,
+    fallback_public: bool,
+) -> bool:
+    fallback_used = False
     for repository in repositories:
         existing, status = get_repository(namespace, repository, bearer)
         if status == 404:
             mode = "private" if private else "public"
             print(f"Creating Docker Hub {mode} repository {namespace}/{repository}")
-            create_repository(namespace, repository, bearer, private)
+            try:
+                create_repository(namespace, repository, bearer, private)
+            except ExportError as exc:
+                if private and fallback_public and is_private_plan_limit_error(exc):
+                    print(
+                        "Docker Hub private repository creation is unavailable for the current plan; "
+                        f"creating public repository {namespace}/{repository} because --fallback-public is enabled."
+                    )
+                    create_repository(namespace, repository, bearer, private=False)
+                    fallback_used = True
+                    continue
+                raise
             continue
         if status in {401, 403}:
             raise ExportError(
                 f"Write API key cannot read or create Docker Hub repository {namespace}/{repository}."
             )
         if private and existing.get("is_private") is not True:
+            if fallback_public:
+                print(
+                    f"Using existing public Docker Hub repository {namespace}/{repository} "
+                    "because --fallback-public is enabled."
+                )
+                fallback_used = True
+                continue
             raise ExportError(
                 f"Docker Hub repository {namespace}/{repository} already exists but is public. "
                 "Make it private or export with --public."
             )
         print(f"Using existing Docker Hub repository {namespace}/{repository}")
+    return fallback_used
 
 
 def docker_login_cli(registry: str, username: str, api_key: str, docker_env: dict[str, str]) -> None:
@@ -695,6 +738,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image-prefix", help="Repository prefix, for example vidaio-miner.")
     parser.add_argument("--tag", help="Image tag. Defaults to git short SHA plus UTC timestamp.")
     parser.add_argument("--public", action="store_true", help="Create/use public repositories instead of private.")
+    parser.add_argument(
+        "--fallback-public",
+        action="store_true",
+        help="If Docker Hub rejects private repo creation because the plan has no private repos, create public repos instead.",
+    )
     parser.add_argument("--yes", action="store_true", help="Use defaults for prompts.")
     parser.add_argument("--skip-build", action="store_true", help="Write compose output without building images.")
     parser.add_argument("--skip-push", action="store_true", help="Build and write compose output without pushing.")
@@ -729,6 +777,7 @@ def main() -> int:
     image_prefix = args.image_prefix or env_value(env_file, "DOCKER_EXPORT_IMAGE_PREFIX", "vidaio-miner")
     tag = args.tag or env_value(env_file, "DOCKER_EXPORT_TAG") or default_tag()
     private = not args.public and env_value(env_file, "DOCKER_EXPORT_VISIBILITY", "private").lower() != "public"
+    fallback_public = args.fallback_public or env_bool(env_file, "DOCKER_EXPORT_FALLBACK_PUBLIC")
 
     repositories = {
         service: slugify(f"{image_prefix}-{service}")
@@ -790,7 +839,15 @@ def main() -> int:
                 label="write",
                 required=("repo:admin",),
             )
-            ensure_repositories(namespace, list(repositories.values()), write_bearer, private)
+            fallback_used = ensure_repositories(
+                namespace,
+                list(repositories.values()),
+                write_bearer,
+                private,
+                fallback_public=fallback_public,
+            )
+            if fallback_used:
+                print("WARNING: one or more exported Docker Hub repositories are public.")
             docker_login_cli(registry, username, write_key, docker_env)
         else:
             print("Skipping Docker Hub API key verification.")

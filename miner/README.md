@@ -73,12 +73,15 @@ docker compose up -d compression
 
 By default the exporter creates or uses private Docker Hub repositories named like `DOCKERHUB_NAMESPACE/vidaio-miner-compression:<tag>`. It verifies the publishing key has `repo:admin`, then creates/uses the private repositories and pushes the built images. Docker Hub `repo:write` can push to existing repositories but does not satisfy this export flow because missing private repositories must be created first. It verifies the read-only API key has `repo:read`, confirms repository read access, inspects the pushed image manifests, and checks that the token cannot push.
 
+If Docker Hub rejects private repository creation because the current plan has no private repositories available, rerun with `--fallback-public` or set `DOCKER_EXPORT_FALLBACK_PUBLIC=true`. This creates the missing repositories as public while still verifying that the second API key is read-only.
+
 Useful non-interactive example:
 ```bash
 python3 miner/export_compose.py \
   --project-root miner/upscaling/ffmpeg \
   --tag ffmpeg-$(date -u +%Y%m%d%H%M%S) \
-  --output-dir miner/exported/upscaling-ffmpeg
+  --output-dir miner/exported/upscaling-ffmpeg \
+  --fallback-public
 ```
 
 The recipient of a private export must log in with the read-only API key before running the exported file:
