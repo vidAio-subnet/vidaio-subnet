@@ -32,6 +32,17 @@ DEFAULT_COMPOSE_NAMES = (
     "compose.yaml",
 )
 DOCKER_HUB_API = "https://hub.docker.com"
+DOCKER_ENV_NAMES = (
+    "DOCKERHUB_USERNAME",
+    "DOCKERHUB_NAMESPACE",
+    "DOCKERHUB_WRITE_API_KEY",
+    "DOCKERHUB_READONLY_API_KEY",
+    "DOCKER_EXPORT_REGISTRY",
+    "DOCKER_EXPORT_IMAGE_PREFIX",
+    "DOCKER_EXPORT_TAG",
+    "DOCKER_EXPORT_VISIBILITY",
+    "DOCKER_EXPORT_OUTPUT_DIR",
+)
 
 
 class ExportError(RuntimeError):
@@ -61,6 +72,31 @@ def env_value(env_file: dict[str, str], name: str, default: str = "") -> str:
 
 def is_placeholder(value: str) -> bool:
     return value.startswith("your-") or value.endswith("-api-key")
+
+
+def redacted_env_value(name: str, value: str) -> str:
+    if value == "":
+        return "<unset>"
+    if any(marker in name for marker in ("KEY", "TOKEN", "PASSWORD", "SECRET")):
+        return f"<redacted len={len(value)}>"
+    return value
+
+
+def env_source(env_file: dict[str, str], name: str) -> str:
+    if name in os.environ:
+        return "environment"
+    if name in env_file:
+        return ".env"
+    return "default/unset"
+
+
+def print_docker_env_summary(env_path: Path, env_file: dict[str, str]) -> None:
+    status = "found" if env_path.exists() else "missing"
+    print(f"Docker export env file: {env_path} ({status})")
+    print("Docker export env:")
+    for name in DOCKER_ENV_NAMES:
+        value = env_value(env_file, name)
+        print(f"  {name}={redacted_env_value(name, value)} [{env_source(env_file, name)}]")
 
 
 def run(
@@ -579,7 +615,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    env_file = load_env_file(Path(args.env_file).expanduser().resolve())
+    env_path = Path(args.env_file).expanduser().resolve()
+    env_file = load_env_file(env_path)
+    print_docker_env_summary(env_path, env_file)
 
     default_root = SCRIPT_DIR
     project_root = (
