@@ -98,6 +98,17 @@ def _validate_s3_config():
         raise RuntimeError(f"Missing storage configuration: {', '.join(missing)}")
 
 
+def _format_process_output(stdout: bytes, stderr: bytes) -> str:
+    parts = []
+    stdout_msg = stdout.decode(errors="replace").strip()
+    stderr_msg = stderr.decode(errors="replace").strip()
+    if stdout_msg:
+        parts.append(f"stdout:\n{stdout_msg}")
+    if stderr_msg:
+        parts.append(f"stderr:\n{stderr_msg}")
+    return "\n\n".join(parts)
+
+
 async def _download_url(url: str, dest: str):
     """Download a URL (presigned S3 or direct) to local path."""
     log.info(f"Downloading {url[:80]}... → {dest}")
@@ -226,6 +237,7 @@ async def upscale(req: UpscaleRequest):
     log.info(f"[{task_label}] Queued {req.scale}x upscale (position={position}, waiting={queued}, remote={remote_mode})")
 
     proc = None
+    stdout = b""
     stderr = b""
     run_error = ""
     try:
@@ -243,7 +255,7 @@ async def upscale(req: UpscaleRequest):
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                _, stderr = await proc.communicate()
+                stdout, stderr = await proc.communicate()
             except FileNotFoundError:
                 run_error = f"Video2X binary not found: {VIDEO2X_BIN}"
                 log.error(f"[{task_label}] {run_error}")
@@ -265,7 +277,7 @@ async def upscale(req: UpscaleRequest):
         return UpscaleResponse(success=False, error=run_error or "Video2X did not start", **stats)
 
     if proc.returncode != 0:
-        err_msg = stderr.decode(errors="replace").strip()
+        err_msg = _format_process_output(stdout, stderr) or "Video2X failed without output"
         log.error(f"[{task_label}] video2x failed (rc={proc.returncode}): {err_msg}")
         if remote_mode:
             _cleanup(local_input)
