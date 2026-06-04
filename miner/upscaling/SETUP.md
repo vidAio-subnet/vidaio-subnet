@@ -15,3 +15,7 @@ docker compose -f miner/docker-compose.yml --profile upscaling-video2x up --buil
 The Video2X worker image builds Video2X from source and installs it into the
 same container as the FastAPI service. It no longer requires a pre-pulled
 upstream Video2X release image or access to the Docker daemon socket.
+
+The default encoder is `h264_nvenc` with `VIDEO2X_ENCODER_OPTIONS=preset=p4,cq={cq}`.
+Override `VIDEO2X_CODEC` and `VIDEO2X_ENCODER_OPTIONS` when testing other
+encoders, for example `VIDEO2X_CODEC=hevc_nvenc`.

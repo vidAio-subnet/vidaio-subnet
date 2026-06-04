@@ -31,11 +31,12 @@ app = FastAPI(title="Video Upscaling Service")
 
 VIDEO2X_BIN = os.getenv("VIDEO2X_BIN", "video2x")
 VIDEO2X_DEVICE = (os.getenv("VIDEO2X_DEVICE") or os.getenv("VIDEO2X_GPU") or "0").strip()
+VIDEO2X_CODEC = os.getenv("VIDEO2X_CODEC", "av1_nvenc").strip()
 VIDEO2X_ENCODER_OPTIONS = [
     opt.strip()
     for opt in os.getenv(
         "VIDEO2X_ENCODER_OPTIONS",
-        "preset=p7,cq={cq},profile=main,bf=0,b_ref_mode=disabled,zerolatency=1",
+        "preset=p4,cq={cq}",
     ).split(",")
     if opt.strip()
 ]
@@ -148,7 +149,7 @@ class UpscaleRequest(BaseModel):
     scale: int = Field(..., description="Upscaling factor: 2 or 4")
     task_id: str = Field("", description="Task ID for logging")
     model: str = Field("realesr-animevideov3", description="RealESRGAN model name")
-    codec: str = Field("hevc_nvenc", description="Output video codec")
+    codec: str = Field(VIDEO2X_CODEC, description="Output video codec")
     cq: int = Field(35, description="Constant quality value")
 
 
@@ -168,6 +169,7 @@ async def health():
         "status": "ok",
         "video2x_binary": VIDEO2X_BIN,
         "video2x_device": VIDEO2X_DEVICE,
+        "video2x_codec": VIDEO2X_CODEC,
         "video2x_encoder_options": VIDEO2X_ENCODER_OPTIONS,
         "max_concurrent": MAX_CONCURRENT,
         "active_tasks": _active_count,

@@ -10,7 +10,8 @@ x-upscaling-video2x-base: &upscaling-video2x-base
     - NVIDIA_DRIVER_CAPABILITIES=graphics,video,compute,utility
     - VIDEO2X_BIN=${VIDEO2X_BIN:-video2x}
     - VIDEO2X_DEVICE=${VIDEO2X_DEVICE:-0}
-    - VIDEO2X_ENCODER_OPTIONS=${VIDEO2X_ENCODER_OPTIONS:-preset=p7,cq={cq},profile=main,bf=0,b_ref_mode=disabled,zerolatency=1}
+    - VIDEO2X_CODEC=${VIDEO2X_CODEC:-av1_nvenc}
+    - VIDEO2X_ENCODER_OPTIONS=${VIDEO2X_ENCODER_OPTIONS:-preset=p4,cq={cq}}
     - SHARED_VOLUME_PATH=/tmp/organic-proxy
     - DISABLE_REMOTE_IO=true
     - MAX_CONCURRENT_UPSCALING=2
