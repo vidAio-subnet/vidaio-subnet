@@ -2,13 +2,19 @@ x-upscaling-video2x-base: &upscaling-video2x-base
   build: ./upscaling
   restart: unless-stopped
   profiles: ["upscaling-video2x"]
+  gpus: all
   networks:
     - miner-local
   environment:
-    - VIDEO2X_IMAGE=ghcr.io/k4yt3x/video2x:6.4.0
+    - NVIDIA_VISIBLE_DEVICES=all
+    - NVIDIA_DRIVER_CAPABILITIES=graphics,video,compute,utility
+    - VIDEO2X_BIN=${VIDEO2X_BIN:-video2x}
+    - VIDEO2X_DEVICE=${VIDEO2X_DEVICE:-0}
+    - VIDEO2X_CODEC=${VIDEO2X_CODEC:-av1_nvenc}
+    - VIDEO2X_ALLOW_REQUEST_CODEC=${VIDEO2X_ALLOW_REQUEST_CODEC:-false}
+    - VIDEO2X_COMMON_ENCODER_ARGS=${VIDEO2X_COMMON_ENCODER_ARGS:---pix-fmt=yuv420p,--max-b-frames=0}
+    - VIDEO2X_ENCODER_OPTIONS=${VIDEO2X_ENCODER_OPTIONS:-preset=p4,cq={cq},profile=main}
     - SHARED_VOLUME_PATH=/tmp/organic-proxy
-    - HOST_SHARED_VOLUME_PATH=${MINER_SHARED_DIR:-/tmp/vidaio-miner-video-tmp}
-    - DOCKER_VOLUME_NAME=${COMPOSE_PROJECT_NAME:-organic-proxy}_video-tmp
     - DISABLE_REMOTE_IO=true
     - MAX_CONCURRENT_UPSCALING=2
     - MINER_STORAGE_PROVIDER=${MINER_STORAGE_PROVIDER:-s3}
@@ -20,7 +26,6 @@ x-upscaling-video2x-base: &upscaling-video2x-base
     - MINER_STORAGE_S3_PRESIGNED_EXPIRY=${MINER_STORAGE_S3_PRESIGNED_EXPIRY:-${S3_PRESIGNED_EXPIRY:-3600}}
   volumes:
     - ${MINER_SHARED_DIR:-/tmp/vidaio-miner-video-tmp}:/tmp/organic-proxy
-    - /var/run/docker.sock:/var/run/docker.sock
   healthcheck:
     test: ["CMD", "curl", "-sf", "http://localhost:8003/health"]
     interval: 30s
