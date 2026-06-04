@@ -32,11 +32,21 @@ app = FastAPI(title="Video Upscaling Service")
 VIDEO2X_BIN = os.getenv("VIDEO2X_BIN", "video2x")
 VIDEO2X_DEVICE = (os.getenv("VIDEO2X_DEVICE") or os.getenv("VIDEO2X_GPU") or "0").strip()
 VIDEO2X_CODEC = os.getenv("VIDEO2X_CODEC", "av1_nvenc").strip()
+VIDEO2X_ALLOW_REQUEST_CODEC = os.getenv("VIDEO2X_ALLOW_REQUEST_CODEC", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+VIDEO2X_COMMON_ENCODER_ARGS = [
+    arg.strip()
+    for arg in os.getenv("VIDEO2X_COMMON_ENCODER_ARGS", "--pix-fmt=yuv420p,--max-b-frames=0").split(",")
+    if arg.strip()
+]
 VIDEO2X_ENCODER_OPTIONS = [
     opt.strip()
     for opt in os.getenv(
         "VIDEO2X_ENCODER_OPTIONS",
-        "preset=p4,cq={cq}",
+        "preset=p4,cq={cq},profile=main",
     ).split(",")
     if opt.strip()
 ]
@@ -170,6 +180,8 @@ async def health():
         "video2x_binary": VIDEO2X_BIN,
         "video2x_device": VIDEO2X_DEVICE,
         "video2x_codec": VIDEO2X_CODEC,
+        "video2x_allow_request_codec": VIDEO2X_ALLOW_REQUEST_CODEC,
+        "video2x_common_encoder_args": VIDEO2X_COMMON_ENCODER_ARGS,
         "video2x_encoder_options": VIDEO2X_ENCODER_OPTIONS,
         "max_concurrent": MAX_CONCURRENT,
         "active_tasks": _active_count,
@@ -224,9 +236,11 @@ async def upscale(req: UpscaleRequest):
     ]
     if VIDEO2X_DEVICE:
         cmd.extend(["-d", VIDEO2X_DEVICE])
+    cmd.extend(VIDEO2X_COMMON_ENCODER_ARGS)
+    codec = req.codec if VIDEO2X_ALLOW_REQUEST_CODEC else VIDEO2X_CODEC
     cmd.extend([
         "--realesrgan-model", req.model,
-        "-c", req.codec,
+        "-c", codec,
     ])
     for option in VIDEO2X_ENCODER_OPTIONS:
         cmd.extend(["-e", option.format(cq=req.cq)])
