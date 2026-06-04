@@ -40,6 +40,11 @@ VMAF_THRESHOLD = CONFIG.score.vmaf_threshold
 PIEAPP_SAMPLE_COUNT = CONFIG.score.pieapp_sample_count
 PIEAPP_THRESHOLD = CONFIG.score.pieapp_threshold
 VMAF_SAMPLE_COUNT = CONFIG.score.vmaf_sample_count
+ORGANIC_PROXY_VERIFY_DOWNLOAD_ENDPOINT = os.getenv(
+    "ORGANIC_PROXY_VERIFY_DOWNLOAD_ENDPOINT",
+    "http://135.181.63.197:20000/api/v1/videos/verify_download",
+)
+ORGANIC_PROXY_API_KEY = os.getenv("ORGANIC_PROXY_API_KEY", "")
 
 # Check if vmaf_ffmpeg Docker image with libvmaf_cuda is available
 VMAF_FFMPEG_AVAILABLE = is_vmaf_ffmpeg_available()
@@ -168,6 +173,39 @@ async def get_shared_session() -> aiohttp.ClientSession:
         connector = aiohttp.TCPConnector(limit=50)  # Adjust concurrency limit as needed
         _shared_session = aiohttp.ClientSession(timeout=timeout, connector=connector)
     return _shared_session
+
+async def verify_organic_proxy_download(video_url: str, session: Optional[aiohttp.ClientSession] = None) -> bool:
+    """Check whether the organic proxy can download a miner's output URL."""
+    verify_session = session or await get_shared_session()
+    headers = {"X-API-Key": ORGANIC_PROXY_API_KEY}
+
+    async with verify_session.post(
+        ORGANIC_PROXY_VERIFY_DOWNLOAD_ENDPOINT,
+        json={"video_url": video_url},
+        headers=headers,
+        timeout=aiohttp.ClientTimeout(total=30),
+    ) as response:
+        if response.status != 200:
+            response_text = await response.text()
+            raise Exception(
+                f"Organic proxy download verification failed. HTTP status: {response.status}, "
+                f"response: {response_text[:500]}"
+            )
+        else:
+            logger.info(f"Organic proxy download verification succeeded for {video_url}")
+
+        response_data = await response.json()
+        downloadable = response_data.get("downloadable")
+        if not isinstance(downloadable, bool):
+            raise Exception("Organic proxy download verification response is missing a boolean downloadable field")
+
+        if not downloadable:
+            logger.warning(
+                f"Organic proxy could not download {video_url}: "
+                f"{response_data.get('reason', 'no reason provided')}"
+            )
+
+        return downloadable
 
 async def download_video(video_url: str, verbose: bool, session: Optional[aiohttp.ClientSession] = None) -> tuple[str, float]:
     """
@@ -2438,11 +2476,27 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
     final_scores = []
     reasons = []
 
+    proxy_downloadable_results = []
     distorted_video_paths = []
     for dist_url in request.distorted_urls:
         if len(dist_url) < 10:
+            proxy_downloadable_results.append(True)
             distorted_video_paths.append(None)
             continue
+        try:
+            proxy_downloadable = await verify_organic_proxy_download(dist_url)
+        except Exception as e:
+            logger.warning(
+                f"organic proxy download verification unavailable for {dist_url}; "
+                f"bypassing check and continuing scoring. error: {e}"
+            )
+            proxy_downloadable = True
+
+        proxy_downloadable_results.append(proxy_downloadable)
+        if not proxy_downloadable:
+            distorted_video_paths.append(None)
+            continue
+
         try:
             path, download_time = await download_video(dist_url, request.verbose)
             distorted_video_paths.append(path)
@@ -2450,8 +2504,8 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             logger.error(f"failed to download distorted video: {dist_url}, error: {e}")
             distorted_video_paths.append(None)
 
-    for idx, (ref_url, dist_path, uid, task_type) in enumerate(
-        zip(request.reference_urls, distorted_video_paths, request.uids, request.task_types)
+    for idx, (ref_url, dist_path, uid, task_type, proxy_downloadable) in enumerate(
+        zip(request.reference_urls, distorted_video_paths, request.uids, request.task_types, proxy_downloadable_results)
     ):
         logger.info(f"🧩 processing {uid}.... downloading reference video.... 🧩")
         ref_path = None
@@ -2537,6 +2591,23 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
 
         # === MINER OUTPUT VALIDATION (MINER'S FAULT) ===
         try:
+            if proxy_downloadable is None:
+                logger.warning(
+                    f"organic proxy download verification unavailable for uid {uid}; "
+                    "bypassing check and continuing scoring."
+                )
+                proxy_downloadable = True
+
+            if not proxy_downloadable:
+                logger.error(f"organic proxy failed to download distorted video for uid {uid}. penalizing miner.")
+                reasons.append(f"MINER FAILURE: distorted video is not downloadable through organic proxy via endpoint: {ORGANIC_PROXY_VERIFY_DOWNLOAD_ENDPOINT}, miner is recommended to whitelist organic proxy IP in S3 compatible storage")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(0.0)
+                continue
+
             # check if distorted video failed to download
             if dist_path is None:
                 logger.error(f"failed to download distorted video for uid {uid}. penalizing miner.")
@@ -2785,11 +2856,27 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
     final_scores = []
     reasons = []
 
+    proxy_downloadable_results = []
     distorted_video_paths = []
     for dist_url in request.distorted_urls:
         if len(dist_url) < 10:
+            proxy_downloadable_results.append(True)
             distorted_video_paths.append(None)
             continue
+        try:
+            proxy_downloadable = await verify_organic_proxy_download(dist_url)
+        except Exception as e:
+            logger.warning(
+                f"organic proxy download verification unavailable for {dist_url}; "
+                f"bypassing check and continuing scoring. error: {e}"
+            )
+            proxy_downloadable = True
+
+        proxy_downloadable_results.append(proxy_downloadable)
+        if not proxy_downloadable:
+            distorted_video_paths.append(None)
+            continue
+
         try:
             path, download_time = await download_video(dist_url, request.verbose)
             distorted_video_paths.append(path)
@@ -2802,9 +2889,9 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
     codec_modes = request.codec_modes if request.codec_modes else ["CRF"] * len(request.uids)
     target_bitrates = request.target_bitrates if request.target_bitrates else [10.0] * len(request.uids)
 
-    for idx, (ref_url, dist_path, uid, vmaf_threshold, target_codec, codec_mode, target_bitrate) in enumerate(
+    for idx, (ref_url, dist_path, uid, vmaf_threshold, target_codec, codec_mode, target_bitrate, proxy_downloadable) in enumerate(
         zip(request.reference_urls, distorted_video_paths, request.uids, request.vmaf_thresholds,
-            target_codecs, codec_modes, target_bitrates)
+            target_codecs, codec_modes, target_bitrates, proxy_downloadable_results)
     ):
         logger.info(f"🧩 processing {uid}.... downloading reference video.... 🧩")
         ref_path = None
@@ -2869,6 +2956,21 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
 
         # === MINER OUTPUT VALIDATION (MINER'S FAULT) ===
         try:
+            if proxy_downloadable is None:
+                logger.warning(
+                    f"organic proxy download verification unavailable for uid {uid}; "
+                    "bypassing check and continuing scoring."
+                )
+                proxy_downloadable = True
+
+            if not proxy_downloadable:
+                logger.error(f"organic proxy failed to download distorted video for uid {uid}. penalizing miner.")
+                vmaf_scores.append(0.0)
+                compression_rates.append(0.9999)
+                reasons.append("MINER FAILURE: distorted video is not downloadable through organic proxy")
+                final_scores.append(0.0)
+                continue
+
             # check if distorted video failed to download
             if dist_path is None:
                 logger.error(f"failed to download distorted video for uid {uid}. penalizing miner.")
