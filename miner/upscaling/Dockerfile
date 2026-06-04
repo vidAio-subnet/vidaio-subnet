@@ -41,6 +41,7 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=graphics,video,compute,utility
+ENV VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
 ENV PATH="/venv/bin:${PATH}"
 
 COPY --from=video2x-builder /src/video2x/video2x-linux-ubuntu-amd64.deb /tmp/video2x.deb
@@ -55,6 +56,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     /tmp/video2x.deb \
     && rm -f /tmp/video2x.deb \
     && python3 -m venv /venv \
+    && mkdir -p /usr/share/vulkan/icd.d \
+    && printf '%s\n' \
+       '{' \
+       '    "file_format_version": "1.0.0",' \
+       '    "ICD": {' \
+       '        "library_path": "libGLX_nvidia.so.0",' \
+       '        "api_version": "1.3.0"' \
+       '    }' \
+       '}' > /usr/share/vulkan/icd.d/nvidia_icd.json \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

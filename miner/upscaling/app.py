@@ -30,7 +30,7 @@ log = logging.getLogger("upscaling")
 app = FastAPI(title="Video Upscaling Service")
 
 VIDEO2X_BIN = os.getenv("VIDEO2X_BIN", "video2x")
-VIDEO2X_GPU = (os.getenv("VIDEO2X_GPU") or os.getenv("VIDEO2X_DEVICE") or "0").strip()
+VIDEO2X_DEVICE = (os.getenv("VIDEO2X_DEVICE") or os.getenv("VIDEO2X_GPU") or "0").strip()
 SHARED_VOLUME_PATH = os.getenv("SHARED_VOLUME_PATH", "/tmp/organic-proxy")
 DISABLE_REMOTE_IO = os.getenv("DISABLE_REMOTE_IO", "false").lower() in ("1", "true", "yes")
 MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_UPSCALING", "2"))
@@ -148,7 +148,7 @@ async def health():
     return {
         "status": "ok",
         "video2x_binary": VIDEO2X_BIN,
-        "video2x_gpu": VIDEO2X_GPU,
+        "video2x_device": VIDEO2X_DEVICE,
         "max_concurrent": MAX_CONCURRENT,
         "active_tasks": _active_count,
         "queued_tasks": max(0, _queue_size - _active_count),
@@ -200,8 +200,8 @@ async def upscale(req: UpscaleRequest):
         "-p", "realesrgan",
         "-s", str(req.scale),
     ]
-    if VIDEO2X_GPU:
-        cmd.extend(["-g", VIDEO2X_GPU])
+    if VIDEO2X_DEVICE:
+        cmd.extend(["-d", VIDEO2X_DEVICE])
     cmd.extend([
         "--realesrgan-model", req.model,
         "-c", req.codec,
