@@ -1,6 +1,7 @@
 FROM ubuntu:24.04 AS video2x-builder
 
 ARG VIDEO2X_REF=6.4.0
+ARG JUST_VERSION=1.40.0
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH="/root/.cargo/bin:${PATH}"
 
@@ -9,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     cargo \
     git \
-    && cargo install just \
+    && cargo install just --version "${JUST_VERSION}" --locked \
     && git clone --depth 1 --branch "${VIDEO2X_REF}" --recurse-submodules --shallow-submodules \
        https://github.com/k4yt3x/video2x.git /src/video2x \
     && cd /src/video2x \

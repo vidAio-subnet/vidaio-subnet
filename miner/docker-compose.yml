@@ -3,6 +3,7 @@ x-upscaling-video2x-base: &upscaling-video2x-base
     context: ./upscaling
     args:
       VIDEO2X_REF: ${VIDEO2X_REF:-6.4.0}
+      JUST_VERSION: ${JUST_VERSION:-1.40.0}
   restart: unless-stopped
   profiles: ["upscaling-video2x"]
   gpus: all
