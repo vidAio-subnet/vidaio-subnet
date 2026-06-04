@@ -40,8 +40,7 @@ FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NVIDIA_VISIBLE_DEVICES=all
-ENV NVIDIA_DRIVER_CAPABILITIES=video,compute,utility
-ENV VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json:/usr/share/vulkan/icd.d/radeon_icd.x86_64.json:/usr/share/vulkan/icd.d/intel_icd.x86_64.json:/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+ENV NVIDIA_DRIVER_CAPABILITIES=graphics,video,compute,utility
 ENV PATH="/venv/bin:${PATH}"
 
 COPY --from=video2x-builder /src/video2x/video2x-linux-ubuntu-amd64.deb /tmp/video2x.deb
@@ -53,6 +52,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     mesa-vulkan-drivers \
     python3 \
     python3-venv \
+    vulkan-tools \
     /tmp/video2x.deb \
     && rm -f /tmp/video2x.deb \
     && python3 -m venv /venv \
