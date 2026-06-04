@@ -31,6 +31,14 @@ app = FastAPI(title="Video Upscaling Service")
 
 VIDEO2X_BIN = os.getenv("VIDEO2X_BIN", "video2x")
 VIDEO2X_DEVICE = (os.getenv("VIDEO2X_DEVICE") or os.getenv("VIDEO2X_GPU") or "0").strip()
+VIDEO2X_ENCODER_OPTIONS = [
+    opt.strip()
+    for opt in os.getenv(
+        "VIDEO2X_ENCODER_OPTIONS",
+        "preset=p7,cq={cq},profile=main,bf=0,b_ref_mode=disabled,zerolatency=1",
+    ).split(",")
+    if opt.strip()
+]
 SHARED_VOLUME_PATH = os.getenv("SHARED_VOLUME_PATH", "/tmp/organic-proxy")
 DISABLE_REMOTE_IO = os.getenv("DISABLE_REMOTE_IO", "false").lower() in ("1", "true", "yes")
 MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_UPSCALING", "2"))
@@ -160,6 +168,7 @@ async def health():
         "status": "ok",
         "video2x_binary": VIDEO2X_BIN,
         "video2x_device": VIDEO2X_DEVICE,
+        "video2x_encoder_options": VIDEO2X_ENCODER_OPTIONS,
         "max_concurrent": MAX_CONCURRENT,
         "active_tasks": _active_count,
         "queued_tasks": max(0, _queue_size - _active_count),
@@ -216,16 +225,9 @@ async def upscale(req: UpscaleRequest):
     cmd.extend([
         "--realesrgan-model", req.model,
         "-c", req.codec,
-        "-e", "preset=p7",
-        "-e", f"cq={req.cq}",
-        "-e", "profile=main",
-        "-e", "pix_fmt=yuv420p",
-        "-e", "sar=1:1",
-        "-e", "color_primaries=bt709",
-        "-e", "color_trc=bt709",
-        "-e", "colorspace=bt709",
-        "-e", "movflags=+faststart",
     ])
+    for option in VIDEO2X_ENCODER_OPTIONS:
+        cmd.extend(["-e", option.format(cq=req.cq)])
 
     global _queue_size, _active_count
 
