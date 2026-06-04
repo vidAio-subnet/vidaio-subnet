@@ -1,8 +1,5 @@
 x-upscaling-video2x-base: &upscaling-video2x-base
-  build:
-    context: ./upscaling
-    args:
-      VIDEO2X_REF: ${VIDEO2X_REF:-6.4.0}
+  build: ./upscaling
   restart: unless-stopped
   profiles: ["upscaling-video2x"]
   gpus: all
