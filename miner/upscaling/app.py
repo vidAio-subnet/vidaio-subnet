@@ -1,8 +1,9 @@
 """
-Upscaling microservice — wraps video2x (ghcr.io/k4yt3x/video2x:6.4.0).
+Upscaling microservice — runs the installed Video2X CLI.
 
 Accepts a video path (on shared volume) OR a URL and scale factor (2 or 4),
-runs video2x via Docker CLI, returns the output path or uploaded S3 URL.
+runs video2x locally in this service container, and returns the output path or
+uploaded S3 URL.
 """
 
 from __future__ import annotations
@@ -10,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import subprocess
 import uuid
 from typing import Optional
 
@@ -29,10 +29,8 @@ log = logging.getLogger("upscaling")
 
 app = FastAPI(title="Video Upscaling Service")
 
-VIDEO2X_IMAGE = os.getenv("VIDEO2X_IMAGE", "ghcr.io/k4yt3x/video2x:6.4.0")
+VIDEO2X_BIN = os.getenv("VIDEO2X_BIN", "video2x")
 SHARED_VOLUME_PATH = os.getenv("SHARED_VOLUME_PATH", "/tmp/organic-proxy")
-DOCKER_VOLUME_NAME = os.getenv("DOCKER_VOLUME_NAME", "")
-HOST_SHARED_VOLUME_PATH = os.getenv("HOST_SHARED_VOLUME_PATH", "").strip()
 DISABLE_REMOTE_IO = os.getenv("DISABLE_REMOTE_IO", "false").lower() in ("1", "true", "yes")
 MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_UPSCALING", "2"))
 
@@ -144,49 +142,11 @@ class UpscaleResponse(BaseModel):
     queued_tasks: Optional[int] = None
 
 
-def _detect_volume_name() -> str:
-    if DOCKER_VOLUME_NAME:
-        return DOCKER_VOLUME_NAME
-    hostname = os.environ.get("HOSTNAME", "")
-    if hostname:
-        try:
-            result = subprocess.run(
-                ["docker", "inspect", "--format",
-                 '{{range .Mounts}}{{if eq .Destination "' + SHARED_VOLUME_PATH + '"}}{{.Name}}{{end}}{{end}}',
-                 hostname],
-                capture_output=True, text=True, timeout=10,
-            )
-            vol = result.stdout.strip()
-            if vol:
-                log.info(f"Auto-detected volume name: {vol}")
-                return vol
-        except Exception as e:
-            log.warning(f"Volume auto-detect failed: {e}")
-    fallback = "organic-proxy_video-tmp"
-    log.warning(f"Using fallback volume name: {fallback}")
-    return fallback
-
-
-_resolved_volume: Optional[str] = None
-
-
-def _get_volume_name() -> str:
-    global _resolved_volume
-    if _resolved_volume is None:
-        _resolved_volume = _detect_volume_name()
-    return _resolved_volume
-
-
-def _get_docker_mount_source() -> str:
-    if HOST_SHARED_VOLUME_PATH:
-        return HOST_SHARED_VOLUME_PATH
-    return _get_volume_name()
-
-
 @app.get("/health")
 async def health():
     return {
         "status": "ok",
+        "video2x_binary": VIDEO2X_BIN,
         "max_concurrent": MAX_CONCURRENT,
         "active_tasks": _active_count,
         "queued_tasks": max(0, _queue_size - _active_count),
@@ -231,21 +191,10 @@ async def upscale(req: UpscaleRequest):
     output_filename = f"{basename}_upscaled_{req.scale}x.mp4"
     output_path = os.path.join(SHARED_VOLUME_PATH, output_filename)
 
-    # Build paths relative to container mount point
-    rel_input = os.path.relpath(local_input, SHARED_VOLUME_PATH)
-    rel_output = os.path.relpath(output_path, SHARED_VOLUME_PATH)
-
     cmd = [
-        "docker", "run",
-        "--gpus", "all",
-        "-e", "NVIDIA_DRIVER_CAPABILITIES=video,compute,utility",
-        "--network", "none",
-        "--pull", "never",
-        "--rm",
-        "-v", f"{_get_docker_mount_source()}:/host",
-        VIDEO2X_IMAGE,
-        "-i", f"/host/{rel_input}",
-        "-o", f"/host/{rel_output}",
+        VIDEO2X_BIN,
+        "-i", local_input,
+        "-o", output_path,
         "-p", "realesrgan",
         "-s", str(req.scale),
         "--realesrgan-model", req.model,
@@ -270,6 +219,9 @@ async def upscale(req: UpscaleRequest):
 
     log.info(f"[{task_label}] Queued {req.scale}x upscale (position={position}, waiting={queued}, remote={remote_mode})")
 
+    proc = None
+    stderr = b""
+    run_error = ""
     try:
         async with _semaphore:
             async with _lock:
@@ -279,20 +231,32 @@ async def upscale(req: UpscaleRequest):
             log.info(f"[{task_label}] Starting {req.scale}x upscale (active={_active_count}/{MAX_CONCURRENT}, queued={queued_now})")
             log.info(f"[{task_label}] Command: {' '.join(cmd)}")
 
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await proc.communicate()
-
-            async with _lock:
-                _active_count -= 1
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, stderr = await proc.communicate()
+            except FileNotFoundError:
+                run_error = f"Video2X binary not found: {VIDEO2X_BIN}"
+                log.error(f"[{task_label}] {run_error}")
+            except OSError as e:
+                run_error = f"Failed to start Video2X: {e}"
+                log.error(f"[{task_label}] {run_error}")
+            finally:
+                async with _lock:
+                    _active_count -= 1
     finally:
         async with _lock:
             _queue_size -= 1
 
     stats = dict(active_tasks=_active_count, queued_tasks=max(0, _queue_size - _active_count))
+
+    if proc is None:
+        if remote_mode:
+            _cleanup(local_input)
+        return UpscaleResponse(success=False, error=run_error or "Video2X did not start", **stats)
 
     if proc.returncode != 0:
         err_msg = stderr.decode(errors="replace").strip()

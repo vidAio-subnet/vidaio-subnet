@@ -1,17 +1,42 @@
-FROM python:3.11-slim
+FROM ubuntu:24.04 AS video2x-builder
+
+ARG VIDEO2X_REF=6.4.0
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
+    build-essential \
     ca-certificates \
-    gnupg \
-    lsb-release \
-    && install -m 0755 -d /etc/apt/keyrings \
-    && curl -fsSL https://download.docker.com/linux/debian/gpg \
-       | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-       https://download.docker.com/linux/debian $(lsb_release -cs) stable" \
-       > /etc/apt/sources.list.d/docker.list \
-    && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli \
+    cargo \
+    git \
+    && cargo install just \
+    && git clone --depth 1 --branch "${VIDEO2X_REF}" --recurse-submodules --shallow-submodules \
+       https://github.com/k4yt3x/video2x.git /src/video2x \
+    && cd /src/video2x \
+    && just ubuntu2404 \
+    && rm -rf /var/lib/apt/lists/*
+
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=video,compute,utility
+ENV VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json:/usr/share/vulkan/icd.d/radeon_icd.x86_64.json:/usr/share/vulkan/icd.d/intel_icd.x86_64.json:/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+ENV PATH="/venv/bin:${PATH}"
+
+COPY --from=video2x-builder /src/video2x/video2x-linux-ubuntu-amd64.deb /tmp/video2x.deb
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    ffmpeg \
+    mesa-vulkan-drivers \
+    python3 \
+    python3-venv \
+    /tmp/video2x.deb \
+    && rm -f /tmp/video2x.deb \
+    && python3 -m venv /venv \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

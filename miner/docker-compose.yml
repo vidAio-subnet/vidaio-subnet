@@ -1,17 +1,18 @@
 x-upscaling-video2x-base: &upscaling-video2x-base
-  build: ./upscaling
+  build:
+    context: ./upscaling
+    args:
+      VIDEO2X_REF: ${VIDEO2X_REF:-6.4.0}
   restart: unless-stopped
   profiles: ["upscaling-video2x"]
-  depends_on:
-    video2x-image:
-      condition: service_completed_successfully
+  gpus: all
   networks:
     - miner-local
   environment:
-    - VIDEO2X_IMAGE=ghcr.io/k4yt3x/video2x:6.4.0
+    - NVIDIA_VISIBLE_DEVICES=all
+    - NVIDIA_DRIVER_CAPABILITIES=video,compute,utility
+    - VIDEO2X_BIN=${VIDEO2X_BIN:-video2x}
     - SHARED_VOLUME_PATH=/tmp/organic-proxy
-    - HOST_SHARED_VOLUME_PATH=${MINER_SHARED_DIR:-/tmp/vidaio-miner-video-tmp}
-    - DOCKER_VOLUME_NAME=${COMPOSE_PROJECT_NAME:-organic-proxy}_video-tmp
     - DISABLE_REMOTE_IO=true
     - MAX_CONCURRENT_UPSCALING=2
     - MINER_STORAGE_PROVIDER=${MINER_STORAGE_PROVIDER:-s3}
@@ -23,7 +24,6 @@ x-upscaling-video2x-base: &upscaling-video2x-base
     - MINER_STORAGE_S3_PRESIGNED_EXPIRY=${MINER_STORAGE_S3_PRESIGNED_EXPIRY:-${S3_PRESIGNED_EXPIRY:-3600}}
   volumes:
     - ${MINER_SHARED_DIR:-/tmp/vidaio-miner-video-tmp}:/tmp/organic-proxy
-    - /var/run/docker.sock:/var/run/docker.sock
   healthcheck:
     test: ["CMD", "curl", "-sf", "http://localhost:8003/health"]
     interval: 30s
@@ -89,15 +89,6 @@ x-compression-base: &compression-base
     start_period: 10s
 
 services:
-  video2x-image:
-    image: ghcr.io/k4yt3x/video2x:6.4.0
-    profiles: ["upscaling-video2x"]
-    network_mode: none
-    entrypoint: ["echo"]
-    command: ["Video2X image pulled!"]
-    restart: "no"
-    # This ensures the container shuts down after its task is done.
-
   upscaling-video2x:
     <<: *upscaling-video2x-base
     ports:

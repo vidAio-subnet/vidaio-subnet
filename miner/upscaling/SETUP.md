@@ -8,8 +8,10 @@ sudo apt update && sudo apt install -y nvidia-container-toolkit
 sudo nvidia-ctk runtime configure --runtime=docker
 sudo systemctl restart docker
 
-# Pull video2x image
-docker pull ghcr.io/k4yt3x/video2x:6.4.0
+# Build and start the Video2X worker
+docker compose -f miner/docker-compose.yml --profile upscaling-video2x up --build upscaling-video2x
 ```
 
-The Video2X worker runs with `--network none` and `--pull never`, so this image must be present locally before starting the `upscaling-video2x` profile.
+The Video2X worker image builds Video2X from source and installs it into the
+same container as the FastAPI service. It no longer requires a pre-pulled
+upstream Video2X release image or access to the Docker daemon socket.
