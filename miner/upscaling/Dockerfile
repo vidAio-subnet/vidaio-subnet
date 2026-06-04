@@ -49,7 +49,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     ffmpeg \
-    mesa-vulkan-drivers \
     python3 \
     python3-venv \
     vulkan-tools \

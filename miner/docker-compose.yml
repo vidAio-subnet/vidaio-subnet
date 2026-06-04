@@ -12,6 +12,7 @@ x-upscaling-video2x-base: &upscaling-video2x-base
     - NVIDIA_VISIBLE_DEVICES=all
     - NVIDIA_DRIVER_CAPABILITIES=graphics,video,compute,utility
     - VIDEO2X_BIN=${VIDEO2X_BIN:-video2x}
+    - VIDEO2X_GPU=${VIDEO2X_GPU:-0}
     - SHARED_VOLUME_PATH=/tmp/organic-proxy
     - DISABLE_REMOTE_IO=true
     - MAX_CONCURRENT_UPSCALING=2
