@@ -32,8 +32,8 @@ SOFT_THRESHOLD_MARGIN = 5.0  # Margin below VMAF threshold for soft scoring zone
 
 FRAME_TOLERANCE = 5  # Tolerance in frames for fast ffprobe frame count read
 UPSCALING_FILE_SIZE_MULTIPLIERS = {
-    2: 4,
-    4: 16,
+    2: 8,
+    4: 20,
 }
 
 
