@@ -167,13 +167,13 @@ def get_video_fps(video_path):
         # Fallback to 30 fps if detection fails, though this might cause drift
         return 30.0
 
-def convert_mp4_to_y4m(input_path, random_frames, upscale_factor=1):
+def convert_mp4_to_y4m(input_path, random_frames=None, upscale_factor=1):
     """
-    Converts an MP4 video file to Y4M format using FFmpeg and upscales selected frames.
+    Converts an MP4 video file to Y4M format using FFmpeg and optionally upscales selected frames.
     
     Args:
         input_path (str): Path to the input MP4 file.
-        random_frames (list): List of frame indices to select.
+        random_frames (list | None): Frame indices to select. If None, convert the full video.
         upscale_factor (int): Factor by which to upscale the frames (2 or 4).
     
     Returns:
@@ -186,33 +186,28 @@ def convert_mp4_to_y4m(input_path, random_frames, upscale_factor=1):
     output_path = os.path.splitext(input_path)[0] + ".y4m"
 
     try:
-        select_expr = "+".join([f"eq(n\\,{f})" for f in random_frames])
-        
+        vf_filters = []
+        if random_frames is not None:
+            select_expr = "+".join([f"eq(n\\,{f})" for f in random_frames])
+            vf_filters.append(f"select='{select_expr}'")
+
         if upscale_factor >= 2:
+            vf_filters.append(f"scale=iw*{upscale_factor}:ih*{upscale_factor}")
 
-            scale_width = f"iw*{upscale_factor}"
-            scale_height = f"ih*{upscale_factor}"
+        command = [
+            "ffmpeg",
+            "-i", input_path,
+        ]
+        if vf_filters:
+            command.extend(["-vf", ",".join(vf_filters)])
+        command.extend([
+            "-pix_fmt", "yuv420p",
+            "-vsync", "vfr",
+            output_path,
+            "-y"
+        ])
 
-            subprocess.run([
-                "ffmpeg",
-                "-i", input_path,
-                "-vf", f"select='{select_expr}',scale={scale_width}:{scale_height}",
-                "-pix_fmt", "yuv420p",
-                "-vsync", "vfr",
-                output_path,
-                "-y"
-            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-
-        else:
-            subprocess.run([
-                "ffmpeg",
-                "-i", input_path,
-                "-vf", f"select='{select_expr}'",
-                "-pix_fmt", "yuv420p",
-                "-vsync", "vfr",
-                output_path,
-                "-y"
-            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
         return output_path
 
@@ -410,7 +405,7 @@ def calculate_vmaf(ref_y4m_path, dist_mp4_path, random_frames, neg_model=False, 
     Args:
         ref_y4m_path: Path to reference Y4M file
         dist_mp4_path: Path to distorted MP4 file
-        random_frames: List of frame indices to sample
+        random_frames: List of frame indices to sample. If None, convert the full distorted video.
         neg_model: Whether to use negative VMAF model
         return_y4m_path: If True, returns (score, dist_y4m_path) instead of just score
         
