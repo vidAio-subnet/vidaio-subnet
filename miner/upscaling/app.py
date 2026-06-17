@@ -12,6 +12,7 @@ import asyncio
 import logging
 import os
 import uuid
+from contextlib import asynccontextmanager
 from typing import Optional
 
 import boto3
@@ -53,6 +54,7 @@ VIDEO2X_ENCODER_OPTIONS = [
 SHARED_VOLUME_PATH = os.getenv("SHARED_VOLUME_PATH", "/tmp/organic-proxy")
 DISABLE_REMOTE_IO = os.getenv("DISABLE_REMOTE_IO", "false").lower() in ("1", "true", "yes")
 MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_UPSCALING", "2"))
+MAX_QUEUE_SIZE = int(os.getenv("MAX_QUEUE_SIZE_UPSCALING") or os.getenv("MAX_QUEUE_SIZE", "5"))
 
 # Storage provider label only. Uploads use one S3-compatible code path.
 STORAGE_PROVIDER = os.getenv("MINER_STORAGE_PROVIDER", "s3").lower()
@@ -154,6 +156,68 @@ def _upload_to_s3(local_path: str, key: str) -> str:
     return url
 
 
+def _queue_capacity() -> int:
+    return MAX_CONCURRENT + MAX_QUEUE_SIZE
+
+
+def _queue_snapshot_locked() -> dict[str, int]:
+    queued_tasks = max(0, _queue_size - _active_count)
+    return {
+        "max_concurrent": MAX_CONCURRENT,
+        "max_queue_size": MAX_QUEUE_SIZE,
+        "active_tasks": _active_count,
+        "queued_tasks": queued_tasks,
+        "total_pending": _queue_size,
+        "queue_capacity_remaining": max(0, _queue_capacity() - _queue_size),
+    }
+
+
+async def _queue_snapshot() -> dict[str, int]:
+    async with _lock:
+        return _queue_snapshot_locked()
+
+
+@asynccontextmanager
+async def _queued_task(task_label: str):
+    global _queue_size
+
+    async with _lock:
+        if _queue_size >= _queue_capacity():
+            snapshot = _queue_snapshot_locked()
+            detail = (
+                f"Upscaling queue full: {snapshot['queued_tasks']}/{MAX_QUEUE_SIZE} queued, "
+                f"{snapshot['active_tasks']}/{MAX_CONCURRENT} active"
+            )
+            log.warning(f"[{task_label}] {detail}")
+            raise HTTPException(status_code=429, detail=detail)
+
+        _queue_size += 1
+        queue_position = max(0, _queue_size - MAX_CONCURRENT)
+        snapshot = _queue_snapshot_locked()
+
+    try:
+        yield queue_position, snapshot
+    finally:
+        async with _lock:
+            _queue_size = max(0, _queue_size - 1)
+
+
+@asynccontextmanager
+async def _running_task():
+    global _active_count
+
+    async with _semaphore:
+        async with _lock:
+            _active_count += 1
+            snapshot = _queue_snapshot_locked()
+
+        try:
+            yield snapshot
+        finally:
+            async with _lock:
+                _active_count = max(0, _active_count - 1)
+
+
 class UpscaleRequest(BaseModel):
     video_path: str = Field(..., description="Local path or URL to input video")
     scale: int = Field(..., description="Upscaling factor: 2 or 4")
@@ -175,6 +239,7 @@ class UpscaleResponse(BaseModel):
 
 @app.get("/health")
 async def health():
+    snapshot = await _queue_snapshot()
     return {
         "status": "ok",
         "video2x_binary": VIDEO2X_BIN,
@@ -183,21 +248,14 @@ async def health():
         "video2x_allow_request_codec": VIDEO2X_ALLOW_REQUEST_CODEC,
         "video2x_common_encoder_args": VIDEO2X_COMMON_ENCODER_ARGS,
         "video2x_encoder_options": VIDEO2X_ENCODER_OPTIONS,
-        "max_concurrent": MAX_CONCURRENT,
-        "active_tasks": _active_count,
-        "queued_tasks": max(0, _queue_size - _active_count),
+        **snapshot,
         "storage": _storage_config_status(),
     }
 
 
 @app.get("/queue")
 async def queue_status():
-    return {
-        "max_concurrent": MAX_CONCURRENT,
-        "active_tasks": _active_count,
-        "queued_tasks": max(0, _queue_size - _active_count),
-        "total_pending": _queue_size,
-    }
+    return await _queue_snapshot()
 
 
 @app.post("/upscale", response_model=UpscaleResponse)
@@ -211,60 +269,57 @@ async def upscale(req: UpscaleRequest):
     if remote_mode and DISABLE_REMOTE_IO:
         return UpscaleResponse(success=False, error="Remote URL input is disabled for this local-only service")
 
-    # --- Resolve input to local path ---
-    if remote_mode:
-        local_input = os.path.join(SHARED_VOLUME_PATH, f"{task_label}_input.mp4")
-        try:
-            await _download_url(req.video_path, local_input)
-        except Exception as e:
-            return UpscaleResponse(success=False, error=f"Failed to download input: {e}")
-    else:
-        local_input = req.video_path
-        if not os.path.exists(local_input):
-            raise HTTPException(status_code=400, detail=f"Input file not found: {local_input}")
-
-    basename = os.path.splitext(os.path.basename(local_input))[0]
-    output_filename = f"{basename}_upscaled_{req.scale}x.mp4"
-    output_path = os.path.join(SHARED_VOLUME_PATH, output_filename)
-
-    cmd = [
-        VIDEO2X_BIN,
-        "-i", local_input,
-        "-o", output_path,
-        "-p", "realesrgan",
-        "-s", str(req.scale),
-    ]
-    if VIDEO2X_DEVICE:
-        cmd.extend(["-d", VIDEO2X_DEVICE])
-    cmd.extend(VIDEO2X_COMMON_ENCODER_ARGS)
-    codec = req.codec if VIDEO2X_ALLOW_REQUEST_CODEC else VIDEO2X_CODEC
-    cmd.extend([
-        "--realesrgan-model", req.model,
-        "-c", codec,
-    ])
-    for option in VIDEO2X_ENCODER_OPTIONS:
-        cmd.extend(["-e", option.format(cq=req.cq)])
-
-    global _queue_size, _active_count
-
-    async with _lock:
-        _queue_size += 1
-        position = _queue_size
-        queued = max(0, _queue_size - _active_count)
-
-    log.info(f"[{task_label}] Queued {req.scale}x upscale (position={position}, waiting={queued}, remote={remote_mode})")
-
     proc = None
     stdout = b""
     stderr = b""
     run_error = ""
-    try:
-        async with _semaphore:
-            async with _lock:
-                _active_count += 1
-                queued_now = max(0, _queue_size - _active_count)
 
-            log.info(f"[{task_label}] Starting {req.scale}x upscale (active={_active_count}/{MAX_CONCURRENT}, queued={queued_now})")
+    async with _queued_task(task_label) as (queue_position, snapshot):
+        log.info(
+            f"[{task_label}] Queued {req.scale}x upscale "
+            f"(position={queue_position}, waiting={snapshot['queued_tasks']}, remote={remote_mode})"
+        )
+
+        # --- Resolve input to local path ---
+        if remote_mode:
+            local_input = os.path.join(SHARED_VOLUME_PATH, f"{task_label}_input.mp4")
+            try:
+                await _download_url(req.video_path, local_input)
+            except Exception as e:
+                return UpscaleResponse(success=False, error=f"Failed to download input: {e}")
+        else:
+            local_input = req.video_path
+            if not os.path.exists(local_input):
+                raise HTTPException(status_code=400, detail=f"Input file not found: {local_input}")
+
+        basename = os.path.splitext(os.path.basename(local_input))[0]
+        output_filename = f"{basename}_upscaled_{req.scale}x.mp4"
+        output_path = os.path.join(SHARED_VOLUME_PATH, output_filename)
+
+        cmd = [
+            VIDEO2X_BIN,
+            "-i", local_input,
+            "-o", output_path,
+            "-p", "realesrgan",
+            "-s", str(req.scale),
+        ]
+        if VIDEO2X_DEVICE:
+            cmd.extend(["-d", VIDEO2X_DEVICE])
+        cmd.extend(VIDEO2X_COMMON_ENCODER_ARGS)
+        codec = req.codec if VIDEO2X_ALLOW_REQUEST_CODEC else VIDEO2X_CODEC
+        cmd.extend([
+            "--realesrgan-model", req.model,
+            "-c", codec,
+        ])
+        for option in VIDEO2X_ENCODER_OPTIONS:
+            cmd.extend(["-e", option.format(cq=req.cq)])
+
+        async with _running_task() as running_snapshot:
+            log.info(
+                f"[{task_label}] Starting {req.scale}x upscale "
+                f"(active={running_snapshot['active_tasks']}/{MAX_CONCURRENT}, "
+                f"queued={running_snapshot['queued_tasks']})"
+            )
             log.info(f"[{task_label}] Command: {' '.join(cmd)}")
 
             try:
@@ -280,14 +335,9 @@ async def upscale(req: UpscaleRequest):
             except OSError as e:
                 run_error = f"Failed to start Video2X: {e}"
                 log.error(f"[{task_label}] {run_error}")
-            finally:
-                async with _lock:
-                    _active_count -= 1
-    finally:
-        async with _lock:
-            _queue_size -= 1
 
-    stats = dict(active_tasks=_active_count, queued_tasks=max(0, _queue_size - _active_count))
+    snapshot = await _queue_snapshot()
+    stats = dict(active_tasks=snapshot["active_tasks"], queued_tasks=snapshot["queued_tasks"])
 
     if proc is None:
         if remote_mode:

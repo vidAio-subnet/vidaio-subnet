@@ -5,6 +5,7 @@ import logging
 import os
 import subprocess
 import uuid
+from contextlib import asynccontextmanager
 from typing import Optional
 
 import boto3
@@ -20,6 +21,7 @@ app = FastAPI(title="FFmpeg Upscaling Service")
 
 SHARED_VOLUME_PATH = os.getenv("SHARED_VOLUME_PATH", "/tmp/organic-proxy")
 MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_UPSCALING", "2"))
+MAX_QUEUE_SIZE = int(os.getenv("MAX_QUEUE_SIZE_UPSCALING") or os.getenv("MAX_QUEUE_SIZE", "5"))
 FFMPEG_CODEC = os.getenv("FFMPEG_CODEC", "hevc_nvenc")
 FFMPEG_PRESET = os.getenv("FFMPEG_PRESET", "p7")
 FFMPEG_CQ = int(os.getenv("FFMPEG_CQ", "35"))
@@ -81,6 +83,68 @@ def _upload_to_s3(local_path: str, key: str) -> str:
     return client.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": key}, ExpiresIn=min(S3_PRESIGNED_EXPIRY, 604800))
 
 
+def _queue_capacity() -> int:
+    return MAX_CONCURRENT + MAX_QUEUE_SIZE
+
+
+def _queue_snapshot_locked() -> dict[str, int]:
+    queued_tasks = max(0, _queue_size - _active_count)
+    return {
+        "max_concurrent": MAX_CONCURRENT,
+        "max_queue_size": MAX_QUEUE_SIZE,
+        "active_tasks": _active_count,
+        "queued_tasks": queued_tasks,
+        "total_pending": _queue_size,
+        "queue_capacity_remaining": max(0, _queue_capacity() - _queue_size),
+    }
+
+
+async def _queue_snapshot() -> dict[str, int]:
+    async with _lock:
+        return _queue_snapshot_locked()
+
+
+@asynccontextmanager
+async def _queued_task(task_label: str):
+    global _queue_size
+
+    async with _lock:
+        if _queue_size >= _queue_capacity():
+            snapshot = _queue_snapshot_locked()
+            detail = (
+                f"Upscaling queue full: {snapshot['queued_tasks']}/{MAX_QUEUE_SIZE} queued, "
+                f"{snapshot['active_tasks']}/{MAX_CONCURRENT} active"
+            )
+            log.warning(f"[{task_label}] {detail}")
+            raise HTTPException(status_code=429, detail=detail)
+
+        _queue_size += 1
+        queue_position = max(0, _queue_size - MAX_CONCURRENT)
+        snapshot = _queue_snapshot_locked()
+
+    try:
+        yield queue_position, snapshot
+    finally:
+        async with _lock:
+            _queue_size = max(0, _queue_size - 1)
+
+
+@asynccontextmanager
+async def _running_task():
+    global _active_count
+
+    async with _semaphore:
+        async with _lock:
+            _active_count += 1
+            snapshot = _queue_snapshot_locked()
+
+        try:
+            yield snapshot
+        finally:
+            async with _lock:
+                _active_count = max(0, _active_count - 1)
+
+
 class UpscaleRequest(BaseModel):
     video_path: str
     scale: int = Field(..., description="Upscaling factor: 2 or 4")
@@ -92,17 +156,23 @@ class UpscaleResponse(BaseModel):
     output_url: str = ""
     success: bool
     error: Optional[str] = None
+    active_tasks: Optional[int] = None
+    queued_tasks: Optional[int] = None
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "max_concurrent": MAX_CONCURRENT, "active_tasks": _active_count, "queued_tasks": max(0, _queue_size - _active_count)}
+    snapshot = await _queue_snapshot()
+    return {"status": "ok", **snapshot}
+
+
+@app.get("/queue")
+async def queue_status():
+    return await _queue_snapshot()
 
 
 @app.post("/upscale", response_model=UpscaleResponse)
 async def upscale(req: UpscaleRequest):
-    global _queue_size, _active_count
-
     if req.scale not in (2, 4):
         raise HTTPException(status_code=400, detail="scale must be 2 or 4")
 
@@ -111,37 +181,45 @@ async def upscale(req: UpscaleRequest):
     if remote and DISABLE_REMOTE_IO:
         return UpscaleResponse(success=False, error="Remote URL input is disabled for this local-only service")
 
-    local_input = os.path.join(SHARED_VOLUME_PATH, f"{task}_input.mp4") if remote else req.video_path
-    if remote:
-        await _download_url(req.video_path, local_input)
-    elif not os.path.exists(local_input):
-        raise HTTPException(status_code=400, detail=f"Input file not found: {local_input}")
+    async with _queued_task(task) as (queue_position, snapshot):
+        log.info(
+            f"[{task}] Queued {req.scale}x ffmpeg upscale "
+            f"(position={queue_position}, waiting={snapshot['queued_tasks']}, remote={remote})"
+        )
 
-    base = os.path.splitext(os.path.basename(local_input))[0]
-    output_path = os.path.join(SHARED_VOLUME_PATH, f"{base}_upscaled_{req.scale}x.mp4")
+        os.makedirs(SHARED_VOLUME_PATH, exist_ok=True)
 
-    cmd = [
-        "ffmpeg", "-y", "-hwaccel", "cuda", "-i", local_input,
-        "-vf", f"scale=iw*{req.scale}:ih*{req.scale}:flags=lanczos",
-        "-c:v", FFMPEG_CODEC, "-preset", FFMPEG_PRESET, "-cq", str(FFMPEG_CQ),
-        "-c:a", "copy", output_path,
-    ]
+        local_input = os.path.join(SHARED_VOLUME_PATH, f"{task}_input.mp4") if remote else req.video_path
+        if remote:
+            await _download_url(req.video_path, local_input)
+        elif not os.path.exists(local_input):
+            raise HTTPException(status_code=400, detail=f"Input file not found: {local_input}")
 
-    async with _lock:
-        _queue_size += 1
-    async with _semaphore:
-        async with _lock:
-            _active_count += 1
-        try:
+        base = os.path.splitext(os.path.basename(local_input))[0]
+        output_path = os.path.join(SHARED_VOLUME_PATH, f"{base}_upscaled_{req.scale}x.mp4")
+
+        cmd = [
+            "ffmpeg", "-y", "-hwaccel", "cuda", "-i", local_input,
+            "-vf", f"scale=iw*{req.scale}:ih*{req.scale}:flags=lanczos",
+            "-c:v", FFMPEG_CODEC, "-preset", FFMPEG_PRESET, "-cq", str(FFMPEG_CQ),
+            "-c:a", "copy", output_path,
+        ]
+
+        async with _running_task() as running_snapshot:
+            log.info(
+                f"[{task}] Starting ffmpeg upscale "
+                f"(active={running_snapshot['active_tasks']}/{MAX_CONCURRENT}, "
+                f"queued={running_snapshot['queued_tasks']})"
+            )
             result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                return UpscaleResponse(success=False, error=result.stderr[-1000:])
-            if remote:
-                key = f"upscaling/{task}/{os.path.basename(output_path)}"
-                url = _upload_to_s3(output_path, key)
-                return UpscaleResponse(success=True, output_url=url)
-            return UpscaleResponse(success=True, output_path=output_path)
-        finally:
-            async with _lock:
-                _active_count = max(0, _active_count - 1)
-                _queue_size = max(0, _queue_size - 1)
+
+    snapshot = await _queue_snapshot()
+    stats = dict(active_tasks=snapshot["active_tasks"], queued_tasks=snapshot["queued_tasks"])
+
+    if result.returncode != 0:
+        return UpscaleResponse(success=False, error=result.stderr[-1000:], **stats)
+    if remote:
+        key = f"upscaling/{task}/{os.path.basename(output_path)}"
+        url = _upload_to_s3(output_path, key)
+        return UpscaleResponse(success=True, output_url=url, **stats)
+    return UpscaleResponse(success=True, output_path=output_path, **stats)

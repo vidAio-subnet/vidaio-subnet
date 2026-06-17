@@ -11,6 +11,7 @@ import asyncio
 import logging
 import os
 import uuid
+from contextlib import asynccontextmanager
 from typing import Optional
 
 import boto3
@@ -30,6 +31,7 @@ app = FastAPI(title="Video Compression Service")
 
 SHARED_VOLUME_PATH = os.getenv("SHARED_VOLUME_PATH", "/tmp/organic-proxy")
 MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_COMPRESSION", "2"))
+MAX_QUEUE_SIZE = int(os.getenv("MAX_QUEUE_SIZE_COMPRESSION") or os.getenv("MAX_QUEUE_SIZE", "5"))
 DISABLE_REMOTE_IO = os.getenv("DISABLE_REMOTE_IO", "false").lower() in ("1", "true", "yes")
 
 # Storage provider label only. Uploads use one S3-compatible code path.
@@ -139,6 +141,68 @@ def _cleanup(*paths: str):
                 pass
 
 
+def _queue_capacity() -> int:
+    return MAX_CONCURRENT + MAX_QUEUE_SIZE
+
+
+def _queue_snapshot_locked() -> dict[str, int]:
+    queued_tasks = max(0, _queue_size - _active_count)
+    return {
+        "max_concurrent": MAX_CONCURRENT,
+        "max_queue_size": MAX_QUEUE_SIZE,
+        "active_tasks": _active_count,
+        "queued_tasks": queued_tasks,
+        "total_pending": _queue_size,
+        "queue_capacity_remaining": max(0, _queue_capacity() - _queue_size),
+    }
+
+
+async def _queue_snapshot() -> dict[str, int]:
+    async with _lock:
+        return _queue_snapshot_locked()
+
+
+@asynccontextmanager
+async def _queued_task(task_label: str):
+    global _queue_size
+
+    async with _lock:
+        if _queue_size >= _queue_capacity():
+            snapshot = _queue_snapshot_locked()
+            detail = (
+                f"Compression queue full: {snapshot['queued_tasks']}/{MAX_QUEUE_SIZE} queued, "
+                f"{snapshot['active_tasks']}/{MAX_CONCURRENT} active"
+            )
+            log.warning(f"[{task_label}] {detail}")
+            raise HTTPException(status_code=429, detail=detail)
+
+        _queue_size += 1
+        queue_position = max(0, _queue_size - MAX_CONCURRENT)
+        snapshot = _queue_snapshot_locked()
+
+    try:
+        yield queue_position, snapshot
+    finally:
+        async with _lock:
+            _queue_size = max(0, _queue_size - 1)
+
+
+@asynccontextmanager
+async def _running_task():
+    global _active_count
+
+    async with _semaphore:
+        async with _lock:
+            _active_count += 1
+            snapshot = _queue_snapshot_locked()
+
+        try:
+            yield snapshot
+        finally:
+            async with _lock:
+                _active_count = max(0, _active_count - 1)
+
+
 class CompressRequest(BaseModel):
     video_path: str = Field(..., description="Local path or URL to input video")
     task_id: str = Field("", description="Task ID for logging")
@@ -162,23 +226,17 @@ class CompressResponse(BaseModel):
 
 @app.get("/health")
 async def health():
+    snapshot = await _queue_snapshot()
     return {
         "status": "ok",
-        "max_concurrent": MAX_CONCURRENT,
-        "active_tasks": _active_count,
-        "queued_tasks": max(0, _queue_size - _active_count),
+        **snapshot,
         "storage": _storage_config_status(),
     }
 
 
 @app.get("/queue")
 async def queue_status():
-    return {
-        "max_concurrent": MAX_CONCURRENT,
-        "active_tasks": _active_count,
-        "queued_tasks": max(0, _queue_size - _active_count),
-        "total_pending": _queue_size,
-    }
+    return await _queue_snapshot()
 
 
 @app.post("/compress", response_model=CompressResponse)
@@ -190,65 +248,63 @@ async def compress(req: CompressRequest):
     if remote_mode and DISABLE_REMOTE_IO:
         return CompressResponse(success=False, error="Remote URL input is disabled for this local-only service")
 
-    os.makedirs(SHARED_VOLUME_PATH, exist_ok=True)
+    async with _queued_task(task_label) as (queue_position, snapshot):
+        log.info(
+            f"[{task_label}] Queued compression "
+            f"(codec={encoder}, cq={req.cq}, position={queue_position}, "
+            f"waiting={snapshot['queued_tasks']}, remote={remote_mode})"
+        )
 
-    # --- Resolve input to local path ---
-    if remote_mode:
-        local_input = os.path.join(SHARED_VOLUME_PATH, f"{task_label}_input.mp4")
-        try:
-            await _download_url(req.video_path, local_input)
-        except Exception as e:
-            return CompressResponse(success=False, error=f"Failed to download input: {e}")
-    else:
-        local_input = req.video_path
-        if not os.path.exists(local_input):
-            raise HTTPException(status_code=400, detail=f"Input file not found: {local_input}")
+        os.makedirs(SHARED_VOLUME_PATH, exist_ok=True)
 
-    basename = os.path.splitext(os.path.basename(local_input))[0]
-    output_filename = f"{basename}_compressed.mp4"
-    output_path = os.path.join(SHARED_VOLUME_PATH, output_filename)
+        # --- Resolve input to local path ---
+        if remote_mode:
+            local_input = os.path.join(SHARED_VOLUME_PATH, f"{task_label}_input.mp4")
+            try:
+                await _download_url(req.video_path, local_input)
+            except Exception as e:
+                return CompressResponse(success=False, error=f"Failed to download input: {e}")
+        else:
+            local_input = req.video_path
+            if not os.path.exists(local_input):
+                raise HTTPException(status_code=400, detail=f"Input file not found: {local_input}")
 
-    # Build ffmpeg command
-    ffmpeg_args = [
-        "ffmpeg", "-y",
-        "-hwaccel", "cuda",
-        "-i", local_input,
-    ]
+        basename = os.path.splitext(os.path.basename(local_input))[0]
+        output_filename = f"{basename}_compressed.mp4"
+        output_path = os.path.join(SHARED_VOLUME_PATH, output_filename)
 
-    ffmpeg_args.extend(["-c:v", encoder])
+        # Build ffmpeg command
+        ffmpeg_args = [
+            "ffmpeg", "-y",
+            "-hwaccel", "cuda",
+            "-i", local_input,
+        ]
 
-    if req.codec_mode == "VBR" and req.target_bitrate:
-        ffmpeg_args.extend(["-b:v", str(req.target_bitrate)])
-    else:
-        ffmpeg_args.extend(["-cq", str(req.cq)])
+        ffmpeg_args.extend(["-c:v", encoder])
 
-    ffmpeg_args.extend(["-preset", req.preset])
+        if req.codec_mode == "VBR" and req.target_bitrate:
+            ffmpeg_args.extend(["-b:v", str(req.target_bitrate)])
+        else:
+            ffmpeg_args.extend(["-cq", str(req.cq)])
 
-    if req.target_width and req.target_height:
-        w = req.target_width if req.target_width % 2 == 0 else req.target_width - 1
-        h = req.target_height if req.target_height % 2 == 0 else req.target_height - 1
-        ffmpeg_args.extend(["-vf", f"scale={w}:{h}"])
+        ffmpeg_args.extend(["-preset", req.preset])
 
-    ffmpeg_args.extend(["-c:a", "copy"])
-    ffmpeg_args.append(output_path)
+        if req.target_width and req.target_height:
+            w = req.target_width if req.target_width % 2 == 0 else req.target_width - 1
+            h = req.target_height if req.target_height % 2 == 0 else req.target_height - 1
+            ffmpeg_args.extend(["-vf", f"scale={w}:{h}"])
 
-    cmd = ffmpeg_args
+        ffmpeg_args.extend(["-c:a", "copy"])
+        ffmpeg_args.append(output_path)
 
-    global _queue_size, _active_count
+        cmd = ffmpeg_args
 
-    async with _lock:
-        _queue_size += 1
-        queued = max(0, _queue_size - _active_count)
-
-    log.info(f"[{task_label}] Queued compression (codec={encoder}, cq={req.cq}, waiting={queued}, remote={remote_mode})")
-
-    try:
-        async with _semaphore:
-            async with _lock:
-                _active_count += 1
-                queued_now = max(0, _queue_size - _active_count)
-
-            log.info(f"[{task_label}] Starting compression (active={_active_count}/{MAX_CONCURRENT}, queued={queued_now})")
+        async with _running_task() as running_snapshot:
+            log.info(
+                f"[{task_label}] Starting compression "
+                f"(active={running_snapshot['active_tasks']}/{MAX_CONCURRENT}, "
+                f"queued={running_snapshot['queued_tasks']})"
+            )
             log.info(f"[{task_label}] Command: {' '.join(cmd)}")
 
             proc = await asyncio.create_subprocess_exec(
@@ -258,13 +314,8 @@ async def compress(req: CompressRequest):
             )
             stdout, stderr = await proc.communicate()
 
-            async with _lock:
-                _active_count -= 1
-    finally:
-        async with _lock:
-            _queue_size -= 1
-
-    stats = dict(active_tasks=_active_count, queued_tasks=max(0, _queue_size - _active_count))
+    snapshot = await _queue_snapshot()
+    stats = dict(active_tasks=snapshot["active_tasks"], queued_tasks=snapshot["queued_tasks"])
 
     if proc.returncode != 0:
         err_msg = stderr.decode(errors="replace").strip()

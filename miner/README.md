@@ -19,6 +19,19 @@ mkdir -p /tmp/vidaio-miner-video-tmp
 chmod 777 /tmp/vidaio-miner-video-tmp
 ```
 
+## Queueing
+Each processing container runs a bounded in-process queue. By default, a service accepts 2 active jobs and 5 waiting jobs; additional requests receive HTTP 429 backpressure.
+
+Tune the limits in `miner/.env`:
+```bash
+MAX_CONCURRENT_UPSCALING=2
+MAX_QUEUE_SIZE_UPSCALING=5
+MAX_CONCURRENT_COMPRESSION=2
+MAX_QUEUE_SIZE_COMPRESSION=5
+```
+
+Queue status is available from `/queue` on each service.
+
 ## Video2X Upscaling Miner
 1. Complete host/container preparation in `miner/upscaling/SETUP.md`.
 2. Start service:
