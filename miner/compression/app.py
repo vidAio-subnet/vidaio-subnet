@@ -8,6 +8,7 @@ runs GPU-accelerated ffmpeg compression, returns the output path or S3 URL.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import shutil
@@ -261,6 +262,45 @@ async def _probe_duration_seconds(path: str, task_label: str) -> float | None:
         return None
 
 
+async def _probe_segment_duration_seconds(path: str, task_label: str) -> float:
+    duration = await _probe_duration_seconds(path, task_label)
+    if duration is None:
+        raise RuntimeError(f"Unable to probe segment duration: {path}")
+    return duration
+
+
+def _format_timestamp(seconds: float) -> str:
+    milliseconds = int(round(seconds * 1000))
+    hours, remainder = divmod(milliseconds, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    whole_seconds, milliseconds = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{whole_seconds:02d}.{milliseconds:03d}"
+
+
+async def _log_chunk_seams(segments: list[str], task_label: str) -> list[float]:
+    durations = [
+        await _probe_segment_duration_seconds(segment, task_label)
+        for segment in segments
+    ]
+    seams: list[float] = []
+    elapsed = 0.0
+    for duration in durations[:-1]:
+        elapsed += duration
+        seams.append(elapsed)
+
+    log.info(
+        f"[{task_label}] chunk_seams "
+        + json.dumps(
+            {
+                "seam_seconds": [round(seam, 3) for seam in seams],
+                "seam_timestamps": [_format_timestamp(seam) for seam in seams],
+                "segment_durations_seconds": [round(duration, 3) for duration in durations],
+            }
+        )
+    )
+    return seams
+
+
 def _build_ffmpeg_args(local_input: str, output_path: str, req: "CompressRequest", encoder: str) -> list[str]:
     ffmpeg_args = [
         FFMPEG_BIN,
@@ -359,6 +399,7 @@ async def _compress_chunked(
         input_segments = await _split_at_keyframes(local_input, work_dir, task_label, chunk_duration_seconds)
         if len(input_segments) < 2:
             raise RuntimeError("segment split produced one chunk; falling back to single-pass compression")
+        await _log_chunk_seams(input_segments, task_label)
 
         os.makedirs(encoded_dir, exist_ok=True)
         encoded_segments = [
