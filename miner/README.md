@@ -32,6 +32,21 @@ MAX_QUEUE_SIZE_COMPRESSION=5
 
 Queue status is available from `/queue` on each service.
 
+## Temporary File Cleanup
+On the normal path, `neurons/miner.py` removes the downloaded input and processed output from `MINER_SHARED_DIR` after upload. The container services also remove their remote-mode temporary files after upload.
+
+For crash and interruption paths, the miner and service containers run cleanup workers over `MINER_SHARED_DIR` / `SHARED_VOLUME_PATH`. By default, files are expired after the presigned URL expiry plus 600 seconds, and the cleanup worker keeps the shared volume under a 9 GB soft cap for Modal-style persistent storage.
+
+Tune cleanup in `miner/.env`:
+```bash
+MINER_CLEANUP_ENABLED=true
+MINER_CLEANUP_INTERVAL_SECONDS=300
+MINER_CLEANUP_MAX_VOLUME_BYTES=9000000000
+MINER_CLEANUP_MIN_FILE_AGE_SECONDS=60
+MINER_TEMP_FILE_TTL_SECONDS=
+PRESIGNED_URL_CLEANUP_GRACE_SECONDS=600
+```
+
 ## Video2X Upscaling Miner
 1. Complete host/container preparation in `miner/upscaling/SETUP.md`.
 2. Start service:

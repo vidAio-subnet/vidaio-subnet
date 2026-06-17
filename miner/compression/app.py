@@ -10,8 +10,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Optional
 
 import boto3
@@ -27,7 +28,19 @@ logging.basicConfig(
 )
 log = logging.getLogger("compression")
 
-app = FastAPI(title="Video Compression Service")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    cleanup_task = asyncio.create_task(_cleanup_worker())
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await cleanup_task
+
+
+app = FastAPI(title="Video Compression Service", lifespan=lifespan)
 
 SHARED_VOLUME_PATH = os.getenv("SHARED_VOLUME_PATH", "/tmp/organic-proxy")
 MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_COMPRESSION", "2"))
@@ -50,10 +63,31 @@ S3_PRESIGNED_EXPIRY = int(
     or os.getenv("S3_PRESIGNED_EXPIRY")
     or "3600"
 )
+PRESIGNED_URL_CLEANUP_GRACE_SECONDS = int(os.getenv("PRESIGNED_URL_CLEANUP_GRACE_SECONDS", "600"))
+TEMP_FILE_TTL_SECONDS = int(
+    os.getenv("MINER_TEMP_FILE_TTL_SECONDS")
+    or os.getenv("TEMP_FILE_TTL_SECONDS")
+    or str(min(S3_PRESIGNED_EXPIRY, 604800) + PRESIGNED_URL_CLEANUP_GRACE_SECONDS)
+)
+CLEANUP_INTERVAL_SECONDS = int(
+    os.getenv("MINER_CLEANUP_INTERVAL_SECONDS") or os.getenv("CLEANUP_INTERVAL_SECONDS") or "300"
+)
+CLEANUP_MAX_VOLUME_BYTES = int(
+    os.getenv("MINER_CLEANUP_MAX_VOLUME_BYTES") or os.getenv("CLEANUP_MAX_VOLUME_BYTES") or "9000000000"
+)
+CLEANUP_MIN_FILE_AGE_SECONDS = int(
+    os.getenv("MINER_CLEANUP_MIN_FILE_AGE_SECONDS") or os.getenv("CLEANUP_MIN_FILE_AGE_SECONDS") or "60"
+)
+CLEANUP_ENABLED = os.getenv("MINER_CLEANUP_ENABLED", os.getenv("CLEANUP_ENABLED", "true")).lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 _semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 _queue_size = 0
 _active_count = 0
+_active_file_paths: set[str] = set()
 _lock = asyncio.Lock()
 
 # Codec name → nvenc/software encoder mapping
@@ -139,6 +173,126 @@ def _cleanup(*paths: str):
                 os.remove(p)
             except OSError:
                 pass
+
+
+def _cleanup_config_status() -> dict[str, object]:
+    return {
+        "enabled": CLEANUP_ENABLED,
+        "interval_seconds": CLEANUP_INTERVAL_SECONDS,
+        "temp_file_ttl_seconds": TEMP_FILE_TTL_SECONDS,
+        "max_volume_bytes": CLEANUP_MAX_VOLUME_BYTES,
+        "min_file_age_seconds": CLEANUP_MIN_FILE_AGE_SECONDS,
+        "presigned_url_expiry_seconds": min(S3_PRESIGNED_EXPIRY, 604800),
+        "presigned_url_cleanup_grace_seconds": PRESIGNED_URL_CLEANUP_GRACE_SECONDS,
+    }
+
+
+def _shared_root() -> str:
+    return os.path.abspath(SHARED_VOLUME_PATH)
+
+
+def _normalize_path(path: str) -> str:
+    return os.path.abspath(path)
+
+
+def _is_shared_path(path: str) -> bool:
+    try:
+        return os.path.commonpath([_shared_root(), _normalize_path(path)]) == _shared_root()
+    except ValueError:
+        return False
+
+
+async def _track_temp_files(*paths: str):
+    async with _lock:
+        for path in paths:
+            if path and _is_shared_path(path):
+                _active_file_paths.add(_normalize_path(path))
+
+
+async def _untrack_temp_files(*paths: str):
+    async with _lock:
+        for path in paths:
+            if path:
+                _active_file_paths.discard(_normalize_path(path))
+
+
+async def _protected_paths_snapshot() -> set[str]:
+    async with _lock:
+        return set(_active_file_paths)
+
+
+def _remove_stale_file(path: str, reason: str) -> int:
+    try:
+        size = os.path.getsize(path)
+        os.remove(path)
+        log.info(f"Removed {reason} temp file: {path} ({size} bytes)")
+        return size
+    except FileNotFoundError:
+        return 0
+    except OSError as e:
+        log.warning(f"Failed to remove temp file {path}: {e}")
+        return 0
+
+
+async def _cleanup_shared_volume_once():
+    if not CLEANUP_ENABLED or not os.path.isdir(SHARED_VOLUME_PATH):
+        return
+
+    now = time.time()
+    protected_paths = await _protected_paths_snapshot()
+    total_bytes = 0
+    candidates: list[tuple[float, str, int]] = []
+
+    for root, _, files in os.walk(SHARED_VOLUME_PATH):
+        for filename in files:
+            path = os.path.abspath(os.path.join(root, filename))
+            try:
+                stat = os.stat(path)
+            except FileNotFoundError:
+                continue
+
+            total_bytes += stat.st_size
+            if path in protected_paths:
+                continue
+
+            candidates.append((stat.st_mtime, path, stat.st_size))
+            if now - stat.st_mtime >= TEMP_FILE_TTL_SECONDS:
+                total_bytes -= _remove_stale_file(path, "expired")
+
+    if CLEANUP_MAX_VOLUME_BYTES <= 0 or total_bytes <= CLEANUP_MAX_VOLUME_BYTES:
+        return
+
+    for _, path, size in sorted(candidates):
+        if total_bytes <= CLEANUP_MAX_VOLUME_BYTES:
+            break
+        if path in protected_paths or not os.path.exists(path):
+            continue
+        try:
+            file_age = now - os.path.getmtime(path)
+        except FileNotFoundError:
+            continue
+        if file_age < CLEANUP_MIN_FILE_AGE_SECONDS:
+            continue
+        total_bytes -= _remove_stale_file(path, "over-quota")
+
+
+async def _cleanup_worker():
+    if not CLEANUP_ENABLED:
+        log.info("Shared-volume cleanup worker disabled")
+        return
+
+    log.info(
+        "Starting shared-volume cleanup worker "
+        f"(path={SHARED_VOLUME_PATH}, ttl={TEMP_FILE_TTL_SECONDS}s, "
+        f"interval={CLEANUP_INTERVAL_SECONDS}s, max_bytes={CLEANUP_MAX_VOLUME_BYTES})"
+    )
+
+    while True:
+        try:
+            await _cleanup_shared_volume_once()
+        except Exception as e:
+            log.warning(f"Shared-volume cleanup pass failed: {e}")
+        await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
 
 
 def _queue_capacity() -> int:
@@ -231,6 +385,7 @@ async def health():
         "status": "ok",
         **snapshot,
         "storage": _storage_config_status(),
+        "cleanup": _cleanup_config_status(),
     }
 
 
@@ -248,100 +403,129 @@ async def compress(req: CompressRequest):
     if remote_mode and DISABLE_REMOTE_IO:
         return CompressResponse(success=False, error="Remote URL input is disabled for this local-only service")
 
-    async with _queued_task(task_label) as (queue_position, snapshot):
-        log.info(
-            f"[{task_label}] Queued compression "
-            f"(codec={encoder}, cq={req.cq}, position={queue_position}, "
-            f"waiting={snapshot['queued_tasks']}, remote={remote_mode})"
-        )
+    local_input = ""
+    output_path = ""
+    output_filename = ""
+    proc = None
+    stdout = b""
+    stderr = b""
+    run_error = ""
 
-        os.makedirs(SHARED_VOLUME_PATH, exist_ok=True)
-
-        # --- Resolve input to local path ---
-        if remote_mode:
-            local_input = os.path.join(SHARED_VOLUME_PATH, f"{task_label}_input.mp4")
-            try:
-                await _download_url(req.video_path, local_input)
-            except Exception as e:
-                return CompressResponse(success=False, error=f"Failed to download input: {e}")
-        else:
-            local_input = req.video_path
-            if not os.path.exists(local_input):
-                raise HTTPException(status_code=400, detail=f"Input file not found: {local_input}")
-
-        basename = os.path.splitext(os.path.basename(local_input))[0]
-        output_filename = f"{basename}_compressed.mp4"
-        output_path = os.path.join(SHARED_VOLUME_PATH, output_filename)
-
-        # Build ffmpeg command
-        ffmpeg_args = [
-            "ffmpeg", "-y",
-            "-hwaccel", "cuda",
-            "-i", local_input,
-        ]
-
-        ffmpeg_args.extend(["-c:v", encoder])
-
-        if req.codec_mode == "VBR" and req.target_bitrate:
-            ffmpeg_args.extend(["-b:v", str(req.target_bitrate)])
-        else:
-            ffmpeg_args.extend(["-cq", str(req.cq)])
-
-        ffmpeg_args.extend(["-preset", req.preset])
-
-        if req.target_width and req.target_height:
-            w = req.target_width if req.target_width % 2 == 0 else req.target_width - 1
-            h = req.target_height if req.target_height % 2 == 0 else req.target_height - 1
-            ffmpeg_args.extend(["-vf", f"scale={w}:{h}"])
-
-        ffmpeg_args.extend(["-c:a", "copy"])
-        ffmpeg_args.append(output_path)
-
-        cmd = ffmpeg_args
-
-        async with _running_task() as running_snapshot:
+    try:
+        async with _queued_task(task_label) as (queue_position, snapshot):
             log.info(
-                f"[{task_label}] Starting compression "
-                f"(active={running_snapshot['active_tasks']}/{MAX_CONCURRENT}, "
-                f"queued={running_snapshot['queued_tasks']})"
+                f"[{task_label}] Queued compression "
+                f"(codec={encoder}, cq={req.cq}, position={queue_position}, "
+                f"waiting={snapshot['queued_tasks']}, remote={remote_mode})"
             )
-            log.info(f"[{task_label}] Command: {' '.join(cmd)}")
 
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await proc.communicate()
+            os.makedirs(SHARED_VOLUME_PATH, exist_ok=True)
 
-    snapshot = await _queue_snapshot()
-    stats = dict(active_tasks=snapshot["active_tasks"], queued_tasks=snapshot["queued_tasks"])
+            # --- Resolve input to local path ---
+            if remote_mode:
+                local_input = os.path.join(SHARED_VOLUME_PATH, f"{task_label}_input.mp4")
+                await _track_temp_files(local_input)
+                try:
+                    await _download_url(req.video_path, local_input)
+                except Exception as e:
+                    _cleanup(local_input)
+                    return CompressResponse(success=False, error=f"Failed to download input: {e}")
+            else:
+                local_input = req.video_path
+                if not os.path.exists(local_input):
+                    raise HTTPException(status_code=400, detail=f"Input file not found: {local_input}")
+                await _track_temp_files(local_input)
 
-    if proc.returncode != 0:
-        err_msg = stderr.decode(errors="replace").strip()
-        log.error(f"[{task_label}] ffmpeg failed (rc={proc.returncode}): {err_msg}")
+            basename = os.path.splitext(os.path.basename(local_input))[0]
+            output_filename = f"{basename}_compressed.mp4"
+            output_path = os.path.join(SHARED_VOLUME_PATH, output_filename)
+            await _track_temp_files(output_path)
+
+            # Build ffmpeg command
+            ffmpeg_args = [
+                "ffmpeg", "-y",
+                "-hwaccel", "cuda",
+                "-i", local_input,
+            ]
+
+            ffmpeg_args.extend(["-c:v", encoder])
+
+            if req.codec_mode == "VBR" and req.target_bitrate:
+                ffmpeg_args.extend(["-b:v", str(req.target_bitrate)])
+            else:
+                ffmpeg_args.extend(["-cq", str(req.cq)])
+
+            ffmpeg_args.extend(["-preset", req.preset])
+
+            if req.target_width and req.target_height:
+                w = req.target_width if req.target_width % 2 == 0 else req.target_width - 1
+                h = req.target_height if req.target_height % 2 == 0 else req.target_height - 1
+                ffmpeg_args.extend(["-vf", f"scale={w}:{h}"])
+
+            ffmpeg_args.extend(["-c:a", "copy"])
+            ffmpeg_args.append(output_path)
+
+            cmd = ffmpeg_args
+
+            async with _running_task() as running_snapshot:
+                log.info(
+                    f"[{task_label}] Starting compression "
+                    f"(active={running_snapshot['active_tasks']}/{MAX_CONCURRENT}, "
+                    f"queued={running_snapshot['queued_tasks']})"
+                )
+                log.info(f"[{task_label}] Command: {' '.join(cmd)}")
+
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    stdout, stderr = await proc.communicate()
+                except FileNotFoundError:
+                    run_error = "ffmpeg binary not found"
+                    log.error(f"[{task_label}] {run_error}")
+                except OSError as e:
+                    run_error = f"Failed to start ffmpeg: {e}"
+                    log.error(f"[{task_label}] {run_error}")
+
+        snapshot = await _queue_snapshot()
+        stats = dict(active_tasks=snapshot["active_tasks"], queued_tasks=snapshot["queued_tasks"])
+
+        if proc is None:
+            _cleanup(output_path)
+            if remote_mode:
+                _cleanup(local_input)
+            return CompressResponse(success=False, error=run_error or "ffmpeg did not start", **stats)
+
+        if proc.returncode != 0:
+            err_msg = stderr.decode(errors="replace").strip()
+            log.error(f"[{task_label}] ffmpeg failed (rc={proc.returncode}): {err_msg}")
+            _cleanup(output_path)
+            if remote_mode:
+                _cleanup(local_input)
+            return CompressResponse(success=False, error=err_msg, **stats)
+
+        if not os.path.exists(output_path):
+            log.error(f"[{task_label}] Output file not found: {output_path}")
+            if remote_mode:
+                _cleanup(local_input)
+            return CompressResponse(success=False, error="Output file not created", **stats)
+
+        # --- Remote mode: upload result to S3, return URL ---
         if remote_mode:
-            _cleanup(local_input)
-        return CompressResponse(success=False, error=err_msg, **stats)
+            try:
+                s3_key = f"processing/{task_label}/{output_filename}"
+                output_url = _upload_to_s3(output_path, s3_key)
+                log.info(f"[{task_label}] Compression complete (remote): {output_url[:80]}...")
+                return CompressResponse(output_url=output_url, success=True, **stats)
+            except Exception as e:
+                log.error(f"[{task_label}] S3 upload failed: {e}")
+                return CompressResponse(success=False, error=f"S3 upload failed: {e}", **stats)
+            finally:
+                _cleanup(local_input, output_path)
 
-    if not os.path.exists(output_path):
-        log.error(f"[{task_label}] Output file not found: {output_path}")
-        if remote_mode:
-            _cleanup(local_input)
-        return CompressResponse(success=False, error="Output file not created", **stats)
-
-    # --- Remote mode: upload result to S3, return URL ---
-    if remote_mode:
-        try:
-            s3_key = f"processing/{task_label}/{output_filename}"
-            output_url = _upload_to_s3(output_path, s3_key)
-            log.info(f"[{task_label}] Compression complete (remote): {output_url[:80]}...")
-            return CompressResponse(output_url=output_url, success=True, **stats)
-        except Exception as e:
-            log.error(f"[{task_label}] S3 upload failed: {e}")
-            return CompressResponse(success=False, error=f"S3 upload failed: {e}", **stats)
-        finally:
-            _cleanup(local_input, output_path)
-
-    log.info(f"[{task_label}] Compression complete (local): {output_path}")
-    return CompressResponse(output_path=output_path, success=True, **stats)
+        log.info(f"[{task_label}] Compression complete (local): {output_path}")
+        return CompressResponse(output_path=output_path, success=True, **stats)
+    finally:
+        await _untrack_temp_files(local_input, output_path)

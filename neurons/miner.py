@@ -1,6 +1,7 @@
 import asyncio
 import os
 import posixpath
+import threading
 import time
 import traceback
 import uuid
@@ -61,6 +62,24 @@ S3_ENDPOINT_URL = (
     or os.getenv("MINER_STORAGE_S3_ENDPOINT")
     or ""
 ).strip()
+PRESIGNED_URL_CLEANUP_GRACE_SECONDS = int(os.getenv("PRESIGNED_URL_CLEANUP_GRACE_SECONDS", "600"))
+SHARED_VOLUME_FILE_TTL_SECONDS = int(
+    os.getenv("MINER_TEMP_FILE_TTL_SECONDS")
+    or os.getenv("TEMP_FILE_TTL_SECONDS")
+    or str(min(MINER_UPLOAD_URL_EXPIRY_SECONDS, 604800) + PRESIGNED_URL_CLEANUP_GRACE_SECONDS)
+)
+SHARED_VOLUME_CLEANUP_INTERVAL_SECONDS = int(
+    os.getenv("MINER_CLEANUP_INTERVAL_SECONDS") or os.getenv("CLEANUP_INTERVAL_SECONDS") or "300"
+)
+SHARED_VOLUME_CLEANUP_MAX_BYTES = int(
+    os.getenv("MINER_CLEANUP_MAX_VOLUME_BYTES") or os.getenv("CLEANUP_MAX_VOLUME_BYTES") or "9000000000"
+)
+SHARED_VOLUME_CLEANUP_MIN_FILE_AGE_SECONDS = int(
+    os.getenv("MINER_CLEANUP_MIN_FILE_AGE_SECONDS") or os.getenv("CLEANUP_MIN_FILE_AGE_SECONDS") or "60"
+)
+SHARED_VOLUME_CLEANUP_ENABLED = os.getenv(
+    "MINER_CLEANUP_ENABLED", os.getenv("CLEANUP_ENABLED", "true")
+).lower() in ("1", "true", "yes")
 
 TASK_TYPE_TO_SCALE = {
     "SD24K": 4,
@@ -89,6 +108,125 @@ class Miner(BaseMiner):
         # Shared in-memory job store for polling-based organic requests.
         # Structure: { job_id: {"task": asyncio.Task, "result": str | None, "error": str | None} }
         self._jobs: dict[str, dict] = {}
+        self._active_shared_files: set[str] = set()
+        self._shared_files_lock = threading.Lock()
+        self._cleanup_stop_event = threading.Event()
+        self._cleanup_thread: threading.Thread | None = None
+        self._start_shared_volume_cleanup_worker()
+
+    def stop_run_thread(self):
+        super().stop_run_thread()
+        self._stop_shared_volume_cleanup_worker()
+
+    def _normalize_shared_path(self, path: Path) -> str:
+        return str(path.resolve())
+
+    def _is_path_in_shared_volume(self, path: Path) -> bool:
+        try:
+            path.resolve().relative_to(HOST_SHARED_VOLUME_PATH.resolve())
+            return True
+        except ValueError:
+            return False
+
+    def _track_shared_file(self, path: Path | None):
+        if path is None or not self._is_path_in_shared_volume(path):
+            return
+        with self._shared_files_lock:
+            self._active_shared_files.add(self._normalize_shared_path(path))
+
+    def _untrack_shared_file(self, path: Path | None):
+        if path is None:
+            return
+        with self._shared_files_lock:
+            self._active_shared_files.discard(self._normalize_shared_path(path))
+
+    def _active_shared_files_snapshot(self) -> set[str]:
+        with self._shared_files_lock:
+            return set(self._active_shared_files)
+
+    def _remove_stale_shared_file(self, path: Path, reason: str) -> int:
+        try:
+            size = path.stat().st_size
+            path.unlink()
+            logger.info(f"Removed {reason} shared temp file: {path} ({size} bytes)")
+            return size
+        except FileNotFoundError:
+            return 0
+        except OSError as e:
+            logger.warning(f"Failed to remove shared temp file {path}: {e}")
+            return 0
+
+    def _cleanup_shared_volume_once(self):
+        if not SHARED_VOLUME_CLEANUP_ENABLED or not HOST_SHARED_VOLUME_PATH.exists():
+            return
+
+        now = time.time()
+        protected_paths = self._active_shared_files_snapshot()
+        total_bytes = 0
+        candidates: list[tuple[float, Path, int]] = []
+
+        for path in HOST_SHARED_VOLUME_PATH.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                continue
+
+            total_bytes += stat.st_size
+            normalized_path = self._normalize_shared_path(path)
+            if normalized_path in protected_paths:
+                continue
+
+            candidates.append((stat.st_mtime, path, stat.st_size))
+            if now - stat.st_mtime >= SHARED_VOLUME_FILE_TTL_SECONDS:
+                total_bytes -= self._remove_stale_shared_file(path, "expired")
+
+        if SHARED_VOLUME_CLEANUP_MAX_BYTES <= 0 or total_bytes <= SHARED_VOLUME_CLEANUP_MAX_BYTES:
+            return
+
+        for _, path, size in sorted(candidates):
+            if total_bytes <= SHARED_VOLUME_CLEANUP_MAX_BYTES:
+                break
+            normalized_path = self._normalize_shared_path(path)
+            if normalized_path in protected_paths or not path.exists():
+                continue
+            try:
+                if now - path.stat().st_mtime < SHARED_VOLUME_CLEANUP_MIN_FILE_AGE_SECONDS:
+                    continue
+            except FileNotFoundError:
+                continue
+            total_bytes -= self._remove_stale_shared_file(path, "over-quota")
+
+    def _shared_volume_cleanup_loop(self):
+        logger.info(
+            "Starting miner shared-volume cleanup worker "
+            f"(path={HOST_SHARED_VOLUME_PATH}, ttl={SHARED_VOLUME_FILE_TTL_SECONDS}s, "
+            f"interval={SHARED_VOLUME_CLEANUP_INTERVAL_SECONDS}s, "
+            f"max_bytes={SHARED_VOLUME_CLEANUP_MAX_BYTES})"
+        )
+        while not self._cleanup_stop_event.is_set():
+            try:
+                self._cleanup_shared_volume_once()
+            except Exception as e:
+                logger.warning(f"Miner shared-volume cleanup pass failed: {e}")
+            self._cleanup_stop_event.wait(SHARED_VOLUME_CLEANUP_INTERVAL_SECONDS)
+
+    def _start_shared_volume_cleanup_worker(self):
+        if not SHARED_VOLUME_CLEANUP_ENABLED:
+            logger.info("Miner shared-volume cleanup worker disabled")
+            return
+        self._cleanup_thread = threading.Thread(
+            target=self._shared_volume_cleanup_loop,
+            name="miner-shared-volume-cleanup",
+            daemon=True,
+        )
+        self._cleanup_thread.start()
+
+    def _stop_shared_volume_cleanup_worker(self):
+        self._cleanup_stop_event.set()
+        if self._cleanup_thread is not None:
+            self._cleanup_thread.join(timeout=5)
 
     def _container_shared_path(self, host_path: Path) -> str:
         return f"{CONTAINER_SHARED_VOLUME_PATH}/{host_path.name}"
@@ -114,6 +252,7 @@ class Miner(BaseMiner):
     async def _download_to_shared_volume(self, video_url: str, task_id: str) -> tuple[Path, str]:
         HOST_SHARED_VOLUME_PATH.mkdir(parents=True, exist_ok=True)
         host_path = HOST_SHARED_VOLUME_PATH / f"{task_id}_input.mp4"
+        self._track_shared_file(host_path)
 
         logger.info(f"Downloading validator payload to shared volume: {host_path}")
         timeout = httpx.Timeout(MINER_DOWNLOAD_TIMEOUT_SECONDS)
@@ -126,6 +265,7 @@ class Miner(BaseMiner):
                             file.write(chunk)
         except Exception:
             self._cleanup_shared_files(host_path)
+            self._untrack_shared_file(host_path)
             raise
 
         return host_path, self._container_shared_path(host_path)
@@ -174,6 +314,7 @@ class Miner(BaseMiner):
 
     def _cleanup_shared_files(self, *paths: Path | None):
         for path in paths:
+            self._untrack_shared_file(path)
             if path and path.exists():
                 try:
                     path.unlink()
@@ -274,6 +415,7 @@ class Miner(BaseMiner):
                 return processed_ref
 
             output_host_path = self._host_shared_path(processed_ref)
+            self._track_shared_file(output_host_path)
             return await self._upload_processed_video(output_host_path, "upscaling", task_id)
         finally:
             self._cleanup_shared_files(input_host_path, output_host_path)
@@ -299,6 +441,7 @@ class Miner(BaseMiner):
                 return processed_ref
 
             output_host_path = self._host_shared_path(processed_ref)
+            self._track_shared_file(output_host_path)
             return await self._upload_processed_video(output_host_path, "compression", task_id)
         finally:
             self._cleanup_shared_files(input_host_path, output_host_path)

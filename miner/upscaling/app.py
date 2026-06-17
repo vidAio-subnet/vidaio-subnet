@@ -11,8 +11,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Optional
 
 import boto3
@@ -28,7 +29,19 @@ logging.basicConfig(
 )
 log = logging.getLogger("upscaling")
 
-app = FastAPI(title="Video Upscaling Service")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    cleanup_task = asyncio.create_task(_cleanup_worker())
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await cleanup_task
+
+
+app = FastAPI(title="Video Upscaling Service", lifespan=lifespan)
 
 VIDEO2X_BIN = os.getenv("VIDEO2X_BIN", "video2x")
 VIDEO2X_DEVICE = (os.getenv("VIDEO2X_DEVICE") or os.getenv("VIDEO2X_GPU") or "0").strip()
@@ -72,10 +85,31 @@ S3_PRESIGNED_EXPIRY = int(
     or os.getenv("S3_PRESIGNED_EXPIRY")
     or "3600"
 )
+PRESIGNED_URL_CLEANUP_GRACE_SECONDS = int(os.getenv("PRESIGNED_URL_CLEANUP_GRACE_SECONDS", "600"))
+TEMP_FILE_TTL_SECONDS = int(
+    os.getenv("MINER_TEMP_FILE_TTL_SECONDS")
+    or os.getenv("TEMP_FILE_TTL_SECONDS")
+    or str(min(S3_PRESIGNED_EXPIRY, 604800) + PRESIGNED_URL_CLEANUP_GRACE_SECONDS)
+)
+CLEANUP_INTERVAL_SECONDS = int(
+    os.getenv("MINER_CLEANUP_INTERVAL_SECONDS") or os.getenv("CLEANUP_INTERVAL_SECONDS") or "300"
+)
+CLEANUP_MAX_VOLUME_BYTES = int(
+    os.getenv("MINER_CLEANUP_MAX_VOLUME_BYTES") or os.getenv("CLEANUP_MAX_VOLUME_BYTES") or "9000000000"
+)
+CLEANUP_MIN_FILE_AGE_SECONDS = int(
+    os.getenv("MINER_CLEANUP_MIN_FILE_AGE_SECONDS") or os.getenv("CLEANUP_MIN_FILE_AGE_SECONDS") or "60"
+)
+CLEANUP_ENABLED = os.getenv("MINER_CLEANUP_ENABLED", os.getenv("CLEANUP_ENABLED", "true")).lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 _semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 _queue_size = 0
 _active_count = 0
+_active_file_paths: set[str] = set()
 _lock = asyncio.Lock()
 
 
@@ -154,6 +188,135 @@ def _upload_to_s3(local_path: str, key: str) -> str:
     )
     log.info(f"Uploaded to {STORAGE_PROVIDER} storage: s3://{S3_BUCKET}/{key}")
     return url
+
+
+def _cleanup(*paths: str):
+    for p in paths:
+        if p and os.path.exists(p):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
+def _cleanup_config_status() -> dict[str, object]:
+    return {
+        "enabled": CLEANUP_ENABLED,
+        "interval_seconds": CLEANUP_INTERVAL_SECONDS,
+        "temp_file_ttl_seconds": TEMP_FILE_TTL_SECONDS,
+        "max_volume_bytes": CLEANUP_MAX_VOLUME_BYTES,
+        "min_file_age_seconds": CLEANUP_MIN_FILE_AGE_SECONDS,
+        "presigned_url_expiry_seconds": min(S3_PRESIGNED_EXPIRY, 604800),
+        "presigned_url_cleanup_grace_seconds": PRESIGNED_URL_CLEANUP_GRACE_SECONDS,
+    }
+
+
+def _shared_root() -> str:
+    return os.path.abspath(SHARED_VOLUME_PATH)
+
+
+def _normalize_path(path: str) -> str:
+    return os.path.abspath(path)
+
+
+def _is_shared_path(path: str) -> bool:
+    try:
+        return os.path.commonpath([_shared_root(), _normalize_path(path)]) == _shared_root()
+    except ValueError:
+        return False
+
+
+async def _track_temp_files(*paths: str):
+    async with _lock:
+        for path in paths:
+            if path and _is_shared_path(path):
+                _active_file_paths.add(_normalize_path(path))
+
+
+async def _untrack_temp_files(*paths: str):
+    async with _lock:
+        for path in paths:
+            if path:
+                _active_file_paths.discard(_normalize_path(path))
+
+
+async def _protected_paths_snapshot() -> set[str]:
+    async with _lock:
+        return set(_active_file_paths)
+
+
+def _remove_stale_file(path: str, reason: str) -> int:
+    try:
+        size = os.path.getsize(path)
+        os.remove(path)
+        log.info(f"Removed {reason} temp file: {path} ({size} bytes)")
+        return size
+    except FileNotFoundError:
+        return 0
+    except OSError as e:
+        log.warning(f"Failed to remove temp file {path}: {e}")
+        return 0
+
+
+async def _cleanup_shared_volume_once():
+    if not CLEANUP_ENABLED or not os.path.isdir(SHARED_VOLUME_PATH):
+        return
+
+    now = time.time()
+    protected_paths = await _protected_paths_snapshot()
+    total_bytes = 0
+    candidates: list[tuple[float, str, int]] = []
+
+    for root, _, files in os.walk(SHARED_VOLUME_PATH):
+        for filename in files:
+            path = os.path.abspath(os.path.join(root, filename))
+            try:
+                stat = os.stat(path)
+            except FileNotFoundError:
+                continue
+
+            total_bytes += stat.st_size
+            if path in protected_paths:
+                continue
+
+            candidates.append((stat.st_mtime, path, stat.st_size))
+            if now - stat.st_mtime >= TEMP_FILE_TTL_SECONDS:
+                total_bytes -= _remove_stale_file(path, "expired")
+
+    if CLEANUP_MAX_VOLUME_BYTES <= 0 or total_bytes <= CLEANUP_MAX_VOLUME_BYTES:
+        return
+
+    for _, path, size in sorted(candidates):
+        if total_bytes <= CLEANUP_MAX_VOLUME_BYTES:
+            break
+        if path in protected_paths or not os.path.exists(path):
+            continue
+        try:
+            file_age = now - os.path.getmtime(path)
+        except FileNotFoundError:
+            continue
+        if file_age < CLEANUP_MIN_FILE_AGE_SECONDS:
+            continue
+        total_bytes -= _remove_stale_file(path, "over-quota")
+
+
+async def _cleanup_worker():
+    if not CLEANUP_ENABLED:
+        log.info("Shared-volume cleanup worker disabled")
+        return
+
+    log.info(
+        "Starting shared-volume cleanup worker "
+        f"(path={SHARED_VOLUME_PATH}, ttl={TEMP_FILE_TTL_SECONDS}s, "
+        f"interval={CLEANUP_INTERVAL_SECONDS}s, max_bytes={CLEANUP_MAX_VOLUME_BYTES})"
+    )
+
+    while True:
+        try:
+            await _cleanup_shared_volume_once()
+        except Exception as e:
+            log.warning(f"Shared-volume cleanup pass failed: {e}")
+        await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
 
 
 def _queue_capacity() -> int:
@@ -250,6 +413,7 @@ async def health():
         "video2x_encoder_options": VIDEO2X_ENCODER_OPTIONS,
         **snapshot,
         "storage": _storage_config_status(),
+        "cleanup": _cleanup_config_status(),
     }
 
 
@@ -269,115 +433,118 @@ async def upscale(req: UpscaleRequest):
     if remote_mode and DISABLE_REMOTE_IO:
         return UpscaleResponse(success=False, error="Remote URL input is disabled for this local-only service")
 
+    local_input = ""
+    output_path = ""
+    output_filename = ""
     proc = None
     stdout = b""
     stderr = b""
     run_error = ""
 
-    async with _queued_task(task_label) as (queue_position, snapshot):
-        log.info(
-            f"[{task_label}] Queued {req.scale}x upscale "
-            f"(position={queue_position}, waiting={snapshot['queued_tasks']}, remote={remote_mode})"
-        )
-
-        # --- Resolve input to local path ---
-        if remote_mode:
-            local_input = os.path.join(SHARED_VOLUME_PATH, f"{task_label}_input.mp4")
-            try:
-                await _download_url(req.video_path, local_input)
-            except Exception as e:
-                return UpscaleResponse(success=False, error=f"Failed to download input: {e}")
-        else:
-            local_input = req.video_path
-            if not os.path.exists(local_input):
-                raise HTTPException(status_code=400, detail=f"Input file not found: {local_input}")
-
-        basename = os.path.splitext(os.path.basename(local_input))[0]
-        output_filename = f"{basename}_upscaled_{req.scale}x.mp4"
-        output_path = os.path.join(SHARED_VOLUME_PATH, output_filename)
-
-        cmd = [
-            VIDEO2X_BIN,
-            "-i", local_input,
-            "-o", output_path,
-            "-p", "realesrgan",
-            "-s", str(req.scale),
-        ]
-        if VIDEO2X_DEVICE:
-            cmd.extend(["-d", VIDEO2X_DEVICE])
-        cmd.extend(VIDEO2X_COMMON_ENCODER_ARGS)
-        codec = req.codec if VIDEO2X_ALLOW_REQUEST_CODEC else VIDEO2X_CODEC
-        cmd.extend([
-            "--realesrgan-model", req.model,
-            "-c", codec,
-        ])
-        for option in VIDEO2X_ENCODER_OPTIONS:
-            cmd.extend(["-e", option.format(cq=req.cq)])
-
-        async with _running_task() as running_snapshot:
+    try:
+        async with _queued_task(task_label) as (queue_position, snapshot):
             log.info(
-                f"[{task_label}] Starting {req.scale}x upscale "
-                f"(active={running_snapshot['active_tasks']}/{MAX_CONCURRENT}, "
-                f"queued={running_snapshot['queued_tasks']})"
+                f"[{task_label}] Queued {req.scale}x upscale "
+                f"(position={queue_position}, waiting={snapshot['queued_tasks']}, remote={remote_mode})"
             )
-            log.info(f"[{task_label}] Command: {' '.join(cmd)}")
 
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
+            # --- Resolve input to local path ---
+            if remote_mode:
+                local_input = os.path.join(SHARED_VOLUME_PATH, f"{task_label}_input.mp4")
+                await _track_temp_files(local_input)
+                try:
+                    await _download_url(req.video_path, local_input)
+                except Exception as e:
+                    _cleanup(local_input)
+                    return UpscaleResponse(success=False, error=f"Failed to download input: {e}")
+            else:
+                local_input = req.video_path
+                if not os.path.exists(local_input):
+                    raise HTTPException(status_code=400, detail=f"Input file not found: {local_input}")
+                await _track_temp_files(local_input)
+
+            basename = os.path.splitext(os.path.basename(local_input))[0]
+            output_filename = f"{basename}_upscaled_{req.scale}x.mp4"
+            output_path = os.path.join(SHARED_VOLUME_PATH, output_filename)
+            await _track_temp_files(output_path)
+
+            cmd = [
+                VIDEO2X_BIN,
+                "-i", local_input,
+                "-o", output_path,
+                "-p", "realesrgan",
+                "-s", str(req.scale),
+            ]
+            if VIDEO2X_DEVICE:
+                cmd.extend(["-d", VIDEO2X_DEVICE])
+            cmd.extend(VIDEO2X_COMMON_ENCODER_ARGS)
+            codec = req.codec if VIDEO2X_ALLOW_REQUEST_CODEC else VIDEO2X_CODEC
+            cmd.extend([
+                "--realesrgan-model", req.model,
+                "-c", codec,
+            ])
+            for option in VIDEO2X_ENCODER_OPTIONS:
+                cmd.extend(["-e", option.format(cq=req.cq)])
+
+            async with _running_task() as running_snapshot:
+                log.info(
+                    f"[{task_label}] Starting {req.scale}x upscale "
+                    f"(active={running_snapshot['active_tasks']}/{MAX_CONCURRENT}, "
+                    f"queued={running_snapshot['queued_tasks']})"
                 )
-                stdout, stderr = await proc.communicate()
-            except FileNotFoundError:
-                run_error = f"Video2X binary not found: {VIDEO2X_BIN}"
-                log.error(f"[{task_label}] {run_error}")
-            except OSError as e:
-                run_error = f"Failed to start Video2X: {e}"
-                log.error(f"[{task_label}] {run_error}")
+                log.info(f"[{task_label}] Command: {' '.join(cmd)}")
 
-    snapshot = await _queue_snapshot()
-    stats = dict(active_tasks=snapshot["active_tasks"], queued_tasks=snapshot["queued_tasks"])
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    stdout, stderr = await proc.communicate()
+                except FileNotFoundError:
+                    run_error = f"Video2X binary not found: {VIDEO2X_BIN}"
+                    log.error(f"[{task_label}] {run_error}")
+                except OSError as e:
+                    run_error = f"Failed to start Video2X: {e}"
+                    log.error(f"[{task_label}] {run_error}")
 
-    if proc is None:
+        snapshot = await _queue_snapshot()
+        stats = dict(active_tasks=snapshot["active_tasks"], queued_tasks=snapshot["queued_tasks"])
+
+        if proc is None:
+            _cleanup(output_path)
+            if remote_mode:
+                _cleanup(local_input)
+            return UpscaleResponse(success=False, error=run_error or "Video2X did not start", **stats)
+
+        if proc.returncode != 0:
+            err_msg = _format_process_output(stdout, stderr) or "Video2X failed without output"
+            log.error(f"[{task_label}] video2x failed (rc={proc.returncode}): {err_msg}")
+            _cleanup(output_path)
+            if remote_mode:
+                _cleanup(local_input)
+            return UpscaleResponse(success=False, error=err_msg, **stats)
+
+        if not os.path.exists(output_path):
+            log.error(f"[{task_label}] Output file not found after video2x: {output_path}")
+            if remote_mode:
+                _cleanup(local_input)
+            return UpscaleResponse(success=False, error="Output file not created", **stats)
+
+        # --- Remote mode: upload result to S3, return URL ---
         if remote_mode:
-            _cleanup(local_input)
-        return UpscaleResponse(success=False, error=run_error or "Video2X did not start", **stats)
-
-    if proc.returncode != 0:
-        err_msg = _format_process_output(stdout, stderr) or "Video2X failed without output"
-        log.error(f"[{task_label}] video2x failed (rc={proc.returncode}): {err_msg}")
-        if remote_mode:
-            _cleanup(local_input)
-        return UpscaleResponse(success=False, error=err_msg, **stats)
-
-    if not os.path.exists(output_path):
-        log.error(f"[{task_label}] Output file not found after video2x: {output_path}")
-        if remote_mode:
-            _cleanup(local_input)
-        return UpscaleResponse(success=False, error="Output file not created", **stats)
-
-    # --- Remote mode: upload result to S3, return URL ---
-    if remote_mode:
-        try:
-            s3_key = f"processing/{task_label}/{output_filename}"
-            output_url = _upload_to_s3(output_path, s3_key)
-            log.info(f"[{task_label}] Upscaling complete (remote): {output_url}")
-            return UpscaleResponse(output_url=output_url, success=True, **stats)
-        except Exception as e:
-            log.error(f"[{task_label}] S3 upload failed: {e}")
-            return UpscaleResponse(success=False, error=f"S3 upload failed: {e}", **stats)
-        finally:
-            _cleanup(local_input, output_path)
-
-    log.info(f"[{task_label}] Upscaling complete (local): {output_path}")
-    return UpscaleResponse(output_path=output_path, success=True, **stats)
-
-
-def _cleanup(*paths: str):
-    for p in paths:
-        if p and os.path.exists(p):
             try:
-                os.remove(p)
-            except OSError:
-                pass
+                s3_key = f"processing/{task_label}/{output_filename}"
+                output_url = _upload_to_s3(output_path, s3_key)
+                log.info(f"[{task_label}] Upscaling complete (remote): {output_url}")
+                return UpscaleResponse(output_url=output_url, success=True, **stats)
+            except Exception as e:
+                log.error(f"[{task_label}] S3 upload failed: {e}")
+                return UpscaleResponse(success=False, error=f"S3 upload failed: {e}", **stats)
+            finally:
+                _cleanup(local_input, output_path)
+
+        log.info(f"[{task_label}] Upscaling complete (local): {output_path}")
+        return UpscaleResponse(output_path=output_path, success=True, **stats)
+    finally:
+        await _untrack_temp_files(local_input, output_path)
