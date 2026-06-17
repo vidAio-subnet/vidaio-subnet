@@ -135,6 +135,56 @@ def _load_fastapi_app():
     return _load_service_module().app
 
 
+def _task_id(payload: dict) -> str:
+    task_id = str(payload.get("task_id") or "missing-task-id")
+    return task_id[:120]
+
+
+def _modal_input_id() -> str:
+    try:
+        return modal.current_input_id()
+    except Exception:
+        return "unavailable"
+
+
+def _log_task_event(worker: str, payload: dict, event: str, **fields: Any) -> None:
+    print(
+        json.dumps(
+            {
+                "event": event,
+                "worker": worker,
+                "task_id": _task_id(payload),
+                "modal_input_id": _modal_input_id(),
+                **fields,
+            },
+            sort_keys=True,
+        ),
+        flush=True,
+    )
+
+
+def _run_with_task_logs(worker: str, payload: dict, callback) -> dict:
+    _log_task_event(worker, payload, "started")
+    try:
+        result = callback()
+    except Exception as exc:
+        _log_task_event(worker, payload, "exception", error=str(exc))
+        raise
+
+    if isinstance(result, dict):
+        _log_task_event(
+            worker,
+            payload,
+            "finished",
+            success=result.get("success"),
+            error=result.get("error"),
+            output_url_configured=bool(result.get("output_url")),
+        )
+    else:
+        _log_task_event(worker, payload, "finished", result_type=type(result).__name__)
+    return result
+
+
 def _run_service_request(request_model_name: str, handler_name: str, payload: dict) -> dict:
     import asyncio
 
@@ -195,26 +245,37 @@ def _probe_remote_duration_seconds(video_url: str) -> float | None:
 )
 @modal.concurrent(max_inputs=16, target_inputs=8)
 def compress(payload: dict) -> dict:
-    duration_seconds = _probe_remote_duration_seconds(str(payload.get("video_path", "")))
-    long_video = duration_seconds is None or duration_seconds >= LONG_COMPRESSION_THRESHOLD_SECONDS
-    if long_video:
-        routed_payload = {
-            **payload,
-            "chunked": True,
-            "chunk_duration_seconds": LONG_COMPRESSION_CHUNK_SECONDS,
-            "chunk_parallelism": LONG_COMPRESSION_CHUNK_PARALLELISM,
-        }
-        print(
-            "Routing compression to RTX PRO 6000 "
-            f"(duration={duration_seconds}, threshold={LONG_COMPRESSION_THRESHOLD_SECONDS})"
-        )
-        return compress_rtx_pro_6000.remote(routed_payload)
+    def _route():
+        duration_seconds = _probe_remote_duration_seconds(str(payload.get("video_path", "")))
+        long_video = duration_seconds is None or duration_seconds >= LONG_COMPRESSION_THRESHOLD_SECONDS
+        if long_video:
+            routed_payload = {
+                **payload,
+                "chunked": True,
+                "chunk_duration_seconds": LONG_COMPRESSION_CHUNK_SECONDS,
+                "chunk_parallelism": LONG_COMPRESSION_CHUNK_PARALLELISM,
+            }
+            _log_task_event(
+                "compress",
+                payload,
+                "routed",
+                duration_seconds=duration_seconds,
+                threshold_seconds=LONG_COMPRESSION_THRESHOLD_SECONDS,
+                routed_worker="compress_rtx_pro_6000",
+            )
+            return compress_rtx_pro_6000.remote(routed_payload)
 
-    print(
-        "Routing compression to T4 "
-        f"(duration={duration_seconds}, threshold={LONG_COMPRESSION_THRESHOLD_SECONDS})"
-    )
-    return compress_t4.remote({**payload, "chunked": False})
+        _log_task_event(
+            "compress",
+            payload,
+            "routed",
+            duration_seconds=duration_seconds,
+            threshold_seconds=LONG_COMPRESSION_THRESHOLD_SECONDS,
+            routed_worker="compress_t4",
+        )
+        return compress_t4.remote({**payload, "chunked": False})
+
+    return _run_with_task_logs("compress", payload, _route)
 
 
 @app.function(
@@ -224,7 +285,11 @@ def compress(payload: dict) -> dict:
 )
 @modal.concurrent(max_inputs=1)
 def compress_t4(payload: dict) -> dict:
-    return _run_service_request("CompressRequest", "compress", payload)
+    return _run_with_task_logs(
+        "compress_t4",
+        payload,
+        lambda: _run_service_request("CompressRequest", "compress", payload),
+    )
 
 
 @app.function(
@@ -234,7 +299,11 @@ def compress_t4(payload: dict) -> dict:
 )
 @modal.concurrent(max_inputs=1)
 def compress_rtx_pro_6000(payload: dict) -> dict:
-    return _run_service_request("CompressRequest", "compress", payload)
+    return _run_with_task_logs(
+        "compress_rtx_pro_6000",
+        payload,
+        lambda: _run_service_request("CompressRequest", "compress", payload),
+    )
 
 
 @app.function(
@@ -244,7 +313,11 @@ def compress_rtx_pro_6000(payload: dict) -> dict:
 )
 @modal.concurrent(max_inputs=1)
 def upscale_video2x(payload: dict) -> dict:
-    return _run_service_request("UpscaleRequest", "upscale", payload)
+    return _run_with_task_logs(
+        "upscale_video2x",
+        payload,
+        lambda: _run_service_request("UpscaleRequest", "upscale", payload),
+    )
 
 
 @app.function(
@@ -254,7 +327,11 @@ def upscale_video2x(payload: dict) -> dict:
 )
 @modal.concurrent(max_inputs=1)
 def upscale_ffmpeg(payload: dict) -> dict:
-    return _run_service_request("UpscaleRequest", "upscale", payload)
+    return _run_with_task_logs(
+        "upscale_ffmpeg",
+        payload,
+        lambda: _run_service_request("UpscaleRequest", "upscale", payload),
+    )
 
 
 @app.function(

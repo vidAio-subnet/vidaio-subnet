@@ -146,6 +146,8 @@ GPU workers use `cpu=16.0`, `min_containers=0`, `max_containers=5` by default, `
 
 Compression is duration-routed: `compress` probes the URL duration, `compress_t4` uses `gpu="T4"` for short videos, and `compress_rtx_pro_6000` uses `gpu="RTX-PRO-6000"` plus parallel chunk encoding for long videos.
 
+Modal's Logs table is keyed by app/run name, so deployed worker rows stay under `vidaio-miner-workers`. Each worker prints structured JSON log events with `task_id`, `worker`, and `modal_input_id`; search the log tab for the task ID to isolate a request.
+
 Install the Modal SDK in the miner environment:
 
 ```bash

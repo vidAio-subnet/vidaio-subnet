@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import time
 import uuid
 from contextlib import asynccontextmanager, suppress
@@ -97,6 +98,16 @@ STORAGE_OBJECT_TTL_SECONDS = int(
     or os.getenv("STORAGE_OBJECT_TTL_SECONDS")
     or str(min(S3_PRESIGNED_EXPIRY, 604800) + PRESIGNED_URL_CLEANUP_GRACE_SECONDS)
 )
+COMPRESSION_CHUNKING_ENABLED = os.getenv("COMPRESSION_CHUNKING_ENABLED", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+COMPRESSION_CHUNK_MIN_DURATION_SECONDS = int(os.getenv("COMPRESSION_CHUNK_MIN_DURATION_SECONDS", "1200"))
+COMPRESSION_CHUNK_TARGET_SECONDS = int(os.getenv("COMPRESSION_CHUNK_TARGET_SECONDS", "600"))
+COMPRESSION_CHUNK_PARALLELISM = max(1, int(os.getenv("COMPRESSION_CHUNK_PARALLELISM", "2")))
+FFPROBE_BIN = os.getenv("FFPROBE_BIN", "ffprobe")
+FFMPEG_BIN = os.getenv("FFMPEG_BIN", "ffmpeg")
 
 _semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 _queue_size = 0
@@ -140,6 +151,15 @@ def _storage_config_status() -> dict[str, object]:
         "access_key_configured": bool(S3_ACCESS_KEY_ID),
         "secret_key_configured": bool(S3_SECRET_ACCESS_KEY),
         "endpoint_configured": bool(S3_ENDPOINT_URL),
+    }
+
+
+def _compression_config_status() -> dict[str, object]:
+    return {
+        "chunking_enabled": COMPRESSION_CHUNKING_ENABLED,
+        "chunk_min_duration_seconds": COMPRESSION_CHUNK_MIN_DURATION_SECONDS,
+        "chunk_target_seconds": COMPRESSION_CHUNK_TARGET_SECONDS,
+        "chunk_parallelism": COMPRESSION_CHUNK_PARALLELISM,
     }
 
 
@@ -187,6 +207,221 @@ def _cleanup(*paths: str):
                 os.remove(p)
             except OSError:
                 pass
+
+
+def _cleanup_tree(path: str):
+    if path and os.path.isdir(path):
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def _format_process_output(stdout: bytes, stderr: bytes) -> str:
+    parts = []
+    stdout_msg = stdout.decode(errors="replace").strip()
+    stderr_msg = stderr.decode(errors="replace").strip()
+    if stdout_msg:
+        parts.append(f"stdout:\n{stdout_msg}")
+    if stderr_msg:
+        parts.append(f"stderr:\n{stderr_msg}")
+    return "\n\n".join(parts)
+
+
+async def _run_process(cmd: list[str], task_label: str, step: str) -> tuple[int | None, bytes, bytes, str]:
+    try:
+        log.info(f"[{task_label}] {step}: {' '.join(cmd)}")
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        return proc.returncode, stdout, stderr, ""
+    except FileNotFoundError:
+        return None, b"", b"", f"{cmd[0]} binary not found"
+    except OSError as e:
+        return None, b"", b"", f"Failed to start {cmd[0]}: {e}"
+
+
+async def _probe_duration_seconds(path: str, task_label: str) -> float | None:
+    cmd = [
+        FFPROBE_BIN,
+        "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        path,
+    ]
+    returncode, stdout, stderr, run_error = await _run_process(cmd, task_label, "ffprobe duration")
+    if returncode != 0 or run_error:
+        detail = run_error or stderr.decode(errors="replace").strip()
+        log.warning(f"[{task_label}] Failed to probe duration: {detail}")
+        return None
+    try:
+        return float(stdout.decode().strip())
+    except ValueError:
+        log.warning(f"[{task_label}] ffprobe returned invalid duration: {stdout!r}")
+        return None
+
+
+def _build_ffmpeg_args(local_input: str, output_path: str, req: "CompressRequest", encoder: str) -> list[str]:
+    ffmpeg_args = [
+        FFMPEG_BIN,
+        "-y",
+        "-hwaccel", "cuda",
+        "-i", local_input,
+        "-map", "0:v:0",
+        "-map", "0:a?",
+        "-c:v", encoder,
+    ]
+
+    if req.codec_mode == "VBR" and req.target_bitrate:
+        ffmpeg_args.extend(["-b:v", str(req.target_bitrate)])
+    else:
+        ffmpeg_args.extend(["-cq", str(req.cq)])
+
+    ffmpeg_args.extend(["-preset", req.preset])
+
+    if req.target_width and req.target_height:
+        w = req.target_width if req.target_width % 2 == 0 else req.target_width - 1
+        h = req.target_height if req.target_height % 2 == 0 else req.target_height - 1
+        ffmpeg_args.extend(["-vf", f"scale={w}:{h}"])
+
+    ffmpeg_args.extend(["-c:a", "copy", "-sn", "-dn", "-movflags", "+faststart", output_path])
+    return ffmpeg_args
+
+
+def _should_chunk(req: "CompressRequest", duration_seconds: float | None) -> bool:
+    if req.chunked is not None:
+        return req.chunked
+    return (
+        COMPRESSION_CHUNKING_ENABLED
+        and duration_seconds is not None
+        and duration_seconds >= COMPRESSION_CHUNK_MIN_DURATION_SECONDS
+    )
+
+
+def _concat_file_line(path: str) -> str:
+    escaped = path.replace("'", "'\\''")
+    return f"file '{escaped}'\n"
+
+
+async def _split_at_keyframes(
+    local_input: str,
+    segments_dir: str,
+    task_label: str,
+    chunk_duration_seconds: int,
+) -> list[str]:
+    os.makedirs(segments_dir, exist_ok=True)
+    segment_pattern = os.path.join(segments_dir, "input_%05d.mp4")
+    cmd = [
+        FFMPEG_BIN,
+        "-hide_banner",
+        "-y",
+        "-i", local_input,
+        "-map", "0:v:0",
+        "-map", "0:a?",
+        "-c", "copy",
+        "-sn",
+        "-dn",
+        "-f", "segment",
+        "-segment_time", str(chunk_duration_seconds),
+        "-reset_timestamps", "1",
+        "-segment_format", "mp4",
+        segment_pattern,
+    ]
+    returncode, stdout, stderr, run_error = await _run_process(cmd, task_label, "split segments")
+    if returncode != 0 or run_error:
+        detail = run_error or _format_process_output(stdout, stderr) or "segment split failed"
+        raise RuntimeError(detail)
+
+    segments = sorted(
+        os.path.join(segments_dir, filename)
+        for filename in os.listdir(segments_dir)
+        if filename.startswith("input_") and filename.endswith(".mp4")
+    )
+    if not segments:
+        raise RuntimeError("segment split produced no files")
+    return segments
+
+
+async def _compress_chunked(
+    local_input: str,
+    output_path: str,
+    req: "CompressRequest",
+    encoder: str,
+    task_label: str,
+) -> None:
+    chunk_duration_seconds = req.chunk_duration_seconds or COMPRESSION_CHUNK_TARGET_SECONDS
+    parallelism = max(1, req.chunk_parallelism or COMPRESSION_CHUNK_PARALLELISM)
+    work_dir = os.path.join(SHARED_VOLUME_PATH, f"{task_label}_chunks")
+    encoded_dir = os.path.join(work_dir, "encoded")
+    tracked_paths: list[str] = []
+
+    try:
+        input_segments = await _split_at_keyframes(local_input, work_dir, task_label, chunk_duration_seconds)
+        if len(input_segments) < 2:
+            raise RuntimeError("segment split produced one chunk; falling back to single-pass compression")
+
+        os.makedirs(encoded_dir, exist_ok=True)
+        encoded_segments = [
+            os.path.join(encoded_dir, f"encoded_{index:05d}.mp4")
+            for index, _ in enumerate(input_segments)
+        ]
+        tracked_paths = [*input_segments, *encoded_segments]
+        await _track_temp_files(*tracked_paths)
+
+        log.info(
+            f"[{task_label}] Compressing {len(input_segments)} chunks "
+            f"(target={chunk_duration_seconds}s, parallelism={parallelism})"
+        )
+        semaphore = asyncio.Semaphore(parallelism)
+
+        async def _compress_one(index: int, segment_input: str, segment_output: str):
+            async with semaphore:
+                cmd = _build_ffmpeg_args(segment_input, segment_output, req, encoder)
+                returncode, stdout, stderr, run_error = await _run_process(
+                    cmd,
+                    task_label,
+                    f"compress chunk {index + 1}/{len(input_segments)}",
+                )
+                if returncode != 0 or run_error:
+                    detail = run_error or _format_process_output(stdout, stderr) or "chunk compression failed"
+                    raise RuntimeError(f"chunk {index + 1} failed: {detail}")
+                if not os.path.exists(segment_output):
+                    raise RuntimeError(f"chunk {index + 1} output missing: {segment_output}")
+
+        chunk_results = await asyncio.gather(
+            *[
+                _compress_one(index, segment_input, encoded_segments[index])
+                for index, segment_input in enumerate(input_segments)
+            ],
+            return_exceptions=True,
+        )
+        chunk_errors = [result for result in chunk_results if isinstance(result, Exception)]
+        if chunk_errors:
+            raise RuntimeError(str(chunk_errors[0]))
+
+        concat_list = os.path.join(work_dir, "concat.txt")
+        with open(concat_list, "w", encoding="utf-8") as file:
+            for segment in encoded_segments:
+                file.write(_concat_file_line(segment))
+
+        cmd = [
+            FFMPEG_BIN,
+            "-hide_banner",
+            "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", concat_list,
+            "-c", "copy",
+            "-movflags", "+faststart",
+            output_path,
+        ]
+        returncode, stdout, stderr, run_error = await _run_process(cmd, task_label, "merge chunks")
+        if returncode != 0 or run_error:
+            detail = run_error or _format_process_output(stdout, stderr) or "chunk merge failed"
+            raise RuntimeError(detail)
+    finally:
+        await _untrack_temp_files(*tracked_paths)
+        _cleanup_tree(work_dir)
 
 
 def _cleanup_config_status() -> dict[str, object]:
@@ -435,6 +670,9 @@ class CompressRequest(BaseModel):
     target_bitrate: Optional[int] = Field(None, description="Target bitrate in bps (for VBR mode)")
     target_width: Optional[int] = Field(None, description="Target width for downscaling")
     target_height: Optional[int] = Field(None, description="Target height for downscaling")
+    chunked: Optional[bool] = Field(None, description="Override automatic long-video chunking")
+    chunk_duration_seconds: Optional[int] = Field(None, description="Target chunk duration")
+    chunk_parallelism: Optional[int] = Field(None, description="Parallel chunk encodes per request")
 
 
 class CompressResponse(BaseModel):
@@ -454,6 +692,7 @@ async def health():
         **snapshot,
         "storage": _storage_config_status(),
         "cleanup": _cleanup_config_status(),
+        "compression": _compression_config_status(),
     }
 
 
@@ -474,7 +713,7 @@ async def compress(req: CompressRequest):
     local_input = ""
     output_path = ""
     output_filename = ""
-    proc = None
+    returncode: int | None = None
     stdout = b""
     stderr = b""
     run_error = ""
@@ -509,66 +748,53 @@ async def compress(req: CompressRequest):
             output_path = os.path.join(SHARED_VOLUME_PATH, output_filename)
             await _track_temp_files(output_path)
 
-            # Build ffmpeg command
-            ffmpeg_args = [
-                "ffmpeg", "-y",
-                "-hwaccel", "cuda",
-                "-i", local_input,
-            ]
-
-            ffmpeg_args.extend(["-c:v", encoder])
-
-            if req.codec_mode == "VBR" and req.target_bitrate:
-                ffmpeg_args.extend(["-b:v", str(req.target_bitrate)])
-            else:
-                ffmpeg_args.extend(["-cq", str(req.cq)])
-
-            ffmpeg_args.extend(["-preset", req.preset])
-
-            if req.target_width and req.target_height:
-                w = req.target_width if req.target_width % 2 == 0 else req.target_width - 1
-                h = req.target_height if req.target_height % 2 == 0 else req.target_height - 1
-                ffmpeg_args.extend(["-vf", f"scale={w}:{h}"])
-
-            ffmpeg_args.extend(["-c:a", "copy"])
-            ffmpeg_args.append(output_path)
-
-            cmd = ffmpeg_args
+            duration_seconds = await _probe_duration_seconds(local_input, task_label)
+            use_chunked = _should_chunk(req, duration_seconds)
 
             async with _running_task() as running_snapshot:
                 log.info(
                     f"[{task_label}] Starting compression "
                     f"(active={running_snapshot['active_tasks']}/{MAX_CONCURRENT}, "
-                    f"queued={running_snapshot['queued_tasks']})"
+                    f"queued={running_snapshot['queued_tasks']}, "
+                    f"duration={duration_seconds}, chunked={use_chunked})"
                 )
-                log.info(f"[{task_label}] Command: {' '.join(cmd)}")
 
-                try:
-                    proc = await asyncio.create_subprocess_exec(
-                        *cmd,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
+                if use_chunked:
+                    try:
+                        await _compress_chunked(local_input, output_path, req, encoder, task_label)
+                        returncode = 0
+                    except RuntimeError as e:
+                        if "falling back to single-pass compression" in str(e):
+                            log.warning(f"[{task_label}] {e}")
+                            cmd = _build_ffmpeg_args(local_input, output_path, req, encoder)
+                            returncode, stdout, stderr, run_error = await _run_process(
+                                cmd,
+                                task_label,
+                                "single-pass compression fallback",
+                            )
+                        else:
+                            run_error = str(e)
+                            log.error(f"[{task_label}] Chunked compression failed: {run_error}")
+                else:
+                    cmd = _build_ffmpeg_args(local_input, output_path, req, encoder)
+                    returncode, stdout, stderr, run_error = await _run_process(
+                        cmd,
+                        task_label,
+                        "single-pass compression",
                     )
-                    stdout, stderr = await proc.communicate()
-                except FileNotFoundError:
-                    run_error = "ffmpeg binary not found"
-                    log.error(f"[{task_label}] {run_error}")
-                except OSError as e:
-                    run_error = f"Failed to start ffmpeg: {e}"
-                    log.error(f"[{task_label}] {run_error}")
 
         snapshot = await _queue_snapshot()
         stats = dict(active_tasks=snapshot["active_tasks"], queued_tasks=snapshot["queued_tasks"])
 
-        if proc is None:
+        if returncode is None:
             _cleanup(output_path)
             if remote_mode:
                 _cleanup(local_input)
-            return CompressResponse(success=False, error=run_error or "ffmpeg did not start", **stats)
+            return CompressResponse(success=False, error=run_error or "compression did not start", **stats)
 
-        if proc.returncode != 0:
-            err_msg = stderr.decode(errors="replace").strip()
-            log.error(f"[{task_label}] ffmpeg failed (rc={proc.returncode}): {err_msg}")
+        if returncode != 0:
+            err_msg = run_error or _format_process_output(stdout, stderr) or "compression failed without output"
+            log.error(f"[{task_label}] ffmpeg failed (rc={returncode}): {err_msg}")
             _cleanup(output_path)
             if remote_mode:
                 _cleanup(local_input)
