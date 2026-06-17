@@ -34,6 +34,8 @@ Queue status is available from `/queue` on each service.
 
 For Modal deployments, the worker functions set `MAX_QUEUE_SIZE_*` to `0` and `@modal.concurrent(max_inputs=1)`. Modal owns the pending-input queue and scales out containers instead of persisting work in the Python process.
 
+Compression adds a duration-aware Modal router. Short compression jobs route to `compress_t4` on a T4 by default. Jobs with unknown duration, or duration greater than `MODAL_LONG_COMPRESSION_THRESHOLD_SECONDS` (default 1200 seconds), route to `compress_rtx_pro_6000` on RTX PRO 6000 and use chunked compression.
+
 ## Temporary File Cleanup
 `MINER_SHARED_DIR` on the host and `SHARED_VOLUME_PATH` inside each container are temporary work areas. They should not accumulate files during normal operation:
 
@@ -71,6 +73,33 @@ On Modal, GPU worker cleanup loops are disabled. The `cleanup_expired_artifacts`
 
 Set `MODAL_VOLUME_FILE_TTL_SECONDS` only if Modal volume files should use a different TTL from bucket objects.
 
+## Long Video Compression
+Long-video compression can split the source at keyframes near the target chunk duration, compress chunks in parallel, then merge the encoded chunks with the ffmpeg concat demuxer and `-c copy`.
+
+Defaults:
+
+```bash
+COMPRESSION_CHUNKING_ENABLED=true
+COMPRESSION_CHUNK_MIN_DURATION_SECONDS=1200
+COMPRESSION_CHUNK_TARGET_SECONDS=600
+COMPRESSION_CHUNK_PARALLELISM=2
+MODAL_LONG_COMPRESSION_THRESHOLD_SECONDS=1200
+MODAL_LONG_COMPRESSION_CHUNK_SECONDS=600
+MODAL_LONG_COMPRESSION_CHUNK_PARALLELISM=4
+MODAL_SHORT_COMPRESSION_GPU=T4
+MODAL_LONG_COMPRESSION_GPU=RTX-PRO-6000
+MODAL_COMPRESSION_TIMEOUT_SECONDS=14400
+```
+
+For a 3 hour video, the long Modal worker targets roughly 18 ten-minute chunks and compresses several chunks at once inside the RTX PRO 6000 container. Additional API requests still scale out to additional Modal GPU containers because every GPU worker uses one input per container.
+
+Caveats:
+
+- Source splitting with `-c copy -f segment` cuts on existing keyframes, so chunks are close to the target duration but not exact. Very long source GOPs produce uneven chunks; sources with too few keyframes can fall back to single-pass compression.
+- The merge step uses stream copy. This is safe only when every encoded segment has compatible codec, resolution, pixel format, profile, time base, and audio layout. The worker enforces one encoder configuration across all chunks; changing per-chunk settings would break this.
+- NVENC/NVDEC jobs usually do not occupy much VRAM. RTX PRO 6000 is useful here for encoder/decoder throughput and parallel segment work, not because ffmpeg should consume 96 GB of VRAM.
+- If chunked compression cannot produce a useful split, the service falls back to single-pass compression. If an individual chunk encode or concat merge fails, the request fails so the miner does not return a partial artifact.
+
 ## Video2X Upscaling Miner
 1. Complete host/container preparation in `miner/upscaling/SETUP.md`.
 2. Start service:
@@ -105,13 +134,17 @@ docker compose up -d compression
 - `MINER_SHARED_VOLUME_PATH` defaults to `MINER_SHARED_DIR`, then `/tmp/vidaio-miner-video-tmp`.
 
 ## Modal Serverless Workers
-`miner/modal_workers.py` deploys three Modal workers:
+`miner/modal_workers.py` deploys these Modal entrypoints:
 
 - `upscale_video2x`: Video2X upscaling worker.
 - `upscale_ffmpeg`: FFmpeg upscaling worker.
-- `compress`: compression worker.
+- `compress`: CPU compression router.
+- `compress_t4`: short-video compression worker.
+- `compress_rtx_pro_6000`: long-video chunked compression worker.
 
-Each worker uses `cpu=16.0`, `gpu="RTX-PRO-6000"`, `min_containers=0`, `max_containers=5` by default, `scaledown_window=300`, and one input per container. A burst of 3 to 5 requests is handled by Modal scale-out; after the idle window, the GPU functions scale back to zero.
+GPU workers use `cpu=16.0`, `min_containers=0`, `max_containers=5` by default, `scaledown_window=300`, and one input per container. Upscaling and long compression use RTX PRO 6000 by default; short compression uses T4. A burst of 3 to 5 requests is handled by Modal scale-out; after the idle window, the GPU functions scale back to zero.
+
+Compression is duration-routed: `compress` probes the URL duration, `compress_t4` uses `gpu="T4"` for short videos, and `compress_rtx_pro_6000` uses `gpu="RTX-PRO-6000"` plus parallel chunk encoding for long videos.
 
 Install the Modal SDK in the miner environment:
 
@@ -148,6 +181,8 @@ cd miner
 modal deploy modal_workers.py
 ```
 
+`modal_workers.py` loads `miner/.env` during deployment when `python-dotenv` is installed, so the Modal GPU, timeout, and chunking knobs above can live there.
+
 Configure `miner/.env` for Modal processing:
 
 ```bash
@@ -156,6 +191,12 @@ MODAL_APP_NAME=vidaio-miner-workers
 MODAL_MINER_SECRET_NAME=vidaio-miner-secrets
 MINER_MODAL_UPSCALING_FUNCTION=upscale_video2x
 MINER_MODAL_COMPRESSION_FUNCTION=compress
+MODAL_SHORT_COMPRESSION_GPU=T4
+MODAL_LONG_COMPRESSION_GPU=RTX-PRO-6000
+MODAL_LONG_COMPRESSION_THRESHOLD_SECONDS=1200
+MODAL_LONG_COMPRESSION_CHUNK_SECONDS=600
+MODAL_LONG_COMPRESSION_CHUNK_PARALLELISM=4
+MODAL_COMPRESSION_TIMEOUT_SECONDS=14400
 MODAL_TOKEN_ID=your-modal-token-id
 MODAL_TOKEN_SECRET=your-modal-token-secret
 ```
@@ -185,9 +226,11 @@ cd miner
 modal run modal_workers.py --worker video2x --video-url "https://example.com/input.mp4" --scale 2
 modal run modal_workers.py --worker ffmpeg --video-url "https://example.com/input.mp4" --scale 2
 modal run modal_workers.py --worker compression --video-url "https://example.com/input.mp4" --codec AV1 --codec-mode CRF --cq 35
+modal run modal_workers.py --worker compression-t4 --video-url "https://example.com/input.mp4" --codec AV1 --codec-mode CRF --cq 35
+modal run modal_workers.py --worker compression-rtx --video-url "https://example.com/input.mp4" --codec AV1 --codec-mode CRF --cq 35
 ```
 
-For direct HTTP endpoint tests, use the URLs printed by `modal deploy` for `upscaling_video2x_api`, `upscaling_ffmpeg_api`, and `compression_api`:
+For direct HTTP endpoint tests, use the URLs printed by `modal deploy` for `upscaling_video2x_api`, `upscaling_ffmpeg_api`, `compression_api`, and `compression_t4_api`:
 
 ```bash
 curl -X POST "$MODAL_VIDEO2X_URL/upscale" \
@@ -201,4 +244,8 @@ curl -X POST "$MODAL_FFMPEG_URL/upscale" \
 curl -X POST "$MODAL_COMPRESSION_URL/compress" \
   -H "Content-Type: application/json" \
   -d '{"video_path":"https://example.com/input.mp4","task_id":"manual-compress","codec":"AV1","codec_mode":"CRF","cq":35}'
+
+curl -X POST "$MODAL_COMPRESSION_T4_URL/compress" \
+  -H "Content-Type: application/json" \
+  -d '{"video_path":"https://example.com/input.mp4","task_id":"manual-compress-t4","codec":"AV1","codec_mode":"CRF","cq":35,"chunked":false}'
 ```

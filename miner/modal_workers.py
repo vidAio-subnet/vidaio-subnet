@@ -13,16 +13,29 @@ import modal
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(REPO_ROOT / "miner" / ".env", override=False)
+except ImportError:
+    pass
+
 APP_NAME = os.getenv("MODAL_APP_NAME", "vidaio-miner-workers")
 SECRET_NAME = os.getenv("MODAL_MINER_SECRET_NAME", "vidaio-miner-secrets")
 GPU_TYPE = os.getenv("MODAL_GPU", "RTX-PRO-6000")
+SHORT_COMPRESSION_GPU = os.getenv("MODAL_SHORT_COMPRESSION_GPU", "T4")
+LONG_COMPRESSION_GPU = os.getenv("MODAL_LONG_COMPRESSION_GPU", GPU_TYPE)
 CPU_CORES = float(os.getenv("MODAL_CPU_CORES", "16"))
 MAX_CONTAINERS_UPSCALING = int(os.getenv("MODAL_UPSCALING_MAX_CONTAINERS", "5"))
 MAX_CONTAINERS_COMPRESSION = int(os.getenv("MODAL_COMPRESSION_MAX_CONTAINERS", "5"))
 SCALEDOWN_WINDOW_SECONDS = int(os.getenv("MODAL_SCALEDOWN_WINDOW_SECONDS", "300"))
 BUFFER_CONTAINERS = int(os.getenv("MODAL_BUFFER_CONTAINERS", "0"))
 UPSCALING_TIMEOUT_SECONDS = int(os.getenv("MODAL_UPSCALING_TIMEOUT_SECONDS", "1800"))
-COMPRESSION_TIMEOUT_SECONDS = int(os.getenv("MODAL_COMPRESSION_TIMEOUT_SECONDS", "1800"))
+COMPRESSION_TIMEOUT_SECONDS = int(os.getenv("MODAL_COMPRESSION_TIMEOUT_SECONDS", "14400"))
+COMPRESSION_PROBE_TIMEOUT_SECONDS = int(os.getenv("MODAL_COMPRESSION_PROBE_TIMEOUT_SECONDS", "60"))
+LONG_COMPRESSION_THRESHOLD_SECONDS = int(os.getenv("MODAL_LONG_COMPRESSION_THRESHOLD_SECONDS", "1200"))
+LONG_COMPRESSION_CHUNK_SECONDS = int(os.getenv("MODAL_LONG_COMPRESSION_CHUNK_SECONDS", "600"))
+LONG_COMPRESSION_CHUNK_PARALLELISM = int(os.getenv("MODAL_LONG_COMPRESSION_CHUNK_PARALLELISM", "4"))
 CLEANUP_TIMEOUT_SECONDS = int(os.getenv("MODAL_CLEANUP_TIMEOUT_SECONDS", "900"))
 CLEANUP_PERIOD_HOURS = int(os.getenv("MODAL_CLEANUP_PERIOD_HOURS", "1"))
 MODAL_SHARED_VOLUME_PATH = os.getenv("MODAL_SHARED_VOLUME_PATH", "/tmp/organic-proxy")
@@ -57,10 +70,23 @@ modal_service_env = {
     "NVIDIA_DRIVER_CAPABILITIES": "graphics,video,compute,utility",
 }
 
-compression_image = modal.Image.from_dockerfile(
+compression_base_image = modal.Image.from_dockerfile(
     str(REPO_ROOT / "miner/compression/Dockerfile"),
     context_dir=str(REPO_ROOT / "miner/compression"),
 ).env(modal_service_env)
+compression_short_image = compression_base_image.env(
+    {
+        "COMPRESSION_CHUNKING_ENABLED": "false",
+    }
+)
+compression_long_image = compression_base_image.env(
+    {
+        "COMPRESSION_CHUNKING_ENABLED": "true",
+        "COMPRESSION_CHUNK_MIN_DURATION_SECONDS": "0",
+        "COMPRESSION_CHUNK_TARGET_SECONDS": str(LONG_COMPRESSION_CHUNK_SECONDS),
+        "COMPRESSION_CHUNK_PARALLELISM": str(LONG_COMPRESSION_CHUNK_PARALLELISM),
+    }
+)
 upscaling_video2x_image = modal.Image.from_dockerfile(
     str(REPO_ROOT / "miner/upscaling/Dockerfile"),
     context_dir=str(REPO_ROOT / "miner/upscaling"),
@@ -73,11 +99,20 @@ cleanup_image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install("boto3")
 )
+compression_router_image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .apt_install("ffmpeg")
+    .pip_install("modal>=1.0.0")
+)
 
 
-def _gpu_worker_options(max_containers: int, timeout_seconds: int) -> dict[str, Any]:
+def _gpu_worker_options(
+    max_containers: int,
+    timeout_seconds: int,
+    gpu_type: str | None = None,
+) -> dict[str, Any]:
     return {
-        "gpu": GPU_TYPE,
+        "gpu": gpu_type or GPU_TYPE,
         "cpu": CPU_CORES,
         "min_containers": 0,
         "max_containers": max_containers,
@@ -121,13 +156,84 @@ def _run_service_request(request_model_name: str, handler_name: str, payload: di
     return {"success": False, "error": f"Unexpected response type: {type(response).__name__}"}
 
 
+def _probe_remote_duration_seconds(video_url: str) -> float | None:
+    import subprocess
+
+    if not video_url.startswith(("http://", "https://")):
+        return None
+
+    cmd = [
+        "ffprobe",
+        "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        video_url,
+    ]
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=COMPRESSION_PROBE_TIMEOUT_SECONDS,
+    )
+    if result.returncode != 0:
+        print(f"Duration probe failed: {result.stderr[-1000:]}")
+        return None
+    try:
+        return float(result.stdout.strip())
+    except ValueError:
+        return None
+
+
 @app.function(
-    image=compression_image,
+    image=compression_router_image,
+    secrets=[miner_secret],
+    min_containers=0,
+    max_containers=MAX_CONTAINERS_COMPRESSION,
+    buffer_containers=BUFFER_CONTAINERS,
+    scaledown_window=SCALEDOWN_WINDOW_SECONDS,
+    timeout=COMPRESSION_TIMEOUT_SECONDS + COMPRESSION_PROBE_TIMEOUT_SECONDS,
+)
+@modal.concurrent(max_inputs=16, target_inputs=8)
+def compress(payload: dict) -> dict:
+    duration_seconds = _probe_remote_duration_seconds(str(payload.get("video_path", "")))
+    long_video = duration_seconds is None or duration_seconds >= LONG_COMPRESSION_THRESHOLD_SECONDS
+    if long_video:
+        routed_payload = {
+            **payload,
+            "chunked": True,
+            "chunk_duration_seconds": LONG_COMPRESSION_CHUNK_SECONDS,
+            "chunk_parallelism": LONG_COMPRESSION_CHUNK_PARALLELISM,
+        }
+        print(
+            "Routing compression to RTX PRO 6000 "
+            f"(duration={duration_seconds}, threshold={LONG_COMPRESSION_THRESHOLD_SECONDS})"
+        )
+        return compress_rtx_pro_6000.remote(routed_payload)
+
+    print(
+        "Routing compression to T4 "
+        f"(duration={duration_seconds}, threshold={LONG_COMPRESSION_THRESHOLD_SECONDS})"
+    )
+    return compress_t4.remote({**payload, "chunked": False})
+
+
+@app.function(
+    image=compression_short_image,
     volumes={MODAL_SHARED_VOLUME_PATH: compression_volume},
-    **_gpu_worker_options(MAX_CONTAINERS_COMPRESSION, COMPRESSION_TIMEOUT_SECONDS),
+    **_gpu_worker_options(MAX_CONTAINERS_COMPRESSION, COMPRESSION_TIMEOUT_SECONDS, SHORT_COMPRESSION_GPU),
 )
 @modal.concurrent(max_inputs=1)
-def compress(payload: dict) -> dict:
+def compress_t4(payload: dict) -> dict:
+    return _run_service_request("CompressRequest", "compress", payload)
+
+
+@app.function(
+    image=compression_long_image,
+    volumes={MODAL_SHARED_VOLUME_PATH: compression_volume},
+    **_gpu_worker_options(MAX_CONTAINERS_COMPRESSION, COMPRESSION_TIMEOUT_SECONDS, LONG_COMPRESSION_GPU),
+)
+@modal.concurrent(max_inputs=1)
+def compress_rtx_pro_6000(payload: dict) -> dict:
     return _run_service_request("CompressRequest", "compress", payload)
 
 
@@ -152,13 +258,24 @@ def upscale_ffmpeg(payload: dict) -> dict:
 
 
 @app.function(
-    image=compression_image,
+    image=compression_long_image,
     volumes={MODAL_SHARED_VOLUME_PATH: compression_volume},
-    **_gpu_worker_options(MAX_CONTAINERS_COMPRESSION, COMPRESSION_TIMEOUT_SECONDS),
+    **_gpu_worker_options(MAX_CONTAINERS_COMPRESSION, COMPRESSION_TIMEOUT_SECONDS, LONG_COMPRESSION_GPU),
 )
 @modal.concurrent(max_inputs=1)
 @modal.asgi_app()
 def compression_api():
+    return _load_fastapi_app()
+
+
+@app.function(
+    image=compression_short_image,
+    volumes={MODAL_SHARED_VOLUME_PATH: compression_volume},
+    **_gpu_worker_options(MAX_CONTAINERS_COMPRESSION, COMPRESSION_TIMEOUT_SECONDS, SHORT_COMPRESSION_GPU),
+)
+@modal.concurrent(max_inputs=1)
+@modal.asgi_app()
+def compression_t4_api():
     return _load_fastapi_app()
 
 
@@ -364,6 +481,32 @@ def test_worker(
         if target_bitrate > 0:
             payload["target_bitrate"] = target_bitrate
         result = compress.remote(payload)
+    elif worker_key in ("compression-t4", "compress_t4", "t4"):
+        payload = {
+            "video_path": video_url,
+            "task_id": task_id,
+            "codec": codec,
+            "codec_mode": codec_mode.upper(),
+            "cq": cq,
+            "chunked": False,
+        }
+        if target_bitrate > 0:
+            payload["target_bitrate"] = target_bitrate
+        result = compress_t4.remote(payload)
+    elif worker_key in ("compression-rtx", "compress_rtx", "compress_rtx_pro_6000", "rtx"):
+        payload = {
+            "video_path": video_url,
+            "task_id": task_id,
+            "codec": codec,
+            "codec_mode": codec_mode.upper(),
+            "cq": cq,
+            "chunked": True,
+            "chunk_duration_seconds": LONG_COMPRESSION_CHUNK_SECONDS,
+            "chunk_parallelism": LONG_COMPRESSION_CHUNK_PARALLELISM,
+        }
+        if target_bitrate > 0:
+            payload["target_bitrate"] = target_bitrate
+        result = compress_rtx_pro_6000.remote(payload)
     elif worker_key in ("video2x", "upscaling-video2x", "upscale_video2x"):
         result = upscale_video2x.remote(
             {"video_path": video_url, "task_id": task_id, "scale": scale}
@@ -373,6 +516,6 @@ def test_worker(
             {"video_path": video_url, "task_id": task_id, "scale": scale}
         )
     else:
-        raise ValueError("worker must be one of: compression, video2x, ffmpeg")
+        raise ValueError("worker must be one of: compression, compression-t4, compression-rtx, video2x, ffmpeg")
 
     print(json.dumps(result, indent=2, sort_keys=True))
