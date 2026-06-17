@@ -32,7 +32,7 @@ The VIDAIO subnet validation mechanism ensures quality and reliability of miners
 - 🏆 **Performance-based incentive systems** with exponential rewards
 - 📈 **Historical performance tracking** with rolling 10-round windows
 - ⚖️ **Balanced penalty/bonus multipliers** encouraging sustained excellence
-- 📦 **Dynamic content processing** (5s to 320s capability)
+- 📦 **Dynamic content processing** (5s and 10s currently supported)
 
 ---
 
@@ -45,7 +45,7 @@ Upscaling tasks require miners to enhance video quality by increasing resolution
 **Key Characteristics:**
 - **Primary Goal**: Quality enhancement and resolution improvement
 - **Quality Metrics**: PIE-APP for scoring, VMAF for threshold validation
-- **Content Length**: Dynamic processing durations (5s to 320s)
+- **Content Length**: Dynamic processing durations (5s and 10s currently supported)
 - **Scoring Focus**: Quality improvement with content length consideration
 
 ### Compression Tasks
@@ -94,7 +94,7 @@ The harmonic mean approach provides several critical advantages:
 | **Quality Consistency** | Prevents miners from neglecting frame quality | Maintains processing standards |
 | **Threshold Function** | Validates authentic processing processes | Prevents gaming attempts |
 
-> **Note**: VMAF scores are calculated using 5 random frames for both upscaling and compression tasks.
+> **Note**: VMAF sampling depends on task and scoring path. Compression uses full-video VMAF by default through the Docker/libvmaf path; its Y4M fallback samples the configured frame count. Upscaling uses a sampled Docker/libvmaf path with random skip/subsample parameters, and its Y4M fallback samples the configured frame count. The current fallback sample count is 10 frames.
 
 ---
 
@@ -107,8 +107,8 @@ PIE-APP provides deep learning-based perceptual similarity assessment between or
 | Parameter | Value | Description |
 |-----------|-------|-------------|
 | **Scale Range** | (-∞, ∞) | Theoretical range |
-| **Practical Range** | 0 to 5+ | Positive values (lower = better) |
-| **Processing Interval** | Every frame | Default frame sampling rate |
+| **Practical Range** | 0 to 2 after cap | Positive values (lower = better) |
+| **Processing Interval** | Every sampled frame | Calculated over the selected sample window |
 | **Implementation** | Deep learning-based | Advanced perceptual assessment |
 
 #### Calculation Process
@@ -122,11 +122,11 @@ PIE-APP_score = (Σ abs(d(F_i, F'_i))) / n
 - `F_i`: Frame `i` from original video
 - `F'_i`: Corresponding frame `i` from processed video  
 - `d(F_i, F'_i)`: Perceptual difference between frames
-- `n`: Number of processed frames (4 random frames)
+- `n`: Number of processed frames (4 consecutive frames from a randomly selected start)
 
 **Step 2: Score Normalization**
 ```
-1. Cap values: max(Average_PIE-APP, 2.0)
+1. Cap values: min(Average_PIE-APP, 2.0)
 2. Sigmoid normalization: normalized_score = 1/(1+exp(-Average_PIE-APP))
 3. Final transformation: Convert "lower is better" to "higher is better" (0-1 range)
 ```
@@ -176,21 +176,17 @@ Else:
 
 #### Dynamic Content Length Requests
 
-Miners actively request content processing durations within 35-second evaluation windows, enabling optimized resource allocation and performance assessment.
+Miners report their maximum supported upscaling content length through `LengthCheckProtocol`. The validator currently requests either 5-second or 10-second chunks; responses above 5 seconds are mapped to 10 seconds.
 
 #### Available Processing Durations
 
 | Duration | Status | Availability |
 |----------|--------|--------------|
-| 5s | ✅ Default | Currently Available |
-| 10s | ✅ Available | Currently Available |
-| 20s | 🔄 Coming Soon | Future Release |
-| 40s | 🔄 Coming Soon | Future Release |
-| 80s | 🔄 Coming Soon | Future Release |
-| 160s | 🔄 Coming Soon | Future Release |
-| 320s | 🔄 Coming Soon | Future Release |
+| 5s | ✅ Default | Currently available |
+| 10s | ✅ Available | Currently available |
+| 20s+ | 🔄 Not protocol-enabled | Future release |
 
-> **Current Limitation**: Processing durations up to 10 seconds are currently supported.
+> **Current Limitation**: The active protocol only exposes 5-second and 10-second upscaling content lengths. The length-score formula still normalizes against 320 seconds as a long-term scoring ceiling.
 
 #### Length Score Mathematical Model
 
@@ -450,17 +446,52 @@ VMAF_score = Harmonic_Mean(VMAF_frame_1, VMAF_frame_2, ..., VMAF_frame_n)
 
 **Where:**
 - `VMAF_frame_i`: VMAF score for frame `i`
-- `n`: Number of sampled frames (5 random frames)
+- `n`: Number of evaluated frames. Compression uses full-video VMAF by default; fallback scoring uses the configured sample count.
 - `Harmonic_Mean`: Emphasizes poor-quality frame impact
 
 #### Final Compression Score Calculation
 
-**Threshold Validation:**
+Compression scoring first converts the compression rate into a compression ratio:
 ```
-If VMAF_score < VMAF_threshold:
-    S_f = 0 (Zero score for quality violation)
+R = 1 / C
+hard_cutoff = VMAF_threshold - 5
+normalization_factor = 1.12
+```
+
+**Hard Fail Conditions:**
+```
+If C >= 0.80:
+    S_f = 0
+
+If VMAF_score < hard_cutoff:
+    S_f = 0
+```
+
+The first rule requires at least 1.25x compression. The second rule rejects outputs that are more than 5 VMAF points below the target threshold.
+
+**Soft Zone: `hard_cutoff <= VMAF_score < VMAF_threshold`**
+```
+soft_zone_position = (VMAF_score - hard_cutoff) / 5
+quality_factor = 0.7 × soft_zone_position^2
+
+If R <= 20:
+    compression_component = ((R - 1) / 19)^1.5
 Else:
-    S_f = w_c × (1 - C^1.5) + w_vmaf × (VMAF_score - VMAF_threshold) / (100 - VMAF_threshold)
+    compression_component = 1.0 + 0.3 × ln(R / 20)
+
+S_f = min(1.0, compression_component × quality_factor / 1.12)
+```
+
+**At or Above Threshold: `VMAF_score >= VMAF_threshold`**
+```
+quality_component = 0.7 + 0.3 × min(1.0, (VMAF_score - VMAF_threshold) / (100 - VMAF_threshold))
+
+If R <= 20:
+    compression_component = ((R - 1.25) / 18.75)^0.9
+Else:
+    compression_component = 1.0 + 0.1 × ln(R / 20)
+
+S_f = min(1.0, (0.7 × compression_component + 0.3 × quality_component) / 1.12)
 ```
 
 **Parameters:**
@@ -468,22 +499,23 @@ Else:
 - `w_c`: Weight for compression rate (default: 0.7)
 - `w_vmaf`: Weight for VMAF score (default: 0.3)
 - `C`: Compression rate
+- `R`: Compression ratio
 - `VMAF_score`: Achieved VMAF quality score
 - `VMAF_threshold`: Minimum required VMAF score
 
 #### Mathematical Properties
 
 **Compression Rate Component:**
-- **Formula**: `w_c × (1 - C^1.5)`
-- **Range**: [0, w_c] (0 when C = 1, w_c when C = 0)
-- **Curve**: Concave function emphasizing compression efficiency
-- **Exponent 1.5**: Provides balanced reward for compression achievements
+- **Formula**: Piecewise function over compression ratio `R`
+- **Minimum Requirement**: `C < 0.80` (at least 1.25x compression)
+- **Standard Range**: Ratio scoring up to `R = 20`
+- **Exceptional Compression**: Logarithmic bonus above `R = 20`
 
 **VMAF Quality Component:**
-- **Formula**: `w_vmaf × (VMAF_score - VMAF_threshold) / (100 - VMAF_threshold)`
-- **Range**: [0, w_vmaf] (0 at threshold, w_vmaf at maximum quality)
-- **Normalization**: Scales quality improvement relative to achievable range
-- **Linear scaling**: Direct correlation between quality improvement and score
+- **Hard Cutoff**: `VMAF_score < VMAF_threshold - 5` produces zero score
+- **Soft Zone**: Quadratic recovery between `VMAF_threshold - 5` and `VMAF_threshold`
+- **Above Threshold**: Linear quality component from `0.7` at threshold to `1.0` at VMAF 100
+- **Integration**: Above-threshold score blends `70%` compression component and `30%` quality component
 
 #### Graph Analysis
 
@@ -493,13 +525,14 @@ Else:
 
 #### Performance Analysis Examples
 
-| Scenario | C | VMAF_score | VMAF_threshold | S_f | Performance Tier |
-|----------|---|------------|----------------|-----|------------------|
-| **Excellent** | 0.3 | 85 | 70 | 0.669 + 0.100 = **0.769** | Outstanding |
-| **Good** | 0.5 | 80 | 70 | 0.517 + 0.067 = **0.584** | Strong |
-| **Average** | 0.7 | 75 | 70 | 0.331 + 0.033 = **0.364** | Acceptable |
-| **Poor Quality** | 0.4 | 65 | 70 | **0.000** | Failed |
-| **No Compression** | 1.0 | 90 | 70 | 0.000 + 0.133 = **0.133** | Inefficient |
+| Scenario | C | R | VMAF_score | VMAF_threshold | S_f | Result |
+|----------|---|---|------------|----------------|-----|--------|
+| **Above threshold, strong quality** | 0.3 | 3.33x | 85 | 70 | **0.3142** | Success |
+| **Above threshold, moderate compression** | 0.5 | 2.00x | 80 | 70 | **0.2488** | Success |
+| **Above threshold, light compression** | 0.7 | 1.43x | 75 | 70 | **0.2104** | Success |
+| **Soft zone recovery** | 0.3 | 3.33x | 68 | 70 | **0.0097** | Low score |
+| **Below hard cutoff** | 0.3 | 3.33x | 64 | 70 | **0.0000** | Failed |
+| **No meaningful compression** | 1.0 | 1.00x | 90 | 70 | **0.0000** | Failed |
 
 #### Strategic Guidelines
 
