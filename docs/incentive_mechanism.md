@@ -465,8 +465,8 @@ Else:
 
 **Parameters:**
 - `S_f`: Final compression score
-- `w_c`: Weight for compression rate (default: 0.8)
-- `w_vmaf`: Weight for VMAF score (default: 0.2)
+- `w_c`: Weight for compression rate (default: 0.7)
+- `w_vmaf`: Weight for VMAF score (default: 0.3)
 - `C`: Compression rate
 - `VMAF_score`: Achieved VMAF quality score
 - `VMAF_threshold`: Minimum required VMAF score
