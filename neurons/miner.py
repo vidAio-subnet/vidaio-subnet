@@ -5,6 +5,7 @@ import threading
 import time
 import traceback
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Tuple
 
@@ -80,6 +81,19 @@ SHARED_VOLUME_CLEANUP_MIN_FILE_AGE_SECONDS = int(
 SHARED_VOLUME_CLEANUP_ENABLED = os.getenv(
     "MINER_CLEANUP_ENABLED", os.getenv("CLEANUP_ENABLED", "true")
 ).lower() in ("1", "true", "yes")
+STORAGE_CLEANUP_ENABLED = os.getenv(
+    "MINER_STORAGE_CLEANUP_ENABLED", os.getenv("STORAGE_CLEANUP_ENABLED", "true")
+).lower() in ("1", "true", "yes")
+STORAGE_CLEANUP_PREFIXES = [
+    prefix.strip()
+    for prefix in os.getenv("MINER_STORAGE_CLEANUP_PREFIXES", "processing/,upscaling/").split(",")
+    if prefix.strip()
+]
+STORAGE_OBJECT_TTL_SECONDS = int(
+    os.getenv("MINER_STORAGE_OBJECT_TTL_SECONDS")
+    or os.getenv("STORAGE_OBJECT_TTL_SECONDS")
+    or str(min(MINER_UPLOAD_URL_EXPIRY_SECONDS, 604800) + PRESIGNED_URL_CLEANUP_GRACE_SECONDS)
+)
 
 TASK_TYPE_TO_SCALE = {
     "SD24K": 4,
@@ -198,23 +212,72 @@ class Miner(BaseMiner):
                 continue
             total_bytes -= self._remove_stale_shared_file(path, "over-quota")
 
+    def _storage_cleanup_ready(self) -> bool:
+        return (
+            STORAGE_CLEANUP_ENABLED
+            and STORAGE_OBJECT_TTL_SECONDS > 0
+            and bool(STORAGE_CLEANUP_PREFIXES)
+            and bool(S3_BUCKET)
+            and bool(S3_ACCESS_KEY_ID)
+            and bool(S3_SECRET_ACCESS_KEY)
+        )
+
+    def _cleanup_expired_storage_objects_once(self) -> int:
+        if not self._storage_cleanup_ready():
+            return 0
+
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=STORAGE_OBJECT_TTL_SECONDS)
+        client = self._get_s3_client()
+        deleted = 0
+
+        for prefix in STORAGE_CLEANUP_PREFIXES:
+            paginator = client.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
+                expired_objects = []
+                for obj in page.get("Contents", []):
+                    last_modified = obj.get("LastModified")
+                    if last_modified is None:
+                        continue
+                    if last_modified.tzinfo is None:
+                        last_modified = last_modified.replace(tzinfo=timezone.utc)
+                    if last_modified < cutoff:
+                        expired_objects.append({"Key": obj["Key"]})
+
+                for index in range(0, len(expired_objects), 1000):
+                    batch = expired_objects[index : index + 1000]
+                    if not batch:
+                        continue
+                    response = client.delete_objects(
+                        Bucket=S3_BUCKET,
+                        Delete={"Objects": batch, "Quiet": True},
+                    )
+                    deleted += len(batch) - len(response.get("Errors", []))
+
+        if deleted:
+            logger.info(f"Deleted {deleted} expired storage object(s)")
+        return deleted
+
     def _shared_volume_cleanup_loop(self):
         logger.info(
-            "Starting miner shared-volume cleanup worker "
+            "Starting miner cleanup worker "
             f"(path={HOST_SHARED_VOLUME_PATH}, ttl={SHARED_VOLUME_FILE_TTL_SECONDS}s, "
             f"interval={SHARED_VOLUME_CLEANUP_INTERVAL_SECONDS}s, "
-            f"max_bytes={SHARED_VOLUME_CLEANUP_MAX_BYTES})"
+            f"max_bytes={SHARED_VOLUME_CLEANUP_MAX_BYTES}, "
+            f"storage_ttl={STORAGE_OBJECT_TTL_SECONDS}s)"
         )
         while not self._cleanup_stop_event.is_set():
             try:
-                self._cleanup_shared_volume_once()
+                if SHARED_VOLUME_CLEANUP_ENABLED:
+                    self._cleanup_shared_volume_once()
+                if self._storage_cleanup_ready():
+                    self._cleanup_expired_storage_objects_once()
             except Exception as e:
-                logger.warning(f"Miner shared-volume cleanup pass failed: {e}")
+                logger.warning(f"Miner cleanup pass failed: {e}")
             self._cleanup_stop_event.wait(SHARED_VOLUME_CLEANUP_INTERVAL_SECONDS)
 
     def _start_shared_volume_cleanup_worker(self):
-        if not SHARED_VOLUME_CLEANUP_ENABLED:
-            logger.info("Miner shared-volume cleanup worker disabled")
+        if not SHARED_VOLUME_CLEANUP_ENABLED and not self._storage_cleanup_ready():
+            logger.info("Miner cleanup worker disabled")
             return
         self._cleanup_thread = threading.Thread(
             target=self._shared_volume_cleanup_loop,

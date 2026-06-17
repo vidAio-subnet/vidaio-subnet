@@ -13,6 +13,7 @@ import os
 import time
 import uuid
 from contextlib import asynccontextmanager, suppress
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import boto3
@@ -82,6 +83,19 @@ CLEANUP_ENABLED = os.getenv("MINER_CLEANUP_ENABLED", os.getenv("CLEANUP_ENABLED"
     "1",
     "true",
     "yes",
+)
+STORAGE_CLEANUP_ENABLED = os.getenv(
+    "MINER_STORAGE_CLEANUP_ENABLED", os.getenv("STORAGE_CLEANUP_ENABLED", "true")
+).lower() in ("1", "true", "yes")
+STORAGE_CLEANUP_PREFIXES = [
+    prefix.strip()
+    for prefix in os.getenv("MINER_STORAGE_CLEANUP_PREFIXES", "processing/,upscaling/").split(",")
+    if prefix.strip()
+]
+STORAGE_OBJECT_TTL_SECONDS = int(
+    os.getenv("MINER_STORAGE_OBJECT_TTL_SECONDS")
+    or os.getenv("STORAGE_OBJECT_TTL_SECONDS")
+    or str(min(S3_PRESIGNED_EXPIRY, 604800) + PRESIGNED_URL_CLEANUP_GRACE_SECONDS)
 )
 
 _semaphore = asyncio.Semaphore(MAX_CONCURRENT)
@@ -184,6 +198,9 @@ def _cleanup_config_status() -> dict[str, object]:
         "min_file_age_seconds": CLEANUP_MIN_FILE_AGE_SECONDS,
         "presigned_url_expiry_seconds": min(S3_PRESIGNED_EXPIRY, 604800),
         "presigned_url_cleanup_grace_seconds": PRESIGNED_URL_CLEANUP_GRACE_SECONDS,
+        "storage_cleanup_enabled": STORAGE_CLEANUP_ENABLED,
+        "storage_object_ttl_seconds": STORAGE_OBJECT_TTL_SECONDS,
+        "storage_cleanup_prefixes": STORAGE_CLEANUP_PREFIXES,
     }
 
 
@@ -276,22 +293,73 @@ async def _cleanup_shared_volume_once():
         total_bytes -= _remove_stale_file(path, "over-quota")
 
 
+def _storage_cleanup_ready() -> bool:
+    return (
+        STORAGE_CLEANUP_ENABLED
+        and STORAGE_OBJECT_TTL_SECONDS > 0
+        and bool(STORAGE_CLEANUP_PREFIXES)
+        and bool(S3_BUCKET)
+        and bool(S3_ACCESS_KEY_ID)
+        and bool(S3_SECRET_ACCESS_KEY)
+    )
+
+
+def _cleanup_expired_storage_objects_once() -> int:
+    if not _storage_cleanup_ready():
+        return 0
+
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=STORAGE_OBJECT_TTL_SECONDS)
+    client = _get_s3_client()
+    deleted = 0
+
+    for prefix in STORAGE_CLEANUP_PREFIXES:
+        paginator = client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
+            expired_objects = []
+            for obj in page.get("Contents", []):
+                last_modified = obj.get("LastModified")
+                if last_modified is None:
+                    continue
+                if last_modified.tzinfo is None:
+                    last_modified = last_modified.replace(tzinfo=timezone.utc)
+                if last_modified < cutoff:
+                    expired_objects.append({"Key": obj["Key"]})
+
+            for index in range(0, len(expired_objects), 1000):
+                batch = expired_objects[index : index + 1000]
+                if not batch:
+                    continue
+                response = client.delete_objects(
+                    Bucket=S3_BUCKET,
+                    Delete={"Objects": batch, "Quiet": True},
+                )
+                deleted += len(batch) - len(response.get("Errors", []))
+
+    if deleted:
+        log.info(f"Deleted {deleted} expired {STORAGE_PROVIDER} object(s)")
+    return deleted
+
+
 async def _cleanup_worker():
-    if not CLEANUP_ENABLED:
-        log.info("Shared-volume cleanup worker disabled")
+    if not CLEANUP_ENABLED and not _storage_cleanup_ready():
+        log.info("Cleanup worker disabled")
         return
 
     log.info(
-        "Starting shared-volume cleanup worker "
+        "Starting cleanup worker "
         f"(path={SHARED_VOLUME_PATH}, ttl={TEMP_FILE_TTL_SECONDS}s, "
-        f"interval={CLEANUP_INTERVAL_SECONDS}s, max_bytes={CLEANUP_MAX_VOLUME_BYTES})"
+        f"interval={CLEANUP_INTERVAL_SECONDS}s, max_bytes={CLEANUP_MAX_VOLUME_BYTES}, "
+        f"storage_ttl={STORAGE_OBJECT_TTL_SECONDS}s)"
     )
 
     while True:
         try:
-            await _cleanup_shared_volume_once()
+            if CLEANUP_ENABLED:
+                await _cleanup_shared_volume_once()
+            if _storage_cleanup_ready():
+                await asyncio.to_thread(_cleanup_expired_storage_objects_once)
         except Exception as e:
-            log.warning(f"Shared-volume cleanup pass failed: {e}")
+            log.warning(f"Cleanup pass failed: {e}")
         await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
 
 
