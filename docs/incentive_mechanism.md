@@ -343,7 +343,7 @@ bonus_multiplier = 1.0 + (bonus_count / 10) × 0.15
 
 #### S_F Penalty System (Performance Penalties)
 
-**Activation Criteria:** `S_F < 0.20` in mining round
+**Activation Criteria:** `S_F < 0.07` in mining round
 
 **Mathematical Model:**
 ```python
@@ -353,17 +353,17 @@ penalty_f_multiplier = 1.0 - (penalty_f_count / 10) × 0.20
 **System Characteristics:**
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| **Maximum Penalty** | -20% | All 10 rounds achieve S_F < 0.20 |
+| **Maximum Penalty** | -20% | All 10 rounds achieve S_F < 0.07 |
 | **Scaling Method** | Linear | Based on poor performance frequency |
 | **Primary Purpose** | Performance consistency enforcement | Discourages sustained poor results |
 
-**Example Calculation:** 4/10 rounds with S_F < 0.20 → 0.92× multiplier (-8% penalty)
+**Example Calculation:** 4/10 rounds with S_F < 0.07 → 0.92× multiplier (-8% penalty)
 
 ---
 
 #### S_Q Penalty System (Quality Penalties)
 
-**Activation Criteria:** `S_Q < 0.25` in mining round
+**Activation Criteria:** `S_Q < 0.50` in mining round
 
 **Mathematical Model:**
 ```python
@@ -373,11 +373,11 @@ penalty_q_multiplier = 1.0 - (penalty_q_count / 10) × 0.25
 **System Characteristics:**
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| **Maximum Penalty** | -25% | All 10 rounds achieve S_Q < 0.25 |
+| **Maximum Penalty** | -25% | All 10 rounds achieve S_Q < 0.50 |
 | **Scaling Method** | Linear | Based on quality failure frequency |
 | **Primary Purpose** | Quality standard enforcement | Strongest penalty (quality is critical) |
 
-**Example Calculation:** 3/10 rounds with S_Q < 0.25 → 0.925× multiplier (-7.5% penalty)
+**Example Calculation:** 3/10 rounds with S_Q < 0.50 → 0.925× multiplier (-7.5% penalty)
 
 ---
 
@@ -605,7 +605,7 @@ penalty_f_multiplier = 1.0 - (penalty_f_count / 10) × 0.20
 | **New Miners** | Foundation Building | Focus on achieving consistent S_pre > 0.5 before optimizing for length |
 | **Established Miners** | Quality Optimization | Prioritize quality improvements when S_pre > 0.6 to avoid S_Q penalties |
 | **Elite Miners** | Consistency Maintenance | Maintain consistency above S_F > 0.32 to secure maximum bonus multipliers |
-| **Recovery Phase** | Systematic Improvement | Focus on quality (S_Q > 0.25) first, then performance (S_F > 0.20) to restore multipliers |
+| **Recovery Phase** | Systematic Improvement | Focus on quality (S_Q >= 0.50) first, then performance (S_F >= 0.07) to restore multipliers |
 
 **Compression Performance-Based Guidelines:**
 
@@ -657,8 +657,8 @@ penalty_f_multiplier = 1.0 - (penalty_f_count / 10) × 0.20
 |-----------|---------------|-------------------|---------------|
 | **Performance History Window** | 10 rounds | 5-10 rounds | Configurable for different network conditions |
 | **Upscaling Bonus Threshold** | S_F > 0.32 | 0.3-0.4 | Adjustable based on network performance |
-| **Upscaling S_F Penalty Threshold** | S_F < 0.20 | 0.15-0.25 | Adjustable based on network performance |
-| **Upscaling S_Q Penalty Threshold** | S_Q < 0.25 | 0.2-0.3 | Adjustable based on network performance |
+| **Upscaling S_F Penalty Threshold** | S_F < 0.07 | Hardcoded in miner manager | Penalty for very poor upscaling final scores |
+| **Upscaling S_Q Penalty Threshold** | S_Q < 0.50 | Hardcoded in miner manager | Penalty for weak upscaling quality scores |
 | **Compression Bonus Threshold** | S_f > 0.74 | 0.7-0.8 | Lower threshold reflecting compression difficulty |
 | **Compression S_f Penalty Threshold** | S_f < 0.4 | 0.35-0.45 | Penalty for poor compression performance |
 | **VMAF Penalty Threshold** | VMAF_score < VMAF_threshold + 5 | +3 to +10 | Quality safety margin enforcement |
