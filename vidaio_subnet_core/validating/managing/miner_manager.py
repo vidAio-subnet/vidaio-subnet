@@ -69,17 +69,14 @@ class MinerManager:
         self.PENALTY_Q_MAX = 0.25  
         
         # Compression-specific constants
-        self.COMPRESSION_BONUS_THRESHOLD = 0.74  # S_f > 0.55 for compression bonus
-        self.COMPRESSION_PENALTY_F_THRESHOLD = 0.4  # S_f < 0.25 for compression penalty
-        self.COMPRESSION_VMAF_MARGIN = 0.0  # VMAF_score < VMAF_threshold + 5 for VMAF penalty
+        self.COMPRESSION_BONUS_THRESHOLD = 0.74  # S_f > 0.74 for compression bonus
+        self.COMPRESSION_PENALTY_F_THRESHOLD = 0.4  # S_f < 0.4 for compression penalty
         
         self.COMPRESSION_BONUS_MAX = 0.15  # +15% max bonus
         self.COMPRESSION_PENALTY_F_MAX = 0.20  # -20% max penalty
-        self.COMPRESSION_PENALTY_VMAF_MAX = 0.30  # -30% max VMAF penalty
-        
         # Compression scoring weights
-        self.COMPRESSION_RATE_WEIGHT = 0.8  # w_c
-        self.COMPRESSION_VMAF_WEIGHT = 0.2  # w_vmaf
+        self.COMPRESSION_RATE_WEIGHT = 0.7  # w_c
+        self.COMPRESSION_VMAF_WEIGHT = 0.3  # w_vmaf
         
         self.MIN_CONTENT_LENGTH = 5.0 
         self.TARGET_CONTENT_LENGTH = 30.0  

@@ -3,7 +3,6 @@ import cv2
 import glob
 import json
 import time
-import math
 import torch
 import random
 import asyncio
@@ -24,6 +23,12 @@ from vidaio_subnet_core.utilities.storage_client import storage_client
 from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video, trim_video_select, vmaf_metric_ffmpeg, is_vmaf_ffmpeg_available
 from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
 from scoring_function import calculate_compression_score
+from upscaling_scoring import (
+    calculate_final_score,
+    calculate_length_score,
+    calculate_preliminary_score,
+    calculate_quality_score,
+)
 
 # Compression scoring constants
 COMPRESSION_RATE_WEIGHT = 0.7  # w_c
@@ -995,60 +1000,6 @@ def calculate_psnr(ref_frame: np.ndarray, dist_frame: np.ndarray) -> float:
     if mse == 0:
         return 1000  # Maximum PSNR value (perfect similarity)
     return 10 * np.log10((255.0**2) / mse)
-
-def calculate_length_score(content_length):
-    """
-    Convert content length in seconds to a normalized length score.
-    
-    Args:
-        content_length (float): Video duration in seconds (5-320s)
-        
-    Returns:
-        float: Normalized length score (0-1)
-    """
-    return math.log(1 + content_length) / math.log(1 + 320)
-
-def calculate_preliminary_score(quality_score, length_score, quality_weight=0.5, length_weight=0.5):
-    """
-    Calculate the preliminary score from quality and length scores.
-    
-    Args:
-        quality_score (float): Normalized quality score (0-1)
-        length_score (float): Normalized length score (0-1)
-        quality_weight (float): Weight for quality component (default: 0.5)
-        length_weight (float): Weight for length component (default: 0.5)
-        
-    Returns:
-        float: Preliminary combined score (0-1)
-    """
-    return (quality_score * quality_weight) + (length_score * length_weight)
-
-def calculate_final_score(s_pre):
-    """
-    Transform preliminary score into final score using exponential function.
-    
-    Args:
-        s_pre (float): Preliminary score (0-1)
-        
-    Returns:
-        float: Final exponentially-transformed score
-    """
-    return 0.1 * math.exp(6.979 * (s_pre - 0.5))
-
-def sigmoid(x):
-    return 1 / (1 + np.exp(-x))
-
-def calculate_quality_score(pieapp_score):
-    sigmoid_normalized_score = sigmoid(pieapp_score)
-    
-    original_at_zero = (1 - (np.log10(sigmoid(0) + 1) / np.log10(3.5))) ** 2.5
-    original_at_two = (1 - (np.log10(sigmoid(2.0) + 1) / np.log10(3.5))) ** 2.5
-    
-    original_value = (1 - (np.log10(sigmoid_normalized_score + 1) / np.log10(3.5))) ** 2.5
-    
-    scaled_value = 1 - ((original_value - original_at_zero) / (original_at_two - original_at_zero))
-    
-    return scaled_value
 
 def get_sample_frames(ref_cap, dist_cap, total_frames):
     """
