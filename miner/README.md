@@ -144,7 +144,8 @@ modal secret create vidaio-miner-secrets \
 Deploy the Modal app from the repository root:
 
 ```bash
-modal deploy miner/modal_workers.py
+cd miner
+modal deploy modal_workers.py
 ```
 
 Configure `miner/.env` for Modal processing:
@@ -180,9 +181,10 @@ python3 neurons/miner.py \
 For direct SDK tests, run:
 
 ```bash
-modal run miner/modal_workers.py --worker video2x --video-url "https://example.com/input.mp4" --scale 2
-modal run miner/modal_workers.py --worker ffmpeg --video-url "https://example.com/input.mp4" --scale 2
-modal run miner/modal_workers.py --worker compression --video-url "https://example.com/input.mp4" --codec AV1 --codec-mode CRF --cq 35
+cd miner
+modal run modal_workers.py --worker video2x --video-url "https://example.com/input.mp4" --scale 2
+modal run modal_workers.py --worker ffmpeg --video-url "https://example.com/input.mp4" --scale 2
+modal run modal_workers.py --worker compression --video-url "https://example.com/input.mp4" --codec AV1 --codec-mode CRF --cq 35
 ```
 
 For direct HTTP endpoint tests, use the URLs printed by `modal deploy` for `upscaling_video2x_api`, `upscaling_ffmpeg_api`, and `compression_api`:
