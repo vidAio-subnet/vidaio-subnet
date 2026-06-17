@@ -199,7 +199,7 @@ S_L = log(1 + content_length) / log(1 + 320)
 - `content_length`: Processing duration in seconds
 - `S_L`: Normalized length score (0 to 1)
 
-#### Performance Analysis Table
+#### Length Score Curve Reference
 
 | Duration (s) | S_L Score | Percentage | Improvement | Performance Tier |
 |--------------|-----------|------------|-------------|------------------|
@@ -210,6 +210,8 @@ S_L = log(1 + content_length) / log(1 + 320)
 | 80 | 0.7614 | 76.14% | +18% | Advanced Processing |
 | 160 | 0.8804 | 88.04% | +16% | Expert Level |
 | 320 | 1.0000 | 100.00% | +14% | Maximum Score |
+
+Only 5-second and 10-second durations are currently reachable through the active protocol. Longer rows show the retained normalization curve for future protocol expansion.
 
 #### Logarithmic Scaling Benefits
 
@@ -223,7 +225,7 @@ S_L = log(1 + content_length) / log(1 + 320)
 **Strategic Insights:**
 - **Optimal Entry Point**: 10s processing provides largest relative improvement (+33%)
 - **Scaling Pattern**: Each duration doubling yields progressively smaller benefits
-- **Maximum Achievement**: 320s processing represents theoretical performance ceiling
+- **Maximum Achievement**: 320s processing represents the retained theoretical scoring ceiling, not current protocol availability
 
 ---
 
@@ -249,7 +251,7 @@ S_pre = S_Q × W1 + S_L × W2
 - `W1 = 0.5` (Quality weight)
 - `W2 = 0.5` (Length weight)
 
-> **Dynamic Adjustment**: Weights are continuously optimized based on real-world performance data and network requirements.
+> **Current Behavior**: Weights are fixed at 0.5 and 0.5 in the current scoring service. Dynamic adjustment is listed as a future enhancement.
 
 #### Final Score Transformation
 
@@ -555,8 +557,10 @@ The compression scoring system incorporates a **rolling 10-round historical perf
 
 ```
 Final Adjusted Compression Score = S_f × Performance Multiplier
-Performance Multiplier = Bonus Multiplier × S_f Penalty × VMAF Penalty
+Performance Multiplier = Bonus Multiplier × S_f Penalty
 ```
+
+Compression quality is already included in `S_f` through the VMAF hard cutoff, soft recovery zone, and above-threshold quality component. The current implementation does not apply a separate VMAF history penalty multiplier for compression.
 
 ---
 
@@ -602,18 +606,18 @@ penalty_f_multiplier = 1.0 - (penalty_f_count / 10) × 0.20
 
 #### Compression Performance Multiplier Case Studies
 
-| Miner Category | Avg S_f | Avg VMAF Margin | Bonus Rate | S_f Penalty | **Final Multiplier** | **Net Effect** |
-|----------------|---------|-----------------|------------|-------------|---------------|---------------------|----------------|
-| **Elite Compressor** | 0.654 | +15 | 10/10 | 0/10 | **1.150×** | **+15.0%** |
-| **Good Compressor** | 0.453 | +8 | 0/10 | 0/10 | **1.000×** | **±0.0%** |
-| **Average Compressor** | 0.311 | +3 | 0/10 | 0/10 | **0.910×** | **-9.0%** |
-| **Poor Compressor** | 0.211 | -2 | 0/10 | 10/10 | **0.490×** | **-51.0%** |
+| Miner Category | Avg S_f | Bonus Rate | S_f Penalty | **Final Multiplier** | **Net Effect** |
+|----------------|---------|------------|-------------|----------------------|----------------|
+| **Elite Compressor** | 0.78 | 10/10 | 0/10 | **1.150×** | **+15.0%** |
+| **Good Compressor** | 0.50 | 0/10 | 0/10 | **1.000×** | **±0.0%** |
+| **Average Compressor** | 0.31 | 0/10 | 10/10 | **0.800×** | **-20.0%** |
+| **Recovering Compressor** | 0.42 | 0/10 | 4/10 | **0.920×** | **-8.0%** |
 
 #### Compression Penalty Analysis
 
 **Strategic Impact:**
-- **Quality-first approach** strongly incentivized through higher penalties
-- **Consistency rewards** for miners maintaining quality above threshold
+- **Quality compliance** is enforced inside `S_f` through VMAF cutoff and soft-zone scoring
+- **Consistency rewards** for miners maintaining strong compression scores
 - **Immediate feedback** through zero-score for quality violations
 - **Balanced optimization** encouraged through dual-factor scoring
 
@@ -626,7 +630,7 @@ penalty_f_multiplier = 1.0 - (penalty_f_count / 10) × 0.20
 **Real-time Operations:**
 - ✅ Scores calculated in real-time during mining operations
 - ✅ Historical performance data maintained for trend analysis and multiplier calculation
-- ✅ Weight adjustments implemented based on network-wide performance metrics
+- ✅ Fixed scoring weights applied consistently by the scoring service
 - ✅ Performance multipliers updated after each mining round
 
 ### Scoring Strategy Recommendations
@@ -644,7 +648,7 @@ penalty_f_multiplier = 1.0 - (penalty_f_count / 10) × 0.20
 
 | Miner Category | Primary Focus | Strategic Recommendations |
 |----------------|---------------|---------------------------|
-| **New Compressors** | Quality Compliance | Focus on maintaining VMAF_score > VMAF_threshold + 5 |
+| **New Compressors** | Quality Compliance | Meet the requested VMAF threshold and avoid the hard cutoff at VMAF_threshold - 5 |
 | **Established Compressors** | Balanced Optimization | Optimize both compression rate and quality maintenance |
 | **Elite Compressors** | Consistency Excellence | Maintain S_f > 0.74 consistently for bonus multipliers |
 | **Recovery Phase** | Quality Restoration | Focus on VMAF compliance first, then compression optimization |
@@ -653,7 +657,7 @@ penalty_f_multiplier = 1.0 - (penalty_f_count / 10) × 0.20
 
 **Planned Developments:**
 
-- [ ] **Extended Content Length Support** - Processing durations up to 320s
+- [ ] **Extended Content Length Support** - Processing durations beyond the current 5s and 10s protocol options
 - [ ] **Dynamic Weight Adjustment Algorithms** - Automated optimization based on network performance
 - [ ] **Advanced Quality Metrics Integration** - Additional assessment parameters
 - [ ] **Multi-dimensional Scoring Parameters** - Enhanced evaluation criteria
@@ -671,18 +675,19 @@ penalty_f_multiplier = 1.0 - (penalty_f_count / 10) × 0.20
 | Parameter | Current Value | Configurable Range | Implementation Notes |
 |-----------|---------------|-------------------|---------------------|
 | **Default Content Length** | 5s | 5s - 10s | Actively configurable by miners |
-| **Quality Weight (W1)** | 0.5 | 0.0 - 1.0 | Dynamically adjusted based on network data |
-| **Length Weight (W2)** | 0.5 | 0.0 - 1.0 | Dynamically adjusted based on network data |
+| **Quality Weight (W1)** | 0.5 | 0.0 - 1.0 | Fixed in current scoring service |
+| **Length Weight (W2)** | 0.5 | 0.0 - 1.0 | Fixed in current scoring service |
 
 ### Compression System Parameters
 
 | Parameter | Current Value | Configurable Range | Implementation Notes |
 |-----------|---------------|-------------------|---------------------|
-| **Compression Rate Weight (w_c)** | 0.8 | 0.6 - 0.9 | Balances compression efficiency vs quality |
-| **VMAF Score Weight (w_vmaf)** | 0.2 | 0.1 - 0.4 | Balances quality maintenance vs compression |
-| **Compression Rate Exponent** | 1.5 | 1.2 - 2.0 | Controls compression reward curve steepness |
-| **VMAF Safety Margin** | +5 | +3 - +10 | Quality buffer above threshold |
-| **Zero-Score Threshold** | VMAF_score < VMAF_threshold | Fixed | Immediate penalty for quality violations |
+| **Compression Rate Weight (w_c)** | 0.7 | Fixed | Above-threshold blend weight for compression component |
+| **VMAF Score Weight (w_vmaf)** | 0.3 | Fixed | Above-threshold blend weight for quality component |
+| **Compression Rate Curves** | Piecewise by ratio | Fixed | Uses separate soft-zone and above-threshold compression curves |
+| **Soft Threshold Margin** | 5 VMAF points | Fixed | Enables soft recovery from VMAF_threshold - 5 to VMAF_threshold |
+| **No-Compression Cutoff** | C >= 0.80 | Fixed | Requires at least 1.25x compression |
+| **Zero-Score Quality Cutoff** | VMAF_score < VMAF_threshold - 5 | Fixed | Immediate penalty for severe quality violations |
 
 ### Performance Multiplier System Parameters
 
@@ -694,7 +699,7 @@ penalty_f_multiplier = 1.0 - (penalty_f_count / 10) × 0.20
 | **Upscaling S_Q Penalty Threshold** | S_Q < 0.50 | Hardcoded in miner manager | Penalty for weak upscaling quality scores |
 | **Compression Bonus Threshold** | S_f > 0.74 | 0.7-0.8 | Lower threshold reflecting compression difficulty |
 | **Compression S_f Penalty Threshold** | S_f < 0.4 | 0.35-0.45 | Penalty for poor compression performance |
-| **VMAF Penalty Threshold** | VMAF_score < VMAF_threshold + 5 | +3 to +10 | Quality safety margin enforcement |
+| **Separate Compression Quality Penalty** | Not active | N/A | Compression quality is included directly in S_f |
 | **Maximum Bonus** | +15% | 10%-20% | Scalable reward system |
 | **Maximum S_F Penalty** | -20% | 15%-25% | Scalable penalty system |
 | **Maximum S_Q Penalty** | -25% | 20%-30% | Strongest penalty for quality issues |
@@ -706,8 +711,9 @@ penalty_f_multiplier = 1.0 - (penalty_f_count / 10) × 0.20
 ### Upscaling Length Score Function Properties
 
 **Mathematical Characteristics:**
-- **Domain**: [5, 320] seconds
-- **Range**: [0.3105, 1.0000]
+- **Current Domain**: [5, 10] seconds
+- **Formula Ceiling**: 320 seconds
+- **Current Range**: [0.3105, 0.4155]
 - **Function Type**: Logarithmic (concave)
 - **Growth Rate**: Decreasing marginal returns
 - **Optimization Point**: Balanced between processing capability and diminishing returns
@@ -716,7 +722,7 @@ penalty_f_multiplier = 1.0 - (penalty_f_count / 10) × 0.20
 
 **Mathematical Characteristics:**
 - **Domain**: [0, 1] (S_pre values)
-- **Range**: [0.0025, 40.43] (theoretical maximum)
+- **Range**: [0.0031, 3.2770] over S_pre in [0, 1]
 - **Function Type**: Exponential (convex)
 - **Critical Point**: S_pre = 0.5 (inflection point for reward/penalty)
 - **Scaling Behavior**: Exponential amplification of performance differences
@@ -724,26 +730,27 @@ penalty_f_multiplier = 1.0 - (penalty_f_count / 10) × 0.20
 ### Compression Score Function Properties
 
 **Mathematical Characteristics:**
-- **Domain**: [0, 1] (compression rate C values)
-- **Range**: [0, w_c] (compression component score)
-- **Function Type**: Concave (1 - C^1.5)
-- **Critical Point**: C = 1 (no compression = zero score)
-- **Optimization**: Lower C values yield higher scores with diminishing returns
+- **Domain**: `0 < C < 0.80` for non-zero compression scoring
+- **Ratio Definition**: `R = 1 / C`
+- **Function Type**: Piecewise compression-ratio scoring with logarithmic bonus above 20x
+- **Critical Point**: `C >= 0.80` produces zero score
+- **Optimization**: Higher compression ratios yield higher compression components with controlled exceptional-compression bonuses
 
 ### Compression VMAF Component Properties
 
 **Mathematical Characteristics:**
-- **Domain**: [VMAF_threshold, 100] (achievable quality range)
-- **Range**: [0, w_vmaf] (quality component score)
-- **Function Type**: Linear normalization
-- **Zero Point**: VMAF_score = VMAF_threshold
-- **Maximum Point**: VMAF_score = 100
-- **Quality Buffer**: +5 margin for penalty system
+- **Hard Cutoff**: VMAF_score < VMAF_threshold - 5
+- **Soft Zone**: [VMAF_threshold - 5, VMAF_threshold)
+- **Above-Threshold Range**: [VMAF_threshold, 100]
+- **Soft-Zone Function**: Quadratic quality factor recovery
+- **Above-Threshold Function**: Linear quality component from 0.7 to 1.0
+- **Quality Integration**: Included directly in S_f rather than as a separate compression history multiplier
 
 ### Performance Multiplier Properties
 
 **Mathematical Characteristics:**
-- **Domain**: [0.55, 1.15] (practical operational range)
+- **Upscaling Domain**: [0.60, 1.15]
+- **Compression Domain**: [0.80, 1.15]
 - **Function Type**: Linear combination of historical performance frequencies
 - **Update Frequency**: After each mining round completion
 - **Memory System**: Rolling 10-round window with automatic history management
