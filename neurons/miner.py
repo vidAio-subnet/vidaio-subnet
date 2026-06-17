@@ -43,6 +43,10 @@ UPSCALING_SERVICE_URL = os.getenv("MINER_UPSCALING_SERVICE_URL", "http://localho
 COMPRESSION_SERVICE_URL = os.getenv("MINER_COMPRESSION_SERVICE_URL", "http://localhost:8004").rstrip("/")
 UPSCALING_SERVICE_TIMEOUT_SECONDS = float(os.getenv("MINER_UPSCALING_SERVICE_TIMEOUT_SECONDS", "1200"))
 COMPRESSION_SERVICE_TIMEOUT_SECONDS = float(os.getenv("MINER_COMPRESSION_SERVICE_TIMEOUT_SECONDS", "600"))
+PROCESSING_BACKEND = os.getenv("MINER_PROCESSING_BACKEND", "http").strip().lower()
+MODAL_APP_NAME = os.getenv("MODAL_APP_NAME", "vidaio-miner-workers").strip()
+MODAL_UPSCALING_FUNCTION = os.getenv("MINER_MODAL_UPSCALING_FUNCTION", "upscale_video2x").strip()
+MODAL_COMPRESSION_FUNCTION = os.getenv("MINER_MODAL_COMPRESSION_FUNCTION", "compress").strip()
 MINER_DOWNLOAD_TIMEOUT_SECONDS = float(os.getenv("MINER_DOWNLOAD_TIMEOUT_SECONDS", "600"))
 MINER_UPLOAD_URL_EXPIRY_SECONDS = int(os.getenv("MINER_STORAGE_S3_PRESIGNED_EXPIRY", os.getenv("S3_PRESIGNED_EXPIRY", "3600")))
 
@@ -459,8 +463,77 @@ class Miner(BaseMiner):
         logger.info(f"Received {service_name} result from container service")
         return processed_video_url
 
+    async def _call_modal_processing_function(
+        self,
+        service_name: str,
+        function_name: str,
+        payload: dict,
+        timeout_seconds: float,
+    ) -> str | None:
+        if not MODAL_APP_NAME or not function_name:
+            logger.error(f"Modal {service_name} configuration is missing app or function name")
+            return None
+
+        def _remote_call() -> dict:
+            try:
+                import modal
+            except ImportError as exc:
+                raise RuntimeError(
+                    "The modal package is required when MINER_PROCESSING_BACKEND=modal"
+                ) from exc
+
+            function = modal.Function.from_name(MODAL_APP_NAME, function_name)
+            return function.remote(payload)
+
+        logger.info(f"Forwarding {service_name} request to Modal: {MODAL_APP_NAME}.{function_name}")
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(_remote_call),
+                timeout=timeout_seconds,
+            )
+        except Exception as e:
+            logger.error(f"Modal {service_name} request failed: {e}")
+            return None
+
+        if not isinstance(result, dict):
+            logger.error(f"Modal {service_name} returned unexpected result type: {type(result).__name__}")
+            return None
+        if not result.get("success", False):
+            logger.error(f"Modal {service_name} failed: {result.get('error')}")
+            return None
+
+        processed_video_url = result.get("output_url")
+        if not processed_video_url:
+            logger.error(f"Modal {service_name} returned no output_url")
+            return None
+        if not _is_url(processed_video_url):
+            logger.error(f"Modal {service_name} returned non-URL output: {processed_video_url}")
+            return None
+
+        logger.info(f"Received {service_name} result from Modal")
+        return processed_video_url
+
+    async def _forward_upscaling_to_modal(self, payload_url: str, task_type: str, task_id: str) -> str | None:
+        return await self._call_modal_processing_function(
+            "upscaling",
+            MODAL_UPSCALING_FUNCTION,
+            self._upscaling_service_payload(payload_url, task_type, task_id),
+            UPSCALING_SERVICE_TIMEOUT_SECONDS,
+        )
+
+    async def _forward_compression_to_modal(self, payload, task_id: str) -> str | None:
+        return await self._call_modal_processing_function(
+            "compression",
+            MODAL_COMPRESSION_FUNCTION,
+            self._compression_service_payload(payload, payload.reference_video_url, task_id),
+            COMPRESSION_SERVICE_TIMEOUT_SECONDS,
+        )
+
     async def _forward_upscaling_to_service(self, payload_url: str, task_type: str) -> str | None:
         task_id = uuid.uuid4().hex[:12]
+        if PROCESSING_BACKEND == "modal":
+            return await self._forward_upscaling_to_modal(payload_url, task_type, task_id)
+
         input_host_path = None
         output_host_path = None
         try:
@@ -485,6 +558,9 @@ class Miner(BaseMiner):
 
     async def _forward_compression_to_service(self, payload) -> str | None:
         task_id = uuid.uuid4().hex[:12]
+        if PROCESSING_BACKEND == "modal":
+            return await self._forward_compression_to_modal(payload, task_id)
+
         input_host_path = None
         output_host_path = None
         try:

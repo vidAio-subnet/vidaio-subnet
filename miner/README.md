@@ -32,6 +32,8 @@ MAX_QUEUE_SIZE_COMPRESSION=5
 
 Queue status is available from `/queue` on each service.
 
+For Modal deployments, the worker functions set `MAX_QUEUE_SIZE_*` to `0` and `@modal.concurrent(max_inputs=1)`. Modal owns the pending-input queue and scales out containers instead of persisting work in the Python process.
+
 ## Temporary File Cleanup
 `MINER_SHARED_DIR` on the host and `SHARED_VOLUME_PATH` inside each container are temporary work areas. They should not accumulate files during normal operation:
 
@@ -65,6 +67,10 @@ MINER_STORAGE_OBJECT_TTL_SECONDS=
 
 Set `MINER_STORAGE_OBJECT_TTL_SECONDS` only if you want bucket objects to live longer or shorter than the presigned URL expiry plus grace. Set `MINER_STORAGE_CLEANUP_ENABLED=false` when another lifecycle policy owns deletion for these prefixes.
 
+On Modal, GPU worker cleanup loops are disabled. The `cleanup_expired_artifacts` scheduled function in `miner/modal_workers.py` runs on CPU, deletes expired S3-compatible objects under the configured prefixes, and removes stale Modal volume files older than the same TTL. This keeps cleanup from competing with upscaling/compression GPU containers.
+
+Set `MODAL_VOLUME_FILE_TTL_SECONDS` only if Modal volume files should use a different TTL from bucket objects.
+
 ## Video2X Upscaling Miner
 1. Complete host/container preparation in `miner/upscaling/SETUP.md`.
 2. Start service:
@@ -97,3 +103,100 @@ docker compose up -d compression
 - `MINER_UPSCALING_SERVICE_URL` defaults to `http://localhost:8003`.
 - `MINER_COMPRESSION_SERVICE_URL` defaults to `http://localhost:8004`.
 - `MINER_SHARED_VOLUME_PATH` defaults to `MINER_SHARED_DIR`, then `/tmp/vidaio-miner-video-tmp`.
+
+## Modal Serverless Workers
+`miner/modal_workers.py` deploys three Modal workers:
+
+- `upscale_video2x`: Video2X upscaling worker.
+- `upscale_ffmpeg`: FFmpeg upscaling worker.
+- `compress`: compression worker.
+
+Each worker uses `cpu=16.0`, `gpu="RTX-PRO-6000"`, `min_containers=0`, `max_containers=5` by default, `scaledown_window=300`, and one input per container. A burst of 3 to 5 requests is handled by Modal scale-out; after the idle window, the GPU functions scale back to zero.
+
+Install the Modal SDK in the miner environment:
+
+```bash
+pip install -r requirements.txt
+```
+
+Authenticate Modal. The SDK reads `~/.modal.toml` from `modal token new`, or these environment variables:
+
+```bash
+export MODAL_TOKEN_ID=your-modal-token-id
+export MODAL_TOKEN_SECRET=your-modal-token-secret
+```
+
+Create the Modal secret used by all workers:
+
+```bash
+modal secret create vidaio-miner-secrets \
+  MINER_STORAGE_PROVIDER=backblaze \
+  MINER_STORAGE_S3_ACCESS_KEY_ID=your-access-key \
+  MINER_STORAGE_S3_SECRET_ACCESS_KEY=your-secret-key \
+  MINER_STORAGE_S3_REGION=us-east-005 \
+  MINER_STORAGE_S3_BUCKET_NAME=your-bucket-name \
+  MINER_STORAGE_S3_ENDPOINT_URL=https://s3.us-east-005.backblazeb2.com \
+  MINER_STORAGE_S3_PRESIGNED_EXPIRY=3600 \
+  MINER_STORAGE_CLEANUP_PREFIXES=processing/,upscaling/ \
+  PRESIGNED_URL_CLEANUP_GRACE_SECONDS=600
+```
+
+Deploy the Modal app from the repository root:
+
+```bash
+modal deploy miner/modal_workers.py
+```
+
+Configure `miner/.env` for Modal processing:
+
+```bash
+MINER_PROCESSING_BACKEND=modal
+MODAL_APP_NAME=vidaio-miner-workers
+MODAL_MINER_SECRET_NAME=vidaio-miner-secrets
+MINER_MODAL_UPSCALING_FUNCTION=upscale_video2x
+MINER_MODAL_COMPRESSION_FUNCTION=compress
+MODAL_TOKEN_ID=your-modal-token-id
+MODAL_TOKEN_SECRET=your-modal-token-secret
+```
+
+To use the FFmpeg upscaler instead of Video2X:
+
+```bash
+MINER_MODAL_UPSCALING_FUNCTION=upscale_ffmpeg
+```
+
+Run the miner with the same wallet/subtensor arguments you use today:
+
+```bash
+python3 neurons/miner.py \
+  --wallet.name [Your_Wallet_Name] \
+  --wallet.hotkey [Your_Hotkey_Name] \
+  --subtensor.network finney \
+  --netuid 85 \
+  --axon.port [port] \
+  --logging.debug
+```
+
+For direct SDK tests, run:
+
+```bash
+modal run miner/modal_workers.py --worker video2x --video-url "https://example.com/input.mp4" --scale 2
+modal run miner/modal_workers.py --worker ffmpeg --video-url "https://example.com/input.mp4" --scale 2
+modal run miner/modal_workers.py --worker compression --video-url "https://example.com/input.mp4" --codec AV1 --codec-mode CRF --cq 35
+```
+
+For direct HTTP endpoint tests, use the URLs printed by `modal deploy` for `upscaling_video2x_api`, `upscaling_ffmpeg_api`, and `compression_api`:
+
+```bash
+curl -X POST "$MODAL_VIDEO2X_URL/upscale" \
+  -H "Content-Type: application/json" \
+  -d '{"video_path":"https://example.com/input.mp4","scale":2,"task_id":"manual-video2x"}'
+
+curl -X POST "$MODAL_FFMPEG_URL/upscale" \
+  -H "Content-Type: application/json" \
+  -d '{"video_path":"https://example.com/input.mp4","scale":2,"task_id":"manual-ffmpeg"}'
+
+curl -X POST "$MODAL_COMPRESSION_URL/compress" \
+  -H "Content-Type: application/json" \
+  -d '{"video_path":"https://example.com/input.mp4","task_id":"manual-compress","codec":"AV1","codec_mode":"CRF","cq":35}'
+```
