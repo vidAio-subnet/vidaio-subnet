@@ -58,13 +58,16 @@ modal_service_env = {
 }
 
 compression_image = modal.Image.from_dockerfile(
-    str(REPO_ROOT / "miner/compression/Dockerfile")
+    str(REPO_ROOT / "miner/compression/Dockerfile"),
+    context_dir=str(REPO_ROOT / "miner/compression"),
 ).env(modal_service_env)
 upscaling_video2x_image = modal.Image.from_dockerfile(
-    str(REPO_ROOT / "miner/upscaling/Dockerfile")
+    str(REPO_ROOT / "miner/upscaling/Dockerfile"),
+    context_dir=str(REPO_ROOT / "miner/upscaling"),
 ).env(modal_service_env)
 upscaling_ffmpeg_image = modal.Image.from_dockerfile(
-    str(REPO_ROOT / "miner/upscaling/ffmpeg/Dockerfile")
+    str(REPO_ROOT / "miner/upscaling/ffmpeg/Dockerfile"),
+    context_dir=str(REPO_ROOT / "miner/upscaling/ffmpeg"),
 ).env(modal_service_env)
 cleanup_image = (
     modal.Image.debian_slim(python_version="3.11")

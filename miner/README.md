@@ -119,7 +119,7 @@ Install the Modal SDK in the miner environment:
 pip install -r requirements.txt
 ```
 
-Authenticate Modal. The SDK reads `~/.modal.toml` from `modal token new`, or these environment variables:
+Authenticate Modal with `modal setup`. The SDK reads `~/.modal.toml` from `modal token new`, or these environment variables:
 
 ```bash
 export MODAL_TOKEN_ID=your-modal-token-id
