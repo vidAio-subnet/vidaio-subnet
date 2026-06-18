@@ -90,15 +90,26 @@ modal_service_env = {
     "NVIDIA_DRIVER_CAPABILITIES": "graphics,video,compute,utility",
 }
 
-compression_base_image = modal.Image.from_dockerfile(
-    str(REPO_ROOT / "miner/compression/Dockerfile"),
-    context_dir=str(REPO_ROOT / "miner/compression"),
-).env(modal_service_env)
+COMPRESSION_DIR = REPO_ROOT / "miner" / "compression"
+UPSCALING_VIDEO2X_DIR = REPO_ROOT / "miner" / "upscaling"
+UPSCALING_FFMPEG_DIR = UPSCALING_VIDEO2X_DIR / "ffmpeg"
+MODAL_IMAGES_DIR = REPO_ROOT / "miner" / "modal_images"
+
+compression_toolchain_image = modal.Image.from_dockerfile(
+    str(MODAL_IMAGES_DIR / "compression_ffmpeg" / "Dockerfile"),
+    context_dir=str(MODAL_IMAGES_DIR / "compression_ffmpeg"),
+)
+compression_base_image = (
+    compression_toolchain_image
+    .pip_install_from_requirements(str(COMPRESSION_DIR / "requirements.txt"))
+    .env(modal_service_env)
+)
+compression_app_file = str(COMPRESSION_DIR / "app.py")
 compression_short_image = compression_base_image.env(
     {
         "COMPRESSION_CHUNKING_ENABLED": "false",
     }
-)
+).add_local_file(compression_app_file, "/app/app.py")
 compression_long_image = compression_base_image.env(
     {
         "COMPRESSION_CHUNKING_ENABLED": "true",
@@ -106,15 +117,27 @@ compression_long_image = compression_base_image.env(
         "COMPRESSION_CHUNK_TARGET_SECONDS": str(LONG_COMPRESSION_CHUNK_SECONDS),
         "COMPRESSION_CHUNK_PARALLELISM": str(LONG_COMPRESSION_CHUNK_PARALLELISM),
     }
+).add_local_file(compression_app_file, "/app/app.py")
+upscaling_video2x_toolchain_image = modal.Image.from_dockerfile(
+    str(MODAL_IMAGES_DIR / "upscaling_video2x" / "Dockerfile"),
+    context_dir=str(MODAL_IMAGES_DIR / "upscaling_video2x"),
 )
-upscaling_video2x_image = modal.Image.from_dockerfile(
-    str(REPO_ROOT / "miner/upscaling/Dockerfile"),
-    context_dir=str(REPO_ROOT / "miner/upscaling"),
-).env(modal_service_env)
-upscaling_ffmpeg_image = modal.Image.from_dockerfile(
-    str(REPO_ROOT / "miner/upscaling/ffmpeg/Dockerfile"),
-    context_dir=str(REPO_ROOT / "miner/upscaling/ffmpeg"),
-).env(modal_service_env)
+upscaling_video2x_image = (
+    upscaling_video2x_toolchain_image
+    .pip_install_from_requirements(str(UPSCALING_VIDEO2X_DIR / "requirements.txt"))
+    .env(modal_service_env)
+    .add_local_file(str(UPSCALING_VIDEO2X_DIR / "app.py"), "/app/app.py")
+)
+upscaling_ffmpeg_toolchain_image = modal.Image.from_dockerfile(
+    str(MODAL_IMAGES_DIR / "upscaling_ffmpeg" / "Dockerfile"),
+    context_dir=str(MODAL_IMAGES_DIR / "upscaling_ffmpeg"),
+)
+upscaling_ffmpeg_image = (
+    upscaling_ffmpeg_toolchain_image
+    .pip_install_from_requirements(str(UPSCALING_FFMPEG_DIR / "requirements.txt"))
+    .env(modal_service_env)
+    .add_local_file(str(UPSCALING_FFMPEG_DIR / "app.py"), "/app/app.py")
+)
 cleanup_image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install("boto3")
@@ -693,10 +716,7 @@ def test_worker(
     elif worker_key in (
         "compression-short",
         "compress_short",
-        "short",
-        "compression-t4",
-        "compress_t4",
-        "t4",
+        "short"
     ):
         payload = {
             "video_paths": [video_url],
