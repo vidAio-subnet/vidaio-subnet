@@ -34,7 +34,7 @@ Queue status is available from `/queue` on each service.
 
 For Modal deployments, the worker functions set `MAX_QUEUE_SIZE_*` to `0`, `MAX_CONCURRENT_*` to `MODAL_SERVICE_MAX_CONCURRENT` (default 5), and `@modal.concurrent(max_inputs=MODAL_GPU_WORKER_MAX_INPUTS)` (default 5). Modal owns the pending-input queue and scales out containers instead of persisting work in the Python process.
 
-Compression adds a duration-aware Modal router. Short compression jobs route to `compress_t4` (historical entrypoint name) on `MODAL_SHORT_COMPRESSION_GPU`, which defaults to `L4,L40S` so Modal tries L4 first and falls back to L40S. Jobs with unknown duration, or duration greater than `MODAL_LONG_COMPRESSION_THRESHOLD_SECONDS` (default 1200 seconds), route to `compress_rtx_pro_6000` on RTX PRO 6000 and use chunked compression.
+Compression adds a duration-aware Modal router. Short compression jobs route to `compress_l4_l40s` on `MODAL_SHORT_COMPRESSION_GPU`, which defaults to `L4,L40S` so Modal tries L4 first and falls back to L40S. Jobs with unknown duration, or duration greater than `MODAL_LONG_COMPRESSION_THRESHOLD_SECONDS` (default 1200 seconds), route to `compress_rtx_pro_6000` on RTX PRO 6000 and use chunked compression.
 
 ## Temporary File Cleanup
 `MINER_SHARED_DIR` on the host and `SHARED_VOLUME_PATH` inside each container are temporary work areas. They should not accumulate files during normal operation:
@@ -98,7 +98,7 @@ For a 3 hour video, the long Modal worker targets roughly 18 ten-minute chunks a
 Caveats:
 
 - `MODAL_SHORT_COMPRESSION_GPU` accepts a comma-separated Modal GPU fallback list. `L4,L40S` keeps short AV1 jobs on the cheapest suitable AV1-capable GPU first, while allowing L40S when L4 capacity is unavailable.
-- T4 supports NVENC for H.264/HEVC, but not AV1 NVENC. The compression service maps AV1 requests to `av1_nvenc`, so T4 can fail for AV1 short-video jobs before falling back to CPU encoding.
+- L4/L40S provide AV1-capable NVENC for short compression jobs. Keep `MODAL_SHORT_COMPRESSION_GPU` on AV1-capable GPU types when AV1 requests are expected.
 - Source splitting with `-c copy -f segment` cuts on existing keyframes, so chunks are close to the target duration but not exact. Very long source GOPs produce uneven chunks; sources with too few keyframes can fall back to single-pass compression.
 - The merge step uses stream copy. This is safe only when every encoded segment has compatible codec, resolution, pixel format, profile, time base, and audio layout. The worker enforces one encoder configuration across all chunks; changing per-chunk settings would break this.
 - NVENC/NVDEC jobs usually do not occupy much VRAM. RTX PRO 6000 is useful here for encoder/decoder throughput and parallel segment work, not because ffmpeg should consume 96 GB of VRAM.
@@ -143,12 +143,12 @@ docker compose up -d compression
 - `upscale_video2x`: Video2X upscaling worker.
 - `upscale_ffmpeg`: FFmpeg upscaling worker.
 - `compress`: CPU compression router.
-- `compress_t4`: short-video compression worker. The name is historical; the GPU defaults to L4 with L40S fallback.
+- `compress_l4_l40s`: short-video compression worker using L4 with L40S fallback by default.
 - `compress_rtx_pro_6000`: long-video chunked compression worker.
 
 GPU workers use `cpu=16.0`, `min_containers=0`, `max_containers=5` by default, `scaledown_window=300`, and up to 5 concurrent inputs per container. Upscaling and long compression use RTX PRO 6000 by default; short compression uses `MODAL_SHORT_COMPRESSION_GPU` (`L4,L40S` by default). A burst of 3 to 5 requests can be handled inside a warm worker; larger bursts are handled by Modal scale-out. After the idle window, the GPU functions scale back to zero.
 
-Compression is duration-routed: `compress` probes the URL duration, `compress_t4` uses `gpu=["L4", "L40S"]` by default for short videos, and `compress_rtx_pro_6000` uses `gpu="RTX-PRO-6000"` plus parallel chunk encoding for long videos.
+Compression is duration-routed: `compress` probes the URL duration, `compress_l4_l40s` uses `gpu=["L4", "L40S"]` by default for short videos, and `compress_rtx_pro_6000` uses `gpu="RTX-PRO-6000"` plus parallel chunk encoding for long videos.
 
 Modal service request bodies use `video_paths` with 1 to 5 input URLs. The miner currently sends a single-item list built from `UpscalingMinerPayload.reference_video_url` or `CompressionMinerPayload.reference_video_url`.
 
@@ -236,11 +236,11 @@ cd miner
 modal run modal_workers.py --worker video2x --video-url "https://example.com/input.mp4" --scale 2
 modal run modal_workers.py --worker ffmpeg --video-url "https://example.com/input.mp4" --scale 2
 modal run modal_workers.py --worker compression --video-url "https://example.com/input.mp4" --codec AV1 --codec-mode CRF --cq 35
-modal run modal_workers.py --worker compression-short --video-url "https://example.com/input.mp4" --codec AV1 --codec-mode CRF --cq 35
+modal run modal_workers.py --worker compression-l4-l40s --video-url "https://example.com/input.mp4" --codec AV1 --codec-mode CRF --cq 35
 modal run modal_workers.py --worker compression-rtx --video-url "https://example.com/input.mp4" --codec AV1 --codec-mode CRF --cq 35
 ```
 
-For direct HTTP endpoint tests, use the URLs printed by `modal deploy` for `upscaling_video2x_api`, `upscaling_ffmpeg_api`, `compression_api`, and `compression_t4_api`:
+For direct HTTP endpoint tests, use the URLs printed by `modal deploy` for `upscaling_video2x_api`, `upscaling_ffmpeg_api`, `compression_api`, and `compression_l4_l40s_api`:
 
 ```bash
 curl -X POST "$MODAL_VIDEO2X_URL/upscale" \
@@ -255,7 +255,7 @@ curl -X POST "$MODAL_COMPRESSION_URL/compress" \
   -H "Content-Type: application/json" \
   -d '{"video_paths":["https://example.com/input.mp4"],"task_id":"manual-compress","codec":"AV1","codec_mode":"CRF","cq":35}'
 
-curl -X POST "$MODAL_COMPRESSION_T4_URL/compress" \
+curl -X POST "$MODAL_COMPRESSION_L4_L40S_URL/compress" \
   -H "Content-Type: application/json" \
   -d '{"video_paths":["https://example.com/input.mp4"],"task_id":"manual-compress-short","codec":"AV1","codec_mode":"CRF","cq":35,"chunked":false}'
 ```

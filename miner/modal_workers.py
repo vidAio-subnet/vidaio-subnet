@@ -393,13 +393,13 @@ def compress(payload: dict) -> dict:
             calls.append(
                 (
                     [index for index, _ in short_items],
-                    compress_t4,
+                    compress_l4_l40s,
                     {
                         **payload,
                         "video_paths": [video_path for _, video_path in short_items],
                         "chunked": False,
                     },
-                    "compress_t4",
+                    "compress_l4_l40s",
                 )
             )
 
@@ -439,9 +439,9 @@ def compress(payload: dict) -> dict:
     **_gpu_worker_options(MAX_CONTAINERS_COMPRESSION, COMPRESSION_TIMEOUT_SECONDS, SHORT_COMPRESSION_GPU),
 )
 @modal.concurrent(max_inputs=MODAL_GPU_WORKER_MAX_INPUTS, target_inputs=MODAL_GPU_WORKER_TARGET_INPUTS)
-def compress_t4(payload: dict) -> dict:
+def compress_l4_l40s(payload: dict) -> dict:
     return _run_with_task_logs(
-        "compress_t4",
+        "compress_l4_l40s",
         payload,
         lambda: _run_service_request("CompressRequest", "compress", payload),
     )
@@ -507,7 +507,7 @@ def compression_api():
 )
 @modal.concurrent(max_inputs=MODAL_GPU_WORKER_MAX_INPUTS, target_inputs=MODAL_GPU_WORKER_TARGET_INPUTS)
 @modal.asgi_app()
-def compression_t4_api():
+def compression_l4_l40s_api():
     return _load_fastapi_app()
 
 
@@ -714,6 +714,9 @@ def test_worker(
             payload["target_bitrate"] = target_bitrate
         result = compress.remote(payload)
     elif worker_key in (
+        "compression-l4-l40s",
+        "compress_l4_l40s",
+        "l4-l40s",
         "compression-short",
         "compress_short",
         "short"
@@ -728,7 +731,7 @@ def test_worker(
         }
         if target_bitrate > 0:
             payload["target_bitrate"] = target_bitrate
-        result = compress_t4.remote(payload)
+        result = compress_l4_l40s.remote(payload)
     elif worker_key in ("compression-rtx", "compress_rtx", "compress_rtx_pro_6000", "rtx"):
         payload = {
             "video_paths": [video_url],
@@ -752,6 +755,6 @@ def test_worker(
             {"video_paths": [video_url], "task_id": task_id, "scale": scale}
         )
     else:
-        raise ValueError("worker must be one of: compression, compression-short, compression-rtx, video2x, ffmpeg")
+        raise ValueError("worker must be one of: compression, compression-l4-l40s, compression-short, compression-rtx, video2x, ffmpeg")
 
     print(json.dumps(result, indent=2, sort_keys=True))
