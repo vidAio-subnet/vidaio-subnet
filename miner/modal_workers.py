@@ -22,9 +22,23 @@ except ImportError:
 
 APP_NAME = os.getenv("MODAL_APP_NAME", "vidaio-miner-workers")
 SECRET_NAME = os.getenv("MODAL_MINER_SECRET_NAME", "vidaio-miner-secrets")
-GPU_TYPE = os.getenv("MODAL_GPU", "RTX-PRO-6000")
-SHORT_COMPRESSION_GPU = os.getenv("MODAL_SHORT_COMPRESSION_GPU", "T4")
-LONG_COMPRESSION_GPU = os.getenv("MODAL_LONG_COMPRESSION_GPU", GPU_TYPE)
+GpuSpec = str | list[str]
+
+
+def _modal_gpu_spec(env_name: str, default: GpuSpec) -> GpuSpec:
+    value = os.getenv(env_name, "").strip()
+    if not value:
+        return default
+
+    choices = [choice.strip() for choice in value.split(",") if choice.strip()]
+    if not choices:
+        return default
+    return choices if len(choices) > 1 else choices[0]
+
+
+GPU_TYPE = _modal_gpu_spec("MODAL_GPU", "RTX-PRO-6000")
+SHORT_COMPRESSION_GPU = _modal_gpu_spec("MODAL_SHORT_COMPRESSION_GPU", ["L4", "L40S"])
+LONG_COMPRESSION_GPU = _modal_gpu_spec("MODAL_LONG_COMPRESSION_GPU", GPU_TYPE)
 CPU_CORES = float(os.getenv("MODAL_CPU_CORES", "16"))
 MAX_CONTAINERS_UPSCALING = int(os.getenv("MODAL_UPSCALING_MAX_CONTAINERS", "5"))
 MAX_CONTAINERS_COMPRESSION = int(os.getenv("MODAL_COMPRESSION_MAX_CONTAINERS", "5"))
@@ -109,7 +123,7 @@ compression_router_image = (
 def _gpu_worker_options(
     max_containers: int,
     timeout_seconds: int,
-    gpu_type: str | None = None,
+    gpu_type: GpuSpec | None = None,
 ) -> dict[str, Any]:
     return {
         "gpu": gpu_type or GPU_TYPE,
@@ -558,7 +572,14 @@ def test_worker(
         if target_bitrate > 0:
             payload["target_bitrate"] = target_bitrate
         result = compress.remote(payload)
-    elif worker_key in ("compression-t4", "compress_t4", "t4"):
+    elif worker_key in (
+        "compression-short",
+        "compress_short",
+        "short",
+        "compression-t4",
+        "compress_t4",
+        "t4",
+    ):
         payload = {
             "video_path": video_url,
             "task_id": task_id,
@@ -593,6 +614,6 @@ def test_worker(
             {"video_path": video_url, "task_id": task_id, "scale": scale}
         )
     else:
-        raise ValueError("worker must be one of: compression, compression-t4, compression-rtx, video2x, ffmpeg")
+        raise ValueError("worker must be one of: compression, compression-short, compression-rtx, video2x, ffmpeg")
 
     print(json.dumps(result, indent=2, sort_keys=True))

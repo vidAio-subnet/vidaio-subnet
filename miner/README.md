@@ -34,7 +34,7 @@ Queue status is available from `/queue` on each service.
 
 For Modal deployments, the worker functions set `MAX_QUEUE_SIZE_*` to `0` and `@modal.concurrent(max_inputs=1)`. Modal owns the pending-input queue and scales out containers instead of persisting work in the Python process.
 
-Compression adds a duration-aware Modal router. Short compression jobs route to `compress_t4` on a T4 by default. Jobs with unknown duration, or duration greater than `MODAL_LONG_COMPRESSION_THRESHOLD_SECONDS` (default 1200 seconds), route to `compress_rtx_pro_6000` on RTX PRO 6000 and use chunked compression.
+Compression adds a duration-aware Modal router. Short compression jobs route to `compress_t4` (historical entrypoint name) on `MODAL_SHORT_COMPRESSION_GPU`, which defaults to `L4,L40S` so Modal tries L4 first and falls back to L40S. Jobs with unknown duration, or duration greater than `MODAL_LONG_COMPRESSION_THRESHOLD_SECONDS` (default 1200 seconds), route to `compress_rtx_pro_6000` on RTX PRO 6000 and use chunked compression.
 
 ## Temporary File Cleanup
 `MINER_SHARED_DIR` on the host and `SHARED_VOLUME_PATH` inside each container are temporary work areas. They should not accumulate files during normal operation:
@@ -86,7 +86,7 @@ COMPRESSION_CHUNK_PARALLELISM=2
 MODAL_LONG_COMPRESSION_THRESHOLD_SECONDS=1200
 MODAL_LONG_COMPRESSION_CHUNK_SECONDS=600
 MODAL_LONG_COMPRESSION_CHUNK_PARALLELISM=4
-MODAL_SHORT_COMPRESSION_GPU=T4
+MODAL_SHORT_COMPRESSION_GPU=L4,L40S
 MODAL_LONG_COMPRESSION_GPU=RTX-PRO-6000
 MODAL_COMPRESSION_TIMEOUT_SECONDS=14400
 ```
@@ -95,6 +95,8 @@ For a 3 hour video, the long Modal worker targets roughly 18 ten-minute chunks a
 
 Caveats:
 
+- `MODAL_SHORT_COMPRESSION_GPU` accepts a comma-separated Modal GPU fallback list. `L4,L40S` keeps short AV1 jobs on the cheapest suitable AV1-capable GPU first, while allowing L40S when L4 capacity is unavailable.
+- T4 supports NVENC for H.264/HEVC, but not AV1 NVENC. The compression service maps AV1 requests to `av1_nvenc`, so T4 can fail for AV1 short-video jobs before falling back to CPU encoding.
 - Source splitting with `-c copy -f segment` cuts on existing keyframes, so chunks are close to the target duration but not exact. Very long source GOPs produce uneven chunks; sources with too few keyframes can fall back to single-pass compression.
 - The merge step uses stream copy. This is safe only when every encoded segment has compatible codec, resolution, pixel format, profile, time base, and audio layout. The worker enforces one encoder configuration across all chunks; changing per-chunk settings would break this.
 - NVENC/NVDEC jobs usually do not occupy much VRAM. RTX PRO 6000 is useful here for encoder/decoder throughput and parallel segment work, not because ffmpeg should consume 96 GB of VRAM.
@@ -139,12 +141,12 @@ docker compose up -d compression
 - `upscale_video2x`: Video2X upscaling worker.
 - `upscale_ffmpeg`: FFmpeg upscaling worker.
 - `compress`: CPU compression router.
-- `compress_t4`: short-video compression worker.
+- `compress_t4`: short-video compression worker. The name is historical; the GPU defaults to L4 with L40S fallback.
 - `compress_rtx_pro_6000`: long-video chunked compression worker.
 
-GPU workers use `cpu=16.0`, `min_containers=0`, `max_containers=5` by default, `scaledown_window=300`, and one input per container. Upscaling and long compression use RTX PRO 6000 by default; short compression uses T4. A burst of 3 to 5 requests is handled by Modal scale-out; after the idle window, the GPU functions scale back to zero.
+GPU workers use `cpu=16.0`, `min_containers=0`, `max_containers=5` by default, `scaledown_window=300`, and one input per container. Upscaling and long compression use RTX PRO 6000 by default; short compression uses `MODAL_SHORT_COMPRESSION_GPU` (`L4,L40S` by default). A burst of 3 to 5 requests is handled by Modal scale-out; after the idle window, the GPU functions scale back to zero.
 
-Compression is duration-routed: `compress` probes the URL duration, `compress_t4` uses `gpu="T4"` for short videos, and `compress_rtx_pro_6000` uses `gpu="RTX-PRO-6000"` plus parallel chunk encoding for long videos.
+Compression is duration-routed: `compress` probes the URL duration, `compress_t4` uses `gpu=["L4", "L40S"]` by default for short videos, and `compress_rtx_pro_6000` uses `gpu="RTX-PRO-6000"` plus parallel chunk encoding for long videos.
 
 Modal's Logs table is keyed by app/run name, so deployed worker rows stay under `vidaio-miner-workers`. Each worker prints structured JSON log events with `task_id`, `worker`, and `modal_input_id`; search the log tab for the task ID to isolate a request.
 
@@ -193,7 +195,7 @@ MODAL_APP_NAME=vidaio-miner-workers
 MODAL_MINER_SECRET_NAME=vidaio-miner-secrets
 MINER_MODAL_UPSCALING_FUNCTION=upscale_video2x
 MINER_MODAL_COMPRESSION_FUNCTION=compress
-MODAL_SHORT_COMPRESSION_GPU=T4
+MODAL_SHORT_COMPRESSION_GPU=L4,L40S
 MODAL_LONG_COMPRESSION_GPU=RTX-PRO-6000
 MODAL_LONG_COMPRESSION_THRESHOLD_SECONDS=1200
 MODAL_LONG_COMPRESSION_CHUNK_SECONDS=600
@@ -228,7 +230,7 @@ cd miner
 modal run modal_workers.py --worker video2x --video-url "https://example.com/input.mp4" --scale 2
 modal run modal_workers.py --worker ffmpeg --video-url "https://example.com/input.mp4" --scale 2
 modal run modal_workers.py --worker compression --video-url "https://example.com/input.mp4" --codec AV1 --codec-mode CRF --cq 35
-modal run modal_workers.py --worker compression-t4 --video-url "https://example.com/input.mp4" --codec AV1 --codec-mode CRF --cq 35
+modal run modal_workers.py --worker compression-short --video-url "https://example.com/input.mp4" --codec AV1 --codec-mode CRF --cq 35
 modal run modal_workers.py --worker compression-rtx --video-url "https://example.com/input.mp4" --codec AV1 --codec-mode CRF --cq 35
 ```
 
