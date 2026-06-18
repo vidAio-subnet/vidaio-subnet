@@ -53,6 +53,12 @@ LONG_COMPRESSION_CHUNK_PARALLELISM = int(os.getenv("MODAL_LONG_COMPRESSION_CHUNK
 CLEANUP_TIMEOUT_SECONDS = int(os.getenv("MODAL_CLEANUP_TIMEOUT_SECONDS", "900"))
 CLEANUP_PERIOD_HOURS = int(os.getenv("MODAL_CLEANUP_PERIOD_HOURS", "1"))
 MODAL_SHARED_VOLUME_PATH = os.getenv("MODAL_SHARED_VOLUME_PATH", "/tmp/organic-proxy")
+MODAL_SERVICE_MAX_CONCURRENT = max(1, int(os.getenv("MODAL_SERVICE_MAX_CONCURRENT", "5")))
+MODAL_GPU_WORKER_MAX_INPUTS = max(1, int(os.getenv("MODAL_GPU_WORKER_MAX_INPUTS", "5")))
+MODAL_GPU_WORKER_TARGET_INPUTS = min(
+    MODAL_GPU_WORKER_MAX_INPUTS,
+    max(1, int(os.getenv("MODAL_GPU_WORKER_TARGET_INPUTS", str(MODAL_GPU_WORKER_MAX_INPUTS)))),
+)
 
 app = modal.App(APP_NAME)
 miner_secret = modal.Secret.from_name(SECRET_NAME)
@@ -73,9 +79,9 @@ upscaling_ffmpeg_volume = modal.Volume.from_name(
 modal_service_env = {
     "SHARED_VOLUME_PATH": MODAL_SHARED_VOLUME_PATH,
     "DISABLE_REMOTE_IO": "false",
-    "MAX_CONCURRENT_UPSCALING": "1",
+    "MAX_CONCURRENT_UPSCALING": str(MODAL_SERVICE_MAX_CONCURRENT),
     "MAX_QUEUE_SIZE_UPSCALING": "0",
-    "MAX_CONCURRENT_COMPRESSION": "1",
+    "MAX_CONCURRENT_COMPRESSION": str(MODAL_SERVICE_MAX_CONCURRENT),
     "MAX_QUEUE_SIZE_COMPRESSION": "0",
     "MAX_QUEUE_SIZE": "0",
     "MINER_CLEANUP_ENABLED": "false",
@@ -154,6 +160,18 @@ def _task_id(payload: dict) -> str:
     return task_id[:120]
 
 
+def _payload_video_paths(payload: dict) -> list[str]:
+    video_paths = payload.get("video_paths")
+    if not isinstance(video_paths, list):
+        return []
+    return [str(video_path).strip() for video_path in video_paths if str(video_path).strip()]
+
+
+def _payload_video_path(payload: dict) -> str:
+    video_paths = _payload_video_paths(payload)
+    return video_paths[0] if video_paths else ""
+
+
 def _modal_input_id() -> str:
     try:
         return modal.current_input_id()
@@ -191,8 +209,8 @@ def _run_with_task_logs(worker: str, payload: dict, callback) -> dict:
             payload,
             "finished",
             success=result.get("success"),
-            error=result.get("error"),
-            output_url_configured=bool(result.get("output_url")),
+            errors=result.get("errors"),
+            output_urls_configured=bool(result.get("output_urls")),
         )
     else:
         _log_task_event(worker, payload, "finished", result_type=type(result).__name__)
@@ -209,15 +227,20 @@ def _run_service_request(request_model_name: str, handler_name: str, payload: di
     handler = getattr(service_module, handler_name)
 
     try:
-        response = asyncio.run(handler(request_model(**payload)))
+        request = request_model(**payload)
+    except Exception as exc:
+        return {"success": False, "errors": [str(exc)]}
+
+    try:
+        response = asyncio.run(handler(request))
     except HTTPException as exc:
-        return {"success": False, "error": str(exc.detail)}
+        return {"success": False, "errors": [str(exc.detail)]}
 
     if hasattr(response, "model_dump"):
         return response.model_dump()
     if isinstance(response, dict):
         return response
-    return {"success": False, "error": f"Unexpected response type: {type(response).__name__}"}
+    return {"success": False, "errors": [f"Unexpected response type: {type(response).__name__}"]}
 
 
 def _probe_remote_duration_seconds(video_url: str) -> float | None:
@@ -248,6 +271,53 @@ def _probe_remote_duration_seconds(video_url: str) -> float | None:
         return None
 
 
+def _result_values(result: dict, plural_key: str, count: int, repeat_single: bool = False) -> list:
+    values = result.get(plural_key)
+    if isinstance(values, list):
+        if repeat_single and len(values) == 1 and count > 1:
+            return values * count
+        return [values[index] if index < len(values) else None for index in range(count)]
+    return [None for _ in range(count)]
+
+
+def _combine_routed_compression_results(total_inputs: int, routed_results: list[tuple[list[int], dict]]) -> dict:
+    output_paths = [""] * total_inputs
+    output_urls = [""] * total_inputs
+    errors: list[str | None] = [None] * total_inputs
+    success = True
+    active_tasks = None
+    queued_tasks = None
+
+    for indexes, result in routed_results:
+        count = len(indexes)
+        group_output_paths = _result_values(result, "output_paths", count)
+        group_output_urls = _result_values(result, "output_urls", count)
+        group_errors = _result_values(result, "errors", count, repeat_single=True)
+
+        if not result.get("success", False):
+            success = False
+
+        active_tasks = result.get("active_tasks", active_tasks)
+        queued_tasks = result.get("queued_tasks", queued_tasks)
+
+        for offset, original_index in enumerate(indexes):
+            output_paths[original_index] = str(group_output_paths[offset] or "")
+            output_urls[original_index] = str(group_output_urls[offset] or "")
+            error = group_errors[offset]
+            errors[original_index] = str(error) if error else None
+            if error:
+                success = False
+
+    return {
+        "output_paths": output_paths,
+        "output_urls": output_urls,
+        "errors": errors,
+        "success": success,
+        "active_tasks": active_tasks,
+        "queued_tasks": queued_tasks,
+    }
+
+
 @app.function(
     image=compression_router_image,
     secrets=[miner_secret],
@@ -260,34 +330,82 @@ def _probe_remote_duration_seconds(video_url: str) -> float | None:
 @modal.concurrent(max_inputs=16, target_inputs=8)
 def compress(payload: dict) -> dict:
     def _route():
-        duration_seconds = _probe_remote_duration_seconds(str(payload.get("video_path", "")))
-        long_video = duration_seconds is None or duration_seconds >= LONG_COMPRESSION_THRESHOLD_SECONDS
-        if long_video:
-            routed_payload = {
-                **payload,
-                "chunked": True,
-                "chunk_duration_seconds": LONG_COMPRESSION_CHUNK_SECONDS,
-                "chunk_parallelism": LONG_COMPRESSION_CHUNK_PARALLELISM,
-            }
-            _log_task_event(
-                "compress",
-                payload,
-                "routed",
-                duration_seconds=duration_seconds,
-                threshold_seconds=LONG_COMPRESSION_THRESHOLD_SECONDS,
-                routed_worker="compress_rtx_pro_6000",
+        from concurrent.futures import ThreadPoolExecutor
+
+        video_paths = _payload_video_paths(payload)
+        if not video_paths:
+            return {"success": False, "errors": ["video_paths is required"]}
+        if len(video_paths) > 5:
+            return {"success": False, "errors": ["video_paths supports at most 5 inputs"]}
+
+        short_items: list[tuple[int, str]] = []
+        long_items: list[tuple[int, str]] = []
+        durations: list[float | None] = []
+
+        for index, video_path in enumerate(video_paths):
+            duration_seconds = _probe_remote_duration_seconds(video_path)
+            durations.append(duration_seconds)
+            if duration_seconds is None or duration_seconds >= LONG_COMPRESSION_THRESHOLD_SECONDS:
+                long_items.append((index, video_path))
+            else:
+                short_items.append((index, video_path))
+
+        calls = []
+        if long_items:
+            calls.append(
+                (
+                    [index for index, _ in long_items],
+                    compress_rtx_pro_6000,
+                    {
+                        **payload,
+                        "video_paths": [video_path for _, video_path in long_items],
+                        "chunked": True,
+                        "chunk_duration_seconds": LONG_COMPRESSION_CHUNK_SECONDS,
+                        "chunk_parallelism": LONG_COMPRESSION_CHUNK_PARALLELISM,
+                    },
+                    "compress_rtx_pro_6000",
+                )
             )
-            return compress_rtx_pro_6000.remote(routed_payload)
+        if short_items:
+            calls.append(
+                (
+                    [index for index, _ in short_items],
+                    compress_t4,
+                    {
+                        **payload,
+                        "video_paths": [video_path for _, video_path in short_items],
+                        "chunked": False,
+                    },
+                    "compress_t4",
+                )
+            )
 
         _log_task_event(
             "compress",
             payload,
             "routed",
-            duration_seconds=duration_seconds,
+            duration_seconds=durations,
             threshold_seconds=LONG_COMPRESSION_THRESHOLD_SECONDS,
-            routed_worker="compress_t4",
+            routed_workers=[worker_name for _, _, _, worker_name in calls],
         )
-        return compress_t4.remote({**payload, "chunked": False})
+
+        if len(calls) == 1:
+            indexes, worker, routed_payload, _ = calls[0]
+            return _combine_routed_compression_results(
+                len(video_paths),
+                [(indexes, worker.remote(routed_payload))],
+            )
+
+        routed_results = []
+        with ThreadPoolExecutor(max_workers=len(calls)) as executor:
+            futures = [
+                (indexes, executor.submit(worker.remote, routed_payload))
+                for indexes, worker, routed_payload, _ in calls
+            ]
+            for indexes, future in futures:
+                routed_results.append((indexes, future.result()))
+
+        return _combine_routed_compression_results(len(video_paths), routed_results)
 
     return _run_with_task_logs("compress", payload, _route)
 
@@ -297,7 +415,7 @@ def compress(payload: dict) -> dict:
     volumes={MODAL_SHARED_VOLUME_PATH: compression_volume},
     **_gpu_worker_options(MAX_CONTAINERS_COMPRESSION, COMPRESSION_TIMEOUT_SECONDS, SHORT_COMPRESSION_GPU),
 )
-@modal.concurrent(max_inputs=1)
+@modal.concurrent(max_inputs=MODAL_GPU_WORKER_MAX_INPUTS, target_inputs=MODAL_GPU_WORKER_TARGET_INPUTS)
 def compress_t4(payload: dict) -> dict:
     return _run_with_task_logs(
         "compress_t4",
@@ -311,7 +429,7 @@ def compress_t4(payload: dict) -> dict:
     volumes={MODAL_SHARED_VOLUME_PATH: compression_volume},
     **_gpu_worker_options(MAX_CONTAINERS_COMPRESSION, COMPRESSION_TIMEOUT_SECONDS, LONG_COMPRESSION_GPU),
 )
-@modal.concurrent(max_inputs=1)
+@modal.concurrent(max_inputs=MODAL_GPU_WORKER_MAX_INPUTS, target_inputs=MODAL_GPU_WORKER_TARGET_INPUTS)
 def compress_rtx_pro_6000(payload: dict) -> dict:
     return _run_with_task_logs(
         "compress_rtx_pro_6000",
@@ -325,7 +443,7 @@ def compress_rtx_pro_6000(payload: dict) -> dict:
     volumes={MODAL_SHARED_VOLUME_PATH: upscaling_video2x_volume},
     **_gpu_worker_options(MAX_CONTAINERS_UPSCALING, UPSCALING_TIMEOUT_SECONDS),
 )
-@modal.concurrent(max_inputs=1)
+@modal.concurrent(max_inputs=MODAL_GPU_WORKER_MAX_INPUTS, target_inputs=MODAL_GPU_WORKER_TARGET_INPUTS)
 def upscale_video2x(payload: dict) -> dict:
     return _run_with_task_logs(
         "upscale_video2x",
@@ -339,7 +457,7 @@ def upscale_video2x(payload: dict) -> dict:
     volumes={MODAL_SHARED_VOLUME_PATH: upscaling_ffmpeg_volume},
     **_gpu_worker_options(MAX_CONTAINERS_UPSCALING, UPSCALING_TIMEOUT_SECONDS),
 )
-@modal.concurrent(max_inputs=1)
+@modal.concurrent(max_inputs=MODAL_GPU_WORKER_MAX_INPUTS, target_inputs=MODAL_GPU_WORKER_TARGET_INPUTS)
 def upscale_ffmpeg(payload: dict) -> dict:
     return _run_with_task_logs(
         "upscale_ffmpeg",
@@ -353,7 +471,7 @@ def upscale_ffmpeg(payload: dict) -> dict:
     volumes={MODAL_SHARED_VOLUME_PATH: compression_volume},
     **_gpu_worker_options(MAX_CONTAINERS_COMPRESSION, COMPRESSION_TIMEOUT_SECONDS, LONG_COMPRESSION_GPU),
 )
-@modal.concurrent(max_inputs=1)
+@modal.concurrent(max_inputs=MODAL_GPU_WORKER_MAX_INPUTS, target_inputs=MODAL_GPU_WORKER_TARGET_INPUTS)
 @modal.asgi_app()
 def compression_api():
     return _load_fastapi_app()
@@ -364,7 +482,7 @@ def compression_api():
     volumes={MODAL_SHARED_VOLUME_PATH: compression_volume},
     **_gpu_worker_options(MAX_CONTAINERS_COMPRESSION, COMPRESSION_TIMEOUT_SECONDS, SHORT_COMPRESSION_GPU),
 )
-@modal.concurrent(max_inputs=1)
+@modal.concurrent(max_inputs=MODAL_GPU_WORKER_MAX_INPUTS, target_inputs=MODAL_GPU_WORKER_TARGET_INPUTS)
 @modal.asgi_app()
 def compression_t4_api():
     return _load_fastapi_app()
@@ -375,7 +493,7 @@ def compression_t4_api():
     volumes={MODAL_SHARED_VOLUME_PATH: upscaling_video2x_volume},
     **_gpu_worker_options(MAX_CONTAINERS_UPSCALING, UPSCALING_TIMEOUT_SECONDS),
 )
-@modal.concurrent(max_inputs=1)
+@modal.concurrent(max_inputs=MODAL_GPU_WORKER_MAX_INPUTS, target_inputs=MODAL_GPU_WORKER_TARGET_INPUTS)
 @modal.asgi_app()
 def upscaling_video2x_api():
     return _load_fastapi_app()
@@ -386,7 +504,7 @@ def upscaling_video2x_api():
     volumes={MODAL_SHARED_VOLUME_PATH: upscaling_ffmpeg_volume},
     **_gpu_worker_options(MAX_CONTAINERS_UPSCALING, UPSCALING_TIMEOUT_SECONDS),
 )
-@modal.concurrent(max_inputs=1)
+@modal.concurrent(max_inputs=MODAL_GPU_WORKER_MAX_INPUTS, target_inputs=MODAL_GPU_WORKER_TARGET_INPUTS)
 @modal.asgi_app()
 def upscaling_ffmpeg_api():
     return _load_fastapi_app()
@@ -563,7 +681,7 @@ def test_worker(
     worker_key = worker.strip().lower()
     if worker_key in ("compression", "compress"):
         payload: dict[str, Any] = {
-            "video_path": video_url,
+            "video_paths": [video_url],
             "task_id": task_id,
             "codec": codec,
             "codec_mode": codec_mode.upper(),
@@ -581,7 +699,7 @@ def test_worker(
         "t4",
     ):
         payload = {
-            "video_path": video_url,
+            "video_paths": [video_url],
             "task_id": task_id,
             "codec": codec,
             "codec_mode": codec_mode.upper(),
@@ -593,7 +711,7 @@ def test_worker(
         result = compress_t4.remote(payload)
     elif worker_key in ("compression-rtx", "compress_rtx", "compress_rtx_pro_6000", "rtx"):
         payload = {
-            "video_path": video_url,
+            "video_paths": [video_url],
             "task_id": task_id,
             "codec": codec,
             "codec_mode": codec_mode.upper(),
@@ -607,11 +725,11 @@ def test_worker(
         result = compress_rtx_pro_6000.remote(payload)
     elif worker_key in ("video2x", "upscaling-video2x", "upscale_video2x"):
         result = upscale_video2x.remote(
-            {"video_path": video_url, "task_id": task_id, "scale": scale}
+            {"video_paths": [video_url], "task_id": task_id, "scale": scale}
         )
     elif worker_key in ("ffmpeg", "upscaling-ffmpeg", "upscale_ffmpeg"):
         result = upscale_ffmpeg.remote(
-            {"video_path": video_url, "task_id": task_id, "scale": scale}
+            {"video_paths": [video_url], "task_id": task_id, "scale": scale}
         )
     else:
         raise ValueError("worker must be one of: compression, compression-short, compression-rtx, video2x, ffmpeg")

@@ -702,7 +702,12 @@ async def _running_task():
 
 
 class CompressRequest(BaseModel):
-    video_path: str = Field(..., description="Local path or URL to input video")
+    video_paths: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=5,
+        description="Input video path or URL list, up to 5 items",
+    )
     task_id: str = Field("", description="Task ID for logging")
     codec: str = Field("AV1", description="Target codec: AV1, H264, HEVC, VP9")
     codec_mode: str = Field("CRF", description="Rate control mode: CRF or VBR")
@@ -717,10 +722,10 @@ class CompressRequest(BaseModel):
 
 
 class CompressResponse(BaseModel):
-    output_path: str = Field("", description="Local path (local mode) or empty (remote mode)")
-    output_url: str = Field("", description="S3 presigned URL (remote mode) or empty (local mode)")
+    output_paths: list[str] = Field(default_factory=list, description="Per-input local output paths")
+    output_urls: list[str] = Field(default_factory=list, description="Per-input S3 presigned URLs")
+    errors: list[Optional[str]] = Field(default_factory=list, description="Per-input errors")
     success: bool
-    error: Optional[str] = None
     active_tasks: Optional[int] = None
     queued_tasks: Optional[int] = None
 
@@ -742,14 +747,12 @@ async def queue_status():
     return await _queue_snapshot()
 
 
-@app.post("/compress", response_model=CompressResponse)
-async def compress(req: CompressRequest):
-    task_label = req.task_id or uuid.uuid4().hex[:8]
-    remote_mode = _is_url(req.video_path)
+async def _compress_one(req: CompressRequest, input_video: str, task_label: str) -> CompressResponse:
+    remote_mode = _is_url(input_video)
     encoder = CODEC_MAP.get(req.codec.upper(), "av1_nvenc")
 
     if remote_mode and DISABLE_REMOTE_IO:
-        return CompressResponse(success=False, error="Remote URL input is disabled for this local-only service")
+        return CompressResponse(success=False, errors=["Remote URL input is disabled for this local-only service"])
 
     local_input = ""
     output_path = ""
@@ -774,12 +777,12 @@ async def compress(req: CompressRequest):
                 local_input = os.path.join(SHARED_VOLUME_PATH, f"{task_label}_input.mp4")
                 await _track_temp_files(local_input)
                 try:
-                    await _download_url(req.video_path, local_input)
+                    await _download_url(input_video, local_input)
                 except Exception as e:
                     _cleanup(local_input)
-                    return CompressResponse(success=False, error=f"Failed to download input: {e}")
+                    return CompressResponse(success=False, errors=[f"Failed to download input: {e}"])
             else:
-                local_input = req.video_path
+                local_input = input_video
                 if not os.path.exists(local_input):
                     raise HTTPException(status_code=400, detail=f"Input file not found: {local_input}")
                 await _track_temp_files(local_input)
@@ -831,7 +834,7 @@ async def compress(req: CompressRequest):
             _cleanup(output_path)
             if remote_mode:
                 _cleanup(local_input)
-            return CompressResponse(success=False, error=run_error or "compression did not start", **stats)
+            return CompressResponse(success=False, errors=[run_error or "compression did not start"], **stats)
 
         if returncode != 0:
             err_msg = run_error or _format_process_output(stdout, stderr) or "compression failed without output"
@@ -839,13 +842,13 @@ async def compress(req: CompressRequest):
             _cleanup(output_path)
             if remote_mode:
                 _cleanup(local_input)
-            return CompressResponse(success=False, error=err_msg, **stats)
+            return CompressResponse(success=False, errors=[err_msg], **stats)
 
         if not os.path.exists(output_path):
             log.error(f"[{task_label}] Output file not found: {output_path}")
             if remote_mode:
                 _cleanup(local_input)
-            return CompressResponse(success=False, error="Output file not created", **stats)
+            return CompressResponse(success=False, errors=["Output file not created"], **stats)
 
         # --- Remote mode: upload result to S3, return URL ---
         if remote_mode:
@@ -853,14 +856,52 @@ async def compress(req: CompressRequest):
                 s3_key = f"processing/{task_label}/{output_filename}"
                 output_url = _upload_to_s3(output_path, s3_key)
                 log.info(f"[{task_label}] Compression complete (remote): {output_url[:80]}...")
-                return CompressResponse(output_url=output_url, success=True, **stats)
+                return CompressResponse(output_urls=[output_url], errors=[None], success=True, **stats)
             except Exception as e:
                 log.error(f"[{task_label}] S3 upload failed: {e}")
-                return CompressResponse(success=False, error=f"S3 upload failed: {e}", **stats)
+                return CompressResponse(success=False, errors=[f"S3 upload failed: {e}"], **stats)
             finally:
                 _cleanup(local_input, output_path)
 
         log.info(f"[{task_label}] Compression complete (local): {output_path}")
-        return CompressResponse(output_path=output_path, success=True, **stats)
+        return CompressResponse(output_paths=[output_path], errors=[None], success=True, **stats)
     finally:
         await _untrack_temp_files(local_input, output_path)
+
+
+def _combine_compress_responses(responses: list[CompressResponse]) -> CompressResponse:
+    output_paths = [response.output_paths[0] if response.output_paths else "" for response in responses]
+    output_urls = [response.output_urls[0] if response.output_urls else "" for response in responses]
+    errors = [response.errors[0] if response.errors else None for response in responses]
+    success = all(response.success for response in responses)
+    latest = responses[-1] if responses else None
+
+    return CompressResponse(
+        output_paths=output_paths,
+        output_urls=output_urls,
+        errors=errors,
+        success=success,
+        active_tasks=latest.active_tasks if latest else None,
+        queued_tasks=latest.queued_tasks if latest else None,
+    )
+
+
+@app.post("/compress", response_model=CompressResponse)
+async def compress(req: CompressRequest):
+    input_videos = [video_path.strip() for video_path in req.video_paths]
+    if any(not video_path for video_path in input_videos):
+        raise HTTPException(status_code=400, detail="video_paths entries are required")
+
+    base_task_id = req.task_id or uuid.uuid4().hex[:8]
+    responses = await asyncio.gather(
+        *[
+            _compress_one(
+                req,
+                input_video,
+                base_task_id if len(input_videos) == 1 else f"{base_task_id}-{index + 1}",
+            )
+            for index, input_video in enumerate(input_videos)
+        ]
+    )
+
+    return responses[0] if len(responses) == 1 else _combine_compress_responses(responses)

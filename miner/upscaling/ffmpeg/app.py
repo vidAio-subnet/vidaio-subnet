@@ -377,16 +377,16 @@ async def _running_task():
 
 
 class UpscaleRequest(BaseModel):
-    video_path: str
+    video_paths: list[str] = Field(..., min_length=1, max_length=5)
     scale: int = Field(..., description="Upscaling factor: 2 or 4")
     task_id: str = ""
 
 
 class UpscaleResponse(BaseModel):
-    output_path: str = ""
-    output_url: str = ""
+    output_paths: list[str] = Field(default_factory=list)
+    output_urls: list[str] = Field(default_factory=list)
+    errors: list[Optional[str]] = Field(default_factory=list)
     success: bool
-    error: Optional[str] = None
     active_tasks: Optional[int] = None
     queued_tasks: Optional[int] = None
 
@@ -402,15 +402,10 @@ async def queue_status():
     return await _queue_snapshot()
 
 
-@app.post("/upscale", response_model=UpscaleResponse)
-async def upscale(req: UpscaleRequest):
-    if req.scale not in (2, 4):
-        raise HTTPException(status_code=400, detail="scale must be 2 or 4")
-
-    task = req.task_id or uuid.uuid4().hex[:8]
-    remote = _is_url(req.video_path)
+async def _upscale_one(req: UpscaleRequest, input_video: str, task: str) -> UpscaleResponse:
+    remote = _is_url(input_video)
     if remote and DISABLE_REMOTE_IO:
-        return UpscaleResponse(success=False, error="Remote URL input is disabled for this local-only service")
+        return UpscaleResponse(success=False, errors=["Remote URL input is disabled for this local-only service"])
 
     local_input = ""
     output_path = ""
@@ -426,14 +421,14 @@ async def upscale(req: UpscaleRequest):
 
             os.makedirs(SHARED_VOLUME_PATH, exist_ok=True)
 
-            local_input = os.path.join(SHARED_VOLUME_PATH, f"{task}_input.mp4") if remote else req.video_path
+            local_input = os.path.join(SHARED_VOLUME_PATH, f"{task}_input.mp4") if remote else input_video
             await _track_temp_files(local_input)
             if remote:
                 try:
-                    await _download_url(req.video_path, local_input)
+                    await _download_url(input_video, local_input)
                 except Exception as e:
                     _cleanup(local_input)
-                    return UpscaleResponse(success=False, error=f"Failed to download input: {e}")
+                    return UpscaleResponse(success=False, errors=[f"Failed to download input: {e}"])
             elif not os.path.exists(local_input):
                 raise HTTPException(status_code=400, detail=f"Input file not found: {local_input}")
 
@@ -470,23 +465,64 @@ async def upscale(req: UpscaleRequest):
             _cleanup(output_path)
             if remote:
                 _cleanup(local_input)
-            return UpscaleResponse(success=False, error=run_error or "ffmpeg did not start", **stats)
+            return UpscaleResponse(success=False, errors=[run_error or "ffmpeg did not start"], **stats)
 
         if result.returncode != 0:
             _cleanup(output_path)
             if remote:
                 _cleanup(local_input)
-            return UpscaleResponse(success=False, error=result.stderr[-1000:], **stats)
+            return UpscaleResponse(success=False, errors=[result.stderr[-1000:]], **stats)
         if remote:
             try:
                 key = f"upscaling/{task}/{os.path.basename(output_path)}"
                 url = _upload_to_s3(output_path, key)
-                return UpscaleResponse(success=True, output_url=url, **stats)
+                return UpscaleResponse(success=True, output_urls=[url], errors=[None], **stats)
             except Exception as e:
                 log.error(f"[{task}] S3 upload failed: {e}")
-                return UpscaleResponse(success=False, error=f"S3 upload failed: {e}", **stats)
+                return UpscaleResponse(success=False, errors=[f"S3 upload failed: {e}"], **stats)
             finally:
                 _cleanup(local_input, output_path)
-        return UpscaleResponse(success=True, output_path=output_path, **stats)
+        return UpscaleResponse(success=True, output_paths=[output_path], errors=[None], **stats)
     finally:
         await _untrack_temp_files(local_input, output_path)
+
+
+def _combine_upscale_responses(responses: list[UpscaleResponse]) -> UpscaleResponse:
+    output_paths = [response.output_paths[0] if response.output_paths else "" for response in responses]
+    output_urls = [response.output_urls[0] if response.output_urls else "" for response in responses]
+    errors = [response.errors[0] if response.errors else None for response in responses]
+    success = all(response.success for response in responses)
+    latest = responses[-1] if responses else None
+
+    return UpscaleResponse(
+        output_paths=output_paths,
+        output_urls=output_urls,
+        errors=errors,
+        success=success,
+        active_tasks=latest.active_tasks if latest else None,
+        queued_tasks=latest.queued_tasks if latest else None,
+    )
+
+
+@app.post("/upscale", response_model=UpscaleResponse)
+async def upscale(req: UpscaleRequest):
+    if req.scale not in (2, 4):
+        raise HTTPException(status_code=400, detail="scale must be 2 or 4")
+
+    input_videos = [video_path.strip() for video_path in req.video_paths]
+    if any(not video_path for video_path in input_videos):
+        raise HTTPException(status_code=400, detail="video_paths entries are required")
+
+    base_task_id = req.task_id or uuid.uuid4().hex[:8]
+    responses = await asyncio.gather(
+        *[
+            _upscale_one(
+                req,
+                input_video,
+                base_task_id if len(input_videos) == 1 else f"{base_task_id}-{index + 1}",
+            )
+            for index, input_video in enumerate(input_videos)
+        ]
+    )
+
+    return responses[0] if len(responses) == 1 else _combine_upscale_responses(responses)

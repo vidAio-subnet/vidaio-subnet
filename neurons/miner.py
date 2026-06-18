@@ -400,7 +400,7 @@ class Miner(BaseMiner):
             logger.warning(f"Unknown upscaling task_type={task_type}, defaulting to 2x scale")
 
         return {
-            "video_path": video_path,
+            "video_paths": [video_path],
             "scale": scale,
             "task_id": task_id,
         }
@@ -421,7 +421,7 @@ class Miner(BaseMiner):
     def _compression_service_payload(self, payload, video_path: str, task_id: str) -> dict:
         compression_type = self._compression_type_from_payload(payload)
         compression_config = {
-            "video_path": video_path,
+            "video_paths": [video_path],
             "task_id": task_id,
             "codec": payload.target_codec,
             "codec_mode": payload.codec_mode.upper(),
@@ -458,10 +458,12 @@ class Miner(BaseMiner):
 
         result = response.json()
         if not result.get("success", False):
-            logger.error(f"{service_name} service failed: {result.get('error')}")
+            logger.error(f"{service_name} service failed: {result.get('errors')}")
             return None
 
-        processed_video_url = result.get("output_url") or result.get("output_path")
+        output_urls = result.get("output_urls") or []
+        output_paths = result.get("output_paths") or []
+        processed_video_url = (output_urls[0] if output_urls else None) or (output_paths[0] if output_paths else None)
         if not processed_video_url:
             logger.error(f"{service_name} service returned no output URL/path")
             return None
@@ -505,12 +507,13 @@ class Miner(BaseMiner):
             logger.error(f"Modal {service_name} returned unexpected result type: {type(result).__name__}")
             return None
         if not result.get("success", False):
-            logger.error(f"Modal {service_name} failed: {result.get('error')}")
+            logger.error(f"Modal {service_name} failed: {result.get('errors')}")
             return None
 
-        processed_video_url = result.get("output_url")
+        output_urls = result.get("output_urls") or []
+        processed_video_url = output_urls[0] if output_urls else None
         if not processed_video_url:
-            logger.error(f"Modal {service_name} returned no output_url")
+            logger.error(f"Modal {service_name} returned no output_urls")
             return None
         if not _is_url(processed_video_url):
             logger.error(f"Modal {service_name} returned non-URL output: {processed_video_url}")

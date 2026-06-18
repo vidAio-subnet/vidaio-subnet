@@ -32,7 +32,7 @@ MAX_QUEUE_SIZE_COMPRESSION=5
 
 Queue status is available from `/queue` on each service.
 
-For Modal deployments, the worker functions set `MAX_QUEUE_SIZE_*` to `0` and `@modal.concurrent(max_inputs=1)`. Modal owns the pending-input queue and scales out containers instead of persisting work in the Python process.
+For Modal deployments, the worker functions set `MAX_QUEUE_SIZE_*` to `0`, `MAX_CONCURRENT_*` to `MODAL_SERVICE_MAX_CONCURRENT` (default 5), and `@modal.concurrent(max_inputs=MODAL_GPU_WORKER_MAX_INPUTS)` (default 5). Modal owns the pending-input queue and scales out containers instead of persisting work in the Python process.
 
 Compression adds a duration-aware Modal router. Short compression jobs route to `compress_t4` (historical entrypoint name) on `MODAL_SHORT_COMPRESSION_GPU`, which defaults to `L4,L40S` so Modal tries L4 first and falls back to L40S. Jobs with unknown duration, or duration greater than `MODAL_LONG_COMPRESSION_THRESHOLD_SECONDS` (default 1200 seconds), route to `compress_rtx_pro_6000` on RTX PRO 6000 and use chunked compression.
 
@@ -88,10 +88,12 @@ MODAL_LONG_COMPRESSION_CHUNK_SECONDS=600
 MODAL_LONG_COMPRESSION_CHUNK_PARALLELISM=4
 MODAL_SHORT_COMPRESSION_GPU=L4,L40S
 MODAL_LONG_COMPRESSION_GPU=RTX-PRO-6000
+MODAL_SERVICE_MAX_CONCURRENT=5
+MODAL_GPU_WORKER_MAX_INPUTS=5
 MODAL_COMPRESSION_TIMEOUT_SECONDS=14400
 ```
 
-For a 3 hour video, the long Modal worker targets roughly 18 ten-minute chunks and compresses several chunks at once inside the RTX PRO 6000 container. Additional API requests still scale out to additional Modal GPU containers because every GPU worker uses one input per container.
+For a 3 hour video, the long Modal worker targets roughly 18 ten-minute chunks and compresses several chunks at once inside the RTX PRO 6000 container. Additional API requests can share a warm Modal GPU container up to `MODAL_GPU_WORKER_MAX_INPUTS`, then Modal can still scale out to additional containers.
 
 Caveats:
 
@@ -144,9 +146,11 @@ docker compose up -d compression
 - `compress_t4`: short-video compression worker. The name is historical; the GPU defaults to L4 with L40S fallback.
 - `compress_rtx_pro_6000`: long-video chunked compression worker.
 
-GPU workers use `cpu=16.0`, `min_containers=0`, `max_containers=5` by default, `scaledown_window=300`, and one input per container. Upscaling and long compression use RTX PRO 6000 by default; short compression uses `MODAL_SHORT_COMPRESSION_GPU` (`L4,L40S` by default). A burst of 3 to 5 requests is handled by Modal scale-out; after the idle window, the GPU functions scale back to zero.
+GPU workers use `cpu=16.0`, `min_containers=0`, `max_containers=5` by default, `scaledown_window=300`, and up to 5 concurrent inputs per container. Upscaling and long compression use RTX PRO 6000 by default; short compression uses `MODAL_SHORT_COMPRESSION_GPU` (`L4,L40S` by default). A burst of 3 to 5 requests can be handled inside a warm worker; larger bursts are handled by Modal scale-out. After the idle window, the GPU functions scale back to zero.
 
 Compression is duration-routed: `compress` probes the URL duration, `compress_t4` uses `gpu=["L4", "L40S"]` by default for short videos, and `compress_rtx_pro_6000` uses `gpu="RTX-PRO-6000"` plus parallel chunk encoding for long videos.
+
+Modal service request bodies use `video_paths` with 1 to 5 input URLs. The miner currently sends a single-item list built from `UpscalingMinerPayload.reference_video_url` or `CompressionMinerPayload.reference_video_url`.
 
 Modal's Logs table is keyed by app/run name, so deployed worker rows stay under `vidaio-miner-workers`. Each worker prints structured JSON log events with `task_id`, `worker`, and `modal_input_id`; search the log tab for the task ID to isolate a request.
 
@@ -197,6 +201,8 @@ MINER_MODAL_UPSCALING_FUNCTION=upscale_video2x
 MINER_MODAL_COMPRESSION_FUNCTION=compress
 MODAL_SHORT_COMPRESSION_GPU=L4,L40S
 MODAL_LONG_COMPRESSION_GPU=RTX-PRO-6000
+MODAL_SERVICE_MAX_CONCURRENT=5
+MODAL_GPU_WORKER_MAX_INPUTS=5
 MODAL_LONG_COMPRESSION_THRESHOLD_SECONDS=1200
 MODAL_LONG_COMPRESSION_CHUNK_SECONDS=600
 MODAL_LONG_COMPRESSION_CHUNK_PARALLELISM=4
@@ -239,17 +245,17 @@ For direct HTTP endpoint tests, use the URLs printed by `modal deploy` for `upsc
 ```bash
 curl -X POST "$MODAL_VIDEO2X_URL/upscale" \
   -H "Content-Type: application/json" \
-  -d '{"video_path":"https://example.com/input.mp4","scale":2,"task_id":"manual-video2x"}'
+  -d '{"video_paths":["https://example.com/input.mp4"],"scale":2,"task_id":"manual-video2x"}'
 
 curl -X POST "$MODAL_FFMPEG_URL/upscale" \
   -H "Content-Type: application/json" \
-  -d '{"video_path":"https://example.com/input.mp4","scale":2,"task_id":"manual-ffmpeg"}'
+  -d '{"video_paths":["https://example.com/input.mp4"],"scale":2,"task_id":"manual-ffmpeg"}'
 
 curl -X POST "$MODAL_COMPRESSION_URL/compress" \
   -H "Content-Type: application/json" \
-  -d '{"video_path":"https://example.com/input.mp4","task_id":"manual-compress","codec":"AV1","codec_mode":"CRF","cq":35}'
+  -d '{"video_paths":["https://example.com/input.mp4"],"task_id":"manual-compress","codec":"AV1","codec_mode":"CRF","cq":35}'
 
 curl -X POST "$MODAL_COMPRESSION_T4_URL/compress" \
   -H "Content-Type: application/json" \
-  -d '{"video_path":"https://example.com/input.mp4","task_id":"manual-compress-t4","codec":"AV1","codec_mode":"CRF","cq":35,"chunked":false}'
+  -d '{"video_paths":["https://example.com/input.mp4"],"task_id":"manual-compress-short","codec":"AV1","codec_mode":"CRF","cq":35,"chunked":false}'
 ```
