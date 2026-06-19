@@ -72,6 +72,12 @@ TARGET_BITRATES = [
 SLEEP_TIME_LOW = 60 * 5 # 5 minutes
 SLEEP_TIME_HIGH = 60 * 6 # 6 minutes
 
+try:
+    SYNTHETIC_QUERIES_PER_MINER = max(1, int(os.getenv("SYNTHETIC_QUERIES_PER_MINER", "5")))
+except ValueError:
+    logger.warning("Invalid SYNTHETIC_QUERIES_PER_MINER value, defaulting to 5")
+    SYNTHETIC_QUERIES_PER_MINER = 5
+
 class Validator(base.BaseValidator):
     def __init__(self):
         super().__init__()
@@ -190,9 +196,7 @@ class Validator(base.BaseValidator):
             start_time = time.time()  # Record start time
 
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(video_url, allow_redirects=False) as response:
-                    if response.status in (301, 302, 303, 307, 308):
-                        raise Exception(f"Redirect blocked: {response.status} -> {response.headers.get('Location')}") 
+                async with session.get(video_url, allow_redirects=True) as response:
                     if response.status != 200:
                         raise Exception(f"Failed to download video. HTTP status: {response.status}")
 
@@ -253,6 +257,7 @@ class Validator(base.BaseValidator):
             self.miner_manager.session.execute(delete_stmt)
 
         self.miner_manager.session.commit()
+        self.miner_manager.sync_miner_chain_metadata(miner_uids)
 
     async def start_synthetic_epoch(self):
         # Wait for scheduler to be ready first
@@ -603,6 +608,21 @@ class Validator(base.BaseValidator):
                 "error": e,
                 "latency_ms": duration,
             }
+
+    def _response_video_urls(self, response, expected_count: int) -> list[str]:
+        miner_response = getattr(response, "miner_response", None)
+        if miner_response is None:
+            return [""] * expected_count
+
+        urls = list(getattr(miner_response, "optimized_video_urls", []) or [])
+        legacy_url = getattr(miner_response, "optimized_video_url", "")
+        if not urls and legacy_url:
+            urls = [legacy_url]
+
+        if len(urls) < expected_count:
+            urls.extend([""] * (expected_count - len(urls)))
+
+        return urls[:expected_count]
     
     async def call_miner_polling(
         self,
@@ -705,68 +725,101 @@ class Validator(base.BaseValidator):
         return _empty("polling timeout")
 
     async def process_upscaling_miners(self, upscaling_miners_with_lengths, version):
-        """Process upscaling miners in batches similar to the original implementation."""
-        batch_size = CONFIG.bandwidth.requests_per_synthetic_interval
-
+        """Process all upscaling miners concurrently with the same bundled challenge."""
         upscaling_miners = [(axon, uid) for axon, uid, _ in upscaling_miners_with_lengths]
         upscaling_content_lengths = {uid: length for _, uid, length in upscaling_miners_with_lengths}
 
-        miner_batches = await self.create_miner_batches(upscaling_miners, batch_size, task_type="upscaling")
+        num_miners = len(upscaling_miners)
+        if num_miners == 0:
+            return
 
-        logger.info(f"Created {len(miner_batches)} upscaling batches of size {batch_size}")
+        query_count = SYNTHETIC_QUERIES_PER_MINER
+        shared_content_length = min(upscaling_content_lengths.values()) if upscaling_content_lengths else 5
+        content_lengths = [shared_content_length] * query_count
+        uids = [uid for _, uid in upscaling_miners]
+        axons = [axon for axon, _ in upscaling_miners]
 
-        for batch_idx, batch in enumerate(miner_batches):
-            batch_start_time = time.time()
-            logger.info(f"🧩 Processing upscaling batch {batch_idx + 1}/{len(miner_batches)} 🧩")
-            
-            uids = []
-            axons = []
-            content_lengths = []
-            for recent_count, miner in batch:
-                content_lengths.append(upscaling_content_lengths[miner[1]])
-                uids.append(miner[1])
-                axons.append(miner[0])
-            
-            round_id = str(uuid.uuid4())
-            payload_urls, video_ids, uploaded_object_names, synapses, task_types = await self.challenge_synthesizer.build_synthetic_protocol(content_lengths, version, round_id)
-            logger.info(f"Built upscaling challenge protocol: payload URLs: {payload_urls}\nvideo IDs: {video_ids}")
+        logger.info(
+            f"🧩 Processing {num_miners} upscaling miners concurrently with "
+            f"{query_count} shared synthetic queries 🧩"
+        )
+        batch_start_time = time.time()
+        round_id = str(uuid.uuid4())
 
-            timestamp = datetime.now(timezone.utc).isoformat()
+        payload_urls, video_ids, uploaded_object_names, synapses, task_types = await self.challenge_synthesizer.build_synthetic_protocol(
+            content_lengths, version, round_id, bundle_protocols=True
+        )
+        query_count = len(payload_urls)
+        logger.info(f"Built upscaling challenge protocol: payload URLs: {payload_urls}\nvideo IDs: {video_ids}")
 
-            forward_tasks = [
-                self.call_miner(axon, synapse, uid, timeout=90)
-                for uid, axon, synapse in zip(uids, axons, synapses)
-            ]
-            raw_responses = await asyncio.gather(*forward_tasks)
-            responses = [response['result'] for response in raw_responses]
+        timestamp = datetime.now(timezone.utc).isoformat()
+        responses = await self.call_miner_batch(
+            axons,
+            synapses[0],
+            num_miners,
+            timeout=max(90, 90 * query_count),
+        )
 
-            logger.info(f"🎲 Received {len(responses)} upscaling responses from miners 🎲")
+        logger.info(f"🎲 Received {len(responses)} upscaling responses from miners 🎲")
 
-            reference_video_paths = []
-            for video_id in video_ids:
-                reference_video_path = get_trim_video_path(video_id)
-                if not os.path.exists(reference_video_path):
-                    logger.warning(f"⚠️ Reference video file missing for video_id {video_id}: {reference_video_path}")
-                reference_video_paths.append(reference_video_path)
-            
-            await self.score_upscalings(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, content_lengths, task_types, round_id)
+        reference_video_paths = []
+        for video_id in video_ids:
+            reference_video_path = get_trim_video_path(video_id)
+            if not os.path.exists(reference_video_path):
+                logger.warning(f"⚠️ Reference video file missing for video_id {video_id}: {reference_video_path}")
+            reference_video_paths.append(reference_video_path)
 
-            batch_processed_time = time.time() - batch_start_time
-            
-            # sleep_time = random.uniform(SLEEP_TIME_LOW, SLEEP_TIME_HIGH) - batch_processed_time
-            logger.info(f"Completed upscaling batch within {batch_processed_time:.2f} seconds")
-            logger.info(f"Scored {batch_idx * batch_size + len(batch)} upscaling miners")
-            # logger.info(f"Sleeping for 5-6 minutes before next upscaling batch")
-            
-            # await asyncio.sleep(sleep_time)
+        flat_uids = []
+        flat_distorted_urls = []
+        flat_payload_urls = []
+        flat_reference_paths = []
+        flat_video_ids = []
+        flat_uploaded_object_names = []
+        flat_content_lengths = []
+        flat_task_types = []
+
+        for response_idx, uid in enumerate(uids):
+            response = responses[response_idx] if response_idx < len(responses) else None
+            response_urls = self._response_video_urls(response, query_count)
+            for query_idx, distorted_url in enumerate(response_urls):
+                flat_uids.append(uid)
+                flat_distorted_urls.append(distorted_url)
+                flat_payload_urls.append(payload_urls[query_idx])
+                flat_reference_paths.append(reference_video_paths[query_idx])
+                flat_video_ids.append(video_ids[query_idx])
+                flat_uploaded_object_names.append(uploaded_object_names[query_idx])
+                flat_content_lengths.append(content_lengths[query_idx])
+                flat_task_types.append(task_types[query_idx])
+
+        await self.score_upscalings(
+            flat_uids,
+            [],
+            flat_payload_urls,
+            flat_reference_paths,
+            timestamp,
+            flat_video_ids,
+            flat_uploaded_object_names,
+            flat_content_lengths,
+            flat_task_types,
+            round_id,
+            distorted_urls=flat_distorted_urls,
+        )
+
+        batch_processed_time = time.time() - batch_start_time
+        logger.info(f"Completed upscaling batch within {batch_processed_time:.2f} seconds")
+        logger.info(f"Scored {len(flat_uids)} upscaling query responses from {num_miners} miners")
 
     async def process_compression_miners(self, compression_miners, version):
-        """Process all compression miners concurrently, and score them in batches of 5."""
+        """Process all compression miners concurrently with the same bundled challenge."""
         num_miners = len(compression_miners)
         if num_miners == 0:
             return
 
-        logger.info(f"🧩 Processing {num_miners} compression miners concurrently with same challenge broadcasted 🧩")
+        query_count = SYNTHETIC_QUERIES_PER_MINER
+        logger.info(
+            f"🧩 Processing {num_miners} compression miners concurrently with "
+            f"{query_count} shared synthetic queries 🧩"
+        )
         
         round_id = str(uuid.uuid4())
 
@@ -776,14 +829,28 @@ class Validator(base.BaseValidator):
             uids.append(uid)
             axons.append(axon)
 
-        vmaf_thresholds = [random.choice(list(VMAF_QUALITY_THRESHOLD))] * num_miners
+        vmaf_threshold = random.choice(list(VMAF_QUALITY_THRESHOLD))
+        vmaf_thresholds = [vmaf_threshold] * query_count
         target_codec = random.choice(TARGET_CODECS)
         codec_mode = random.choice(CODEC_MODES)
         target_bitrate = random.choice(TARGET_BITRATES)
 
         payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_compression_protocol(
-            vmaf_thresholds, num_miners, version, round_id, target_codec, codec_mode, target_bitrate, broadcast_single_chunk=True)
-        logger.warning(f"Built compression challenge protocol for {num_miners} miners, VMAF threshold {vmaf_thresholds[0]}, codec {target_codec}, mode {codec_mode}, bitrate {target_bitrate} Mbps")
+            vmaf_thresholds,
+            query_count,
+            version,
+            round_id,
+            target_codec,
+            codec_mode,
+            target_bitrate,
+            bundle_protocols=True,
+        )
+        query_count = len(payload_urls)
+        logger.warning(
+            f"Built compression challenge protocol for {num_miners} miners, "
+            f"{query_count} queries, VMAF threshold {vmaf_thresholds[0]}, codec {target_codec}, "
+            f"mode {codec_mode}, bitrate {target_bitrate} Mbps"
+        )
 
         timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -791,7 +858,12 @@ class Validator(base.BaseValidator):
         
         batch_start_time = time.time()
         
-        responses = await self.call_miner_batch(axons, synapses[0], num_miners, timeout=135)
+        responses = await self.call_miner_batch(
+            axons,
+            synapses[0],
+            num_miners,
+            timeout=max(135, 135 * query_count),
+        )
 
         logger.info(f"🎲 Received {len(responses)} compression responses from miners 🎲")
 
@@ -801,6 +873,26 @@ class Validator(base.BaseValidator):
             if not os.path.exists(reference_video_path):
                 logger.warning(f"⚠️ Reference video file missing for video_id {video_id}: {reference_video_path}")
             reference_video_paths.append(reference_video_path)
+
+        flat_uids = []
+        flat_distorted_urls = []
+        flat_payload_urls = []
+        flat_reference_paths = []
+        flat_video_ids = []
+        flat_uploaded_object_names = []
+        flat_vmaf_thresholds = []
+
+        for response_idx, uid in enumerate(uids):
+            response = responses[response_idx] if response_idx < len(responses) else None
+            response_urls = self._response_video_urls(response, query_count)
+            for query_idx, distorted_url in enumerate(response_urls):
+                flat_uids.append(uid)
+                flat_distorted_urls.append(distorted_url)
+                flat_payload_urls.append(payload_urls[query_idx])
+                flat_reference_paths.append(reference_video_paths[query_idx])
+                flat_video_ids.append(video_ids[query_idx])
+                flat_uploaded_object_names.append(uploaded_object_names[query_idx])
+                flat_vmaf_thresholds.append(getattr(vmaf_thresholds[query_idx], "value", vmaf_thresholds[query_idx]))
 
         
         # Concurrently start all downloads that have valid URLs,
@@ -817,8 +909,7 @@ class Validator(base.BaseValidator):
                     return e
 
         download_tasks = []
-        for uid_val, response in zip(uids, responses):
-            url = response.miner_response.optimized_video_url
+        for uid_val, url in zip(flat_uids, flat_distorted_urls):
             if not url or len(url) < 10:
                 logger.error(f"UID {uid_val}: invalid or missing distorted video download URL: {url}")
                 # Create a task that simply returns None
@@ -833,7 +924,7 @@ class Validator(base.BaseValidator):
         
         # Process the results, handling any exceptions
         distorted_file_paths = []
-        for uid_val, url, result in zip(uids, [r.miner_response.optimized_video_url for r in responses], download_results):
+        for uid_val, url, result in zip(flat_uids, flat_distorted_urls, download_results):
             if isinstance(result, Exception):
                 logger.error(f"UID {uid_val}: Failed to download distorted video from {url} - {str(result)}")
                 distorted_file_paths.append(None)
@@ -850,51 +941,35 @@ class Validator(base.BaseValidator):
         batch_processed_time = time.time() - batch_start_time
         logger.info(f"Completed compression gathering and downloading within {batch_processed_time:.2f} seconds")
 
-        # Score in batches of 5
-        score_batch_size = 5
-        logger.info(f"Scoring {num_miners} compression miners in batches of {score_batch_size}")
-        
-        for i in range(0, num_miners, score_batch_size):
-            batch_uids = uids[i:i+score_batch_size]
-            batch_responses = responses[i:i+score_batch_size]
-            batch_distorted_file_paths = distorted_file_paths[i:i+score_batch_size]
-            batch_payload_urls = payload_urls[i:i+score_batch_size]
-            batch_reference_paths = reference_video_paths[i:i+score_batch_size]
-            batch_video_ids = video_ids[i:i+score_batch_size]
-            batch_uploaded_object_names = uploaded_object_names[i:i+score_batch_size]
-            batch_vmaf_thresholds = vmaf_thresholds[i:i+score_batch_size]
-            
-            await self.score_compressions(
-                batch_uids, 
-                batch_responses,
-                batch_distorted_file_paths,
-                batch_payload_urls, 
-                batch_reference_paths, 
-                timestamp, 
-                batch_video_ids, 
-                batch_uploaded_object_names, 
-                batch_vmaf_thresholds, 
-                target_codec, 
-                codec_mode, 
-                target_bitrate, 
-                round_id
-            )
-            
-            # Cleanup downloaded distorted videos after scoring the batch
-            for path in batch_distorted_file_paths:
-                if path and os.path.exists(path):
-                    try:
-                        os.unlink(path)
-                    except Exception as e:
-                        logger.error(f"Error deleting distorted video file {path}: {e}")
-            
-            logger.info(f"Completed scoring compression batch {batch_uids} within {batch_processed_time:.2f} seconds")
-            logger.info(f"Scored {i + len(batch_uids)} of {num_miners} compression miners")
-            # await asyncio.sleep(sleep_time)
+        logger.info(f"Scoring {len(flat_uids)} compression query responses from {num_miners} miners")
+        await self.score_compressions(
+            flat_uids,
+            [],
+            distorted_file_paths,
+            flat_payload_urls,
+            flat_reference_paths,
+            timestamp,
+            flat_video_ids,
+            flat_uploaded_object_names,
+            flat_vmaf_thresholds,
+            target_codec,
+            codec_mode,
+            target_bitrate,
+            round_id,
+            distorted_urls=flat_distorted_urls,
+        )
+
+        for path in distorted_file_paths:
+            if path and os.path.exists(path):
+                try:
+                    os.unlink(path)
+                except Exception as e:
+                    logger.error(f"Error deleting distorted video file {path}: {e}")
 
         try:
-            if os.path.exists(reference_video_paths[0]):
-                os.unlink(reference_video_paths[0])
+            for reference_video_path in set(reference_video_paths):
+                if os.path.exists(reference_video_path):
+                    os.unlink(reference_video_path)
         except Exception as e:
             logger.error(f"Error deleting reference video file: {e}")
 
@@ -941,11 +1016,13 @@ class Validator(base.BaseValidator):
         uploaded_object_names: list[str], 
         content_lengths: list[int], 
         task_types: list[str],
-        round_id: str
+        round_id: str,
+        distorted_urls: list[str] | None = None,
     ):
-        distorted_urls = []
-        for uid, response in zip(uids, responses):
-            distorted_urls.append(response.miner_response.optimized_video_url)
+        if distorted_urls is None:
+            distorted_urls = []
+            for uid, response in zip(uids, responses):
+                distorted_urls.append(response.miner_response.optimized_video_url)
 
         logger.info(f"payloads: {payload_urls}\nresponses: {distorted_urls}")
 
@@ -1054,11 +1131,13 @@ class Validator(base.BaseValidator):
         target_codec: str,
         codec_mode: str,
         target_bitrate: float,
-        round_id: str
+        round_id: str,
+        distorted_urls: list[str] | None = None,
     ):
-        distorted_urls = []
-        for uid, response in zip(uids, responses):
-            distorted_urls.append(response.miner_response.optimized_video_url)
+        if distorted_urls is None:
+            distorted_urls = []
+            for uid, response in zip(uids, responses):
+                distorted_urls.append(response.miner_response.optimized_video_url)
 
         logger.info(f"payload: {payload_urls[0]}\nresponses: {distorted_urls}")
 
@@ -1071,6 +1150,7 @@ class Validator(base.BaseValidator):
                 "video_ids": video_ids,
                 "uploaded_object_names": uploaded_object_names,
                 "vmaf_thresholds": vmaf_thresholds,
+                "distorted_urls": distorted_urls,
                 "target_codec": target_codec,
                 "codec_mode": codec_mode,
                 "target_bitrate": target_bitrate
@@ -1326,7 +1406,41 @@ class Validator(base.BaseValidator):
         stake_array = self.metagraph.S
         miner_uids = [i for i, stake in enumerate(stake_array) if stake < min_stake]
 
-        return miner_uids
+        return self._deduplicate_uids_by_ip(miner_uids, "synthetic miner filter")
+
+    def _axon_ip_address(self, uid: int) -> str:
+        axon = self.metagraph.axons[uid]
+        ip_value = (
+            getattr(axon, "ip_str", None)
+            or getattr(axon, "external_ip", None)
+            or getattr(axon, "ip", None)
+        )
+        if ip_value is None:
+            return ""
+        return str(ip_value)
+
+    def _deduplicate_uids_by_ip(self, uids: list[int], context: str) -> list[int]:
+        seen_ips: dict[str, int] = {}
+        selected = []
+
+        for uid in uids:
+            ip_address = self._axon_ip_address(uid)
+            if ip_address and ip_address in seen_ips:
+                logger.warning(
+                    f"Skipping UID {uid} during {context}: duplicate IP {ip_address} "
+                    f"already used by UID {seen_ips[ip_address]}"
+                )
+                continue
+
+            if ip_address:
+                seen_ips[ip_address] = uid
+            selected.append(uid)
+
+        removed = len(uids) - len(selected)
+        if removed:
+            logger.info(f"Removed {removed} duplicate-IP UIDs during {context}")
+
+        return selected
 
     async def should_process_organic_upscaling(self):
         """Check if organic upscaling tasks should be processed."""

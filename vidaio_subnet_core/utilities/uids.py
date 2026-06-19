@@ -25,6 +25,14 @@ def check_uid_availability(metagraph: "bt.metagraph.Metagraph", uid: int, vpermi
         return False
     return True
 
+def _axon_ip_address(axon) -> str:
+    ip_value = (
+        getattr(axon, "ip_str", None)
+        or getattr(axon, "external_ip", None)
+        or getattr(axon, "ip", None)
+    )
+    return "" if ip_value is None else str(ip_value)
+
 def get_organic_forward_uids(self, count: int = None, task_type : str = None, vpermit_tao_limit: int = 100000000, exclude: List[int] = None) -> np.ndarray:
     """
     Get a list of UIDs that are available for forwarding, selected from
@@ -56,11 +64,21 @@ def get_organic_forward_uids(self, count: int = None, task_type : str = None, vp
 
     # Map hotkeys to UIDs, preserving the accumulate_score ordering
     candidate_uids = []
+    seen_ips = {}
     for hotkey in top_hotkeys:
         uid = hotkey_to_uid.get(hotkey)
         if uid is not None \
                 and uid not in exclude \
                 and check_uid_availability(self.metagraph, uid, vpermit_tao_limit):
+            ip_address = _axon_ip_address(self.metagraph.axons[uid])
+            if ip_address and ip_address in seen_ips:
+                logger.warning(
+                    f"Skipping organic UID {uid} for task_type={task_type}: duplicate IP "
+                    f"{ip_address} already used by UID {seen_ips[ip_address]}"
+                )
+                continue
+            if ip_address:
+                seen_ips[ip_address] = uid
             candidate_uids.append(uid)
 
     if not candidate_uids:

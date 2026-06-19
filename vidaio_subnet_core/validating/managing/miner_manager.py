@@ -12,12 +12,13 @@ from typing import List, Dict, Any
 import pandas as pd
 from datetime import datetime
 from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy import desc
+from sqlalchemy import desc, text
 import os
 from pathlib import Path
 import requests
 import hashlib
 import time
+import ipaddress
 
 class MinerManager:
     def __init__(self, uid, config, wallet, metagraph):
@@ -51,8 +52,10 @@ class MinerManager:
         logger.info(f"Creating SQL engine")
         self.engine = create_engine("sqlite:///video_subnet_validator.db")
         Base.metadata.create_all(self.engine)
+        self._migrate_miner_metadata_table()
         Session = sessionmaker(bind=self.engine)
         self.session = Session()
+        self.sync_miner_chain_metadata()
         logger.info("Initializing serving counters")
         if len(self.metagraph.uids) < 256:
             uids = list(range(256)) 
@@ -88,6 +91,85 @@ class MinerManager:
         self.df = self.df.set_index('uid')
 
         logger.success("MinerManager initialization complete")
+
+    def _migrate_miner_metadata_table(self) -> None:
+        """Add miner chain metadata columns without recreating existing SQLite data."""
+        migrations = {
+            "coldkey": "ALTER TABLE miner_metadata ADD COLUMN coldkey VARCHAR(64) NOT NULL DEFAULT ''",
+            "ip_address": "ALTER TABLE miner_metadata ADD COLUMN ip_address VARCHAR(64) NOT NULL DEFAULT ''",
+            "port": "ALTER TABLE miner_metadata ADD COLUMN port INTEGER NOT NULL DEFAULT 0",
+        }
+
+        with self.engine.begin() as connection:
+            existing_columns = {
+                row[1] for row in connection.execute(text("PRAGMA table_info(miner_metadata)"))
+            }
+            for column_name, statement in migrations.items():
+                if column_name not in existing_columns:
+                    logger.info(f"Applying miner metadata migration: add {column_name}")
+                    connection.execute(text(statement))
+
+    def _axon_ip_address(self, axon) -> str:
+        ip_value = (
+            getattr(axon, "ip_str", None)
+            or getattr(axon, "external_ip", None)
+            or getattr(axon, "ip", None)
+        )
+        if ip_value is None:
+            return ""
+        if isinstance(ip_value, int):
+            try:
+                return str(ipaddress.ip_address(ip_value))
+            except ValueError:
+                return str(ip_value)
+        return str(ip_value)
+
+    def _chain_metadata_for_uid(self, uid: int) -> dict[str, Any]:
+        axon = self.metagraph.axons[uid]
+        hotkey = ""
+        coldkey = ""
+        if uid < len(getattr(self.metagraph, "hotkeys", [])):
+            hotkey = self.metagraph.hotkeys[uid]
+        if uid < len(getattr(self.metagraph, "coldkeys", [])):
+            coldkey = self.metagraph.coldkeys[uid]
+
+        return {
+            "hotkey": hotkey or getattr(axon, "hotkey", "") or "",
+            "coldkey": coldkey or getattr(axon, "coldkey", "") or "",
+            "ip_address": self._axon_ip_address(axon),
+            "port": int(getattr(axon, "port", 0) or 0),
+        }
+
+    def _apply_chain_metadata(self, miner: MinerMetadata, uid: int, fallback_hotkey: str = "") -> None:
+        try:
+            metadata = self._chain_metadata_for_uid(uid)
+        except Exception as e:
+            logger.warning(f"Unable to fetch metagraph metadata for UID {uid}: {e}")
+            metadata = {"hotkey": fallback_hotkey, "coldkey": "", "ip_address": "", "port": 0}
+
+        miner.hotkey = metadata["hotkey"] or fallback_hotkey or miner.hotkey
+        miner.coldkey = metadata["coldkey"]
+        miner.ip_address = metadata["ip_address"]
+        miner.port = metadata["port"]
+
+    def sync_miner_chain_metadata(self, uids: List[int] | None = None) -> None:
+        session = self.session
+        try:
+            query = session.query(MinerMetadata)
+            if uids:
+                query = query.filter(MinerMetadata.uid.in_(uids))
+
+            updated = 0
+            for miner in query.all():
+                self._apply_chain_metadata(miner, miner.uid, miner.hotkey)
+                updated += 1
+
+            if updated:
+                session.commit()
+                logger.info(f"Synced metagraph metadata for {updated} miner records")
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Failed to sync miner chain metadata: {e}")
 
     def _cleanup_old_database_files(self):
         """Delete old local database files if they exist before connecting to new database URL"""
@@ -308,6 +390,7 @@ class MinerManager:
                         MinerPerformanceHistory.uid == uid
                     ).delete()
 
+                self._apply_chain_metadata(miner, uid, hotkey)
                 success = s_f > 0.08
 
                 self._add_performance_record(
@@ -479,6 +562,7 @@ class MinerManager:
 
                     task_changed = True
                 
+                self._apply_chain_metadata(miner, uid, hotkey)
                 success = s_f > 0.08
 
                 self._add_performance_record(

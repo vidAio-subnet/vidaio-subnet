@@ -538,6 +538,68 @@ class Miner(BaseMiner):
             COMPRESSION_SERVICE_TIMEOUT_SECONDS,
         )
 
+    async def _forward_upscaling_payload_to_service(self, payload) -> list[str]:
+        urls = payload.reference_video_urls or [payload.reference_video_url]
+        task_types = payload.task_types or [payload.task_type] * len(urls)
+        if len(task_types) < len(urls):
+            task_types.extend([task_types[-1] if task_types else "HD24K"] * (len(urls) - len(task_types)))
+
+        processed_urls = []
+        for index, (payload_url, task_type) in enumerate(zip(urls, task_types)):
+            try:
+                processed_url = await self._forward_upscaling_to_service(payload_url, task_type)
+                processed_urls.append(processed_url or "")
+            except Exception as e:
+                logger.error(f"Failed to process upscaling payload item {index}: {e}")
+                processed_urls.append("")
+        return processed_urls
+
+    async def _forward_compression_url_to_service(self, payload, payload_url: str) -> str | None:
+        task_id = uuid.uuid4().hex[:12]
+        if PROCESSING_BACKEND == "modal":
+            return await self._call_modal_processing_function(
+                "compression",
+                MODAL_COMPRESSION_FUNCTION,
+                self._compression_service_payload(payload, payload_url, task_id),
+                COMPRESSION_SERVICE_TIMEOUT_SECONDS,
+            )
+
+        input_host_path = None
+        output_host_path = None
+        try:
+            input_host_path, input_container_path = await self._download_to_shared_volume(
+                payload_url, task_id
+            )
+            processed_ref = await self._post_processing_service(
+                "compression",
+                COMPRESSION_SERVICE_URL,
+                "/compress",
+                self._compression_service_payload(payload, input_container_path, task_id),
+                COMPRESSION_SERVICE_TIMEOUT_SECONDS,
+            )
+            if processed_ref is None:
+                return None
+            if _is_url(processed_ref):
+                return processed_ref
+
+            output_host_path = self._host_shared_path(processed_ref)
+            self._track_shared_file(output_host_path)
+            return await self._upload_processed_video(output_host_path, "compression", task_id)
+        finally:
+            self._cleanup_shared_files(input_host_path, output_host_path)
+
+    async def _forward_compression_payload_to_service(self, payload) -> list[str]:
+        urls = payload.reference_video_urls or [payload.reference_video_url]
+        processed_urls = []
+        for index, payload_url in enumerate(urls):
+            try:
+                processed_url = await self._forward_compression_url_to_service(payload, payload_url)
+                processed_urls.append(processed_url or "")
+            except Exception as e:
+                logger.error(f"Failed to process compression payload item {index}: {e}")
+                processed_urls.append("")
+        return processed_urls
+
     async def _forward_upscaling_to_service(self, payload_url: str, task_type: str) -> str | None:
         task_id = uuid.uuid4().hex[:12]
         if PROCESSING_BACKEND == "modal":
@@ -566,33 +628,7 @@ class Miner(BaseMiner):
             self._cleanup_shared_files(input_host_path, output_host_path)
 
     async def _forward_compression_to_service(self, payload) -> str | None:
-        task_id = uuid.uuid4().hex[:12]
-        if PROCESSING_BACKEND == "modal":
-            return await self._forward_compression_to_modal(payload, task_id)
-
-        input_host_path = None
-        output_host_path = None
-        try:
-            input_host_path, input_container_path = await self._download_to_shared_volume(
-                payload.reference_video_url, task_id
-            )
-            processed_ref = await self._post_processing_service(
-                "compression",
-                COMPRESSION_SERVICE_URL,
-                "/compress",
-                self._compression_service_payload(payload, input_container_path, task_id),
-                COMPRESSION_SERVICE_TIMEOUT_SECONDS,
-            )
-            if processed_ref is None:
-                return None
-            if _is_url(processed_ref):
-                return processed_ref
-
-            output_host_path = self._host_shared_path(processed_ref)
-            self._track_shared_file(output_host_path)
-            return await self._upload_processed_video(output_host_path, "compression", task_id)
-        finally:
-            self._cleanup_shared_files(input_host_path, output_host_path)
+        return await self._forward_compression_url_to_service(payload, payload.reference_video_url)
 
     async def forward_upscaling_requests(self, synapse: VideoUpscalingProtocol) -> VideoUpscalingProtocol:
         """
@@ -602,22 +638,25 @@ class Miner(BaseMiner):
         
         start_time = time.time()
 
-        task_type: str = synapse.miner_payload.task_type      
-        payload_url: str = synapse.miner_payload.reference_video_url
+        task_type: str = synapse.miner_payload.task_type
+        payload_urls = synapse.miner_payload.reference_video_urls or [synapse.miner_payload.reference_video_url]
         validator_uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
 
-        logger.info(f"✅✅✅ Receiving {task_type} Request from validator: {synapse.dendrite.hotkey} with uid: {validator_uid}: round_id : {synapse.round_id}")
+        logger.info(
+            f"✅✅✅ Receiving {task_type} Request from validator: {synapse.dendrite.hotkey} "
+            f"with uid: {validator_uid}: round_id : {synapse.round_id} | queries={len(payload_urls)}"
+        )
         
         check_version(synapse.version)
 
         try:
-            processed_video_url = await self._forward_upscaling_to_service(payload_url, task_type)
+            processed_video_urls = await self._forward_upscaling_payload_to_service(synapse.miner_payload)
             
-            if processed_video_url is None:
+            if not any(processed_video_urls):
                 logger.info(f"💔 Failed to upscaling video 💔")
                 return synapse
             
-            synapse.miner_response.optimized_video_url = processed_video_url
+            synapse.miner_response.optimized_video_urls = processed_video_urls
 
             processed_time = time.time() - start_time
 
@@ -642,20 +681,25 @@ class Miner(BaseMiner):
         target_codec: str = synapse.miner_payload.target_codec
         codec_mode: str = synapse.miner_payload.codec_mode
         target_bitrate: float = synapse.miner_payload.target_bitrate
+        payload_urls = synapse.miner_payload.reference_video_urls or [synapse.miner_payload.reference_video_url]
         validator_uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
 
-        logger.info(f"🛜🛜🛜 Receiving CompressionRequest from validator: {synapse.dendrite.hotkey} with uid: {validator_uid} | VMAF: {vmaf_threshold} | Codec: {target_codec} | Mode: {codec_mode} | Bitrate: {target_bitrate} Mbps 🛜🛜🛜")
+        logger.info(
+            f"🛜🛜🛜 Receiving CompressionRequest from validator: {synapse.dendrite.hotkey} "
+            f"with uid: {validator_uid} | queries={len(payload_urls)} | VMAF: {vmaf_threshold} | "
+            f"Codec: {target_codec} | Mode: {codec_mode} | Bitrate: {target_bitrate} Mbps 🛜🛜🛜"
+        )
 
         check_version(synapse.version)
 
         try:
-            processed_video_url = await self._forward_compression_to_service(synapse.miner_payload)
+            processed_video_urls = await self._forward_compression_payload_to_service(synapse.miner_payload)
 
-            if processed_video_url is None:
+            if not any(processed_video_urls):
                 logger.info(f"💔 Failed to compress video 💔")
                 return synapse
 
-            synapse.miner_response.optimized_video_url = processed_video_url
+            synapse.miner_response.optimized_video_urls = processed_video_urls
 
             processed_time = time.time() - start_time
 

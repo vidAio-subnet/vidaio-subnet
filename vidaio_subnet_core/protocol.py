@@ -1,6 +1,6 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from bittensor import Synapse
-from typing import Optional 
+from typing import Any, Optional, List
 from enum import Enum, IntEnum
 
 class Version(BaseModel):
@@ -30,26 +30,51 @@ class TaskType(IntEnum):
     UPSCALING = 2
 
 class UpscalingMinerPayload(BaseModel):
-    reference_video_url: str = Field(
-        description="The URL of the reference video to be optimized",
-        default="",
-        min_length=1,
+    reference_video_urls: List[str] = Field(
+        description="The URLs of the reference videos to be optimized",
+        default_factory=list,
     )
     maximum_optimized_size_mb: int = Field(
         description="The maximum size of the optimized video in MB",
         default=100,
         gt=0,
     )
-    task_type: str = Field(
-        description="The type of task: HD24K, SD2HD, SD24K, 4K28K",
-        default="HD24K",
+    task_types: List[str] = Field(
+        description="The types of tasks: HD24K, SD2HD, SD24K, 4K28K",
+        default_factory=list,
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            data = data.copy()
+            if not data.get("reference_video_urls") and data.get("reference_video_url"):
+                data["reference_video_urls"] = [data["reference_video_url"]]
+            if not data.get("task_types") and data.get("task_type"):
+                data["task_types"] = [data["task_type"]]
+        return data
+
+    @property
+    def reference_video_url(self) -> str:
+        return self.reference_video_urls[0] if self.reference_video_urls else ""
+
+    @reference_video_url.setter
+    def reference_video_url(self, value: str) -> None:
+        self.reference_video_urls = [value] if value else []
+
+    @property
+    def task_type(self) -> str:
+        return self.task_types[0] if self.task_types else "HD24K"
+
+    @task_type.setter
+    def task_type(self, value: str) -> None:
+        self.task_types = [value] if value else []
+
 class CompressionMinerPayload(BaseModel):
-    reference_video_url: str = Field(
-        description="The URL of the reference video to be compressed",
-        default="",
-        min_length=1,
+    reference_video_urls: List[str] = Field(
+        description="The URLs of the reference videos to be compressed",
+        default_factory=list,
     )
     vmaf_threshold: float = Field(
         description="The VMAF threshold for quality control during compression",
@@ -71,12 +96,46 @@ class CompressionMinerPayload(BaseModel):
         gt=0.0,
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            data = data.copy()
+            if not data.get("reference_video_urls") and data.get("reference_video_url"):
+                data["reference_video_urls"] = [data["reference_video_url"]]
+        return data
+
+    @property
+    def reference_video_url(self) -> str:
+        return self.reference_video_urls[0] if self.reference_video_urls else ""
+
+    @reference_video_url.setter
+    def reference_video_url(self, value: str) -> None:
+        self.reference_video_urls = [value] if value else []
+
 
 class MinerResponse(BaseModel):
-    optimized_video_url: str = Field(
-        description="The URL of the processed video (compressed/upscaled)",
-        default="",
+    optimized_video_urls: List[str] = Field(
+        description="The URLs of the processed videos (compressed/upscaled)",
+        default_factory=list,
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            data = data.copy()
+            if not data.get("optimized_video_urls") and data.get("optimized_video_url"):
+                data["optimized_video_urls"] = [data["optimized_video_url"]]
+        return data
+
+    @property
+    def optimized_video_url(self) -> str:
+        return self.optimized_video_urls[0] if self.optimized_video_urls else ""
+
+    @optimized_video_url.setter
+    def optimized_video_url(self, value: str) -> None:
+        self.optimized_video_urls = [value] if value else []
 
 
 # ---------------------------------------------------------------------------
