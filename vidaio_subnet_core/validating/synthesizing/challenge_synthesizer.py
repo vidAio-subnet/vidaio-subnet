@@ -368,7 +368,7 @@ class Synthesizer:
                     
         raise RuntimeError(f"Failed to get compression chunks after {self.max_retries} attempts")
 
-    async def build_organic_upscaling_protocol(self, needed: int):
+    async def build_organic_upscaling_protocol(self, needed: int, bundle_size: int = 1):
         for attempt in range(self.max_retries):
             try:
                 response = await self.session.get(f"/api/get_organic_upscaling_chunks?needed={needed}")
@@ -407,6 +407,18 @@ class Synthesizer:
 
                     organic_synapses.append(synapse)
 
+                if bundle_size > 1:
+                    organic_synapses = []
+                    for start in range(0, len(original_urls), bundle_size):
+                        organic_synapses.append(
+                            VideoUpscalingJobProtocol(
+                                miner_payload=UpscalingMinerPayload(
+                                    reference_video_urls=original_urls[start:start + bundle_size],
+                                    task_types=task_types[start:start + bundle_size],
+                                ),
+                            )
+                        )
+
                 return task_ids, original_urls, task_types, organic_synapses
 
             except httpx.HTTPStatusError as e:
@@ -423,7 +435,7 @@ class Synthesizer:
 
         raise RuntimeError(f"Failed to get valid response after {self.max_retries} attempts")
 
-    async def build_organic_compression_protocol(self, needed: int):
+    async def build_organic_compression_protocol(self, needed: int, bundle_size: int = 1):
         for attempt in range(self.max_retries):
             try:
                 response = await self.session.get(f"/api/get_organic_compression_chunks?needed={needed}")
@@ -448,6 +460,9 @@ class Synthesizer:
                 original_urls = []
                 organic_synapses = []
                 vmaf_thresholds = []
+                target_codecs = []
+                codec_modes = []
+                target_bitrates = []
 
                 for chunk in chunks:
                     vmaf_threshold = None
@@ -479,10 +494,40 @@ class Synthesizer:
                     task_ids.append(chunk["task_id"])
                     original_urls.append(chunk["url"])
                     vmaf_thresholds.append(vmaf_threshold)
+                    target_codecs.append(target_codec)
+                    codec_modes.append(codec_mode)
+                    target_bitrates.append(target_bitrate)
 
                     organic_synapses.append(synapse)
 
-                return task_ids, original_urls, vmaf_thresholds, organic_synapses
+                if bundle_size > 1:
+                    organic_synapses = []
+                    for start in range(0, len(original_urls), bundle_size):
+                        organic_synapses.append(
+                            VideoCompressionJobProtocol(
+                                miner_payload=CompressionMinerPayload(
+                                    reference_video_urls=original_urls[start:start + bundle_size],
+                                    vmaf_threshold=vmaf_thresholds[start],
+                                    vmaf_thresholds=vmaf_thresholds[start:start + bundle_size],
+                                    target_codec=target_codecs[start],
+                                    target_codecs=target_codecs[start:start + bundle_size],
+                                    codec_mode=codec_modes[start],
+                                    codec_modes=codec_modes[start:start + bundle_size],
+                                    target_bitrate=target_bitrates[start],
+                                    target_bitrates=target_bitrates[start:start + bundle_size],
+                                ),
+                            )
+                        )
+
+                return (
+                    task_ids,
+                    original_urls,
+                    vmaf_thresholds,
+                    target_codecs,
+                    codec_modes,
+                    target_bitrates,
+                    organic_synapses,
+                )
 
             except httpx.HTTPStatusError as e:
                 logger.info(f"HTTP error on attempt {attempt + 1}/{self.max_retries}: {e}")

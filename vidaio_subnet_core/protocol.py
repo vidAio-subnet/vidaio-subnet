@@ -82,18 +82,34 @@ class CompressionMinerPayload(BaseModel):
         ge=0.0,
         le=100.0,
     )
+    vmaf_thresholds: List[float] = Field(
+        description="Per-video VMAF thresholds for batched compression payloads",
+        default_factory=list,
+    )
     target_codec: str = Field(
         description="The target codec for compression (e.g., av1, hevc, h264, vp9)",
         default="av1",
+    )
+    target_codecs: List[str] = Field(
+        description="Per-video target codecs for batched compression payloads",
+        default_factory=list,
     )
     codec_mode: str = Field(
         description="Codec mode: CBR (Constant Bitrate), VBR (Variable Bitrate), or CRF (Constant Rate Factor)",
         default="CRF",
     )
+    codec_modes: List[str] = Field(
+        description="Per-video codec modes for batched compression payloads",
+        default_factory=list,
+    )
     target_bitrate: float = Field(
         description="Target bitrate in Mbps (megabits per second)",
         default=10.0,
         gt=0.0,
+    )
+    target_bitrates: List[float] = Field(
+        description="Per-video target bitrates for batched compression payloads",
+        default_factory=list,
     )
 
     @model_validator(mode="before")
@@ -160,10 +176,27 @@ class PollResponse(BaseModel):
         description="Job status: 'processing' | 'completed' | 'failed'",
         default="unknown",
     )
-    optimized_video_url: str = Field(
-        description="Populated with the result URL once status is 'completed'",
-        default="",
+    optimized_video_urls: List[str] = Field(
+        description="Populated with result URLs once status is 'completed'",
+        default_factory=list,
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            data = data.copy()
+            if not data.get("optimized_video_urls") and data.get("optimized_video_url"):
+                data["optimized_video_urls"] = [data["optimized_video_url"]]
+        return data
+
+    @property
+    def optimized_video_url(self) -> str:
+        return self.optimized_video_urls[0] if self.optimized_video_urls else ""
+
+    @optimized_video_url.setter
+    def optimized_video_url(self, value: str) -> None:
+        self.optimized_video_urls = [value] if value else []
 
 
 class ScoringPayload(BaseModel):

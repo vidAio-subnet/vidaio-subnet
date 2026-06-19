@@ -593,12 +593,31 @@ class Miner(BaseMiner):
         processed_urls = []
         for index, payload_url in enumerate(urls):
             try:
-                processed_url = await self._forward_compression_url_to_service(payload, payload_url)
+                item_payload = self._compression_payload_for_index(payload, index)
+                processed_url = await self._forward_compression_url_to_service(item_payload, payload_url)
                 processed_urls.append(processed_url or "")
             except Exception as e:
                 logger.error(f"Failed to process compression payload item {index}: {e}")
                 processed_urls.append("")
         return processed_urls
+
+    def _compression_payload_for_index(self, payload, index: int):
+        updates = {}
+        per_item_fields = {
+            "vmaf_thresholds": "vmaf_threshold",
+            "target_codecs": "target_codec",
+            "codec_modes": "codec_mode",
+            "target_bitrates": "target_bitrate",
+        }
+
+        for list_field, scalar_field in per_item_fields.items():
+            values = getattr(payload, list_field, []) or []
+            if index < len(values):
+                updates[scalar_field] = values[index]
+
+        if updates and hasattr(payload, "model_copy"):
+            return payload.model_copy(update=updates)
+        return payload
 
     async def _forward_upscaling_to_service(self, payload_url: str, task_type: str) -> str | None:
         task_id = uuid.uuid4().hex[:12]
@@ -759,7 +778,7 @@ class Miner(BaseMiner):
                 return synapse
 
             async def _run_compression():
-                result = await self._forward_compression_to_service(synapse.miner_payload)
+                result = await self._forward_compression_payload_to_service(synapse.miner_payload)
                 logger.info(f"CompressionJob processed successfully | job_id={job_id} | result={result}")
                 return result
 
@@ -799,10 +818,15 @@ class Miner(BaseMiner):
             self._jobs.pop(job_id, None)
             return synapse
 
-        result_url: str = task.result() or ""
-        logger.info(f"Compression job {job_id} completed | url={result_url}")
+        result = task.result() or []
+        result_urls = [result] if isinstance(result, str) else list(result)
+        result_url = result_urls[0] if result_urls else ""
+        logger.info(f"Compression job {job_id} completed | urls={result_urls}")
         synapse.poll_response = PollResponse(
-            job_id=job_id, status="completed", optimized_video_url=result_url
+            job_id=job_id,
+            status="completed",
+            optimized_video_url=result_url,
+            optimized_video_urls=result_urls,
         )
         self._jobs.pop(job_id, None)
         return synapse
@@ -864,11 +888,8 @@ class Miner(BaseMiner):
                 synapse.job_response = JobKickoffResponse(accepted=False)
                 return synapse
 
-            payload_url = synapse.miner_payload.reference_video_url
-            task_type = synapse.miner_payload.task_type
-
             async def _run_upscaling():
-                result = await self._forward_upscaling_to_service(payload_url, task_type)
+                result = await self._forward_upscaling_payload_to_service(synapse.miner_payload)
                 logger.info(f"UpscalingJob processed successfully | job_id={job_id} | result={result}")
                 return result
 
@@ -907,10 +928,15 @@ class Miner(BaseMiner):
             self._jobs.pop(job_id, None)
             return synapse
 
-        result_url: str = task.result() or ""
-        logger.info(f"Upscaling job {job_id} completed | url={result_url}")
+        result = task.result() or []
+        result_urls = [result] if isinstance(result, str) else list(result)
+        result_url = result_urls[0] if result_urls else ""
+        logger.info(f"Upscaling job {job_id} completed | urls={result_urls}")
         synapse.poll_response = PollResponse(
-            job_id=job_id, status="completed", optimized_video_url=result_url
+            job_id=job_id,
+            status="completed",
+            optimized_video_url=result_url,
+            optimized_video_urls=result_urls,
         )
         self._jobs.pop(job_id, None)
         return synapse

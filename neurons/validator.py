@@ -78,6 +78,14 @@ except ValueError:
     logger.warning("Invalid SYNTHETIC_QUERIES_PER_MINER value, defaulting to 5")
     SYNTHETIC_QUERIES_PER_MINER = 5
 
+try:
+    ORGANIC_QUERIES_PER_MINER = max(
+        1, int(os.getenv("ORGANIC_QUERIES_PER_MINER", str(SYNTHETIC_QUERIES_PER_MINER)))
+    )
+except ValueError:
+    logger.warning("Invalid ORGANIC_QUERIES_PER_MINER value, defaulting to SYNTHETIC_QUERIES_PER_MINER")
+    ORGANIC_QUERIES_PER_MINER = SYNTHETIC_QUERIES_PER_MINER
+
 class Validator(base.BaseValidator):
     def __init__(self):
         super().__init__()
@@ -705,8 +713,12 @@ class Validator(base.BaseValidator):
             if resp.status == "completed":
                 # Shim result so all downstream code can access
                 # .miner_response.optimized_video_url unchanged.
+                response_urls = list(getattr(resp, "optimized_video_urls", []) or [])
+                legacy_url = getattr(resp, "optimized_video_url", "")
+                if not response_urls and legacy_url:
+                    response_urls = [legacy_url]
                 synapse_job.miner_response = MinerResponse(
-                    optimized_video_url=resp.optimized_video_url
+                    optimized_video_urls=response_urls
                 )
                 return {
                     "uid": uid,
@@ -1229,11 +1241,23 @@ class Validator(base.BaseValidator):
         else:
             logger.info("Failed to send compression data to dashboard")
 
-    async def score_organics_upscaling(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: list[str], task_types: list[str], timestamp: str):
+    async def score_organics_upscaling(
+        self,
+        uids: list[int],
+        responses: list[protocol.Synapse],
+        reference_urls: list[str],
+        task_types: list[str],
+        timestamp: str,
+        distorted_urls: list[str] | None = None,
+    ):
         """Score organic upscaling tasks."""
-        distorted_urls = [response.miner_response.optimized_video_url for response in responses]
+        if distorted_urls is None:
+            distorted_urls = [response.miner_response.optimized_video_url for response in responses]
 
         combined = list(zip(uids, distorted_urls, reference_urls, task_types))
+        if not combined:
+            logger.warning("No organic upscaling responses available for scoring")
+            return
         random.shuffle(combined)
         uids, distorted_urls, reference_urls, task_types = map(list, zip(*combined))
 
@@ -1266,7 +1290,7 @@ class Validator(base.BaseValidator):
         length_scores = response_data.get("length_scores", [])
         reasons = response_data.get("reasons", [])
 
-        max_length = max(len(uids), len(scores), len(vmaf_scores), len(pieapp_scores), len(reasons))
+        max_length = max(len(selected_uids), len(scores), len(vmaf_scores), len(pieapp_scores), len(reasons))
         scores.extend([0.0] * (max_length - len(scores)))
         vmaf_scores.extend([0.0] * (max_length - len(vmaf_scores)))
         pieapp_scores.extend([0.0] * (max_length - len(pieapp_scores)))
@@ -1312,11 +1336,26 @@ class Validator(base.BaseValidator):
         else:
             logger.info("Failed to send data to dashboard")
 
-    async def score_organics_compression(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: list[str], vmaf_thresholds: list[float], target_codecs: list[str], codec_modes: list[str], target_bitrates: list[float], timestamp: str):
+    async def score_organics_compression(
+        self,
+        uids: list[int],
+        responses: list[protocol.Synapse],
+        reference_urls: list[str],
+        vmaf_thresholds: list[float],
+        target_codecs: list[str],
+        codec_modes: list[str],
+        target_bitrates: list[float],
+        timestamp: str,
+        distorted_urls: list[str] | None = None,
+    ):
         """Score organic compression tasks."""
-        distorted_urls = [response.miner_response.optimized_video_url for response in responses]
+        if distorted_urls is None:
+            distorted_urls = [response.miner_response.optimized_video_url for response in responses]
 
         combined = list(zip(uids, distorted_urls, reference_urls, vmaf_thresholds, target_codecs, codec_modes, target_bitrates))
+        if not combined:
+            logger.warning("No organic compression responses available for scoring")
+            return
         random.shuffle(combined)
         uids, distorted_urls, reference_urls, vmaf_thresholds, target_codecs, codec_modes, target_bitrates = map(list, zip(*combined))
 
@@ -1469,24 +1508,40 @@ class Validator(base.BaseValidator):
         organic_start_time = time.time() 
 
         needed = min(CONFIG.bandwidth.requests_per_organic_interval, num_organic_chunks)
-        
-        logger.info(f"☘️ | UPSCALING | Start processing organic upscaling query. need {needed} miners ☘️")
+        batch_size = ORGANIC_QUERIES_PER_MINER
+        miner_count_needed = (needed + batch_size - 1) // batch_size
 
-        forward_uids = get_organic_forward_uids(self, needed, "upscaling", CONFIG.bandwidth.min_stake)
+        logger.info(
+            f"☘️ | UPSCALING | Start processing {needed} organic chunks "
+            f"with up to {batch_size} chunks per miner ☘️"
+        )
 
-        if len(forward_uids) < needed:
-            logger.info(f"There are just {len(forward_uids)} miners available for organic upscaling, handling {len(forward_uids)} chunks")
-            needed = len(forward_uids)
+        forward_uids = get_organic_forward_uids(self, miner_count_needed, "upscaling", CONFIG.bandwidth.min_stake)
 
-        axon_list = [self.metagraph.axons[uid] for uid in forward_uids]
+        if len(forward_uids) < miner_count_needed:
+            needed = min(needed, len(forward_uids) * batch_size)
+            logger.info(
+                f"There are just {len(forward_uids)} miners available for organic upscaling, "
+                f"handling {needed} chunks"
+            )
 
-        task_ids, original_urls, task_types, synapses = await self.challenge_synthesizer.build_organic_upscaling_protocol(needed)
+        if needed <= 0 or len(forward_uids) == 0:
+            logger.warning("No available miners for organic upscaling")
+            return
 
-        if len(task_ids) != needed or len(synapses) != needed:
+        task_ids, original_urls, task_types, synapses = await self.challenge_synthesizer.build_organic_upscaling_protocol(
+            needed, bundle_size=batch_size
+        )
+
+        if len(task_ids) != needed or len(synapses) > len(forward_uids):
             logger.error(
-                f"Mismatch in organic upscaling synapses after building organic protocol: {len(task_ids)} != {needed} or {len(synapses)} != {needed}"
+                f"Mismatch in organic upscaling synapses after building organic protocol: "
+                f"task_ids={len(task_ids)}, needed={needed}, synapses={len(synapses)}, uids={len(forward_uids)}"
             )
             return
+
+        forward_uids = forward_uids[:len(synapses)]
+        axon_list = [self.metagraph.axons[uid] for uid in forward_uids]
 
         logger.info("Updating task status to 'processing' for upscaling")
         for task_id, original_url in zip(task_ids, original_urls):
@@ -1502,7 +1557,14 @@ class Validator(base.BaseValidator):
         raw_responses = await asyncio.gather(*forward_tasks)
         responses = [response['result'] for response in raw_responses]
 
-        processed_urls = [response.miner_response.optimized_video_url for response in responses]
+        flat_uids = []
+        processed_urls = []
+        for batch_idx, response in enumerate(responses):
+            query_count = len(synapses[batch_idx].miner_payload.reference_video_urls)
+            response_urls = self._response_video_urls(response, query_count)
+            for processed_url in response_urls:
+                flat_uids.append(int(forward_uids[batch_idx]))
+                processed_urls.append(processed_url)
 
         logger.info(f"Processing organic upscaling chunks with uids: {forward_uids.tolist()}")
         logger.info("Updating task status to 'completed' and pushing results for upscaling")
@@ -1510,7 +1572,16 @@ class Validator(base.BaseValidator):
             await self.update_task_status(task_id, original_url, "completed")
             await self.push_result(task_id, original_url, processed_url)
 
-        asyncio.create_task(self.score_organics_upscaling(forward_uids.tolist(), responses, original_urls, task_types, timestamp))
+        asyncio.create_task(
+            self.score_organics_upscaling(
+                flat_uids,
+                [],
+                original_urls,
+                task_types,
+                timestamp,
+                distorted_urls=processed_urls,
+            )
+        )
 
         end_time = time.time()
         total_time = end_time - organic_start_time
@@ -1521,24 +1592,48 @@ class Validator(base.BaseValidator):
         organic_start_time = time.time() 
 
         needed = min(CONFIG.bandwidth.requests_per_organic_interval, num_organic_chunks)
-        
-        logger.info(f"☘️ | COMPRESSION | Start processing organic compression query. need {needed} miners ☘️")
+        batch_size = ORGANIC_QUERIES_PER_MINER
+        miner_count_needed = (needed + batch_size - 1) // batch_size
 
-        forward_uids = get_organic_forward_uids(self, needed, "compression", CONFIG.bandwidth.min_stake)
+        logger.info(
+            f"☘️ | COMPRESSION | Start processing {needed} organic chunks "
+            f"with up to {batch_size} chunks per miner ☘️"
+        )
 
-        if len(forward_uids) < needed:
-            logger.info(f"There are just {len(forward_uids)} miners available for organic compression, handling {len(forward_uids)} chunks")
-            needed = len(forward_uids)
+        forward_uids = get_organic_forward_uids(self, miner_count_needed, "compression", CONFIG.bandwidth.min_stake)
 
-        axon_list = [self.metagraph.axons[uid] for uid in forward_uids]
+        if len(forward_uids) < miner_count_needed:
+            needed = min(needed, len(forward_uids) * batch_size)
+            logger.info(
+                f"There are just {len(forward_uids)} miners available for organic compression, "
+                f"handling {needed} chunks"
+            )
 
-        task_ids, original_urls, vmaf_thresholds, synapses = await self.challenge_synthesizer.build_organic_compression_protocol(needed)
+        if needed <= 0 or len(forward_uids) == 0:
+            logger.warning("No available miners for organic compression")
+            return
 
-        if len(task_ids) != needed or len(synapses) != needed:
+        (
+            task_ids,
+            original_urls,
+            vmaf_thresholds,
+            target_codecs,
+            codec_modes,
+            target_bitrates,
+            synapses,
+        ) = await self.challenge_synthesizer.build_organic_compression_protocol(
+            needed, bundle_size=batch_size
+        )
+
+        if len(task_ids) != needed or len(synapses) > len(forward_uids):
             logger.error(
-                f"Mismatch in organic compression synapses after building organic protocol: {len(task_ids)} != {needed} or {len(synapses)} != {needed}"
+                f"Mismatch in organic compression synapses after building organic protocol: "
+                f"task_ids={len(task_ids)}, needed={needed}, synapses={len(synapses)}, uids={len(forward_uids)}"
             )
             return
+
+        forward_uids = forward_uids[:len(synapses)]
+        axon_list = [self.metagraph.axons[uid] for uid in forward_uids]
 
         logger.info(f"Processing organic compression chunks with uids: {forward_uids.tolist()}")
         logger.info("Updating task status to 'processing' for compression")
@@ -1556,19 +1651,33 @@ class Validator(base.BaseValidator):
         raw_responses = await asyncio.gather(*forward_tasks)
         responses = [response['result'] for response in raw_responses]
 
-        processed_urls = [response.miner_response.optimized_video_url for response in responses]
-
-        # Extract compression parameters from synapses
-        target_codecs = [synapse.miner_payload.target_codec for synapse in synapses]
-        codec_modes = [synapse.miner_payload.codec_mode for synapse in synapses]
-        target_bitrates = [synapse.miner_payload.target_bitrate for synapse in synapses]
+        flat_uids = []
+        processed_urls = []
+        for batch_idx, response in enumerate(responses):
+            query_count = len(synapses[batch_idx].miner_payload.reference_video_urls)
+            response_urls = self._response_video_urls(response, query_count)
+            for processed_url in response_urls:
+                flat_uids.append(int(forward_uids[batch_idx]))
+                processed_urls.append(processed_url)
 
         logger.info("Updating task status to 'completed' and pushing results for compression")
         for task_id, original_url, processed_url in zip(task_ids, original_urls, processed_urls):
             await self.update_task_status(task_id, original_url, "completed")
             await self.push_result(task_id, original_url, processed_url)
 
-        asyncio.create_task(self.score_organics_compression(forward_uids.tolist(), responses, original_urls, vmaf_thresholds, target_codecs, codec_modes, target_bitrates, timestamp))
+        asyncio.create_task(
+            self.score_organics_compression(
+                flat_uids,
+                [],
+                original_urls,
+                vmaf_thresholds,
+                target_codecs,
+                codec_modes,
+                target_bitrates,
+                timestamp,
+                distorted_urls=processed_urls,
+            )
+        )
 
         end_time = time.time()
         total_time = end_time - organic_start_time
