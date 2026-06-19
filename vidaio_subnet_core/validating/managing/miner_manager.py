@@ -152,6 +152,29 @@ class MinerManager:
         miner.ip_address = metadata["ip_address"]
         miner.port = metadata["port"]
 
+    def _new_miner_metadata(
+        self,
+        uid: int,
+        processing_task_type: str | None = None,
+        fallback_hotkey: str = "",
+        **kwargs,
+    ) -> MinerMetadata:
+        try:
+            metadata = self._chain_metadata_for_uid(uid)
+        except Exception as e:
+            logger.warning(f"Unable to fetch metagraph metadata for new UID {uid}: {e}")
+            metadata = {"hotkey": fallback_hotkey, "coldkey": "", "ip_address": "", "port": 0}
+
+        return MinerMetadata(
+            uid=uid,
+            hotkey=metadata["hotkey"] or fallback_hotkey,
+            coldkey=metadata["coldkey"],
+            ip_address=metadata["ip_address"],
+            port=metadata["port"],
+            processing_task_type=processing_task_type,
+            **kwargs,
+        )
+
     def sync_miner_chain_metadata(self, uids: List[int] | None = None) -> None:
         session = self.session
         try:
@@ -311,10 +334,10 @@ class MinerManager:
                 task_changed = False
 
                 if not miner:
-                    miner = MinerMetadata(
+                    miner = self._new_miner_metadata(
                         processing_task_type="upscaling",
                         uid=uid,
-                        hotkey=hotkey,
+                        fallback_hotkey=hotkey,
                         accumulate_score=0.0,
                         bonus_multiplier=1.0,
                         penalty_f_multiplier=1.0,
@@ -483,10 +506,10 @@ class MinerManager:
                 task_changed = False
 
                 if not miner:
-                    miner = MinerMetadata(
+                    miner = self._new_miner_metadata(
                         processing_task_type="compression",
                         uid=uid,
-                        hotkey=hotkey,
+                        fallback_hotkey=hotkey,
                         accumulate_score=0.0,
                         bonus_multiplier=1.0,
                         penalty_f_multiplier=1.0,
@@ -955,9 +978,9 @@ class MinerManager:
                 
                 if miner is None:
                     logger.info(f"Creating new metadata record for UID {uid}")
-                    miner = MinerMetadata(
+                    miner = self._new_miner_metadata(
                         uid=uid,
-                        hotkey="",  # Will be updated when synthetic scoring runs
+                        processing_task_type="upscaling",
                         accumulate_score=0.0,
                         bonus_multiplier=1.0,
                         penalty_f_multiplier=1.0,
@@ -966,6 +989,8 @@ class MinerManager:
                         performance_tier="New Miner"
                     )
                     self.session.add(miner)
+
+                self._apply_chain_metadata(miner, uid, miner.hotkey)
                 
                 # Convert organic scores to synthetic-like format
 
@@ -1090,9 +1115,9 @@ class MinerManager:
                 
                 if miner is None:
                     logger.info(f"Creating new metadata record for UID {uid}")
-                    miner = MinerMetadata(
+                    miner = self._new_miner_metadata(
                         uid=uid,
-                        hotkey="",  # Will be updated when synthetic scoring runs
+                        processing_task_type="compression",
                         accumulate_score=0.0,
                         bonus_multiplier=1.0,
                         penalty_f_multiplier=1.0,
@@ -1102,7 +1127,7 @@ class MinerManager:
                     )
                     self.session.add(miner)
 
-                
+                self._apply_chain_metadata(miner, uid, miner.hotkey)
 
                 # Add performance record for organic scoring
                 self._add_performance_record(
