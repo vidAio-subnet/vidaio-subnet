@@ -630,6 +630,48 @@ class Validator(base.BaseValidator):
             urls.extend([""] * (expected_count - len(urls)))
 
         return urls[:expected_count]
+
+    def _synthetic_response_url_key(self, url: str) -> str:
+        return (url or "").strip()
+
+    def _duplicate_synthetic_response_url_reasons(
+        self,
+        uids: list[int],
+        distorted_urls: list[str],
+        query_indices: list[int],
+        task_type: str,
+    ) -> dict[int, str]:
+        grouped_indices: dict[tuple[int, str], list[int]] = {}
+        for idx, (url, query_idx) in enumerate(zip(distorted_urls, query_indices)):
+            url_key = self._synthetic_response_url_key(url)
+            if not url_key or len(url_key) < 10:
+                continue
+            grouped_indices.setdefault((query_idx, url_key), []).append(idx)
+
+        duplicate_reasons: dict[int, str] = {}
+        for (query_idx, url), indices in grouped_indices.items():
+            if len(indices) <= 1:
+                continue
+
+            duplicate_uids = [uids[idx] for idx in indices]
+            logger.warning(
+                f"Zeroing all synthetic {task_type} responses with duplicate URL "
+                f"{url} for query {query_idx}: uids={duplicate_uids}"
+            )
+            for duplicate_idx in indices:
+                reason = (
+                    f"MINER FAILURE: duplicate synthetic {task_type} response URL "
+                    f"for query {query_idx}: {url} shared by UIDs {duplicate_uids}"
+                )
+                duplicate_reasons[duplicate_idx] = reason
+
+        if duplicate_reasons:
+            logger.info(
+                f"Zeroed {len(duplicate_reasons)} duplicate synthetic {task_type} "
+                f"response URLs before scoring"
+            )
+
+        return duplicate_reasons
     
     async def call_miner_polling(
         self,
@@ -788,6 +830,7 @@ class Validator(base.BaseValidator):
         flat_uploaded_object_names = []
         flat_content_lengths = []
         flat_task_types = []
+        flat_query_indices = []
 
         for response_idx, uid in enumerate(uids):
             response = responses[response_idx] if response_idx < len(responses) else None
@@ -801,6 +844,14 @@ class Validator(base.BaseValidator):
                 flat_uploaded_object_names.append(uploaded_object_names[query_idx])
                 flat_content_lengths.append(content_lengths[query_idx])
                 flat_task_types.append(task_types[query_idx])
+                flat_query_indices.append(query_idx)
+
+        duplicate_url_reasons = self._duplicate_synthetic_response_url_reasons(
+            flat_uids,
+            flat_distorted_urls,
+            flat_query_indices,
+            "upscaling",
+        )
 
         total_scoring_responses = len(flat_uids)
         scoring_batch_size = UPSCALING_SCORING_BATCH_SIZE
@@ -820,6 +871,12 @@ class Validator(base.BaseValidator):
                 f"uids={batch_uids}"
             )
 
+            batch_duplicate_url_reasons = {
+                idx - batch_start: reason
+                for idx, reason in duplicate_url_reasons.items()
+                if batch_start <= idx < batch_end
+            }
+
             await self.score_upscalings(
                 batch_uids,
                 [],
@@ -832,6 +889,7 @@ class Validator(base.BaseValidator):
                 flat_task_types[batch_start:batch_end],
                 round_id,
                 distorted_urls=flat_distorted_urls[batch_start:batch_end],
+                duplicate_url_reasons=batch_duplicate_url_reasons,
             )
 
             logger.info(
@@ -915,6 +973,7 @@ class Validator(base.BaseValidator):
         flat_video_ids = []
         flat_uploaded_object_names = []
         flat_vmaf_thresholds = []
+        flat_query_indices = []
 
         for response_idx, uid in enumerate(uids):
             response = responses[response_idx] if response_idx < len(responses) else None
@@ -927,6 +986,14 @@ class Validator(base.BaseValidator):
                 flat_video_ids.append(video_ids[query_idx])
                 flat_uploaded_object_names.append(uploaded_object_names[query_idx])
                 flat_vmaf_thresholds.append(getattr(vmaf_thresholds[query_idx], "value", vmaf_thresholds[query_idx]))
+                flat_query_indices.append(query_idx)
+
+        duplicate_url_reasons = self._duplicate_synthetic_response_url_reasons(
+            flat_uids,
+            flat_distorted_urls,
+            flat_query_indices,
+            "compression",
+        )
 
         
         # Concurrently start all downloads that have valid URLs,
@@ -943,8 +1010,14 @@ class Validator(base.BaseValidator):
                     return e
 
         download_tasks = []
-        for uid_val, url in zip(flat_uids, flat_distorted_urls):
-            if not url or len(url) < 10:
+        for idx, (uid_val, url) in enumerate(zip(flat_uids, flat_distorted_urls)):
+            if idx in duplicate_url_reasons:
+                logger.warning(
+                    f"UID {uid_val}: skipping distorted video download because "
+                    f"response URL was deduplicated before compression scoring"
+                )
+                download_tasks.append(asyncio.create_task(asyncio.sleep(0, result=None)))
+            elif not url or len(url) < 10:
                 logger.error(f"UID {uid_val}: invalid or missing distorted video download URL: {url}")
                 # Create a task that simply returns None
                 download_tasks.append(asyncio.create_task(asyncio.sleep(0, result=None)))
@@ -991,6 +1064,7 @@ class Validator(base.BaseValidator):
             target_bitrate,
             round_id,
             distorted_urls=flat_distorted_urls,
+            duplicate_url_reasons=duplicate_url_reasons,
         )
 
         for path in distorted_file_paths:
@@ -1052,6 +1126,7 @@ class Validator(base.BaseValidator):
         task_types: list[str],
         round_id: str,
         distorted_urls: list[str] | None = None,
+        duplicate_url_reasons: dict[int, str] | None = None,
     ):
         if distorted_urls is None:
             distorted_urls = []
@@ -1060,29 +1135,67 @@ class Validator(base.BaseValidator):
 
         logger.info(f"payloads: {payload_urls}\nresponses: {distorted_urls}")
 
-        score_response = await self.score_client_upscaling.post(
-            "/score_upscaling_synthetics",
-            json = {
-                "uids": uids,
-                "payload_urls": payload_urls,
-                "distorted_urls": distorted_urls,
-                "reference_paths": reference_video_paths,
-                "video_ids": video_ids,
-                "uploaded_object_names": uploaded_object_names,
-                "content_lengths": content_lengths,
-                "task_types": task_types
-            },
-            timeout=600
+        duplicate_url_reasons = duplicate_url_reasons or {}
+        scoring_indices = [
+            idx for idx in range(len(uids)) if idx not in duplicate_url_reasons
+        ]
+
+        if duplicate_url_reasons:
+            logger.info(
+                f"Sending {len(scoring_indices)}/{len(uids)} upscaling responses "
+                f"to scorer after exact URL deduplication"
+            )
+
+        if scoring_indices:
+            score_response = await self.score_client_upscaling.post(
+                "/score_upscaling_synthetics",
+                json = {
+                    "uids": [uids[idx] for idx in scoring_indices],
+                    "payload_urls": [payload_urls[idx] for idx in scoring_indices],
+                    "distorted_urls": [distorted_urls[idx] for idx in scoring_indices],
+                    "reference_paths": [reference_video_paths[idx] for idx in scoring_indices],
+                    "video_ids": [video_ids[idx] for idx in scoring_indices],
+                    "uploaded_object_names": [uploaded_object_names[idx] for idx in scoring_indices],
+                    "content_lengths": [content_lengths[idx] for idx in scoring_indices],
+                    "task_types": [task_types[idx] for idx in scoring_indices]
+                },
+                timeout=600
+            )
+            response_data = score_response.json()
+        else:
+            response_data = {}
+
+        scored_quality_scores = response_data.get("quality_scores", [])
+        scored_length_scores = response_data.get("length_scores", [])
+        scored_final_scores = response_data.get("final_scores", [])
+        scored_vmaf_scores = response_data.get("vmaf_scores", [])
+        scored_pieapp_scores = response_data.get("pieapp_scores", [])
+        scored_reasons = response_data.get("reasons", [])
+
+        def merge_scored_values(scored_values, duplicate_default, missing_default):
+            merged_values = []
+            scored_pos = 0
+            for idx in range(len(uids)):
+                if idx in duplicate_url_reasons:
+                    merged_values.append(duplicate_default(idx))
+                    continue
+                if scored_pos < len(scored_values):
+                    merged_values.append(scored_values[scored_pos])
+                else:
+                    merged_values.append(missing_default)
+                scored_pos += 1
+            return merged_values
+
+        quality_scores = merge_scored_values(scored_quality_scores, lambda _idx: 0.0, 0.0)
+        length_scores = merge_scored_values(scored_length_scores, lambda _idx: 0.0, 0.0)
+        final_scores = merge_scored_values(scored_final_scores, lambda _idx: 0.0, 0.0)
+        vmaf_scores = merge_scored_values(scored_vmaf_scores, lambda _idx: 0.0, 0.0)
+        pieapp_scores = merge_scored_values(scored_pieapp_scores, lambda _idx: 0.0, 0.0)
+        reasons = merge_scored_values(
+            scored_reasons,
+            lambda idx: duplicate_url_reasons[idx],
+            "No reason provided",
         )
-
-        response_data = score_response.json()
-
-        quality_scores = response_data.get("quality_scores", [])
-        length_scores = response_data.get("length_scores", [])
-        final_scores = response_data.get("final_scores", [])
-        vmaf_scores = response_data.get("vmaf_scores", [])
-        pieapp_scores = response_data.get("pieapp_scores", [])
-        reasons = response_data.get("reasons", [])
         
         logger.info(f"Updating miner manager with {len(quality_scores)} upscaling scores after synthetic requests processing")
 
@@ -1167,6 +1280,7 @@ class Validator(base.BaseValidator):
         target_bitrate: float,
         round_id: str,
         distorted_urls: list[str] | None = None,
+        duplicate_url_reasons: dict[int, str] | None = None,
     ):
         if distorted_urls is None:
             distorted_urls = []
@@ -1175,29 +1289,67 @@ class Validator(base.BaseValidator):
 
         logger.info(f"payload: {payload_urls[0]}\nresponses: {distorted_urls}")
 
-        score_response = await self.score_client_compression.post(
-            "/score_compression_synthetics",
-            json = {
-                "uids": uids,
-                "distorted_file_paths": distorted_file_paths,
-                "reference_paths": reference_video_paths,
-                "video_ids": video_ids,
-                "uploaded_object_names": uploaded_object_names,
-                "vmaf_thresholds": vmaf_thresholds,
-                "distorted_urls": distorted_urls,
-                "target_codec": target_codec,
-                "codec_mode": codec_mode,
-                "target_bitrate": target_bitrate
-            },
-            timeout=600
+        duplicate_url_reasons = duplicate_url_reasons or {}
+        scoring_indices = [
+            idx for idx in range(len(uids)) if idx not in duplicate_url_reasons
+        ]
+
+        if duplicate_url_reasons:
+            logger.info(
+                f"Sending {len(scoring_indices)}/{len(uids)} compression responses "
+                f"to scorer after exact URL deduplication"
+            )
+
+        if scoring_indices:
+            score_response = await self.score_client_compression.post(
+                "/score_compression_synthetics",
+                json = {
+                    "uids": [uids[idx] for idx in scoring_indices],
+                    "distorted_file_paths": [distorted_file_paths[idx] for idx in scoring_indices],
+                    "reference_paths": [reference_video_paths[idx] for idx in scoring_indices],
+                    "video_ids": [video_ids[idx] for idx in scoring_indices],
+                    "uploaded_object_names": [uploaded_object_names[idx] for idx in scoring_indices],
+                    "vmaf_thresholds": [vmaf_thresholds[idx] for idx in scoring_indices],
+                    "distorted_urls": [distorted_urls[idx] for idx in scoring_indices],
+                    "target_codec": target_codec,
+                    "codec_mode": codec_mode,
+                    "target_bitrate": target_bitrate
+                },
+                timeout=600
+            )
+            response_data = score_response.json()
+        else:
+            response_data = {}
+
+        scored_compression_rates = response_data.get("compression_rates", [])
+        scored_final_scores = response_data.get("final_scores", [])
+        scored_vmaf_scores = response_data.get("vmaf_scores", [])
+        scored_reasons = response_data.get("reasons", [])
+
+        def merge_scored_values(scored_values, duplicate_default, missing_default):
+            merged_values = []
+            scored_pos = 0
+            for idx in range(len(uids)):
+                if idx in duplicate_url_reasons:
+                    merged_values.append(duplicate_default(idx))
+                    continue
+                if scored_pos < len(scored_values):
+                    merged_values.append(scored_values[scored_pos])
+                else:
+                    merged_values.append(missing_default)
+                scored_pos += 1
+            return merged_values
+
+        compression_rates = merge_scored_values(
+            scored_compression_rates, lambda _idx: 0.9999, 0.5
         )
-
-        response_data = score_response.json()
-
-        compression_rates = response_data.get("compression_rates", [])
-        final_scores = response_data.get("final_scores", [])
-        vmaf_scores = response_data.get("vmaf_scores", [])
-        reasons = response_data.get("reasons", [])
+        final_scores = merge_scored_values(scored_final_scores, lambda _idx: 0.0, 0.0)
+        vmaf_scores = merge_scored_values(scored_vmaf_scores, lambda _idx: 0.0, 0.0)
+        reasons = merge_scored_values(
+            scored_reasons,
+            lambda idx: duplicate_url_reasons[idx],
+            "No reason provided",
+        )
         
         logger.info(f"Updating miner manager with {len(compression_rates)} compression miner scores after synthetic requests processing")
 
@@ -1512,8 +1664,28 @@ class Validator(base.BaseValidator):
                 return host
             return ip_text
 
+    def _uid_coldkey(self, uid: int) -> str:
+        coldkey = ""
+        coldkeys = getattr(self.metagraph, "coldkeys", [])
+
+        try:
+            if uid < len(coldkeys):
+                coldkey = coldkeys[uid]
+        except Exception as e:
+            logger.debug(f"Unable to resolve metagraph coldkey for UID {uid}: {e}")
+
+        if not coldkey:
+            try:
+                coldkey = getattr(self.metagraph.axons[uid], "coldkey", "")
+            except Exception as e:
+                logger.debug(f"Unable to resolve axon coldkey for UID {uid}: {e}")
+                coldkey = ""
+
+        return str(coldkey or "").strip()
+
     def _deduplicate_uids_by_ip(self, uids: list[int], context: str) -> list[int]:
         seen_ips: dict[str, int] = {}
+        seen_coldkeys: dict[str, int] = {}
         selected = []
 
         for uid in uids:
@@ -1525,13 +1697,23 @@ class Validator(base.BaseValidator):
                 )
                 continue
 
+            coldkey = self._uid_coldkey(uid)
+            if coldkey and coldkey in seen_coldkeys:
+                logger.warning(
+                    f"Skipping UID {uid} during {context}: duplicate coldkey {coldkey} "
+                    f"already used by UID {seen_coldkeys[coldkey]}"
+                )
+                continue
+
             if ip_address:
                 seen_ips[ip_address] = uid
+            if coldkey:
+                seen_coldkeys[coldkey] = uid
             selected.append(uid)
 
         removed = len(uids) - len(selected)
         if removed:
-            logger.info(f"Removed {removed} duplicate-IP UIDs during {context}")
+            logger.info(f"Removed {removed} duplicate-IP/coldkey UIDs during {context}")
 
         return selected
 
