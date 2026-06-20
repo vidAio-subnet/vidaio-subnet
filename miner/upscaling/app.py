@@ -46,7 +46,7 @@ app = FastAPI(title="Video Upscaling Service", lifespan=lifespan)
 
 VIDEO2X_BIN = os.getenv("VIDEO2X_BIN", "video2x")
 VIDEO2X_DEVICE = (os.getenv("VIDEO2X_DEVICE") or os.getenv("VIDEO2X_GPU") or "0").strip()
-VIDEO2X_CODEC = os.getenv("VIDEO2X_CODEC", "av1_nvenc").strip()
+VIDEO2X_CODEC = os.getenv("VIDEO2X_CODEC", "hevc_nvenc").strip()
 VIDEO2X_ALLOW_REQUEST_CODEC = os.getenv("VIDEO2X_ALLOW_REQUEST_CODEC", "false").lower() in (
     "1",
     "true",
