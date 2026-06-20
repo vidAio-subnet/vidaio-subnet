@@ -2,7 +2,7 @@
 
 ## Overview
 
-The VIDAIO scoring mechanism has two primary layers:
+The VIDAIO scoring mechanism has three primary layers:
 
 1. **Round score**: the score assigned to a miner for a specific task response.
    - Upscaling round score: `s_f`
@@ -11,7 +11,10 @@ The VIDAIO scoring mechanism has two primary layers:
 2. **Long-term miner score**: the smoothed reputation score used for ranking and reward allocation.
    - Stored as `accumulate_score`
 
-The scoring process evaluates both immediate task performance and recent historical consistency. A miner's reward outcome is therefore determined by whether the submitted output is valid, whether it satisfies task-specific quality requirements, and whether the miner has performed consistently across recent rounds.
+3. **Emission weighting**: the final on-chain weight calculation that ranks miners by task type, applies the top-50 cutoff and ladder distribution, then burns the configured proportion of miner emissions.
+   - Implemented in `vidaio_subnet_core/validating/managing/miner_manager.py`
+
+The scoring process evaluates both immediate task performance and recent historical consistency. A miner's reward outcome is therefore determined by whether the submitted output is valid, whether it satisfies task-specific quality requirements, whether the miner has performed consistently across recent rounds, and whether the miner ranks inside the emission cutoff for their task category.
 
 ## Upscaling Scoring
 
@@ -168,6 +171,56 @@ Each new round contributes 25% of the updated value, while 75% is retained from 
 
 If a scorer returns `s_f = -100`, the round is skipped for accumulation. This is generally used for infrastructure or invalid-reference cases rather than ordinary miner penalties.
 
+## Emission Allocation and Burn
+
+Final emissions are calculated in `MinerManager.weights` in `vidaio_subnet_core/validating/managing/miner_manager.py`.
+
+The miner manager separates eligible miners into compression and upscaling groups, excluding validators and miners with `accumulate_score == -1`. Each group is sorted by `accumulate_score` descending.
+
+Only the top 50 miners in each task group can receive non-zero miner-side emissions:
+
+```text
+top_n_compression_miners_cutoff_rank = 50
+top_n_upscaling_miners_cutoff_rank = 50
+```
+
+Within each task group, emissions use a ladder distribution:
+
+```text
+ranks 1-10   top tier
+ranks 11-50  mid tier
+ranks 51+    zero weight
+```
+
+When both task groups have eligible miners, the pre-burn ladder allocation is:
+
+```text
+compression ranks 1-10   30%
+compression ranks 11-50  30%
+upscaling ranks 1-10     20%
+upscaling ranks 11-50    20%
+```
+
+If only one task group has eligible miners, it receives 100% of the pre-burn miner allocation split evenly between its top tier and mid tier:
+
+```text
+active task ranks 1-10   50%
+active task ranks 11-50  50%
+```
+
+Inside each tier, weights are proportional to `accumulate_score`. If a tier has miners but its score sum is not positive, the tier allocation is split equally among that tier's miners.
+
+After ladder allocation, the miner manager applies the emissions burn:
+
+```text
+burn_proportion = 4 / 5
+
+miner_weight_i = pre_burn_weight_i * (1 - burn_proportion)
+burn_weight = burn_proportion * sum(pre_burn_weights)
+```
+
+With the current `burn_proportion = 0.80`, 80% of calculated miner emissions are assigned to the burn UID, which is the subnet owner UID returned by `get_burn_uid()`. The remaining 20% is distributed across the ranked top-50 compression and top-50 upscaling miners according to the ladder above.
+
 ## Performance Tier
 
 `performance_tier` is a label derived from the miner's average recent `s_f`:
@@ -182,4 +235,4 @@ If a scorer returns `s_f = -100`, the round is skipped for accumulation. This is
 else    Poor Performance
 ```
 
-In summary, `s_q` represents upscaling quality, `s_f` represents the task-level final round score, `total_multiplier` adjusts the round score based on recent consistency, and `accumulate_score` is the smoothed long-term score used for miner ranking and reward allocation.
+In summary, `s_q` represents upscaling quality, `s_f` represents the task-level final round score, `total_multiplier` adjusts the round score based on recent consistency, `accumulate_score` is the smoothed long-term score used for miner ranking, and `burn_proportion` determines how much of the calculated miner emission pool is burned before the remaining emissions reach top-ranked miners.

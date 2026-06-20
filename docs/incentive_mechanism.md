@@ -16,6 +16,7 @@
 - [Compression System](#compression-system)
   - [Compression Scoring](#compression-scoring)
   - [Compression Penalty & Bonus System](#compression-penalty--bonus-system)
+- [Emission Weighting & Burn](#emission-weighting--burn)
 - [Implementation Guidelines](#implementation-guidelines)
 - [Technical Specifications](#technical-specifications)
 - [Mathematical Properties](#mathematical-properties)
@@ -623,6 +624,88 @@ penalty_f_multiplier = 1.0 - (penalty_f_count / 10) × 0.20
 
 ---
 
+## Emission Weighting & Burn
+
+The final incentive layer is implemented in `vidaio_subnet_core/validating/managing/miner_manager.py` through the `MinerManager.weights` property. This layer converts accumulated miner scores into on-chain weights, restricts emissions to the highest-ranked active miners in each task category, and burns a configured portion of the miner emission pool.
+
+### Eligible Miner Set
+
+Only miners with a valid `accumulate_score` and a recognized `processing_task_type` participate in the emission calculation. Validators and miners with `accumulate_score == -1` are excluded before ranking.
+
+Eligible miners are separated into two independent ranking groups:
+
+| Group | Ranking score | Emission cutoff |
+|-------|---------------|-----------------|
+| Compression miners | `accumulate_score` | Top 50 compression miners |
+| Upscaling miners | `accumulate_score` | Top 50 upscaling miners |
+
+Miners ranked below the configured cutoff receive zero emission weight for that round. The current cutoff values are:
+
+```python
+top_n_compression_miners_cutoff_rank = 50
+top_n_upscaling_miners_cutoff_rank = 50
+```
+
+### Ladder Distribution
+
+Within each task group, eligible miners are sorted by `accumulate_score` in descending order and split into two ladder tiers:
+
+| Tier | Rank range | Distribution method |
+|------|------------|---------------------|
+| Top tier | 1-10 | Proportional to `accumulate_score` within the tier |
+| Mid tier | 11-50 | Proportional to `accumulate_score` within the tier |
+| Outside cutoff | 51+ | Zero weight |
+
+When both compression and upscaling miners are present, the pre-burn emission ladder is:
+
+| Ladder bucket | Pre-burn allocation |
+|---------------|---------------------|
+| Compression ranks 1-10 | 30% |
+| Compression ranks 11-50 | 30% |
+| Upscaling ranks 1-10 | 20% |
+| Upscaling ranks 11-50 | 20% |
+
+When only one task category has eligible miners, the absent category's allocation is redistributed to the active category. The active category receives 100% of the pre-burn miner allocation, split evenly between its top and mid tiers:
+
+| Active category state | Top tier allocation | Mid tier allocation |
+|-----------------------|---------------------|---------------------|
+| Compression only | 50% | 50% |
+| Upscaling only | 50% | 50% |
+
+If a tier has miners but its accumulated score sum is not positive, the tier's allocation is divided equally among miners in that tier. Otherwise, each miner receives a tier share proportional to their `accumulate_score`.
+
+### Emissions Burn
+
+After the ladder allocations are calculated, the miner manager burns a fixed proportion of the miner emission pool. The current configuration is:
+
+```python
+burn_proportion = 4 / 5
+```
+
+This means 80% of the calculated miner emissions are assigned to the subnet owner UID returned by `get_burn_uid()`, while the remaining 20% stays with the ranked miners.
+
+The burn is applied after ranking and ladder allocation:
+
+```text
+pre_burn_weight_i = ladder allocation for miner i
+miner_weight_i = pre_burn_weight_i * (1 - burn_proportion)
+burn_weight = burn_proportion * sum(pre_burn_weights)
+```
+
+With the current `burn_proportion = 0.80`, the effective on-chain distribution when both task categories are active is:
+
+| Recipient bucket | Effective final allocation |
+|------------------|----------------------------|
+| Compression ranks 1-10 | 6% |
+| Compression ranks 11-50 | 6% |
+| Upscaling ranks 1-10 | 4% |
+| Upscaling ranks 11-50 | 4% |
+| Burn UID / subnet owner UID | 80% |
+
+The top-50 restriction is applied before the burn. Therefore, only the top 50 compression miners and top 50 upscaling miners can receive non-zero miner-side emissions; all other miner-side emission is zeroed before the remaining eligible miner emissions are scaled by `1 - burn_proportion`.
+
+---
+
 ## Implementation Guidelines
 
 ### Performance Monitoring
@@ -677,6 +760,9 @@ penalty_f_multiplier = 1.0 - (penalty_f_count / 10) × 0.20
 | **Default Content Length** | 5s | 5s - 10s | Actively configurable by miners |
 | **Quality Weight (W1)** | 0.5 | 0.0 - 1.0 | Fixed in current scoring service |
 | **Length Weight (W2)** | 0.5 | 0.0 - 1.0 | Fixed in current scoring service |
+| **Emission Burn Proportion** | 0.80 | Miner manager setting | Burns 80% of miner emissions to the subnet owner UID |
+| **Compression Emission Cutoff** | Top 50 miners | Miner manager setting | Miners below rank 50 receive zero compression-side emission weight |
+| **Upscaling Emission Cutoff** | Top 50 miners | Miner manager setting | Miners below rank 50 receive zero upscaling-side emission weight |
 
 ### Compression System Parameters
 
