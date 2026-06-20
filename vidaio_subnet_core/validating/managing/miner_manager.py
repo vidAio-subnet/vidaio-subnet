@@ -131,7 +131,25 @@ class MinerManager:
                 return str(ipaddress.ip_address(ip_value))
             except ValueError:
                 return str(ip_value)
-        return str(ip_value)
+
+        ip_text = str(ip_value).strip()
+        if ip_text.startswith("/ipv"):
+            parts = ip_text.split("/", 2)
+            if len(parts) == 3:
+                ip_text = parts[2]
+
+        if ip_text.startswith("["):
+            closing_bracket = ip_text.find("]")
+            if closing_bracket != -1:
+                return ip_text[1:closing_bracket]
+
+        try:
+            return str(ipaddress.ip_address(ip_text))
+        except ValueError:
+            host, separator, port = ip_text.rpartition(":")
+            if separator and port.isdigit():
+                return host
+            return ip_text
 
     def _chain_metadata_for_uid(self, uid: int) -> dict[str, Any]:
         axon = self.metagraph.axons[uid]

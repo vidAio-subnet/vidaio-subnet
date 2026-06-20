@@ -1,6 +1,7 @@
 import random
 import bittensor as bt
 import numpy as np
+import ipaddress
 from typing import List
 import os
 import shutil
@@ -40,7 +41,32 @@ def _axon_ip_address(axon) -> str:
             ip_value = candidate
             break
 
-    return "" if ip_value is None else str(ip_value)
+    if ip_value is None:
+        return ""
+    if isinstance(ip_value, int):
+        try:
+            return str(ipaddress.ip_address(ip_value))
+        except ValueError:
+            return str(ip_value)
+
+    ip_text = str(ip_value).strip()
+    if ip_text.startswith("/ipv"):
+        parts = ip_text.split("/", 2)
+        if len(parts) == 3:
+            ip_text = parts[2]
+
+    if ip_text.startswith("["):
+        closing_bracket = ip_text.find("]")
+        if closing_bracket != -1:
+            return ip_text[1:closing_bracket]
+
+    try:
+        return str(ipaddress.ip_address(ip_text))
+    except ValueError:
+        host, separator, port = ip_text.rpartition(":")
+        if separator and port.isdigit():
+            return host
+        return ip_text
 
 def get_organic_forward_uids(self, count: int = None, task_type : str = None, vpermit_tao_limit: int = 100000000, exclude: List[int] = None) -> np.ndarray:
     """
