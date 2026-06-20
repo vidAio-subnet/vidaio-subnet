@@ -26,11 +26,20 @@ def check_uid_availability(metagraph: "bt.metagraph.Metagraph", uid: int, vpermi
     return True
 
 def _axon_ip_address(axon) -> str:
-    ip_value = (
-        getattr(axon, "ip_str", None)
-        or getattr(axon, "external_ip", None)
-        or getattr(axon, "ip", None)
-    )
+    ip_value = None
+    for attr in ("ip_str", "external_ip", "ip"):
+        candidate = getattr(axon, attr, None)
+        if callable(candidate):
+            try:
+                candidate = candidate()
+            except Exception as e:
+                logger.debug(f"Unable to resolve axon {attr}: {e}")
+                candidate = None
+
+        if candidate is not None and candidate != "":
+            ip_value = candidate
+            break
+
     return "" if ip_value is None else str(ip_value)
 
 def get_organic_forward_uids(self, count: int = None, task_type : str = None, vpermit_tao_limit: int = 100000000, exclude: List[int] = None) -> np.ndarray:
