@@ -38,6 +38,7 @@ load_dotenv(REPO_ROOT / "miner" / ".env", override=False)
 
 MAX_CONTENT_LEN = ContentLength.FIVE
 warrant_task = TaskType.UPSCALING
+DEV_MODE = os.getenv("DEV_MODE", "False").lower() == "true"
 
 UPSCALING_SERVICE_URL = os.getenv("MINER_UPSCALING_SERVICE_URL", "http://localhost:8003").rstrip("/")
 COMPRESSION_SERVICE_URL = os.getenv("MINER_COMPRESSION_SERVICE_URL", "http://localhost:8004").rstrip("/")
@@ -167,6 +168,9 @@ class Miner(BaseMiner):
     def _active_shared_files_snapshot(self) -> set[str]:
         with self._shared_files_lock:
             return set(self._active_shared_files)
+
+    def _should_blacklist_non_validator(self, uid: int) -> bool:
+        return not DEV_MODE and not self.metagraph.validator_permit[uid]
 
     def _remove_stale_shared_file(self, path: Path, reason: str) -> int:
         try:
@@ -913,7 +917,7 @@ class Miner(BaseMiner):
         if not synapse.dendrite or not synapse.dendrite.hotkey:
             return True, "Missing dendrite or hotkey"
         uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
-        if not self.metagraph.validator_permit[uid]:
+        if self._should_blacklist_non_validator(uid):
             return True, "Non-validator hotkey"
         return False, "Hotkey recognized!"
 
@@ -931,7 +935,7 @@ class Miner(BaseMiner):
         if not synapse.dendrite or not synapse.dendrite.hotkey:
             return True, "Missing dendrite or hotkey"
         uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
-        if not self.metagraph.validator_permit[uid]:
+        if self._should_blacklist_non_validator(uid):
             return True, "Non-validator hotkey"
         return False, "Hotkey recognized!"
 
@@ -1023,7 +1027,7 @@ class Miner(BaseMiner):
         if not synapse.dendrite or not synapse.dendrite.hotkey:
             return True, "Missing dendrite or hotkey"
         uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
-        if not self.metagraph.validator_permit[uid]:
+        if self._should_blacklist_non_validator(uid):
             return True, "Non-validator hotkey"
         return False, "Hotkey recognized!"
 
@@ -1041,7 +1045,7 @@ class Miner(BaseMiner):
         if not synapse.dendrite or not synapse.dendrite.hotkey:
             return True, "Missing dendrite or hotkey"
         uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
-        if not self.metagraph.validator_permit[uid]:
+        if self._should_blacklist_non_validator(uid):
             return True, "Non-validator hotkey"
         return False, "Hotkey recognized!"
 
@@ -1063,7 +1067,7 @@ class Miner(BaseMiner):
 
         uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
 
-        if not self.metagraph.validator_permit[uid]:
+        if self._should_blacklist_non_validator(uid):
             logger.warning(f"Blacklisting non-validator hotkey {synapse.dendrite.hotkey}")
             return True, "Non-validator hotkey"
 
@@ -1095,7 +1099,7 @@ class Miner(BaseMiner):
 
         uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
 
-        if not self.metagraph.validator_permit[uid]:
+        if self._should_blacklist_non_validator(uid):
             logger.warning(f"Blacklisting non-validator hotkey {synapse.dendrite.hotkey}")
             return True, "Non-validator hotkey"
 
@@ -1127,7 +1131,7 @@ class Miner(BaseMiner):
 
         uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
 
-        if not self.metagraph.validator_permit[uid]:
+        if self._should_blacklist_non_validator(uid):
             logger.warning(f"Blacklisting non-validator hotkey {synapse.dendrite.hotkey}")
             return True, "Non-validator hotkey"
 
@@ -1159,7 +1163,7 @@ class Miner(BaseMiner):
 
         uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
 
-        if not self.metagraph.validator_permit[uid]:
+        if self._should_blacklist_non_validator(uid):
             logger.warning(f"Blacklisting non-validator hotkey {synapse.dendrite.hotkey}")
             return True, "Non-validator hotkey"
 
