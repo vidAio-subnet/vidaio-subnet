@@ -1470,8 +1470,8 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
         if task == "compression":
             if detected_codec_family != expected_codec_family:
                 errors.append(f"Codec must be {expected_codec_family} (got {codec} which normalizes to {detected_codec_family})")
-        elif task == "upscaling" and detected_codec_family != "hevc":
-            errors.append(f"Codec must be hevc for upscaling, got {codec}")
+        elif task == "upscaling" and detected_codec_family not in ["hevc", "av1"]:
+            errors.append(f"Codec must be hevc or av1 for upscaling, got {codec}")
         if "ivf" in container.lower():
             errors.append("Container must be MP4, got IVF (incompatible for concatenation)")
         if container not in ["mov,mp4,m4a,3gp,3g2,mj2", "mp4", "isom"]:
