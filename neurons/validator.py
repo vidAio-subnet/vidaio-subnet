@@ -768,7 +768,7 @@ class Validator(base.BaseValidator):
             axons,
             synapses[0],
             num_miners,
-            timeout=max(90, 90 * query_count),
+            timeout=90
         )
 
         logger.info(f"🎲 Received {len(responses)} upscaling responses from miners 🎲")
@@ -896,7 +896,7 @@ class Validator(base.BaseValidator):
             axons,
             synapses[0],
             num_miners,
-            timeout=max(135, 135 * query_count),
+            timeout=135,
         )
 
         logger.info(f"🎲 Received {len(responses)} compression responses from miners 🎲")
