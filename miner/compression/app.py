@@ -319,10 +319,14 @@ def _build_ffmpeg_args(local_input: str, output_path: str, req: "CompressRequest
 
     ffmpeg_args.extend(["-preset", req.preset])
 
+    video_filters = []
     if req.target_width and req.target_height:
         w = req.target_width if req.target_width % 2 == 0 else req.target_width - 1
         h = req.target_height if req.target_height % 2 == 0 else req.target_height - 1
-        ffmpeg_args.extend(["-vf", f"scale={w}:{h}"])
+        video_filters.append(f"scale={w}:{h}")
+
+    video_filters.append("setsar=1")
+    ffmpeg_args.extend(["-vf", ",".join(video_filters)])
 
     ffmpeg_args.extend(["-c:a", "copy", "-sn", "-dn", "-movflags", "+faststart", output_path])
     return ffmpeg_args
