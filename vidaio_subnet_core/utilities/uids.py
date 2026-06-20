@@ -71,8 +71,9 @@ def _axon_ip_address(axon) -> str:
 def get_organic_forward_uids(self, count: int = None, task_type : str = None, vpermit_tao_limit: int = 100000000, exclude: List[int] = None) -> np.ndarray:
     """
     Get a list of UIDs that are available for forwarding, selected from
-    the top 10 miners by accumulate_score for the given task_type. 
-    The top x miners chosen here is consistent with `TOP_N` in the miner manager.
+    the top 5 miners by accumulate_score for the given task_type.
+    Miner slots are sampled with the same rank probability curve used for
+    emissions within each task pool: 60%, 20%, 10%, 6%, and 4%.
 
     Args:
         count (int): Number of UIDs to return
@@ -85,8 +86,14 @@ def get_organic_forward_uids(self, count: int = None, task_type : str = None, vp
     """
     exclude = exclude or []
 
-    # Get top 10 hotkeys for this task type from MinerMetadata, ordered by accumulate_score desc
-    top_hotkeys = self.miner_manager.get_top_hotkeys_by_task(task_type, limit=10)
+    rank_shares = getattr(
+        self.miner_manager,
+        "emission_rank_shares",
+        [0.60, 0.20, 0.10, 0.06, 0.04],
+    )
+
+    # Get top 5 hotkeys for this task type from MinerMetadata, ordered by accumulate_score desc.
+    top_hotkeys = self.miner_manager.get_top_hotkeys_by_task(task_type, limit=len(rank_shares))
 
     if not top_hotkeys:
         logger.warning(f"No hotkeys found for task_type={task_type}")
@@ -99,8 +106,9 @@ def get_organic_forward_uids(self, count: int = None, task_type : str = None, vp
 
     # Map hotkeys to UIDs, preserving the accumulate_score ordering
     candidate_uids = []
+    candidate_weights = []
     seen_ips = {}
-    for hotkey in top_hotkeys:
+    for rank, hotkey in enumerate(top_hotkeys):
         uid = hotkey_to_uid.get(hotkey)
         if uid is not None \
                 and uid not in exclude \
@@ -115,16 +123,27 @@ def get_organic_forward_uids(self, count: int = None, task_type : str = None, vp
             if ip_address:
                 seen_ips[ip_address] = uid
             candidate_uids.append(uid)
+            candidate_weights.append(rank_shares[rank])
 
     if not candidate_uids:
         logger.warning(f"No available UIDs found for task_type={task_type}")
         return np.array([], dtype=int)
 
-    # Sample up to `count` UIDs from the candidates
+    selection_count = 1 if count is None else max(0, count)
+    if selection_count == 0:
+        return np.array([], dtype=int)
+
+    probabilities = np.array(candidate_weights, dtype=float)
+    probabilities = probabilities / probabilities.sum()
+
+    # Sample miner slots from the task-specific top 5 using the emissions rank curve.
+    # Replacement keeps the requested organic capacity while preserving the intended
+    # long-run routing probability for each rank.
     selected = np.random.choice(
         candidate_uids,
-        size=min(count, len(candidate_uids)),
-        replace=False
+        size=selection_count,
+        replace=True,
+        p=probabilities,
     )
 
     return np.array(selected, dtype=int)
