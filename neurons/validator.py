@@ -78,6 +78,8 @@ except ValueError:
     logger.warning("Invalid SYNTHETIC_QUERIES_PER_MINER value, defaulting to 5")
     SYNTHETIC_QUERIES_PER_MINER = 5
 
+UPSCALING_SCORING_BATCH_SIZE = 5
+
 try:
     ORGANIC_QUERIES_PER_MINER = max(
         1, int(os.getenv("ORGANIC_QUERIES_PER_MINER", str(SYNTHETIC_QUERIES_PER_MINER)))
@@ -803,23 +805,46 @@ class Validator(base.BaseValidator):
                 flat_content_lengths.append(content_lengths[query_idx])
                 flat_task_types.append(task_types[query_idx])
 
-        await self.score_upscalings(
-            flat_uids,
-            [],
-            flat_payload_urls,
-            flat_reference_paths,
-            timestamp,
-            flat_video_ids,
-            flat_uploaded_object_names,
-            flat_content_lengths,
-            flat_task_types,
-            round_id,
-            distorted_urls=flat_distorted_urls,
+        total_scoring_responses = len(flat_uids)
+        scoring_batch_size = UPSCALING_SCORING_BATCH_SIZE
+        scoring_batch_count = (total_scoring_responses + scoring_batch_size - 1) // scoring_batch_size
+        logger.info(
+            f"Scoring {total_scoring_responses} upscaling query responses from "
+            f"{num_miners} miners in {scoring_batch_count} batches of up to {scoring_batch_size}"
         )
+
+        for batch_idx, batch_start in enumerate(range(0, total_scoring_responses, scoring_batch_size), start=1):
+            batch_end = min(batch_start + scoring_batch_size, total_scoring_responses)
+            batch_uids = flat_uids[batch_start:batch_end]
+            batch_timer = time.time()
+            logger.info(
+                f"Scoring upscaling batch {batch_idx}/{scoring_batch_count}: "
+                f"responses {batch_start + 1}-{batch_end}/{total_scoring_responses}, "
+                f"uids={batch_uids}"
+            )
+
+            await self.score_upscalings(
+                batch_uids,
+                [],
+                flat_payload_urls[batch_start:batch_end],
+                flat_reference_paths[batch_start:batch_end],
+                timestamp,
+                flat_video_ids[batch_start:batch_end],
+                flat_uploaded_object_names[batch_start:batch_end],
+                flat_content_lengths[batch_start:batch_end],
+                flat_task_types[batch_start:batch_end],
+                round_id,
+                distorted_urls=flat_distorted_urls[batch_start:batch_end],
+            )
+
+            logger.info(
+                f"Completed upscaling scoring batch {batch_idx}/{scoring_batch_count} "
+                f"in {time.time() - batch_timer:.2f} seconds"
+            )
 
         batch_processed_time = time.time() - batch_start_time
         logger.info(f"Completed upscaling batch within {batch_processed_time:.2f} seconds")
-        logger.info(f"Scored {len(flat_uids)} upscaling query responses from {num_miners} miners")
+        logger.info(f"Scored {total_scoring_responses} upscaling query responses from {num_miners} miners")
 
     async def process_compression_miners(self, compression_miners, version):
         """Process all compression miners concurrently with the same bundled challenge."""
@@ -1062,7 +1087,7 @@ class Validator(base.BaseValidator):
         pieapp_scores = response_data.get("pieapp_scores", [])
         reasons = response_data.get("reasons", [])
         
-        logger.info(f"Updating miner manager with {len(quality_scores)} miner scores after synthetic requests processing")
+        logger.info(f"Updating miner manager with {len(quality_scores)} upscaling scores after synthetic requests processing")
 
         miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
         
@@ -1092,7 +1117,7 @@ class Validator(base.BaseValidator):
         content_lengths.extend([0.0] * (max_length - len(content_lengths)))
         applied_multipliers.extend([0.0] * (max_length - len(applied_multipliers)))
 
-        logger.info(f"Synthetic scoring results for {len(uids)} miners")
+        logger.info(f"Synthetic upscaling scoring results for {len(uids)} query responses")
         logger.info(f"Uids: {uids}")
 
         for uid, vmaf_score, pieapp_score, quality_score, length_score, final_score, reason, content_length, applied_multiplier in zip(
