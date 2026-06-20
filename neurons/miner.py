@@ -597,15 +597,21 @@ class Miner(BaseMiner):
 
         task_types = self._payload_task_types(payload, len(urls))
 
-        processed_urls = []
-        for index, (payload_url, task_type) in enumerate(zip(urls, task_types)):
+        async def _process_one(index: int, payload_url: str, task_type: str) -> str:
             try:
                 processed_url = await self._forward_upscaling_to_service(payload_url, task_type)
-                processed_urls.append(processed_url or "")
+                return processed_url or ""
             except Exception as e:
                 logger.error(f"Failed to process upscaling payload item {index}: {e}")
-                processed_urls.append("")
-        return processed_urls
+                return ""
+
+        logger.info(f"Forwarding {len(urls)} upscaling payload item(s) concurrently")
+        return await asyncio.gather(
+            *[
+                _process_one(index, payload_url, task_type)
+                for index, (payload_url, task_type) in enumerate(zip(urls, task_types))
+            ]
+        )
 
     async def _forward_compression_url_to_service(self, payload, payload_url: str) -> str | None:
         task_id = uuid.uuid4().hex[:12]
@@ -647,16 +653,22 @@ class Miner(BaseMiner):
             logger.error(f"Compression payload missing reference video URLs: {self._payload_debug_dump(payload)}")
             return []
 
-        processed_urls = []
-        for index, payload_url in enumerate(urls):
+        async def _process_one(index: int, payload_url: str) -> str:
             try:
                 item_payload = self._compression_payload_for_index(payload, index)
                 processed_url = await self._forward_compression_url_to_service(item_payload, payload_url)
-                processed_urls.append(processed_url or "")
+                return processed_url or ""
             except Exception as e:
                 logger.error(f"Failed to process compression payload item {index}: {e}")
-                processed_urls.append("")
-        return processed_urls
+                return ""
+
+        logger.info(f"Forwarding {len(urls)} compression payload item(s) concurrently")
+        return await asyncio.gather(
+            *[
+                _process_one(index, payload_url)
+                for index, payload_url in enumerate(urls)
+            ]
+        )
 
     def _compression_payload_for_index(self, payload, index: int):
         updates = {}
