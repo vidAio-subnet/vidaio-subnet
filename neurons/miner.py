@@ -437,6 +437,52 @@ class Miner(BaseMiner):
 
         return compression_config
 
+    def _payload_debug_dump(self, payload) -> dict:
+        if hasattr(payload, "model_dump"):
+            try:
+                return payload.model_dump()
+            except Exception:
+                pass
+        return {
+            "reference_video_urls": getattr(payload, "reference_video_urls", None),
+            "reference_video_url": getattr(payload, "reference_video_url", None),
+            "task_types": getattr(payload, "task_types", None),
+            "task_type": getattr(payload, "task_type", None),
+        }
+
+    def _payload_reference_video_urls(self, payload) -> list[str]:
+        payload_data = self._payload_debug_dump(payload)
+        raw_urls = getattr(payload, "reference_video_urls", None) or payload_data.get("reference_video_urls") or []
+        if isinstance(raw_urls, str):
+            raw_urls = [raw_urls]
+
+        legacy_url = getattr(payload, "reference_video_url", None) or payload_data.get("reference_video_url")
+        urls = [str(url).strip() for url in raw_urls if str(url).strip()]
+        if not urls and legacy_url and str(legacy_url).strip():
+            urls = [str(legacy_url).strip()]
+
+        return urls
+
+    def _payload_task_types(self, payload, query_count: int) -> list[str]:
+        if query_count <= 0:
+            return []
+
+        payload_data = self._payload_debug_dump(payload)
+        raw_task_types = getattr(payload, "task_types", None) or payload_data.get("task_types") or []
+        if isinstance(raw_task_types, str):
+            raw_task_types = [raw_task_types]
+
+        legacy_task_type = getattr(payload, "task_type", None) or payload_data.get("task_type") or "HD24K"
+        if not raw_task_types:
+            raw_task_types = [legacy_task_type] * query_count
+
+        task_types = [str(task_type).strip() for task_type in raw_task_types if str(task_type).strip()]
+        if not task_types:
+            task_types = ["HD24K"] * query_count
+        if len(task_types) < query_count:
+            task_types.extend([task_types[-1]] * (query_count - len(task_types)))
+        return task_types[:query_count]
+
     async def _post_processing_service(
         self,
         service_name: str,
@@ -531,18 +577,25 @@ class Miner(BaseMiner):
         )
 
     async def _forward_compression_to_modal(self, payload, task_id: str) -> str | None:
+        payload_urls = self._payload_reference_video_urls(payload)
+        if not payload_urls:
+            logger.error(f"Compression payload missing reference video URLs: {self._payload_debug_dump(payload)}")
+            return None
+
         return await self._call_modal_processing_function(
             "compression",
             MODAL_COMPRESSION_FUNCTION,
-            self._compression_service_payload(payload, payload.reference_video_url, task_id),
+            self._compression_service_payload(payload, payload_urls[0], task_id),
             COMPRESSION_SERVICE_TIMEOUT_SECONDS,
         )
 
     async def _forward_upscaling_payload_to_service(self, payload) -> list[str]:
-        urls = payload.reference_video_urls or [payload.reference_video_url]
-        task_types = payload.task_types or [payload.task_type] * len(urls)
-        if len(task_types) < len(urls):
-            task_types.extend([task_types[-1] if task_types else "HD24K"] * (len(urls) - len(task_types)))
+        urls = self._payload_reference_video_urls(payload)
+        if not urls:
+            logger.error(f"Upscaling payload missing reference video URLs: {self._payload_debug_dump(payload)}")
+            return []
+
+        task_types = self._payload_task_types(payload, len(urls))
 
         processed_urls = []
         for index, (payload_url, task_type) in enumerate(zip(urls, task_types)):
@@ -589,7 +642,11 @@ class Miner(BaseMiner):
             self._cleanup_shared_files(input_host_path, output_host_path)
 
     async def _forward_compression_payload_to_service(self, payload) -> list[str]:
-        urls = payload.reference_video_urls or [payload.reference_video_url]
+        urls = self._payload_reference_video_urls(payload)
+        if not urls:
+            logger.error(f"Compression payload missing reference video URLs: {self._payload_debug_dump(payload)}")
+            return []
+
         processed_urls = []
         for index, payload_url in enumerate(urls):
             try:
@@ -647,7 +704,11 @@ class Miner(BaseMiner):
             self._cleanup_shared_files(input_host_path, output_host_path)
 
     async def _forward_compression_to_service(self, payload) -> str | None:
-        return await self._forward_compression_url_to_service(payload, payload.reference_video_url)
+        payload_urls = self._payload_reference_video_urls(payload)
+        if not payload_urls:
+            logger.error(f"Compression payload missing reference video URLs: {self._payload_debug_dump(payload)}")
+            return None
+        return await self._forward_compression_url_to_service(payload, payload_urls[0])
 
     async def forward_upscaling_requests(self, synapse: VideoUpscalingProtocol) -> VideoUpscalingProtocol:
         """
@@ -657,8 +718,9 @@ class Miner(BaseMiner):
         
         start_time = time.time()
 
-        task_type: str = synapse.miner_payload.task_type
-        payload_urls = synapse.miner_payload.reference_video_urls or [synapse.miner_payload.reference_video_url]
+        payload_urls = self._payload_reference_video_urls(synapse.miner_payload)
+        task_types = self._payload_task_types(synapse.miner_payload, len(payload_urls))
+        task_type = task_types[0] if task_types else "HD24K"
         validator_uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
 
         logger.info(
@@ -676,6 +738,7 @@ class Miner(BaseMiner):
                 return synapse
             
             synapse.miner_response.optimized_video_urls = processed_video_urls
+            synapse.miner_response.optimized_video_url = processed_video_urls[0] if processed_video_urls else ""
 
             processed_time = time.time() - start_time
 
@@ -700,7 +763,7 @@ class Miner(BaseMiner):
         target_codec: str = synapse.miner_payload.target_codec
         codec_mode: str = synapse.miner_payload.codec_mode
         target_bitrate: float = synapse.miner_payload.target_bitrate
-        payload_urls = synapse.miner_payload.reference_video_urls or [synapse.miner_payload.reference_video_url]
+        payload_urls = self._payload_reference_video_urls(synapse.miner_payload)
         validator_uid: int = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
 
         logger.info(
@@ -719,6 +782,7 @@ class Miner(BaseMiner):
                 return synapse
 
             synapse.miner_response.optimized_video_urls = processed_video_urls
+            synapse.miner_response.optimized_video_url = processed_video_urls[0] if processed_video_urls else ""
 
             processed_time = time.time() - start_time
 

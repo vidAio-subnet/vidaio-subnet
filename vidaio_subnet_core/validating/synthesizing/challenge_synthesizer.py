@@ -109,8 +109,9 @@ class Synthesizer:
                 for chunk in valid_chunks:
                     # Validate chunk data
                     required_fields = ["video_id", "uploaded_object_name", "sharing_link", "task_type"]
-                    if not all(field in chunk for field in required_fields):
-                        logger.warning(f"Missing required fields in chunk data: {chunk}")
+                    missing_fields = [field for field in required_fields if not chunk.get(field)]
+                    if missing_fields:
+                        logger.warning(f"Missing/empty required fields in chunk data ({missing_fields}): {chunk}")
                         continue
                     
                     # Assign chunks to lengths based on required_chunks order
@@ -300,8 +301,9 @@ class Synthesizer:
                     
                     # Validate chunk data
                     required_fields = ["video_id", "uploaded_object_name", "sharing_link"]
-                    if not all(field in chunk for field in required_fields):
-                        logger.warning(f"Missing required fields in compression chunk data: {chunk}")
+                    missing_fields = [field for field in required_fields if not chunk.get(field)]
+                    if missing_fields:
+                        logger.warning(f"Missing/empty required fields in compression chunk data ({missing_fields}): {chunk}")
                         continue
 
                     try:
@@ -384,8 +386,8 @@ class Synthesizer:
                 logger.info("Received organic upscaling chunks from video-scheduler API")
 
                 required_fields = ["url", "chunk_id", "task_id", "resolution_type"]
-                if any(not all(field in chunk for field in required_fields) for chunk in chunks):
-                    logger.info("Missing required fields in some chunk data, retrying...")
+                if any(any(not chunk.get(field) for field in required_fields) for chunk in chunks):
+                    logger.info("Missing/empty required fields in some chunk data, retrying...")
                     await asyncio.sleep(self.retry_delay)
                     continue
 
@@ -451,8 +453,8 @@ class Synthesizer:
                 logger.info("Received organic compression chunks from video-scheduler API")
 
                 required_fields = ["url", "chunk_id", "task_id", "compression_type"]
-                if any(not all(field in chunk for field in required_fields) for chunk in chunks):
-                    logger.info("Missing required fields in some chunk data, retrying...")
+                if any(any(not chunk.get(field) for field in required_fields) for chunk in chunks):
+                    logger.info("Missing/empty required fields in some chunk data, retrying...")
                     await asyncio.sleep(self.retry_delay)
                     continue
 

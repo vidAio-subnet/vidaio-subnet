@@ -34,6 +34,10 @@ class UpscalingMinerPayload(BaseModel):
         description="The URLs of the reference videos to be optimized",
         default_factory=list,
     )
+    reference_video_url: str = Field(
+        description="Legacy scalar URL of the first reference video",
+        default="",
+    )
     maximum_optimized_size_mb: int = Field(
         description="The maximum size of the optimized video in MB",
         default=100,
@@ -43,6 +47,10 @@ class UpscalingMinerPayload(BaseModel):
         description="The types of tasks: HD24K, SD2HD, SD24K, 4K28K",
         default_factory=list,
     )
+    task_type: str = Field(
+        description="Legacy scalar task type for the first reference video",
+        default="HD24K",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -51,30 +59,34 @@ class UpscalingMinerPayload(BaseModel):
             data = data.copy()
             if not data.get("reference_video_urls") and data.get("reference_video_url"):
                 data["reference_video_urls"] = [data["reference_video_url"]]
+            if not data.get("reference_video_url") and data.get("reference_video_urls"):
+                data["reference_video_url"] = data["reference_video_urls"][0]
             if not data.get("task_types") and data.get("task_type"):
                 data["task_types"] = [data["task_type"]]
+            if not data.get("task_type") and data.get("task_types"):
+                data["task_type"] = data["task_types"][0]
         return data
 
-    @property
-    def reference_video_url(self) -> str:
-        return self.reference_video_urls[0] if self.reference_video_urls else ""
-
-    @reference_video_url.setter
-    def reference_video_url(self, value: str) -> None:
-        self.reference_video_urls = [value] if value else []
-
-    @property
-    def task_type(self) -> str:
-        return self.task_types[0] if self.task_types else "HD24K"
-
-    @task_type.setter
-    def task_type(self, value: str) -> None:
-        self.task_types = [value] if value else []
+    @model_validator(mode="after")
+    def sync_legacy_fields(self):
+        if not self.reference_video_urls and self.reference_video_url:
+            self.reference_video_urls = [self.reference_video_url]
+        if self.reference_video_urls:
+            self.reference_video_url = self.reference_video_urls[0]
+        if not self.task_types and self.task_type:
+            self.task_types = [self.task_type]
+        if self.task_types:
+            self.task_type = self.task_types[0]
+        return self
 
 class CompressionMinerPayload(BaseModel):
     reference_video_urls: List[str] = Field(
         description="The URLs of the reference videos to be compressed",
         default_factory=list,
+    )
+    reference_video_url: str = Field(
+        description="Legacy scalar URL of the first reference video",
+        default="",
     )
     vmaf_threshold: float = Field(
         description="The VMAF threshold for quality control during compression",
@@ -119,21 +131,27 @@ class CompressionMinerPayload(BaseModel):
             data = data.copy()
             if not data.get("reference_video_urls") and data.get("reference_video_url"):
                 data["reference_video_urls"] = [data["reference_video_url"]]
+            if not data.get("reference_video_url") and data.get("reference_video_urls"):
+                data["reference_video_url"] = data["reference_video_urls"][0]
         return data
 
-    @property
-    def reference_video_url(self) -> str:
-        return self.reference_video_urls[0] if self.reference_video_urls else ""
-
-    @reference_video_url.setter
-    def reference_video_url(self, value: str) -> None:
-        self.reference_video_urls = [value] if value else []
+    @model_validator(mode="after")
+    def sync_legacy_fields(self):
+        if not self.reference_video_urls and self.reference_video_url:
+            self.reference_video_urls = [self.reference_video_url]
+        if self.reference_video_urls:
+            self.reference_video_url = self.reference_video_urls[0]
+        return self
 
 
 class MinerResponse(BaseModel):
     optimized_video_urls: List[str] = Field(
         description="The URLs of the processed videos (compressed/upscaled)",
         default_factory=list,
+    )
+    optimized_video_url: str = Field(
+        description="Legacy scalar URL of the first processed video",
+        default="",
     )
 
     @model_validator(mode="before")
@@ -143,15 +161,17 @@ class MinerResponse(BaseModel):
             data = data.copy()
             if not data.get("optimized_video_urls") and data.get("optimized_video_url"):
                 data["optimized_video_urls"] = [data["optimized_video_url"]]
+            if not data.get("optimized_video_url") and data.get("optimized_video_urls"):
+                data["optimized_video_url"] = data["optimized_video_urls"][0]
         return data
 
-    @property
-    def optimized_video_url(self) -> str:
-        return self.optimized_video_urls[0] if self.optimized_video_urls else ""
-
-    @optimized_video_url.setter
-    def optimized_video_url(self, value: str) -> None:
-        self.optimized_video_urls = [value] if value else []
+    @model_validator(mode="after")
+    def sync_legacy_fields(self):
+        if not self.optimized_video_urls and self.optimized_video_url:
+            self.optimized_video_urls = [self.optimized_video_url]
+        if self.optimized_video_urls:
+            self.optimized_video_url = self.optimized_video_urls[0]
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +200,10 @@ class PollResponse(BaseModel):
         description="Populated with result URLs once status is 'completed'",
         default_factory=list,
     )
+    optimized_video_url: str = Field(
+        description="Legacy scalar URL of the first processed video",
+        default="",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -188,15 +212,17 @@ class PollResponse(BaseModel):
             data = data.copy()
             if not data.get("optimized_video_urls") and data.get("optimized_video_url"):
                 data["optimized_video_urls"] = [data["optimized_video_url"]]
+            if not data.get("optimized_video_url") and data.get("optimized_video_urls"):
+                data["optimized_video_url"] = data["optimized_video_urls"][0]
         return data
 
-    @property
-    def optimized_video_url(self) -> str:
-        return self.optimized_video_urls[0] if self.optimized_video_urls else ""
-
-    @optimized_video_url.setter
-    def optimized_video_url(self, value: str) -> None:
-        self.optimized_video_urls = [value] if value else []
+    @model_validator(mode="after")
+    def sync_legacy_fields(self):
+        if not self.optimized_video_urls and self.optimized_video_url:
+            self.optimized_video_urls = [self.optimized_video_url]
+        if self.optimized_video_urls:
+            self.optimized_video_url = self.optimized_video_urls[0]
+        return self
 
 
 class ScoringPayload(BaseModel):
