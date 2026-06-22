@@ -3,7 +3,6 @@ import cv2
 import glob
 import json
 import time
-import math
 import torch
 import random
 import asyncio
@@ -24,6 +23,12 @@ from vidaio_subnet_core.utilities.storage_client import storage_client
 from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video, trim_video_select, vmaf_metric_ffmpeg, is_vmaf_ffmpeg_available
 from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
 from scoring_function import calculate_compression_score
+from upscaling_scoring import (
+    calculate_final_score,
+    calculate_length_score,
+    calculate_preliminary_score,
+    calculate_quality_score,
+)
 
 # Compression scoring constants
 COMPRESSION_RATE_WEIGHT = 0.7  # w_c
@@ -31,6 +36,10 @@ COMPRESSION_VMAF_WEIGHT = 0.3  # w_vmaf
 SOFT_THRESHOLD_MARGIN = 5.0  # Margin below VMAF threshold for soft scoring zone
 
 FRAME_TOLERANCE = 5  # Tolerance in frames for fast ffprobe frame count read
+UPSCALING_FILE_SIZE_MULTIPLIERS = {
+    2: 8,
+    4: 20,
+}
 
 
 app = FastAPI()
@@ -40,9 +49,29 @@ VMAF_THRESHOLD = CONFIG.score.vmaf_threshold
 PIEAPP_SAMPLE_COUNT = CONFIG.score.pieapp_sample_count
 PIEAPP_THRESHOLD = CONFIG.score.pieapp_threshold
 VMAF_SAMPLE_COUNT = CONFIG.score.vmaf_sample_count
+ORGANIC_PROXY_VERIFY_DOWNLOAD_ENDPOINT = os.getenv(
+    "ORGANIC_PROXY_VERIFY_DOWNLOAD_ENDPOINT",
+    "http://135.181.63.197:20000/api/v1/videos/verify_download",
+)
+ORGANIC_PROXY_API_KEY = os.getenv("ORGANIC_PROXY_API_KEY", "")
 
 # Check if vmaf_ffmpeg Docker image with libvmaf_cuda is available
 VMAF_FFMPEG_AVAILABLE = is_vmaf_ffmpeg_available()
+
+def validate_upscaling_file_size(reference_path, distorted_path, scale_factor):
+    """Validate that an upscaled video stays within the allowed file size."""
+    max_multiplier = UPSCALING_FILE_SIZE_MULTIPLIERS[scale_factor]
+    reference_file_size = os.path.getsize(reference_path)
+    distorted_file_size = os.path.getsize(distorted_path)
+    max_distorted_file_size = reference_file_size * max_multiplier
+
+    logger.info(
+        f"Upscaling file size check: distorted={distorted_file_size / (1024 * 1024):.2f} MB, "
+        f"reference={reference_file_size / (1024 * 1024):.2f} MB, "
+        f"limit={max_distorted_file_size / (1024 * 1024):.2f} MB ({max_multiplier}x)"
+    )
+
+    return distorted_file_size <= max_distorted_file_size, max_multiplier
 
 class UpscalingScoringRequest(BaseModel):
     """
@@ -168,6 +197,39 @@ async def get_shared_session() -> aiohttp.ClientSession:
         connector = aiohttp.TCPConnector(limit=50)  # Adjust concurrency limit as needed
         _shared_session = aiohttp.ClientSession(timeout=timeout, connector=connector)
     return _shared_session
+
+async def verify_organic_proxy_download(video_url: str, session: Optional[aiohttp.ClientSession] = None) -> bool:
+    """Check whether the organic proxy can download a miner's output URL."""
+    verify_session = session or await get_shared_session()
+    headers = {"X-API-Key": ORGANIC_PROXY_API_KEY}
+
+    async with verify_session.post(
+        ORGANIC_PROXY_VERIFY_DOWNLOAD_ENDPOINT,
+        json={"video_url": video_url},
+        headers=headers,
+        timeout=aiohttp.ClientTimeout(total=30),
+    ) as response:
+        if response.status != 200:
+            response_text = await response.text()
+            raise Exception(
+                f"Organic proxy download verification failed. HTTP status: {response.status}, "
+                f"response: {response_text[:500]}"
+            )
+        else:
+            logger.info(f"Organic proxy download verification succeeded for {video_url}")
+
+        response_data = await response.json()
+        downloadable = response_data.get("downloadable")
+        if not isinstance(downloadable, bool):
+            raise Exception("Organic proxy download verification response is missing a boolean downloadable field")
+
+        if not downloadable:
+            logger.warning(
+                f"Organic proxy could not download {video_url}: "
+                f"{response_data.get('reason', 'no reason provided')}"
+            )
+
+        return downloadable
 
 async def download_video(video_url: str, verbose: bool, session: Optional[aiohttp.ClientSession] = None) -> tuple[str, float]:
     """
@@ -939,60 +1001,6 @@ def calculate_psnr(ref_frame: np.ndarray, dist_frame: np.ndarray) -> float:
         return 1000  # Maximum PSNR value (perfect similarity)
     return 10 * np.log10((255.0**2) / mse)
 
-def calculate_length_score(content_length):
-    """
-    Convert content length in seconds to a normalized length score.
-    
-    Args:
-        content_length (float): Video duration in seconds (5-320s)
-        
-    Returns:
-        float: Normalized length score (0-1)
-    """
-    return math.log(1 + content_length) / math.log(1 + 320)
-
-def calculate_preliminary_score(quality_score, length_score, quality_weight=0.5, length_weight=0.5):
-    """
-    Calculate the preliminary score from quality and length scores.
-    
-    Args:
-        quality_score (float): Normalized quality score (0-1)
-        length_score (float): Normalized length score (0-1)
-        quality_weight (float): Weight for quality component (default: 0.5)
-        length_weight (float): Weight for length component (default: 0.5)
-        
-    Returns:
-        float: Preliminary combined score (0-1)
-    """
-    return (quality_score * quality_weight) + (length_score * length_weight)
-
-def calculate_final_score(s_pre):
-    """
-    Transform preliminary score into final score using exponential function.
-    
-    Args:
-        s_pre (float): Preliminary score (0-1)
-        
-    Returns:
-        float: Final exponentially-transformed score
-    """
-    return 0.1 * math.exp(6.979 * (s_pre - 0.5))
-
-def sigmoid(x):
-    return 1 / (1 + np.exp(-x))
-
-def calculate_quality_score(pieapp_score):
-    sigmoid_normalized_score = sigmoid(pieapp_score)
-    
-    original_at_zero = (1 - (np.log10(sigmoid(0) + 1) / np.log10(3.5))) ** 2.5
-    original_at_two = (1 - (np.log10(sigmoid(2.0) + 1) / np.log10(3.5))) ** 2.5
-    
-    original_value = (1 - (np.log10(sigmoid_normalized_score + 1) / np.log10(3.5))) ** 2.5
-    
-    scaled_value = 1 - ((original_value - original_at_zero) / (original_at_two - original_at_zero))
-    
-    return scaled_value
-
 def get_sample_frames(ref_cap, dist_cap, total_frames):
     """
     Get sample frames from both reference and distorted videos.
@@ -1356,8 +1364,8 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
         if task == "compression":
             if detected_codec_family != expected_codec_family:
                 errors.append(f"Codec must be {expected_codec_family} (got {codec} which normalizes to {detected_codec_family})")
-        elif task == "upscaling" and detected_codec_family != "hevc":
-            errors.append(f"Codec must be hevc for upscaling, got {codec}")
+        elif task == "upscaling" and detected_codec_family not in ["hevc", "av1"]:
+            errors.append(f"Codec must be hevc or av1 for upscaling, got {codec}")
         if "ivf" in container.lower():
             errors.append("Container must be MP4, got IVF (incompatible for concatenation)")
         if container not in ["mov,mp4,m4a,3gp,3g2,mj2", "mp4", "isom"]:
@@ -1753,6 +1761,25 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 length_scores.append(0.0)
                 final_scores.append(-100)
                 reasons.append(error_msg)
+                continue
+
+            is_valid_file_size, max_file_size_multiplier = validate_upscaling_file_size(
+                payload_path, dist_path, scale_factor
+            )
+            if not is_valid_file_size:
+                logger.info(
+                    f"Distorted video file size exceeds {max_file_size_multiplier}x reference "
+                    "file size limit. Penalizing miner."
+                )
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(0.0)
+                reasons.append(
+                    f"MINER FAILURE: distorted video file size exceeds "
+                    f"{max_file_size_multiplier}x reference file size limit"
+                )
                 continue
 
             step_time = time.time() - uid_start_time
@@ -2438,11 +2465,27 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
     final_scores = []
     reasons = []
 
+    proxy_downloadable_results = []
     distorted_video_paths = []
     for dist_url in request.distorted_urls:
         if len(dist_url) < 10:
+            proxy_downloadable_results.append(True)
             distorted_video_paths.append(None)
             continue
+        try:
+            proxy_downloadable = await verify_organic_proxy_download(dist_url)
+        except Exception as e:
+            logger.warning(
+                f"organic proxy download verification unavailable for {dist_url}; "
+                f"bypassing check and continuing scoring. error: {e}"
+            )
+            proxy_downloadable = True
+
+        proxy_downloadable_results.append(proxy_downloadable)
+        if not proxy_downloadable:
+            distorted_video_paths.append(None)
+            continue
+
         try:
             path, download_time = await download_video(dist_url, request.verbose)
             distorted_video_paths.append(path)
@@ -2450,8 +2493,8 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
             logger.error(f"failed to download distorted video: {dist_url}, error: {e}")
             distorted_video_paths.append(None)
 
-    for idx, (ref_url, dist_path, uid, task_type) in enumerate(
-        zip(request.reference_urls, distorted_video_paths, request.uids, request.task_types)
+    for idx, (ref_url, dist_path, uid, task_type, proxy_downloadable) in enumerate(
+        zip(request.reference_urls, distorted_video_paths, request.uids, request.task_types, proxy_downloadable_results)
     ):
         logger.info(f"🧩 processing {uid}.... downloading reference video.... 🧩")
         ref_path = None
@@ -2537,6 +2580,23 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
 
         # === MINER OUTPUT VALIDATION (MINER'S FAULT) ===
         try:
+            if proxy_downloadable is None:
+                logger.warning(
+                    f"organic proxy download verification unavailable for uid {uid}; "
+                    "bypassing check and continuing scoring."
+                )
+                proxy_downloadable = True
+
+            if not proxy_downloadable:
+                logger.error(f"organic proxy failed to download distorted video for uid {uid}. penalizing miner.")
+                reasons.append(f"MINER FAILURE: distorted video is not downloadable through organic proxy via endpoint: {ORGANIC_PROXY_VERIFY_DOWNLOAD_ENDPOINT}, miner is recommended to whitelist organic proxy IP in S3 compatible storage")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(0.0)
+                continue
+
             # check if distorted video failed to download
             if dist_path is None:
                 logger.error(f"failed to download distorted video for uid {uid}. penalizing miner.")
@@ -2546,6 +2606,29 @@ async def score_organics_upscaling(request: OrganicsUpscalingScoringRequest) -> 
                 quality_scores.append(0.0)
                 length_scores.append(0.0)
                 final_scores.append(0.0)  # 0 = miner penalty
+                continue
+
+            is_valid_file_size, max_file_size_multiplier = validate_upscaling_file_size(
+                ref_path, dist_path, scale_factor
+            )
+            if not is_valid_file_size:
+                logger.info(
+                    f"distorted video file size exceeds {max_file_size_multiplier}x reference "
+                    "file size limit. penalizing miner."
+                )
+                reasons.append(
+                    f"MINER FAILURE: distorted video file size exceeds "
+                    f"{max_file_size_multiplier}x reference file size limit"
+                )
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(0.0)  # 0 = miner penalty
+                if ref_path and os.path.exists(ref_path):
+                    os.unlink(ref_path)
+                if dist_path and os.path.exists(dist_path):
+                    os.unlink(dist_path)
                 continue
 
             # Check if miner's output can be opened (using ffprobe to avoid AV1 warnings)
@@ -2785,11 +2868,27 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
     final_scores = []
     reasons = []
 
+    proxy_downloadable_results = []
     distorted_video_paths = []
     for dist_url in request.distorted_urls:
         if len(dist_url) < 10:
+            proxy_downloadable_results.append(True)
             distorted_video_paths.append(None)
             continue
+        try:
+            proxy_downloadable = await verify_organic_proxy_download(dist_url)
+        except Exception as e:
+            logger.warning(
+                f"organic proxy download verification unavailable for {dist_url}; "
+                f"bypassing check and continuing scoring. error: {e}"
+            )
+            proxy_downloadable = True
+
+        proxy_downloadable_results.append(proxy_downloadable)
+        if not proxy_downloadable:
+            distorted_video_paths.append(None)
+            continue
+
         try:
             path, download_time = await download_video(dist_url, request.verbose)
             distorted_video_paths.append(path)
@@ -2802,17 +2901,15 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
     codec_modes = request.codec_modes if request.codec_modes else ["CRF"] * len(request.uids)
     target_bitrates = request.target_bitrates if request.target_bitrates else [10.0] * len(request.uids)
 
-    for idx, (ref_url, dist_path, uid, vmaf_threshold, target_codec, codec_mode, target_bitrate) in enumerate(
+    for idx, (ref_url, dist_path, uid, vmaf_threshold, target_codec, codec_mode, target_bitrate, proxy_downloadable) in enumerate(
         zip(request.reference_urls, distorted_video_paths, request.uids, request.vmaf_thresholds,
-            target_codecs, codec_modes, target_bitrates)
+            target_codecs, codec_modes, target_bitrates, proxy_downloadable_results)
     ):
         logger.info(f"🧩 processing {uid}.... downloading reference video.... 🧩")
         ref_path = None
         
         ref_y4m_path = None
         dist_y4m_path = None
-        ref_clip_path = None
-        dist_clip_path = None
 
         uid_start_time = time.time() # start time for each uid
 
@@ -2869,6 +2966,21 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
 
         # === MINER OUTPUT VALIDATION (MINER'S FAULT) ===
         try:
+            if proxy_downloadable is None:
+                logger.warning(
+                    f"organic proxy download verification unavailable for uid {uid}; "
+                    "bypassing check and continuing scoring."
+                )
+                proxy_downloadable = True
+
+            if not proxy_downloadable:
+                logger.error(f"organic proxy failed to download distorted video for uid {uid}. penalizing miner.")
+                vmaf_scores.append(0.0)
+                compression_rates.append(0.9999)
+                reasons.append("MINER FAILURE: distorted video is not downloadable through organic proxy")
+                final_scores.append(0.0)
+                continue
+
             # check if distorted video failed to download
             if dist_path is None:
                 logger.error(f"failed to download distorted video for uid {uid}. penalizing miner.")
@@ -2931,51 +3043,39 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 compression_rate = 1.0
                 logger.info("Reference file size is 0 or distorted file size >= reference, setting compression rate to 1.0")
 
-            # Calculate 0.5 second clip using frame-accurate extraction
+            # Score VMAF on the full videos. Keep a short bounded window only
+            # for the existing color/chroma validation checks.
             ref_fps = get_video_fps(ref_path)
             logger.info(f"Reference video FPS: {ref_fps}")
 
-            clip_num_frames = max(1, int(ref_fps * 0.5))  # 0.5 seconds worth of frames
-            max_start_frame = max(0, ref_total_frames - clip_num_frames)
-            start_frame = random.randint(0, max_start_frame)
+            color_check_num_frames = max(1, int(ref_fps * 0.5))
+            max_color_check_start_frame = max(0, ref_total_frames - color_check_num_frames)
+            color_check_start_frame = random.randint(0, max_color_check_start_frame)
 
-            logger.info(f"Creating {clip_num_frames}-frame clips starting at frame {start_frame}")
+            logger.info(
+                f"Selected {color_check_num_frames}-frame window starting at frame "
+                f"{color_check_start_frame} for color/chroma validation"
+            )
             step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 6. Selected random start frame for video chunks in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
-            # Create reference clip (frame-accurate)
-            ref_clip_path = trim_video_select(ref_path, start_frame, clip_num_frames)
-            logger.info(f"Created reference clip: {ref_clip_path}")
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 7. Created reference video clip in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
-            # Create distorted clip (frame-accurate)
-            dist_clip_path = trim_video_select(dist_path, start_frame, clip_num_frames)
-            logger.info(f"Created distorted clip: {dist_clip_path}")
-            step_time = time.time() - uid_start_time
-            logger.info(f"♎️ 8. Created distorted video clip in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            logger.info(f"♎️ 6. Selected validation frame window in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Calculate VMAF — Docker-first with Y4M fallback
-            # Docker path: FFmpeg signalstats for color/chroma validation (no Y4M needed)
-            # Fallback path: Y4M-based VMAF + Y4M-based color/chroma validation
             dist_y4m_path = None
-            used_docker_vmaf = False
             try:
                 vmaf_start = time.time()
                 vmaf_score = None
 
-                if VMAF_FFMPEG_AVAILABLE and ref_clip_path and dist_clip_path:
+                if VMAF_FFMPEG_AVAILABLE:
                     try:
                         logger.info("Attempting Docker-based VMAF calculation (libvmaf_cuda)...")
                         vmaf_score = vmaf_metric_ffmpeg(
-                            dist_path=dist_clip_path,
-                            ref_path=ref_clip_path,
+                            dist_path=dist_path,
+                            ref_path=ref_path,
                             skip_frames=0,
                             n_subsample=1,
                             neg_model=True,
                         )
                         logger.info(f"Docker VMAF calculation succeeded: {vmaf_score}")
-                        used_docker_vmaf = True
                     except Exception as docker_err:
                         logger.warning(f"Docker VMAF failed, falling back to Y4M: {docker_err}")
                         vmaf_score = None
@@ -2983,14 +3083,11 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 if vmaf_score is None:
                     # Fallback: Y4M-based VMAF calculation
                     logger.info("Using Y4M-based VMAF calculation (fallback)...")
-                    ref_clip_frames = get_frame_count(ref_clip_path)
-                    logger.info(f"Reference clip has {ref_clip_frames} frames.")
-                    random_frames = sorted(random.sample(range(ref_clip_frames), min(VMAF_SAMPLE_COUNT, ref_clip_frames)))
-                    ref_y4m_path = convert_mp4_to_y4m(ref_clip_path, random_frames)
-                    logger.info("The reference video clip has been successfully converted to Y4M format.")
+                    ref_y4m_path = convert_mp4_to_y4m(ref_path)
+                    logger.info("The full reference video has been successfully converted to Y4M format.")
                     step_time = time.time() - uid_start_time
-                    logger.info(f"♎️ 9. Converted reference video clip to Y4M in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-                    vmaf_score, dist_y4m_path = calculate_vmaf(ref_y4m_path, dist_clip_path, random_frames, neg_model=True, return_y4m_path=True)
+                    logger.info(f"♎️ 9. Converted full reference video to Y4M in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+                    vmaf_score, dist_y4m_path = calculate_vmaf(ref_y4m_path, dist_path, None, neg_model=True, return_y4m_path=True)
 
                 vmaf_calc_time = time.time() - vmaf_start
                 logger.info(f"☣️☣️ VMAF calculation took {vmaf_calc_time:.2f} seconds.")
@@ -3015,106 +3112,43 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 continue
 
             # === COLOR / CHROMA VALIDATION ===
-            if used_docker_vmaf:
-                # Docker path: use FFmpeg signalstats on original videos with time bounds (no Y4M needed)
-                logger.info("Using FFmpeg signalstats for color/chroma validation (no Y4M conversion)")
+            # Use a bounded window so these guard checks remain fast while VMAF
+            # itself is scored over the full videos above.
+            logger.info("Using FFmpeg signalstats for bounded color/chroma validation")
+            signalstats_start_time = color_check_start_frame / ref_fps
+            signalstats_duration = color_check_num_frames / ref_fps
+            ref_signal_stats = _get_signalstats(ref_path, start_time=signalstats_start_time, duration=signalstats_duration)
+            dist_signal_stats = _get_signalstats(dist_path, start_time=signalstats_start_time, duration=signalstats_duration)
 
-                # Compute signalstats once on original videos (not trimmed clips — avoids keyframe issues)
-                # Convert frame-based position back to time for signalstats
-                signalstats_start_time = start_frame / ref_fps
-                signalstats_duration = clip_num_frames / ref_fps
-                ref_signal_stats = _get_signalstats(ref_path, start_time=signalstats_start_time, duration=signalstats_duration)
-                dist_signal_stats = _get_signalstats(dist_path, start_time=signalstats_start_time, duration=signalstats_duration)
+            # Color validation (grayscale detection)
+            color_valid, color_reason = validate_color_channels_ffmpeg(ref_signal_stats, dist_signal_stats)
+            if not color_valid:
+                logger.error(f"UID {uid}: {color_reason}")
+                compression_rates.append(0.9999)
+                final_scores.append(0.0)
+                reasons.append(f"Color validation failed: {color_reason}")
+                if dist_path and os.path.exists(dist_path):
+                    os.unlink(dist_path)
+                continue
 
-                # Color validation (grayscale detection)
-                color_valid, color_reason = validate_color_channels_ffmpeg(ref_signal_stats, dist_signal_stats)
-                if not color_valid:
-                    logger.error(f"UID {uid}: {color_reason}")
-                    compression_rates.append(0.9999)
-                    final_scores.append(0.0)
-                    reasons.append(f"Color validation failed: {color_reason}")
-                    if dist_path and os.path.exists(dist_path):
-                        os.unlink(dist_path)
-                    if ref_clip_path and os.path.exists(ref_clip_path):
-                        os.unlink(ref_clip_path)
-                    if dist_clip_path and os.path.exists(dist_clip_path):
-                        os.unlink(dist_clip_path)
-                    continue
+            logger.info(f"✅ UID {uid}: Color channels validated (ffmpeg) - {color_reason}")
+            step_time = time.time() - uid_start_time
+            logger.info(f"♎️ 10.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
-                logger.info(f"✅ UID {uid}: Color channels validated (ffmpeg) - {color_reason}")
-                step_time = time.time() - uid_start_time
-                logger.info(f"♎️ 10.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            # Chroma validation (UV reduction detection)
+            chroma_valid, chroma_reason = validate_chroma_quality_ffmpeg(ref_signal_stats, dist_signal_stats, threshold=0.7)
+            if not chroma_valid:
+                logger.error(f"UID {uid}: {chroma_reason}")
+                compression_rates.append(0.9999)
+                final_scores.append(0.0)
+                reasons.append(f"Chroma validation failed: {chroma_reason}")
+                if dist_path and os.path.exists(dist_path):
+                    os.unlink(dist_path)
+                continue
 
-                # Chroma validation (UV reduction detection)
-                chroma_valid, chroma_reason = validate_chroma_quality_ffmpeg(ref_signal_stats, dist_signal_stats, threshold=0.7)
-                if not chroma_valid:
-                    logger.error(f"UID {uid}: {chroma_reason}")
-                    compression_rates.append(0.9999)
-                    final_scores.append(0.0)
-                    reasons.append(f"Chroma validation failed: {chroma_reason}")
-                    if dist_path and os.path.exists(dist_path):
-                        os.unlink(dist_path)
-                    if ref_clip_path and os.path.exists(ref_clip_path):
-                        os.unlink(ref_clip_path)
-                    if dist_clip_path and os.path.exists(dist_clip_path):
-                        os.unlink(dist_clip_path)
-                    continue
-
-                logger.info(f"✅ UID {uid}: Chroma quality validated (ffmpeg) - {chroma_reason}")
-                step_time = time.time() - uid_start_time
-                logger.info(f"♎️ 10.7. Validated chroma quality in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-            else:
-                # Fallback path: use Y4M-based validation (existing approach)
-                logger.info("Extracting frames from Y4M for color validation from clip (reusing VMAF Y4M files)")
-                dist_clip_frames = extract_frames_from_y4m(dist_y4m_path)
-                step_time = time.time() - uid_start_time
-                logger.info(f"♎️ 10.5. Extracted {len(dist_clip_frames)} frames from Y4M for color validation in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
-                ref_clip_frames_data = extract_frames_from_y4m(ref_y4m_path)
-
-                # Validate color channels (grayscale check)
-                color_valid, color_reason = validate_color_channels_on_frames(ref_clip_frames_data, dist_clip_frames)
-                if not color_valid:
-                    logger.error(f"UID {uid}: {color_reason}")
-                    compression_rates.append(0.9999)
-                    final_scores.append(0.0)
-                    reasons.append(f"Color validation failed: {color_reason}")
-                    if dist_path and os.path.exists(dist_path):
-                        os.unlink(dist_path)
-                    if ref_clip_path and os.path.exists(ref_clip_path):
-                        os.unlink(ref_clip_path)
-                    if dist_clip_path and os.path.exists(dist_clip_path):
-                        os.unlink(dist_clip_path)
-                    if dist_y4m_path and os.path.exists(dist_y4m_path):
-                        os.unlink(dist_y4m_path)
-                    continue
-
-                logger.info(f"✅ UID {uid}: Color channels validated - {color_reason}")
-                step_time = time.time() - uid_start_time
-                logger.info(f"♎️ 10.6. Validated color channels in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
-
-                # Validate chroma quality (prevents partial UV reduction)
-                chroma_valid, chroma_reason = validate_chroma_quality_on_frames(
-                    ref_clip_frames_data, dist_clip_frames, threshold=0.7
-                )
-                if not chroma_valid:
-                    logger.error(f"UID {uid}: {chroma_reason}")
-                    compression_rates.append(0.9999)
-                    final_scores.append(0.0)
-                    reasons.append(f"Chroma validation failed: {chroma_reason}")
-                    if dist_path and os.path.exists(dist_path):
-                        os.unlink(dist_path)
-                    if ref_clip_path and os.path.exists(ref_clip_path):
-                        os.unlink(ref_clip_path)
-                    if dist_clip_path and os.path.exists(dist_clip_path):
-                        os.unlink(dist_clip_path)
-                    if dist_y4m_path and os.path.exists(dist_y4m_path):
-                        os.unlink(dist_y4m_path)
-                    continue
-
-                logger.info(f"✅ UID {uid}: Chroma quality validated - {chroma_reason}")
-                step_time = time.time() - uid_start_time
-                logger.info(f"♎️ 10.7. Validated chroma quality in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
+            logger.info(f"✅ UID {uid}: Chroma quality validated (ffmpeg) - {chroma_reason}")
+            step_time = time.time() - uid_start_time
+            logger.info(f"♎️ 10.7. Validated chroma quality in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
             # Calculate compression score using the proper formula
             # Check scoring function for details
@@ -3165,11 +3199,6 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 os.unlink(ref_y4m_path)
             if dist_y4m_path and os.path.exists(dist_y4m_path):
                 os.unlink(dist_y4m_path)
-            # Clean up chunked video files
-            if ref_clip_path and os.path.exists(ref_clip_path):
-                os.unlink(ref_clip_path)
-            if dist_clip_path and os.path.exists(dist_clip_path):
-                os.unlink(dist_clip_path)
 
     return OrganicsCompressionScoringResponse(
         vmaf_scores=vmaf_scores,

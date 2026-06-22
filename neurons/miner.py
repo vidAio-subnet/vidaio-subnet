@@ -1,9 +1,11 @@
 import asyncio
 import os
 import posixpath
+import threading
 import time
 import traceback
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Tuple
 
@@ -39,8 +41,18 @@ warrant_task = TaskType.UPSCALING
 
 UPSCALING_SERVICE_URL = os.getenv("MINER_UPSCALING_SERVICE_URL", "http://localhost:8003").rstrip("/")
 COMPRESSION_SERVICE_URL = os.getenv("MINER_COMPRESSION_SERVICE_URL", "http://localhost:8004").rstrip("/")
+PROCESSING_BACKEND = os.getenv("MINER_PROCESSING_BACKEND", "http").strip().lower()
 UPSCALING_SERVICE_TIMEOUT_SECONDS = float(os.getenv("MINER_UPSCALING_SERVICE_TIMEOUT_SECONDS", "1200"))
-COMPRESSION_SERVICE_TIMEOUT_SECONDS = float(os.getenv("MINER_COMPRESSION_SERVICE_TIMEOUT_SECONDS", "600"))
+DEFAULT_COMPRESSION_TIMEOUT_SECONDS = os.getenv(
+    "MODAL_COMPRESSION_TIMEOUT_SECONDS" if PROCESSING_BACKEND == "modal" else "MINER_DEFAULT_COMPRESSION_TIMEOUT_SECONDS",
+    "14400" if PROCESSING_BACKEND == "modal" else "600",
+)
+COMPRESSION_SERVICE_TIMEOUT_SECONDS = float(
+    os.getenv("MINER_COMPRESSION_SERVICE_TIMEOUT_SECONDS", DEFAULT_COMPRESSION_TIMEOUT_SECONDS)
+)
+MODAL_APP_NAME = os.getenv("MODAL_APP_NAME", "vidaio-miner-workers").strip()
+MODAL_UPSCALING_FUNCTION = os.getenv("MINER_MODAL_UPSCALING_FUNCTION", "upscale_video2x").strip()
+MODAL_COMPRESSION_FUNCTION = os.getenv("MINER_MODAL_COMPRESSION_FUNCTION", "compress").strip()
 MINER_DOWNLOAD_TIMEOUT_SECONDS = float(os.getenv("MINER_DOWNLOAD_TIMEOUT_SECONDS", "600"))
 MINER_UPLOAD_URL_EXPIRY_SECONDS = int(os.getenv("MINER_STORAGE_S3_PRESIGNED_EXPIRY", os.getenv("S3_PRESIGNED_EXPIRY", "3600")))
 
@@ -61,6 +73,37 @@ S3_ENDPOINT_URL = (
     or os.getenv("MINER_STORAGE_S3_ENDPOINT")
     or ""
 ).strip()
+PRESIGNED_URL_CLEANUP_GRACE_SECONDS = int(os.getenv("PRESIGNED_URL_CLEANUP_GRACE_SECONDS", "600"))
+SHARED_VOLUME_FILE_TTL_SECONDS = int(
+    os.getenv("MINER_TEMP_FILE_TTL_SECONDS")
+    or os.getenv("TEMP_FILE_TTL_SECONDS")
+    or str(min(MINER_UPLOAD_URL_EXPIRY_SECONDS, 604800) + PRESIGNED_URL_CLEANUP_GRACE_SECONDS)
+)
+SHARED_VOLUME_CLEANUP_INTERVAL_SECONDS = int(
+    os.getenv("MINER_CLEANUP_INTERVAL_SECONDS") or os.getenv("CLEANUP_INTERVAL_SECONDS") or "300"
+)
+SHARED_VOLUME_CLEANUP_MAX_BYTES = int(
+    os.getenv("MINER_CLEANUP_MAX_VOLUME_BYTES") or os.getenv("CLEANUP_MAX_VOLUME_BYTES") or "9000000000"
+)
+SHARED_VOLUME_CLEANUP_MIN_FILE_AGE_SECONDS = int(
+    os.getenv("MINER_CLEANUP_MIN_FILE_AGE_SECONDS") or os.getenv("CLEANUP_MIN_FILE_AGE_SECONDS") or "60"
+)
+SHARED_VOLUME_CLEANUP_ENABLED = os.getenv(
+    "MINER_CLEANUP_ENABLED", os.getenv("CLEANUP_ENABLED", "true")
+).lower() in ("1", "true", "yes")
+STORAGE_CLEANUP_ENABLED = os.getenv(
+    "MINER_STORAGE_CLEANUP_ENABLED", os.getenv("STORAGE_CLEANUP_ENABLED", "true")
+).lower() in ("1", "true", "yes")
+STORAGE_CLEANUP_PREFIXES = [
+    prefix.strip()
+    for prefix in os.getenv("MINER_STORAGE_CLEANUP_PREFIXES", "processing/,upscaling/").split(",")
+    if prefix.strip()
+]
+STORAGE_OBJECT_TTL_SECONDS = int(
+    os.getenv("MINER_STORAGE_OBJECT_TTL_SECONDS")
+    or os.getenv("STORAGE_OBJECT_TTL_SECONDS")
+    or str(min(MINER_UPLOAD_URL_EXPIRY_SECONDS, 604800) + PRESIGNED_URL_CLEANUP_GRACE_SECONDS)
+)
 
 TASK_TYPE_TO_SCALE = {
     "SD24K": 4,
@@ -89,6 +132,174 @@ class Miner(BaseMiner):
         # Shared in-memory job store for polling-based organic requests.
         # Structure: { job_id: {"task": asyncio.Task, "result": str | None, "error": str | None} }
         self._jobs: dict[str, dict] = {}
+        self._active_shared_files: set[str] = set()
+        self._shared_files_lock = threading.Lock()
+        self._cleanup_stop_event = threading.Event()
+        self._cleanup_thread: threading.Thread | None = None
+        self._start_shared_volume_cleanup_worker()
+
+    def stop_run_thread(self):
+        super().stop_run_thread()
+        self._stop_shared_volume_cleanup_worker()
+
+    def _normalize_shared_path(self, path: Path) -> str:
+        return str(path.resolve())
+
+    def _is_path_in_shared_volume(self, path: Path) -> bool:
+        try:
+            path.resolve().relative_to(HOST_SHARED_VOLUME_PATH.resolve())
+            return True
+        except ValueError:
+            return False
+
+    def _track_shared_file(self, path: Path | None):
+        if path is None or not self._is_path_in_shared_volume(path):
+            return
+        with self._shared_files_lock:
+            self._active_shared_files.add(self._normalize_shared_path(path))
+
+    def _untrack_shared_file(self, path: Path | None):
+        if path is None:
+            return
+        with self._shared_files_lock:
+            self._active_shared_files.discard(self._normalize_shared_path(path))
+
+    def _active_shared_files_snapshot(self) -> set[str]:
+        with self._shared_files_lock:
+            return set(self._active_shared_files)
+
+    def _remove_stale_shared_file(self, path: Path, reason: str) -> int:
+        try:
+            size = path.stat().st_size
+            path.unlink()
+            logger.info(f"Removed {reason} shared temp file: {path} ({size} bytes)")
+            return size
+        except FileNotFoundError:
+            return 0
+        except OSError as e:
+            logger.warning(f"Failed to remove shared temp file {path}: {e}")
+            return 0
+
+    def _cleanup_shared_volume_once(self):
+        if not SHARED_VOLUME_CLEANUP_ENABLED or not HOST_SHARED_VOLUME_PATH.exists():
+            return
+
+        now = time.time()
+        protected_paths = self._active_shared_files_snapshot()
+        total_bytes = 0
+        candidates: list[tuple[float, Path, int]] = []
+
+        for path in HOST_SHARED_VOLUME_PATH.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                continue
+
+            total_bytes += stat.st_size
+            normalized_path = self._normalize_shared_path(path)
+            if normalized_path in protected_paths:
+                continue
+
+            candidates.append((stat.st_mtime, path, stat.st_size))
+            if now - stat.st_mtime >= SHARED_VOLUME_FILE_TTL_SECONDS:
+                total_bytes -= self._remove_stale_shared_file(path, "expired")
+
+        if SHARED_VOLUME_CLEANUP_MAX_BYTES <= 0 or total_bytes <= SHARED_VOLUME_CLEANUP_MAX_BYTES:
+            return
+
+        for _, path, size in sorted(candidates):
+            if total_bytes <= SHARED_VOLUME_CLEANUP_MAX_BYTES:
+                break
+            normalized_path = self._normalize_shared_path(path)
+            if normalized_path in protected_paths or not path.exists():
+                continue
+            try:
+                if now - path.stat().st_mtime < SHARED_VOLUME_CLEANUP_MIN_FILE_AGE_SECONDS:
+                    continue
+            except FileNotFoundError:
+                continue
+            total_bytes -= self._remove_stale_shared_file(path, "over-quota")
+
+    def _storage_cleanup_ready(self) -> bool:
+        return (
+            STORAGE_CLEANUP_ENABLED
+            and STORAGE_OBJECT_TTL_SECONDS > 0
+            and bool(STORAGE_CLEANUP_PREFIXES)
+            and bool(S3_BUCKET)
+            and bool(S3_ACCESS_KEY_ID)
+            and bool(S3_SECRET_ACCESS_KEY)
+        )
+
+    def _cleanup_expired_storage_objects_once(self) -> int:
+        if not self._storage_cleanup_ready():
+            return 0
+
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=STORAGE_OBJECT_TTL_SECONDS)
+        client = self._get_s3_client()
+        deleted = 0
+
+        for prefix in STORAGE_CLEANUP_PREFIXES:
+            paginator = client.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
+                expired_objects = []
+                for obj in page.get("Contents", []):
+                    last_modified = obj.get("LastModified")
+                    if last_modified is None:
+                        continue
+                    if last_modified.tzinfo is None:
+                        last_modified = last_modified.replace(tzinfo=timezone.utc)
+                    if last_modified < cutoff:
+                        expired_objects.append({"Key": obj["Key"]})
+
+                for index in range(0, len(expired_objects), 1000):
+                    batch = expired_objects[index : index + 1000]
+                    if not batch:
+                        continue
+                    response = client.delete_objects(
+                        Bucket=S3_BUCKET,
+                        Delete={"Objects": batch, "Quiet": True},
+                    )
+                    deleted += len(batch) - len(response.get("Errors", []))
+
+        if deleted:
+            logger.info(f"Deleted {deleted} expired storage object(s)")
+        return deleted
+
+    def _shared_volume_cleanup_loop(self):
+        logger.info(
+            "Starting miner cleanup worker "
+            f"(path={HOST_SHARED_VOLUME_PATH}, ttl={SHARED_VOLUME_FILE_TTL_SECONDS}s, "
+            f"interval={SHARED_VOLUME_CLEANUP_INTERVAL_SECONDS}s, "
+            f"max_bytes={SHARED_VOLUME_CLEANUP_MAX_BYTES}, "
+            f"storage_ttl={STORAGE_OBJECT_TTL_SECONDS}s)"
+        )
+        while not self._cleanup_stop_event.is_set():
+            try:
+                if SHARED_VOLUME_CLEANUP_ENABLED:
+                    self._cleanup_shared_volume_once()
+                if self._storage_cleanup_ready():
+                    self._cleanup_expired_storage_objects_once()
+            except Exception as e:
+                logger.warning(f"Miner cleanup pass failed: {e}")
+            self._cleanup_stop_event.wait(SHARED_VOLUME_CLEANUP_INTERVAL_SECONDS)
+
+    def _start_shared_volume_cleanup_worker(self):
+        if not SHARED_VOLUME_CLEANUP_ENABLED and not self._storage_cleanup_ready():
+            logger.info("Miner cleanup worker disabled")
+            return
+        self._cleanup_thread = threading.Thread(
+            target=self._shared_volume_cleanup_loop,
+            name="miner-shared-volume-cleanup",
+            daemon=True,
+        )
+        self._cleanup_thread.start()
+
+    def _stop_shared_volume_cleanup_worker(self):
+        self._cleanup_stop_event.set()
+        if self._cleanup_thread is not None:
+            self._cleanup_thread.join(timeout=5)
 
     def _container_shared_path(self, host_path: Path) -> str:
         return f"{CONTAINER_SHARED_VOLUME_PATH}/{host_path.name}"
@@ -114,6 +325,7 @@ class Miner(BaseMiner):
     async def _download_to_shared_volume(self, video_url: str, task_id: str) -> tuple[Path, str]:
         HOST_SHARED_VOLUME_PATH.mkdir(parents=True, exist_ok=True)
         host_path = HOST_SHARED_VOLUME_PATH / f"{task_id}_input.mp4"
+        self._track_shared_file(host_path)
 
         logger.info(f"Downloading validator payload to shared volume: {host_path}")
         timeout = httpx.Timeout(MINER_DOWNLOAD_TIMEOUT_SECONDS)
@@ -126,6 +338,7 @@ class Miner(BaseMiner):
                             file.write(chunk)
         except Exception:
             self._cleanup_shared_files(host_path)
+            self._untrack_shared_file(host_path)
             raise
 
         return host_path, self._container_shared_path(host_path)
@@ -174,6 +387,7 @@ class Miner(BaseMiner):
 
     def _cleanup_shared_files(self, *paths: Path | None):
         for path in paths:
+            self._untrack_shared_file(path)
             if path and path.exists():
                 try:
                     path.unlink()
@@ -186,7 +400,7 @@ class Miner(BaseMiner):
             logger.warning(f"Unknown upscaling task_type={task_type}, defaulting to 2x scale")
 
         return {
-            "video_path": video_path,
+            "video_paths": [video_path],
             "scale": scale,
             "task_id": task_id,
         }
@@ -207,7 +421,7 @@ class Miner(BaseMiner):
     def _compression_service_payload(self, payload, video_path: str, task_id: str) -> dict:
         compression_type = self._compression_type_from_payload(payload)
         compression_config = {
-            "video_path": video_path,
+            "video_paths": [video_path],
             "task_id": task_id,
             "codec": payload.target_codec,
             "codec_mode": payload.codec_mode.upper(),
@@ -244,10 +458,12 @@ class Miner(BaseMiner):
 
         result = response.json()
         if not result.get("success", False):
-            logger.error(f"{service_name} service failed: {result.get('error')}")
+            logger.error(f"{service_name} service failed: {result.get('errors')}")
             return None
 
-        processed_video_url = result.get("output_url") or result.get("output_path")
+        output_urls = result.get("output_urls") or []
+        output_paths = result.get("output_paths") or []
+        processed_video_url = (output_urls[0] if output_urls else None) or (output_paths[0] if output_paths else None)
         if not processed_video_url:
             logger.error(f"{service_name} service returned no output URL/path")
             return None
@@ -255,8 +471,78 @@ class Miner(BaseMiner):
         logger.info(f"Received {service_name} result from container service")
         return processed_video_url
 
+    async def _call_modal_processing_function(
+        self,
+        service_name: str,
+        function_name: str,
+        payload: dict,
+        timeout_seconds: float,
+    ) -> str | None:
+        if not MODAL_APP_NAME or not function_name:
+            logger.error(f"Modal {service_name} configuration is missing app or function name")
+            return None
+
+        def _remote_call() -> dict:
+            try:
+                import modal
+            except ImportError as exc:
+                raise RuntimeError(
+                    "The modal package is required when MINER_PROCESSING_BACKEND=modal"
+                ) from exc
+
+            function = modal.Function.from_name(MODAL_APP_NAME, function_name)
+            return function.remote(payload)
+
+        logger.info(f"Forwarding {service_name} request to Modal: {MODAL_APP_NAME}.{function_name}")
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(_remote_call),
+                timeout=timeout_seconds,
+            )
+        except Exception as e:
+            logger.error(f"Modal {service_name} request failed: {e}")
+            return None
+
+        if not isinstance(result, dict):
+            logger.error(f"Modal {service_name} returned unexpected result type: {type(result).__name__}")
+            return None
+        if not result.get("success", False):
+            logger.error(f"Modal {service_name} failed: {result.get('errors')}")
+            return None
+
+        output_urls = result.get("output_urls") or []
+        processed_video_url = output_urls[0] if output_urls else None
+        if not processed_video_url:
+            logger.error(f"Modal {service_name} returned no output_urls")
+            return None
+        if not _is_url(processed_video_url):
+            logger.error(f"Modal {service_name} returned non-URL output: {processed_video_url}")
+            return None
+
+        logger.info(f"Received {service_name} result from Modal")
+        return processed_video_url
+
+    async def _forward_upscaling_to_modal(self, payload_url: str, task_type: str, task_id: str) -> str | None:
+        return await self._call_modal_processing_function(
+            "upscaling",
+            MODAL_UPSCALING_FUNCTION,
+            self._upscaling_service_payload(payload_url, task_type, task_id),
+            UPSCALING_SERVICE_TIMEOUT_SECONDS,
+        )
+
+    async def _forward_compression_to_modal(self, payload, task_id: str) -> str | None:
+        return await self._call_modal_processing_function(
+            "compression",
+            MODAL_COMPRESSION_FUNCTION,
+            self._compression_service_payload(payload, payload.reference_video_url, task_id),
+            COMPRESSION_SERVICE_TIMEOUT_SECONDS,
+        )
+
     async def _forward_upscaling_to_service(self, payload_url: str, task_type: str) -> str | None:
         task_id = uuid.uuid4().hex[:12]
+        if PROCESSING_BACKEND == "modal":
+            return await self._forward_upscaling_to_modal(payload_url, task_type, task_id)
+
         input_host_path = None
         output_host_path = None
         try:
@@ -274,12 +560,16 @@ class Miner(BaseMiner):
                 return processed_ref
 
             output_host_path = self._host_shared_path(processed_ref)
+            self._track_shared_file(output_host_path)
             return await self._upload_processed_video(output_host_path, "upscaling", task_id)
         finally:
             self._cleanup_shared_files(input_host_path, output_host_path)
 
     async def _forward_compression_to_service(self, payload) -> str | None:
         task_id = uuid.uuid4().hex[:12]
+        if PROCESSING_BACKEND == "modal":
+            return await self._forward_compression_to_modal(payload, task_id)
+
         input_host_path = None
         output_host_path = None
         try:
@@ -299,6 +589,7 @@ class Miner(BaseMiner):
                 return processed_ref
 
             output_host_path = self._host_shared_path(processed_ref)
+            self._track_shared_file(output_host_path)
             return await self._upload_processed_video(output_host_path, "compression", task_id)
         finally:
             self._cleanup_shared_files(input_host_path, output_host_path)

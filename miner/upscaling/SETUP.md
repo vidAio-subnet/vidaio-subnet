@@ -8,8 +8,16 @@ sudo apt update && sudo apt install -y nvidia-container-toolkit
 sudo nvidia-ctk runtime configure --runtime=docker
 sudo systemctl restart docker
 
-# Pull video2x image
-docker pull ghcr.io/k4yt3x/video2x:6.4.0
+# Build and start the Video2X worker
+docker compose -f miner/docker-compose.yml --profile upscaling-video2x up --build upscaling-video2x
 ```
 
-The Video2X worker runs with `--network none` and `--pull never`, so this image must be present locally before starting the `upscaling-video2x` profile.
+The Video2X worker image builds Video2X from source and installs it into the
+same container as the FastAPI service. It no longer requires a pre-pulled
+upstream Video2X release image or access to the Docker daemon socket.
+
+The default encoder is `av1_nvenc`. The service passes
+`VIDEO2X_COMMON_ENCODER_ARGS=--pix-fmt=yuv420p,--max-b-frames=0` as Video2X
+encoder arguments and `VIDEO2X_ENCODER_OPTIONS=preset=p4,cq={cq},profile=main`
+as codec-specific FFmpeg AVOptions. Request-supplied codecs are ignored unless
+`VIDEO2X_ALLOW_REQUEST_CODEC=true`.
