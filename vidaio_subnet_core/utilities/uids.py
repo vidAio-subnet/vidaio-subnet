@@ -1,6 +1,7 @@
 import random
 import bittensor as bt
 import numpy as np
+import ipaddress
 from typing import List
 import os
 import shutil
@@ -25,11 +26,54 @@ def check_uid_availability(metagraph: "bt.metagraph.Metagraph", uid: int, vpermi
         return False
     return True
 
+def _axon_ip_address(axon) -> str:
+    ip_value = None
+    for attr in ("ip_str", "external_ip", "ip"):
+        candidate = getattr(axon, attr, None)
+        if callable(candidate):
+            try:
+                candidate = candidate()
+            except Exception as e:
+                logger.debug(f"Unable to resolve axon {attr}: {e}")
+                candidate = None
+
+        if candidate is not None and candidate != "":
+            ip_value = candidate
+            break
+
+    if ip_value is None:
+        return ""
+    if isinstance(ip_value, int):
+        try:
+            return str(ipaddress.ip_address(ip_value))
+        except ValueError:
+            return str(ip_value)
+
+    ip_text = str(ip_value).strip()
+    if ip_text.startswith("/ipv"):
+        parts = ip_text.split("/", 2)
+        if len(parts) == 3:
+            ip_text = parts[2]
+
+    if ip_text.startswith("["):
+        closing_bracket = ip_text.find("]")
+        if closing_bracket != -1:
+            return ip_text[1:closing_bracket]
+
+    try:
+        return str(ipaddress.ip_address(ip_text))
+    except ValueError:
+        host, separator, port = ip_text.rpartition(":")
+        if separator and port.isdigit():
+            return host
+        return ip_text
+
 def get_organic_forward_uids(self, count: int = None, task_type : str = None, vpermit_tao_limit: int = 100000000, exclude: List[int] = None) -> np.ndarray:
     """
     Get a list of UIDs that are available for forwarding, selected from
-    the top 10 miners by accumulate_score for the given task_type. 
-    The top x miners chosen here is consistent with `TOP_N` in the miner manager.
+    the top 5 miners by accumulate_score for the given task_type.
+    Miner slots are sampled with the same rank probability curve used for
+    emissions within each task pool: 60%, 20%, 10%, 6%, and 4%.
 
     Args:
         count (int): Number of UIDs to return
@@ -42,8 +86,14 @@ def get_organic_forward_uids(self, count: int = None, task_type : str = None, vp
     """
     exclude = exclude or []
 
-    # Get top 10 hotkeys for this task type from MinerMetadata, ordered by accumulate_score desc
-    top_hotkeys = self.miner_manager.get_top_hotkeys_by_task(task_type, limit=10)
+    rank_shares = getattr(
+        self.miner_manager,
+        "emission_rank_shares",
+        [0.60, 0.20, 0.10, 0.06, 0.04],
+    )
+
+    # Get top 5 hotkeys for this task type from MinerMetadata, ordered by accumulate_score desc.
+    top_hotkeys = self.miner_manager.get_top_hotkeys_by_task(task_type, limit=len(rank_shares))
 
     if not top_hotkeys:
         logger.warning(f"No hotkeys found for task_type={task_type}")
@@ -56,22 +106,44 @@ def get_organic_forward_uids(self, count: int = None, task_type : str = None, vp
 
     # Map hotkeys to UIDs, preserving the accumulate_score ordering
     candidate_uids = []
-    for hotkey in top_hotkeys:
+    candidate_weights = []
+    seen_ips = {}
+    for rank, hotkey in enumerate(top_hotkeys):
         uid = hotkey_to_uid.get(hotkey)
         if uid is not None \
                 and uid not in exclude \
                 and check_uid_availability(self.metagraph, uid, vpermit_tao_limit):
+            ip_address = _axon_ip_address(self.metagraph.axons[uid])
+            if ip_address and ip_address in seen_ips:
+                logger.warning(
+                    f"Skipping organic UID {uid} for task_type={task_type}: duplicate IP "
+                    f"{ip_address} already used by UID {seen_ips[ip_address]}"
+                )
+                continue
+            if ip_address:
+                seen_ips[ip_address] = uid
             candidate_uids.append(uid)
+            candidate_weights.append(rank_shares[rank])
 
     if not candidate_uids:
         logger.warning(f"No available UIDs found for task_type={task_type}")
         return np.array([], dtype=int)
 
-    # Sample up to `count` UIDs from the candidates
+    selection_count = 1 if count is None else max(0, count)
+    if selection_count == 0:
+        return np.array([], dtype=int)
+
+    probabilities = np.array(candidate_weights, dtype=float)
+    probabilities = probabilities / probabilities.sum()
+
+    # Sample miner slots from the task-specific top 5 using the emissions rank curve.
+    # Replacement keeps the requested organic capacity while preserving the intended
+    # long-run routing probability for each rank.
     selected = np.random.choice(
         candidate_uids,
-        size=min(count, len(candidate_uids)),
-        replace=False
+        size=selection_count,
+        replace=True,
+        p=probabilities,
     )
 
     return np.array(selected, dtype=int)

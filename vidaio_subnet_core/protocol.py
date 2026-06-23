@@ -1,6 +1,6 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from bittensor import Synapse
-from typing import Optional 
+from typing import Any, Optional, List
 from enum import Enum, IntEnum
 
 class Version(BaseModel):
@@ -30,26 +30,63 @@ class TaskType(IntEnum):
     UPSCALING = 2
 
 class UpscalingMinerPayload(BaseModel):
+    reference_video_urls: List[str] = Field(
+        description="The URLs of the reference videos to be optimized",
+        default_factory=list,
+    )
     reference_video_url: str = Field(
-        description="The URL of the reference video to be optimized",
+        description="Legacy scalar URL of the first reference video",
         default="",
-        min_length=1,
     )
     maximum_optimized_size_mb: int = Field(
         description="The maximum size of the optimized video in MB",
         default=100,
         gt=0,
     )
+    task_types: List[str] = Field(
+        description="The types of tasks: HD24K, SD2HD, SD24K, 4K28K",
+        default_factory=list,
+    )
     task_type: str = Field(
-        description="The type of task: HD24K, SD2HD, SD24K, 4K28K",
+        description="Legacy scalar task type for the first reference video",
         default="HD24K",
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            data = data.copy()
+            if not data.get("reference_video_urls") and data.get("reference_video_url"):
+                data["reference_video_urls"] = [data["reference_video_url"]]
+            if not data.get("reference_video_url") and data.get("reference_video_urls"):
+                data["reference_video_url"] = data["reference_video_urls"][0]
+            if not data.get("task_types") and data.get("task_type"):
+                data["task_types"] = [data["task_type"]]
+            if not data.get("task_type") and data.get("task_types"):
+                data["task_type"] = data["task_types"][0]
+        return data
+
+    @model_validator(mode="after")
+    def sync_legacy_fields(self):
+        if not self.reference_video_urls and self.reference_video_url:
+            self.reference_video_urls = [self.reference_video_url]
+        if self.reference_video_urls:
+            self.reference_video_url = self.reference_video_urls[0]
+        if not self.task_types and self.task_type:
+            self.task_types = [self.task_type]
+        if self.task_types:
+            self.task_type = self.task_types[0]
+        return self
+
 class CompressionMinerPayload(BaseModel):
+    reference_video_urls: List[str] = Field(
+        description="The URLs of the reference videos to be compressed",
+        default_factory=list,
+    )
     reference_video_url: str = Field(
-        description="The URL of the reference video to be compressed",
+        description="Legacy scalar URL of the first reference video",
         default="",
-        min_length=1,
     )
     vmaf_threshold: float = Field(
         description="The VMAF threshold for quality control during compression",
@@ -57,26 +94,84 @@ class CompressionMinerPayload(BaseModel):
         ge=0.0,
         le=100.0,
     )
+    vmaf_thresholds: List[float] = Field(
+        description="Per-video VMAF thresholds for batched compression payloads",
+        default_factory=list,
+    )
     target_codec: str = Field(
         description="The target codec for compression (e.g., av1, hevc, h264, vp9)",
         default="av1",
     )
+    target_codecs: List[str] = Field(
+        description="Per-video target codecs for batched compression payloads",
+        default_factory=list,
+    )
     codec_mode: str = Field(
         description="Codec mode: CBR (Constant Bitrate), VBR (Variable Bitrate), or CRF (Constant Rate Factor)",
         default="CRF",
+    )
+    codec_modes: List[str] = Field(
+        description="Per-video codec modes for batched compression payloads",
+        default_factory=list,
     )
     target_bitrate: float = Field(
         description="Target bitrate in Mbps (megabits per second)",
         default=10.0,
         gt=0.0,
     )
+    target_bitrates: List[float] = Field(
+        description="Per-video target bitrates for batched compression payloads",
+        default_factory=list,
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            data = data.copy()
+            if not data.get("reference_video_urls") and data.get("reference_video_url"):
+                data["reference_video_urls"] = [data["reference_video_url"]]
+            if not data.get("reference_video_url") and data.get("reference_video_urls"):
+                data["reference_video_url"] = data["reference_video_urls"][0]
+        return data
+
+    @model_validator(mode="after")
+    def sync_legacy_fields(self):
+        if not self.reference_video_urls and self.reference_video_url:
+            self.reference_video_urls = [self.reference_video_url]
+        if self.reference_video_urls:
+            self.reference_video_url = self.reference_video_urls[0]
+        return self
 
 
 class MinerResponse(BaseModel):
+    optimized_video_urls: List[str] = Field(
+        description="The URLs of the processed videos (compressed/upscaled)",
+        default_factory=list,
+    )
     optimized_video_url: str = Field(
-        description="The URL of the processed video (compressed/upscaled)",
+        description="Legacy scalar URL of the first processed video",
         default="",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            data = data.copy()
+            if not data.get("optimized_video_urls") and data.get("optimized_video_url"):
+                data["optimized_video_urls"] = [data["optimized_video_url"]]
+            if not data.get("optimized_video_url") and data.get("optimized_video_urls"):
+                data["optimized_video_url"] = data["optimized_video_urls"][0]
+        return data
+
+    @model_validator(mode="after")
+    def sync_legacy_fields(self):
+        if not self.optimized_video_urls and self.optimized_video_url:
+            self.optimized_video_urls = [self.optimized_video_url]
+        if self.optimized_video_urls:
+            self.optimized_video_url = self.optimized_video_urls[0]
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -101,10 +196,33 @@ class PollResponse(BaseModel):
         description="Job status: 'processing' | 'completed' | 'failed'",
         default="unknown",
     )
+    optimized_video_urls: List[str] = Field(
+        description="Populated with result URLs once status is 'completed'",
+        default_factory=list,
+    )
     optimized_video_url: str = Field(
-        description="Populated with the result URL once status is 'completed'",
+        description="Legacy scalar URL of the first processed video",
         default="",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            data = data.copy()
+            if not data.get("optimized_video_urls") and data.get("optimized_video_url"):
+                data["optimized_video_urls"] = [data["optimized_video_url"]]
+            if not data.get("optimized_video_url") and data.get("optimized_video_urls"):
+                data["optimized_video_url"] = data["optimized_video_urls"][0]
+        return data
+
+    @model_validator(mode="after")
+    def sync_legacy_fields(self):
+        if not self.optimized_video_urls and self.optimized_video_url:
+            self.optimized_video_urls = [self.optimized_video_url]
+        if self.optimized_video_urls:
+            self.optimized_video_url = self.optimized_video_urls[0]
+        return self
 
 
 class ScoringPayload(BaseModel):
