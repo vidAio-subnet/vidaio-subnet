@@ -145,6 +145,8 @@ class Validator(base.BaseValidator):
         self.push_result_endpoint = f"http://{CONFIG.video_scheduler.host}:{CONFIG.video_scheduler.port}/api/push_result"
         
         self.scheduler_ready_endpoint = f"http://{CONFIG.video_scheduler.host}:{CONFIG.video_scheduler.port}/api/scheduler_ready"
+        self.synthetic_deduped_uid_reasons: dict[int, str] = {}
+        self.synthetic_deduped_uid_sources: dict[int, int] = {}
 
     async def check_scheduler_ready(self) -> bool:
         """
@@ -279,6 +281,8 @@ class Validator(base.BaseValidator):
 
         miner_uids = self.filter_miners()
         logger.debug(f"Initialized {len(miner_uids)} subnet neurons of total {len(self.metagraph.S)} neurons")
+        deduped_uid_reasons = self.synthetic_deduped_uid_reasons.copy()
+        deduped_uid_sources = self.synthetic_deduped_uid_sources.copy()
 
         uids = self.miner_manager.consume(miner_uids)
 
@@ -343,6 +347,10 @@ class Validator(base.BaseValidator):
         upscaling_uids = [uid for _, uid in upscaling_miners]
         compression_uids = [uid for _, uid in compression_miners]
         all_uids = upscaling_uids + compression_uids
+        selected_task_types = {
+            **{uid: "upscaling" for uid in upscaling_uids},
+            **{uid: "compression" for uid in compression_uids},
+        }
         
         await self.refresh_miner_manager(all_uids)
         
@@ -359,6 +367,12 @@ class Validator(base.BaseValidator):
             logger.info("Synthetic epoch disabled by DISABLE_SYNTHETICS env var, only ran TaskWarrant requests to gauge miner task types necessary to execute organics, sleeping for 30 minutes before refreshing")
             await asyncio.sleep(1800)
             return
+
+        await self.score_deduplicated_synthetic_miners(
+            deduped_uid_reasons,
+            deduped_uid_sources,
+            selected_task_types,
+        )
 
         logger.info("Sleeping for 3 minutes before starting epoch")
         await asyncio.sleep(180)
@@ -1619,7 +1633,13 @@ class Validator(base.BaseValidator):
         stake_array = self.metagraph.S
         miner_uids = [i for i, stake in enumerate(stake_array) if stake < min_stake]
 
-        return self._deduplicate_uids_by_ip(miner_uids, "synthetic miner filter")
+        selected_uids, deduped_uid_reasons, deduped_uid_sources = self._deduplicate_uids_by_ip(
+            miner_uids,
+            "synthetic miner filter",
+        )
+        self.synthetic_deduped_uid_reasons = deduped_uid_reasons
+        self.synthetic_deduped_uid_sources = deduped_uid_sources
+        return selected_uids
 
     def _axon_ip_address(self, uid: int) -> str:
         axon = self.metagraph.axons[uid]
@@ -1683,26 +1703,45 @@ class Validator(base.BaseValidator):
 
         return str(coldkey or "").strip()
 
-    def _deduplicate_uids_by_ip(self, uids: list[int], context: str) -> list[int]:
+    def _deduplication_reason(self, uid: int, key_type: str, key_value: str, existing_uid: int) -> str:
+        return (
+            f"MINER FAILURE: UID {uid} assigned score 0 because it was removed "
+            f"by synthetic miner deduplication; duplicate {key_type} {key_value} "
+            f"already used by UID {existing_uid}"
+        )
+
+    def _deduplicate_uids_by_ip(self, uids: list[int], context: str) -> tuple[list[int], dict[int, str], dict[int, int]]:
         seen_ips: dict[str, int] = {}
         seen_coldkeys: dict[str, int] = {}
+        deduped_uid_reasons: dict[int, str] = {}
+        deduped_uid_sources: dict[int, int] = {}
         selected = []
 
         for uid in uids:
             ip_address = self._axon_ip_address(uid)
             if ip_address and ip_address in seen_ips:
+                existing_uid = seen_ips[ip_address]
                 logger.warning(
                     f"Skipping UID {uid} during {context}: duplicate IP {ip_address} "
-                    f"already used by UID {seen_ips[ip_address]}"
+                    f"already used by UID {existing_uid}"
                 )
+                deduped_uid_reasons[uid] = self._deduplication_reason(
+                    uid, "IP", ip_address, existing_uid
+                )
+                deduped_uid_sources[uid] = existing_uid
                 continue
 
             coldkey = self._uid_coldkey(uid)
             if coldkey and coldkey in seen_coldkeys:
+                existing_uid = seen_coldkeys[coldkey]
                 logger.warning(
                     f"Skipping UID {uid} during {context}: duplicate coldkey {coldkey} "
-                    f"already used by UID {seen_coldkeys[coldkey]}"
+                    f"already used by UID {existing_uid}"
                 )
+                deduped_uid_reasons[uid] = self._deduplication_reason(
+                    uid, "coldkey", coldkey, existing_uid
+                )
+                deduped_uid_sources[uid] = existing_uid
                 continue
 
             if ip_address:
@@ -1715,7 +1754,98 @@ class Validator(base.BaseValidator):
         if removed:
             logger.info(f"Removed {removed} duplicate-IP/coldkey UIDs during {context}")
 
-        return selected
+        return selected, deduped_uid_reasons, deduped_uid_sources
+
+    async def score_deduplicated_synthetic_miners(
+        self,
+        deduped_uid_reasons: dict[int, str],
+        deduped_uid_sources: dict[int, int],
+        selected_task_types: dict[int, str],
+    ) -> None:
+        if not deduped_uid_reasons:
+            return
+
+        task_lookup_uids = list({*deduped_uid_reasons.keys(), *deduped_uid_sources.values()})
+        db_task_types = self.miner_manager.get_miner_processing_task_types(task_lookup_uids)
+        grouped_uids: dict[str, list[int]] = {"upscaling": [], "compression": []}
+
+        for uid in deduped_uid_reasons:
+            source_uid = deduped_uid_sources.get(uid)
+            task_type = (
+                db_task_types.get(uid)
+                or selected_task_types.get(source_uid)
+                or db_task_types.get(source_uid)
+                or "upscaling"
+            )
+            if task_type not in grouped_uids:
+                logger.warning(
+                    f"UID {uid} deduplicated with unknown task_type={task_type}; "
+                    "recording zero score as upscaling"
+                )
+                task_type = "upscaling"
+            grouped_uids[task_type].append(uid)
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+
+        for task_type, task_uids in grouped_uids.items():
+            if not task_uids:
+                continue
+
+            score_uids = [
+                uid
+                for uid in task_uids
+                for _query_idx in range(SYNTHETIC_QUERIES_PER_MINER)
+            ]
+            duplicate_reasons = {
+                idx: deduped_uid_reasons[uid]
+                for idx, uid in enumerate(score_uids)
+            }
+            round_id = f"deduplicated_{task_type}_{uuid.uuid4()}"
+            empty_urls = [""] * len(score_uids)
+            video_ids = [
+                f"deduplicated_uid_{uid}_query_{query_idx}"
+                for uid in task_uids
+                for query_idx in range(SYNTHETIC_QUERIES_PER_MINER)
+            ]
+
+            logger.info(
+                f"Recording {len(score_uids)} score-0 rows for "
+                f"{len(task_uids)} deduplicated synthetic {task_type} miners"
+            )
+
+            if task_type == "compression":
+                await self.score_compressions(
+                    score_uids,
+                    [],
+                    [None] * len(score_uids),
+                    empty_urls,
+                    empty_urls,
+                    timestamp,
+                    video_ids,
+                    empty_urls,
+                    [0.0] * len(score_uids),
+                    target_codec="deduplicated",
+                    codec_mode="deduplicated",
+                    target_bitrate=0.0,
+                    round_id=round_id,
+                    distorted_urls=empty_urls,
+                    duplicate_url_reasons=duplicate_reasons,
+                )
+            else:
+                await self.score_upscalings(
+                    score_uids,
+                    [],
+                    empty_urls,
+                    empty_urls,
+                    timestamp,
+                    video_ids,
+                    empty_urls,
+                    [0] * len(score_uids),
+                    ["deduplicated"] * len(score_uids),
+                    round_id,
+                    distorted_urls=empty_urls,
+                    duplicate_url_reasons=duplicate_reasons,
+                )
 
     async def should_process_organic_upscaling(self):
         """Check if organic upscaling tasks should be processed."""
