@@ -27,7 +27,13 @@ class Synthesizer:
         self.max_retries = 20
         self.retry_delay = 10  
 
-    async def build_synthetic_protocol(self, content_lengths: list[int], version, round_id) -> Tuple[list[str], list[str], list[str], list[VideoUpscalingProtocol], list[str]]:
+    async def build_synthetic_protocol(
+        self,
+        content_lengths: list[int],
+        version,
+        round_id,
+        bundle_protocols: bool = False,
+    ) -> Tuple[list[str], list[str], list[str], list[VideoUpscalingProtocol], list[str]]:
         """Fetches synthetic video chunks and builds the video upscaling protocols.
         
         Args:
@@ -49,8 +55,9 @@ class Synthesizer:
         from collections import Counter
         content_counts = Counter(content_lengths)
         
-        # Get miners per task from configuration
-        miners_per_task = CONFIG.bandwidth.miners_per_task
+        # Get miners per task from configuration. Bundled payloads need one
+        # distinct chunk per query inside the payload.
+        miners_per_task = 1 if bundle_protocols else CONFIG.bandwidth.miners_per_task
         
         # Calculate required chunks (one chunk per miners_per_task miners of same length)
         required_chunks = []
@@ -102,8 +109,9 @@ class Synthesizer:
                 for chunk in valid_chunks:
                     # Validate chunk data
                     required_fields = ["video_id", "uploaded_object_name", "sharing_link", "task_type"]
-                    if not all(field in chunk for field in required_fields):
-                        logger.warning(f"Missing required fields in chunk data: {chunk}")
+                    missing_fields = [field for field in required_fields if not chunk.get(field)]
+                    if missing_fields:
+                        logger.warning(f"Missing/empty required fields in chunk data ({missing_fields}): {chunk}")
                         continue
                     
                     # Assign chunks to lengths based on required_chunks order
@@ -165,6 +173,18 @@ class Synthesizer:
                     logger.warning(f"Attempt {attempt + 1}/{self.max_retries}: No valid protocols could be created, retrying...")
                     await asyncio.sleep(self.retry_delay)
                     continue
+
+                if bundle_protocols:
+                    synapses = [
+                        VideoUpscalingProtocol(
+                            miner_payload=UpscalingMinerPayload(
+                                reference_video_urls=payload_urls,
+                                task_types=task_types,
+                            ),
+                            version=version,
+                            round_id=round_id,
+                        )
+                    ]
                 
                 logger.info(f"Successfully created {len(synapses)} protocols from {len(valid_chunks)} chunks")
                 # Return the results if we have valid data
@@ -187,7 +207,8 @@ class Synthesizer:
 
     async def build_compression_protocol(self, vmaf_thresholds: List[float], num_miners: int, version, round_id,
      target_codec: str = "av1", codec_mode: str = "CRF", target_bitrate: float = 10.0,
-     broadcast_single_chunk: bool = False) -> Tuple[list[str], list[str], list[str], list[VideoCompressionProtocol]]:
+     broadcast_single_chunk: bool = False,
+     bundle_protocols: bool = False) -> Tuple[list[str], list[str], list[str], list[VideoCompressionProtocol]]:
         """Fetches synthetic video chunks and builds the video compression protocols.
 
         Args:
@@ -210,14 +231,18 @@ class Synthesizer:
             httpx.HTTPStatusError: If the request to the video scheduler fails
             RuntimeError: If max retries exceeded without valid response
         """
-        # Get miners per task from configuration
-        miners_per_task = CONFIG.bandwidth.miners_per_task
+        # Get miners per task from configuration. Bundled payloads need one
+        # distinct chunk per query inside the payload.
+        miners_per_task = 1 if bundle_protocols else CONFIG.bandwidth.miners_per_task
         
         # Calculate required chunks
         num_protocols = num_miners
         assert len(vmaf_thresholds) == num_protocols
         
-        if broadcast_single_chunk:
+        if bundle_protocols:
+            num_needed = num_protocols
+            logger.info(f"Bundling {num_protocols} compression payloads into one miner query")
+        elif broadcast_single_chunk:
             num_needed = 1  # We only need 1 chunk to broadcast to all miners
             logger.info(f"Broadcasting single payload to all {num_miners} miners in batch")
         else:
@@ -276,8 +301,9 @@ class Synthesizer:
                     
                     # Validate chunk data
                     required_fields = ["video_id", "uploaded_object_name", "sharing_link"]
-                    if not all(field in chunk for field in required_fields):
-                        logger.warning(f"Missing required fields in compression chunk data: {chunk}")
+                    missing_fields = [field for field in required_fields if not chunk.get(field)]
+                    if missing_fields:
+                        logger.warning(f"Missing/empty required fields in compression chunk data ({missing_fields}): {chunk}")
                         continue
 
                     try:
@@ -286,10 +312,11 @@ class Synthesizer:
                         uploaded_object_names.append(chunk["uploaded_object_name"])
 
                         # Use the provided compression parameters
+                        vmaf_threshold = getattr(vmaf_thresholds[i], "value", vmaf_thresholds[i])
                         synapse = VideoCompressionProtocol(
                             miner_payload=CompressionMinerPayload(
                                 reference_video_url=chunk["sharing_link"],
-                                vmaf_threshold=vmaf_thresholds[i].value,
+                                vmaf_threshold=vmaf_threshold,
                                 target_codec=target_codec,
                                 codec_mode=codec_mode,
                                 target_bitrate=target_bitrate
@@ -307,6 +334,22 @@ class Synthesizer:
                     logger.warning(f"Attempt {attempt + 1}/{self.max_retries}: No valid compression protocols could be created, retrying...")
                     await asyncio.sleep(self.retry_delay)
                     continue
+
+                if bundle_protocols:
+                    vmaf_threshold = getattr(vmaf_thresholds[0], "value", vmaf_thresholds[0])
+                    synapses = [
+                        VideoCompressionProtocol(
+                            miner_payload=CompressionMinerPayload(
+                                reference_video_urls=payload_urls,
+                                vmaf_threshold=vmaf_threshold,
+                                target_codec=target_codec,
+                                codec_mode=codec_mode,
+                                target_bitrate=target_bitrate,
+                            ),
+                            version=version,
+                            round_id=round_id,
+                        )
+                    ]
                 
                 logger.info(f"Successfully created {len(synapses)} compression protocols from {len(valid_chunks)} chunks")
                 # Return the results if we have valid data
@@ -327,7 +370,7 @@ class Synthesizer:
                     
         raise RuntimeError(f"Failed to get compression chunks after {self.max_retries} attempts")
 
-    async def build_organic_upscaling_protocol(self, needed: int):
+    async def build_organic_upscaling_protocol(self, needed: int, bundle_size: int = 1):
         for attempt in range(self.max_retries):
             try:
                 response = await self.session.get(f"/api/get_organic_upscaling_chunks?needed={needed}")
@@ -343,8 +386,8 @@ class Synthesizer:
                 logger.info("Received organic upscaling chunks from video-scheduler API")
 
                 required_fields = ["url", "chunk_id", "task_id", "resolution_type"]
-                if any(not all(field in chunk for field in required_fields) for chunk in chunks):
-                    logger.info("Missing required fields in some chunk data, retrying...")
+                if any(any(not chunk.get(field) for field in required_fields) for chunk in chunks):
+                    logger.info("Missing/empty required fields in some chunk data, retrying...")
                     await asyncio.sleep(self.retry_delay)
                     continue
 
@@ -366,6 +409,18 @@ class Synthesizer:
 
                     organic_synapses.append(synapse)
 
+                if bundle_size > 1:
+                    organic_synapses = []
+                    for start in range(0, len(original_urls), bundle_size):
+                        organic_synapses.append(
+                            VideoUpscalingJobProtocol(
+                                miner_payload=UpscalingMinerPayload(
+                                    reference_video_urls=original_urls[start:start + bundle_size],
+                                    task_types=task_types[start:start + bundle_size],
+                                ),
+                            )
+                        )
+
                 return task_ids, original_urls, task_types, organic_synapses
 
             except httpx.HTTPStatusError as e:
@@ -382,7 +437,7 @@ class Synthesizer:
 
         raise RuntimeError(f"Failed to get valid response after {self.max_retries} attempts")
 
-    async def build_organic_compression_protocol(self, needed: int):
+    async def build_organic_compression_protocol(self, needed: int, bundle_size: int = 1):
         for attempt in range(self.max_retries):
             try:
                 response = await self.session.get(f"/api/get_organic_compression_chunks?needed={needed}")
@@ -398,8 +453,8 @@ class Synthesizer:
                 logger.info("Received organic compression chunks from video-scheduler API")
 
                 required_fields = ["url", "chunk_id", "task_id", "compression_type"]
-                if any(not all(field in chunk for field in required_fields) for chunk in chunks):
-                    logger.info("Missing required fields in some chunk data, retrying...")
+                if any(any(not chunk.get(field) for field in required_fields) for chunk in chunks):
+                    logger.info("Missing/empty required fields in some chunk data, retrying...")
                     await asyncio.sleep(self.retry_delay)
                     continue
 
@@ -407,6 +462,9 @@ class Synthesizer:
                 original_urls = []
                 organic_synapses = []
                 vmaf_thresholds = []
+                target_codecs = []
+                codec_modes = []
+                target_bitrates = []
 
                 for chunk in chunks:
                     vmaf_threshold = None
@@ -438,10 +496,40 @@ class Synthesizer:
                     task_ids.append(chunk["task_id"])
                     original_urls.append(chunk["url"])
                     vmaf_thresholds.append(vmaf_threshold)
+                    target_codecs.append(target_codec)
+                    codec_modes.append(codec_mode)
+                    target_bitrates.append(target_bitrate)
 
                     organic_synapses.append(synapse)
 
-                return task_ids, original_urls, vmaf_thresholds, organic_synapses
+                if bundle_size > 1:
+                    organic_synapses = []
+                    for start in range(0, len(original_urls), bundle_size):
+                        organic_synapses.append(
+                            VideoCompressionJobProtocol(
+                                miner_payload=CompressionMinerPayload(
+                                    reference_video_urls=original_urls[start:start + bundle_size],
+                                    vmaf_threshold=vmaf_thresholds[start],
+                                    vmaf_thresholds=vmaf_thresholds[start:start + bundle_size],
+                                    target_codec=target_codecs[start],
+                                    target_codecs=target_codecs[start:start + bundle_size],
+                                    codec_mode=codec_modes[start],
+                                    codec_modes=codec_modes[start:start + bundle_size],
+                                    target_bitrate=target_bitrates[start],
+                                    target_bitrates=target_bitrates[start:start + bundle_size],
+                                ),
+                            )
+                        )
+
+                return (
+                    task_ids,
+                    original_urls,
+                    vmaf_thresholds,
+                    target_codecs,
+                    codec_modes,
+                    target_bitrates,
+                    organic_synapses,
+                )
 
             except httpx.HTTPStatusError as e:
                 logger.info(f"HTTP error on attempt {attempt + 1}/{self.max_retries}: {e}")

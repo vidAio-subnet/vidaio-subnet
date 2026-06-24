@@ -15,6 +15,9 @@ class MinerMetadata(Base):
 
     uid = Column(Integer, primary_key=True)
     hotkey = Column(String(64), nullable=False)
+    coldkey = Column(String(64), nullable=False, default="")
+    ip_address = Column(String(64), nullable=False, default="")
+    port = Column(Integer, nullable=False, default=0)
     accumulate_score = Column(Float, default=0.0)
     
     bonus_multiplier = Column(Float, default=1.0)

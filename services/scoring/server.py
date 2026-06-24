@@ -13,6 +13,7 @@ import subprocess
 import numpy as np
 from pydantic import BaseModel
 from typing import Optional, List
+from collections import defaultdict
 from firerequests import FireRequests
 from vidaio_subnet_core import CONFIG
 from torchvision.models import resnet50
@@ -95,6 +96,7 @@ class CompressionScoringRequest(BaseModel):
     Request model for compression scoring. Contains paths for distorted videos and the reference video path.
     """
     distorted_file_paths: List[Optional[str]]
+    distorted_urls: Optional[List[str]] = None
     reference_paths: List[str]
     uids: List[int]
     video_ids: List[str]
@@ -231,7 +233,12 @@ async def verify_organic_proxy_download(video_url: str, session: Optional[aiohtt
 
         return downloadable
 
-async def download_video(video_url: str, verbose: bool, session: Optional[aiohttp.ClientSession] = None) -> tuple[str, float]:
+async def download_video(
+    video_url: str,
+    verbose: bool,
+    session: Optional[aiohttp.ClientSession] = None,
+    return_final_url: bool = False,
+) -> tuple[str, float] | tuple[str, float, str]:
     """
     Download a video from the given URL and save it to a temporary file.
     Supports retries, connection pooling, partial download resumes, and tuned timeouts.
@@ -255,6 +262,7 @@ async def download_video(video_url: str, verbose: bool, session: Optional[aiohtt
     start_time = time.time()  # Record start time
 
     dl_session = session or await get_shared_session()
+    final_url = video_url
 
     for attempt in range(max_retries + 1):
         try:
@@ -271,6 +279,7 @@ async def download_video(video_url: str, verbose: bool, session: Optional[aiohtt
                     logger.info(f"Downloading video from {video_url} to {file_path} (Attempt {attempt + 1}/{max_retries + 1})")
 
             async with dl_session.get(video_url, headers=headers) as response:
+                final_url = str(response.url)
                 if response.status == 416:  # Range Not Satisfiable
                     # The file might be fully downloaded already, or the server rejected the range.
                     # We truncate the file and retry from scratch to be safe.
@@ -298,6 +307,8 @@ async def download_video(video_url: str, verbose: bool, session: Optional[aiohtt
                 logger.info(f"File successfully downloaded to: {file_path}")
                 logger.info(f"Download time: {download_time:.2f} seconds")
 
+            if return_final_url:
+                return file_path, download_time, final_url
             return file_path, download_time
         except aiohttp.ServerTimeoutError:
             if attempt == max_retries:
@@ -323,6 +334,101 @@ async def download_video(video_url: str, verbose: bool, session: Optional[aiohtt
             if verbose:
                 logger.warning(f"Download failed: {str(e)}. Retrying {attempt + 1}/{max_retries}...")
             await asyncio.sleep(2 ** attempt)
+
+def _normalize_duplicate_url(url: Optional[str]) -> str:
+    return (url or "").strip()
+
+async def _resolve_final_url(video_url: str) -> str:
+    if not video_url or len(video_url) < 10:
+        return ""
+
+    timeout = aiohttp.ClientTimeout(sock_connect=10, total=30)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            try:
+                async with session.head(video_url, allow_redirects=True) as response:
+                    if response.status < 400:
+                        return str(response.url)
+            except Exception:
+                pass
+
+            async with session.get(
+                video_url,
+                allow_redirects=True,
+                headers={"Range": "bytes=0-0"},
+            ) as response:
+                if response.status < 400:
+                    return str(response.url)
+    except Exception as e:
+        logger.warning(f"Failed to resolve final URL for duplicate detection: {video_url} | {e}")
+
+    return video_url
+
+async def _resolve_final_urls(video_urls: List[str]) -> List[str]:
+    return await asyncio.gather(
+        *[_resolve_final_url(url) for url in video_urls],
+        return_exceptions=False,
+    )
+
+def _mark_duplicate_groups(
+    duplicate_reasons: dict[int, list[str]],
+    label: str,
+    values: List[object],
+    uids: List[int],
+) -> None:
+    groups = defaultdict(list)
+    for idx, value in enumerate(values):
+        if value in (None, ""):
+            continue
+        groups[value].append(idx)
+
+    for value, indices in groups.items():
+        if len(indices) <= 1:
+            continue
+        uid_list = [uids[idx] for idx in indices]
+        reason = (
+            f"duplicate miner response by {label}: {value} shared by "
+            f"indices={indices}, uids={uid_list}"
+        )
+        logger.warning(reason)
+        for idx in indices:
+            duplicate_reasons[idx].append(reason)
+
+def _duplicate_response_reasons(
+    uids: List[int],
+    submitted_urls: List[str],
+    downloaded_paths: List[Optional[str]],
+    final_urls: Optional[List[str]] = None,
+) -> dict[int, str]:
+    duplicate_reasons: dict[int, list[str]] = defaultdict(list)
+
+    _mark_duplicate_groups(
+        duplicate_reasons,
+        "submitted URL",
+        [_normalize_duplicate_url(url) for url in submitted_urls],
+        uids,
+    )
+
+    if final_urls is not None:
+        _mark_duplicate_groups(
+            duplicate_reasons,
+            "redirected URL",
+            [_normalize_duplicate_url(url) for url in final_urls],
+            uids,
+        )
+
+    file_sizes = []
+    for path in downloaded_paths:
+        if path and os.path.exists(path):
+            file_sizes.append(os.path.getsize(path))
+        else:
+            file_sizes.append(None)
+    _mark_duplicate_groups(duplicate_reasons, "downloaded file size", file_sizes, uids)
+
+    return {
+        idx: "MINER FAILURE: " + " | ".join(reasons)
+        for idx, reasons in duplicate_reasons.items()
+    }
 
 # Function to get ClipIQA+ score programmatically
 def get_clipiqa_score(video_path, num_frames=3):
@@ -1692,6 +1798,54 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             detail="Number of payload URLs must match number of distorted URLs"
         )
 
+    semaphore = asyncio.Semaphore(15)
+
+    async def _download_distorted_for_duplicate_check(idx: int, uid: int, dist_url: str):
+        if not dist_url or len(dist_url) < 10:
+            return {"path": None, "final_url": dist_url, "error": "invalid or missing distorted video URL"}
+        async with semaphore:
+            try:
+                path, download_time, final_url = await download_video(
+                    dist_url,
+                    request.verbose,
+                    return_final_url=True,
+                )
+                logger.info(
+                    f"UID {uid}: downloaded distorted video for duplicate check "
+                    f"in {download_time:.2f}s | final_url={final_url}"
+                )
+                return {"path": path, "final_url": final_url, "error": None}
+            except Exception as e:
+                return {"path": None, "final_url": dist_url, "error": str(e)}
+
+    download_tasks = [
+        asyncio.create_task(_download_distorted_for_duplicate_check(idx, uid, dist_url))
+        for idx, (uid, dist_url) in enumerate(zip(request.uids, request.distorted_urls))
+    ]
+    download_results = await asyncio.gather(*download_tasks, return_exceptions=True)
+    distorted_download_paths = []
+    final_distorted_urls = []
+    distorted_download_errors = {}
+
+    for idx, result in enumerate(download_results):
+        if isinstance(result, Exception):
+            distorted_download_paths.append(None)
+            final_distorted_urls.append(request.distorted_urls[idx])
+            distorted_download_errors[idx] = str(result)
+            continue
+
+        distorted_download_paths.append(result["path"])
+        final_distorted_urls.append(result["final_url"])
+        if result["error"]:
+            distorted_download_errors[idx] = result["error"]
+
+    duplicate_reasons = _duplicate_response_reasons(
+        request.uids,
+        request.distorted_urls,
+        distorted_download_paths,
+        final_distorted_urls,
+    )
+
     for idx, (ref_path, dist_url, payload_url, uid, video_id, uploaded_object_name, content_length, task_type) in enumerate(zip(
         request.reference_paths, 
         request.distorted_urls, 
@@ -1708,8 +1862,30 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             uid_start_time = time.time()  # Start time for this UID
 
             ref_y4m_path = None
-            dist_path = None
+            dist_path = distorted_download_paths[idx] if idx < len(distorted_download_paths) else None
             payload_path = None
+
+            if idx in duplicate_reasons:
+                reason = duplicate_reasons[idx]
+                logger.error(f"UID {uid}: {reason}. Assigning score of 0.")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(0.0)
+                reasons.append(reason)
+                continue
+
+            if idx in distorted_download_errors:
+                error_msg = f"Failed to download distorted video from {dist_url}: {distorted_download_errors[idx]}"
+                logger.error(f"{error_msg}. Assigning score of 0.")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(0.0)
+                reasons.append(error_msg)
+                continue
 
             scale_factor = 2
             if task_type == "SD24K":
@@ -1735,19 +1911,6 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 length_scores.append(0.0)
                 final_scores.append(-100)
                 reasons.append(f"error opening reference video file: {ref_path} (exists: {file_exists}, size: {file_size})")
-                continue
-            
-            try:
-                dist_path, download_time = await download_video(dist_url, request.verbose)
-            except Exception as e:
-                error_msg = f"Failed to download distorted video from {dist_url}: {str(e)}"
-                logger.error(f"{error_msg}. Assigning score of 0.")
-                vmaf_scores.append(0.0)
-                pieapp_scores.append(0.0)
-                quality_scores.append(0.0)
-                length_scores.append(0.0)
-                final_scores.append(0.0)
-                reasons.append(error_msg)
                 continue
 
             try:
@@ -2102,6 +2265,21 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             detail="Number of UIDs must match number of distorted file paths"
         )
 
+    distorted_urls = request.distorted_urls or [""] * len(request.distorted_file_paths)
+    if len(distorted_urls) != len(request.distorted_file_paths):
+        raise HTTPException(
+            status_code=400,
+            detail="Number of distorted URLs must match number of distorted file paths",
+        )
+
+    final_distorted_urls = await _resolve_final_urls(distorted_urls)
+    duplicate_reasons = _duplicate_response_reasons(
+        request.uids,
+        distorted_urls,
+        request.distorted_file_paths,
+        final_distorted_urls,
+    )
+
     for idx, (ref_path, dist_path, uid, video_id, uploaded_object_name) in enumerate(zip(
         request.reference_paths, 
         request.distorted_file_paths, 
@@ -2117,6 +2295,15 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             
             ref_y4m_path = None
             dist_y4m_path = None
+
+            if idx in duplicate_reasons:
+                reason = duplicate_reasons[idx]
+                logger.error(f"UID {uid}: {reason}. Assigning score of 0.")
+                vmaf_scores.append(0.0)
+                compression_rates.append(0.9999)
+                final_scores.append(0.0)
+                reasons.append(reason)
+                continue
 
             # Validate reference video using ffprobe (avoids AV1 warnings)
             if not is_valid_video(ref_path):

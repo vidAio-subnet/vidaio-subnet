@@ -150,7 +150,7 @@ GPU workers use `cpu=16.0`, `min_containers=0`, `max_containers=5` by default, `
 
 Compression is duration-routed: `compress` probes the URL duration, `compress_l4_l40s` uses `gpu=["L4", "L40S"]` by default for short videos, and `compress_rtx_pro_6000` uses `gpu="RTX-PRO-6000"` plus parallel chunk encoding for long videos.
 
-Modal service request bodies use `video_paths` with 1 to 5 input URLs. The miner currently sends a single-item list built from `UpscalingMinerPayload.reference_video_url` or `CompressionMinerPayload.reference_video_url`.
+Modal service request bodies use `video_paths` with 1 to 5 input URLs. Synthetic miner payloads can carry multiple `reference_video_urls`; organic jobs continue to use a single URL.
 
 Modal's Logs table is keyed by app/run name, so deployed worker rows stay under `vidaio-miner-workers`. Each worker prints structured JSON log events with `task_id`, `worker`, and `modal_input_id`; search the log tab for the task ID to isolate a request.
 

@@ -12,12 +12,13 @@ from typing import List, Dict, Any
 import pandas as pd
 from datetime import datetime
 from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy import desc
+from sqlalchemy import desc, text
 import os
 from pathlib import Path
 import requests
 import hashlib
 import time
+import ipaddress
 
 class MinerManager:
     def __init__(self, uid, config, wallet, metagraph):
@@ -28,11 +29,12 @@ class MinerManager:
 
         self.config = config
         self.subtensor = bt.Subtensor(config=self.config)
-        self.burn_proportion = float(4/5)   # 80% of miner emissions burnt
+        self.burn_proportion = 0.95   # 95% of miner emissions burnt
 
-        # top X compression & upscaling miners getting non-zero emissions
-        self.top_n_compression_miners_cutoff_rank = 50
-        self.top_n_upscaling_miners_cutoff_rank = 50
+        # Task allocations and rank-based distribution within each task pool.
+        self.compression_emission_allocation = 0.60
+        self.upscaling_emission_allocation = 0.40
+        self.emission_rank_shares = [0.60, 0.20, 0.10, 0.06, 0.04]
 
         self.metagraph = metagraph
         self.config_url = CONFIG.sql.url
@@ -51,8 +53,10 @@ class MinerManager:
         logger.info(f"Creating SQL engine")
         self.engine = create_engine("sqlite:///video_subnet_validator.db")
         Base.metadata.create_all(self.engine)
+        self._migrate_miner_metadata_table()
         Session = sessionmaker(bind=self.engine)
         self.session = Session()
+        self.sync_miner_chain_metadata()
         logger.info("Initializing serving counters")
         if len(self.metagraph.uids) < 256:
             uids = list(range(256)) 
@@ -88,6 +92,135 @@ class MinerManager:
         self.df = self.df.set_index('uid')
 
         logger.success("MinerManager initialization complete")
+
+    def _migrate_miner_metadata_table(self) -> None:
+        """Add miner chain metadata columns without recreating existing SQLite data."""
+        migrations = {
+            "coldkey": "ALTER TABLE miner_metadata ADD COLUMN coldkey VARCHAR(64) NOT NULL DEFAULT ''",
+            "ip_address": "ALTER TABLE miner_metadata ADD COLUMN ip_address VARCHAR(64) NOT NULL DEFAULT ''",
+            "port": "ALTER TABLE miner_metadata ADD COLUMN port INTEGER NOT NULL DEFAULT 0",
+        }
+
+        with self.engine.begin() as connection:
+            existing_columns = {
+                row[1] for row in connection.execute(text("PRAGMA table_info(miner_metadata)"))
+            }
+            for column_name, statement in migrations.items():
+                if column_name not in existing_columns:
+                    logger.info(f"Applying miner metadata migration: add {column_name}")
+                    connection.execute(text(statement))
+
+    def _axon_ip_address(self, axon) -> str:
+        ip_value = None
+        for attr in ("ip_str", "external_ip", "ip"):
+            candidate = getattr(axon, attr, None)
+            if callable(candidate):
+                try:
+                    candidate = candidate()
+                except Exception as e:
+                    logger.debug(f"Unable to resolve axon {attr}: {e}")
+                    candidate = None
+
+            if candidate is not None and candidate != "":
+                ip_value = candidate
+                break
+
+        if ip_value is None:
+            return ""
+        if isinstance(ip_value, int):
+            try:
+                return str(ipaddress.ip_address(ip_value))
+            except ValueError:
+                return str(ip_value)
+
+        ip_text = str(ip_value).strip()
+        if ip_text.startswith("/ipv"):
+            parts = ip_text.split("/", 2)
+            if len(parts) == 3:
+                ip_text = parts[2]
+
+        if ip_text.startswith("["):
+            closing_bracket = ip_text.find("]")
+            if closing_bracket != -1:
+                return ip_text[1:closing_bracket]
+
+        try:
+            return str(ipaddress.ip_address(ip_text))
+        except ValueError:
+            host, separator, port = ip_text.rpartition(":")
+            if separator and port.isdigit():
+                return host
+            return ip_text
+
+    def _chain_metadata_for_uid(self, uid: int) -> dict[str, Any]:
+        axon = self.metagraph.axons[uid]
+        hotkey = ""
+        coldkey = ""
+        if uid < len(getattr(self.metagraph, "hotkeys", [])):
+            hotkey = self.metagraph.hotkeys[uid]
+        if uid < len(getattr(self.metagraph, "coldkeys", [])):
+            coldkey = self.metagraph.coldkeys[uid]
+
+        return {
+            "hotkey": hotkey or getattr(axon, "hotkey", "") or "",
+            "coldkey": coldkey or getattr(axon, "coldkey", "") or "",
+            "ip_address": self._axon_ip_address(axon),
+            "port": int(getattr(axon, "port", 0) or 0),
+        }
+
+    def _apply_chain_metadata(self, miner: MinerMetadata, uid: int, fallback_hotkey: str = "") -> None:
+        try:
+            metadata = self._chain_metadata_for_uid(uid)
+        except Exception as e:
+            logger.warning(f"Unable to fetch metagraph metadata for UID {uid}: {e}")
+            metadata = {"hotkey": fallback_hotkey, "coldkey": "", "ip_address": "", "port": 0}
+
+        miner.hotkey = metadata["hotkey"] or fallback_hotkey or miner.hotkey
+        miner.coldkey = metadata["coldkey"]
+        miner.ip_address = metadata["ip_address"]
+        miner.port = metadata["port"]
+
+    def _new_miner_metadata(
+        self,
+        uid: int,
+        processing_task_type: str | None = None,
+        fallback_hotkey: str = "",
+        **kwargs,
+    ) -> MinerMetadata:
+        try:
+            metadata = self._chain_metadata_for_uid(uid)
+        except Exception as e:
+            logger.warning(f"Unable to fetch metagraph metadata for new UID {uid}: {e}")
+            metadata = {"hotkey": fallback_hotkey, "coldkey": "", "ip_address": "", "port": 0}
+
+        return MinerMetadata(
+            uid=uid,
+            hotkey=metadata["hotkey"] or fallback_hotkey,
+            coldkey=metadata["coldkey"],
+            ip_address=metadata["ip_address"],
+            port=metadata["port"],
+            processing_task_type=processing_task_type,
+            **kwargs,
+        )
+
+    def sync_miner_chain_metadata(self, uids: List[int] | None = None) -> None:
+        session = self.session
+        try:
+            query = session.query(MinerMetadata)
+            if uids:
+                query = query.filter(MinerMetadata.uid.in_(uids))
+
+            updated = 0
+            for miner in query.all():
+                self._apply_chain_metadata(miner, miner.uid, miner.hotkey)
+                updated += 1
+
+            if updated:
+                session.commit()
+                logger.info(f"Synced metagraph metadata for {updated} miner records")
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Failed to sync miner chain metadata: {e}")
 
     def _cleanup_old_database_files(self):
         """Delete old local database files if they exist before connecting to new database URL"""
@@ -229,10 +362,10 @@ class MinerManager:
                 task_changed = False
 
                 if not miner:
-                    miner = MinerMetadata(
+                    miner = self._new_miner_metadata(
                         processing_task_type="upscaling",
                         uid=uid,
-                        hotkey=hotkey,
+                        fallback_hotkey=hotkey,
                         accumulate_score=0.0,
                         bonus_multiplier=1.0,
                         penalty_f_multiplier=1.0,
@@ -308,6 +441,7 @@ class MinerManager:
                         MinerPerformanceHistory.uid == uid
                     ).delete()
 
+                self._apply_chain_metadata(miner, uid, hotkey)
                 success = s_f > 0.08
 
                 self._add_performance_record(
@@ -400,10 +534,10 @@ class MinerManager:
                 task_changed = False
 
                 if not miner:
-                    miner = MinerMetadata(
+                    miner = self._new_miner_metadata(
                         processing_task_type="compression",
                         uid=uid,
-                        hotkey=hotkey,
+                        fallback_hotkey=hotkey,
                         accumulate_score=0.0,
                         bonus_multiplier=1.0,
                         penalty_f_multiplier=1.0,
@@ -479,6 +613,7 @@ class MinerManager:
 
                     task_changed = True
                 
+                self._apply_chain_metadata(miner, uid, hotkey)
                 success = s_f > 0.08
 
                 self._add_performance_record(
@@ -871,9 +1006,9 @@ class MinerManager:
                 
                 if miner is None:
                     logger.info(f"Creating new metadata record for UID {uid}")
-                    miner = MinerMetadata(
+                    miner = self._new_miner_metadata(
                         uid=uid,
-                        hotkey="",  # Will be updated when synthetic scoring runs
+                        processing_task_type="upscaling",
                         accumulate_score=0.0,
                         bonus_multiplier=1.0,
                         penalty_f_multiplier=1.0,
@@ -882,6 +1017,8 @@ class MinerManager:
                         performance_tier="New Miner"
                     )
                     self.session.add(miner)
+
+                self._apply_chain_metadata(miner, uid, miner.hotkey)
                 
                 # Convert organic scores to synthetic-like format
 
@@ -1006,9 +1143,9 @@ class MinerManager:
                 
                 if miner is None:
                     logger.info(f"Creating new metadata record for UID {uid}")
-                    miner = MinerMetadata(
+                    miner = self._new_miner_metadata(
                         uid=uid,
-                        hotkey="",  # Will be updated when synthetic scoring runs
+                        processing_task_type="compression",
                         accumulate_score=0.0,
                         bonus_multiplier=1.0,
                         penalty_f_multiplier=1.0,
@@ -1018,7 +1155,7 @@ class MinerManager:
                     )
                     self.session.add(miner)
 
-                
+                self._apply_chain_metadata(miner, uid, miner.hotkey)
 
                 # Add performance record for organic scoring
                 self._add_performance_record(
@@ -1202,10 +1339,12 @@ class MinerManager:
     @property
     def weights(self):
         """
-        Calculate weights for reward distribution with 60% for compression and 40% for upscaling.
-        Within each task type, rewards are distributed proportionally based on accumulated scores.
+        Calculate weights with fixed task allocations and a top-heavy rank curve.
+        Compression receives 60% and upscaling receives 40% of the pre-burn
+        miner pool. Within each task pool, the top five miners receive 60%,
+        20%, 10%, 6%, and 4% respectively; all lower ranks receive zero.
         """
-        # Collect miners by task type
+        # Collect eligible miners by task type, then rank each task pool separately.
         compression_miners = []
         upscaling_miners = []
 
@@ -1228,85 +1367,17 @@ class MinerManager:
         compression_count = len(compression_miners)
         upscaling_count = len(upscaling_miners)
 
-        # Emission allocations (must sum to 1.0):
-        #   top-10 compression  : 30%   mid (11-50) compression: 30%
-        #   top-10 upscaling    : 20%   mid (11-50) upscaling  : 20%
-        # When one task category is absent, redistribute its share to the other.
-        if compression_count == 0 and upscaling_count > 0:
-            alloc_comp_top, alloc_comp_mid = 0.0, 0.0
-            alloc_up_top,   alloc_up_mid   = 0.5, 0.5  # 100% to upscaling, split evenly between tiers
-        elif upscaling_count == 0 and compression_count > 0:
-            alloc_up_top, alloc_up_mid   = 0.0, 0.0
-            alloc_comp_top, alloc_comp_mid = 0.5, 0.5
-        else:
-            alloc_comp_top, alloc_comp_mid = 0.30, 0.30
-            alloc_up_top,   alloc_up_mid   = 0.20, 0.20
+        def _apply_rank_curve(miners, allocation):
+            miners.sort(key=lambda x: x[1], reverse=True)
+            for rank, (uid, _) in enumerate(miners):
+                uids.append(uid)
+                if rank < len(self.emission_rank_shares):
+                    scores.append(allocation * self.emission_rank_shares[rank])
+                else:
+                    scores.append(0.0)
 
-        TOP_N = 10  # boundary between "top" and "mid" tiers
-
-        def _apply_tier_weights(sorted_scores, alloc_top, alloc_mid, cutoff_rank):
-            """
-            Given scores sorted descending, split into top-10 and rank-11 to cutoff_rank
-            tiers and assign weights proportionally within each tier.
-            Returns a weight array aligned with sorted_scores.
-            """
-            n = len(sorted_scores)
-            weights = np.zeros(n)
-
-            # Zero out anything beyond the hard cutoff rank
-            active_scores = sorted_scores.copy()
-            if n > cutoff_rank:
-                active_scores[cutoff_rank:] = 0
-
-            # Top tier: indices 0 .. min(TOP_N, cutoff_rank) - 1
-            top_end = min(TOP_N, cutoff_rank, n)
-            top_scores = active_scores[:top_end]
-            top_sum = top_scores.sum()
-            if top_sum > 0:
-                weights[:top_end] = (top_scores / top_sum) * alloc_top
-            elif top_end > 0 and alloc_top > 0:
-                weights[:top_end] = alloc_top / top_end
-
-            # Mid tier: indices TOP_N .. cutoff_rank - 1
-            mid_start = TOP_N
-            mid_end = min(cutoff_rank, n)
-            if mid_start < mid_end:
-                mid_scores = active_scores[mid_start:mid_end]
-                mid_sum = mid_scores.sum()
-                if mid_sum > 0:
-                    weights[mid_start:mid_end] = (mid_scores / mid_sum) * alloc_mid
-                elif alloc_mid > 0:
-                    weights[mid_start:mid_end] = alloc_mid / (mid_end - mid_start)
-
-            return weights
-
-        # Process compression miners
-        if compression_miners:
-            compression_miners.sort(key=lambda x: x[1], reverse=True)
-            compression_uids, compression_scores = zip(*compression_miners)
-            compression_scores = np.array(compression_scores)
-
-            compression_weights = _apply_tier_weights(
-                compression_scores, alloc_comp_top, alloc_comp_mid,
-                self.top_n_compression_miners_cutoff_rank
-            )
-
-            uids.extend(compression_uids)
-            scores.extend(compression_weights)
-
-        # Process upscaling miners
-        if upscaling_miners:
-            upscaling_miners.sort(key=lambda x: x[1], reverse=True)
-            upscaling_uids, upscaling_scores = zip(*upscaling_miners)
-            upscaling_scores = np.array(upscaling_scores)
-
-            upscaling_weights = _apply_tier_weights(
-                upscaling_scores, alloc_up_top, alloc_up_mid,
-                self.top_n_upscaling_miners_cutoff_rank
-            )
-
-            uids.extend(upscaling_uids)
-            scores.extend(upscaling_weights)
+        _apply_rank_curve(compression_miners, self.compression_emission_allocation)
+        _apply_rank_curve(upscaling_miners, self.upscaling_emission_allocation)
         
         # burn self.burn_proportion fraction of miner emissions
         total_scores = sum(scores)
