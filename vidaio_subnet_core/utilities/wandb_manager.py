@@ -5,6 +5,8 @@ import hashlib
 import asyncio
 import datetime
 import threading
+import uuid
+from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
 import wandb
 from dotenv import load_dotenv
@@ -19,6 +21,13 @@ DEFAULT_ROTATION_DAYS = 0
 DEFAULT_HEARTBEAT_SECONDS = 300
 DEFAULT_CONSOLE_CHUNK_SECONDS = 60 * 60
 DEFAULT_CONSOLE_CHUNK_BYTES = 25 * 1024 * 1024
+DEFAULT_CONSOLE_MODE = "redirect"
+DEFAULT_CONSOLE_MULTIPART = False
+DEFAULT_LOG_LEVEL = "DEBUG"
+LOG_FORMAT = (
+    "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | "
+    "{name}:{function}:{line} - {message}"
+)
 
 
 class WandbManager:
@@ -39,8 +48,16 @@ class WandbManager:
         self.console_chunk_bytes = self._get_env_int(
             "WANDB_CONSOLE_CHUNK_BYTES", DEFAULT_CONSOLE_CHUNK_BYTES
         )
-        self.run_id = self._get_run_id()
+        self.console_mode = os.getenv("WANDB_CONSOLE", DEFAULT_CONSOLE_MODE)
+        self.console_multipart = self._get_env_bool(
+            "WANDB_CONSOLE_MULTIPART", DEFAULT_CONSOLE_MULTIPART
+        )
+        self.run_group = self._get_run_group()
+        self.run_id = None
         self.run_name = os.getenv("WANDB_RUN_NAME") or f"validator-{self.validator.uid}"
+        self.log_level = os.getenv("WANDB_LOG_LEVEL", DEFAULT_LOG_LEVEL)
+        self.wandb_output_sink_id = None
+        self.wandb_output_log_path = None
         self._lock = threading.Lock()
         self.enabled = self._is_enabled()
 
@@ -65,11 +82,32 @@ class WandbManager:
             logger.warning(f"Invalid {name}={raw_value!r}; using default {default}.")
             return default
 
+    def _get_env_bool(self, name, default):
+        raw_value = os.getenv(name)
+        if raw_value is None:
+            return default
+
+        normalized = raw_value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+
+        logger.warning(f"Invalid {name}={raw_value!r}; using default {default}.")
+        return default
+
     def _get_run_id(self):
         configured_run_id = os.getenv("WANDB_RUN_ID")
         if configured_run_id:
             return self._sanitize_run_id(configured_run_id)
 
+        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime(
+            "%Y%m%d-%H%M%S"
+        )
+        suffix = uuid.uuid4().hex[:8]
+        return self._sanitize_run_id(f"{self.run_group}-{timestamp}-{suffix}")
+
+    def _get_run_group(self):
         network = self._sanitize_run_id(str(self.validator.config.subtensor.network))
         hotkey_hash = hashlib.sha1(
             self.validator.wallet.hotkey.ss58_address.encode("utf-8")
@@ -87,40 +125,79 @@ class WandbManager:
             parsed = urlsplit(run_url)
             return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
 
+        if self._is_non_syncing_wandb_mode():
+            return None
+
         entity = quote(wandb_entity, safe="")
         project = quote(wandb_project, safe="")
         run_id = quote(self.run_id, safe="")
         return f"https://wandb.ai/{entity}/{project}/runs/{run_id}"
 
     def _build_settings(self):
-        try:
-            return wandb.Settings(
-                silent=True,
-                console_multipart=True,
-                console_chunk_max_seconds=self.console_chunk_seconds,
-                console_chunk_max_bytes=self.console_chunk_bytes,
+        settings_attempts = [
+            {
+                "silent": True,
+                "console": self.console_mode,
+            },
+            {
+                "silent": True,
+            },
+        ]
+
+        if self.console_multipart:
+            settings_attempts.insert(
+                0,
+                {
+                    "silent": True,
+                    "console": self.console_mode,
+                    "console_multipart": True,
+                    "console_chunk_max_seconds": self.console_chunk_seconds,
+                    "console_chunk_max_bytes": self.console_chunk_bytes,
+                },
             )
-        except Exception as e:
-            logger.debug(
-                "Wandb multipart console chunk settings are unsupported in this SDK; "
-                f"falling back without chunk controls ({type(e).__name__})."
+            settings_attempts.insert(
+                1,
+                {
+                    "silent": True,
+                    "console": self.console_mode,
+                    "console_multipart": True,
+                },
             )
 
-        try:
-            return wandb.Settings(silent=True, console_multipart=True)
-        except Exception as e:
-            logger.warning(
-                "Wandb multipart console logs are unsupported in this SDK; "
-                f"falling back to silent mode only ({type(e).__name__})."
-            )
+        for settings_kwargs in settings_attempts:
+            try:
+                return wandb.Settings(**settings_kwargs)
+            except Exception as e:
+                logger.debug(
+                    "Wandb settings are unsupported in this SDK; "
+                    f"falling back ({type(e).__name__})."
+                )
+
+        return None
+
+    def _get_wandb_mode(self):
+        disabled = os.getenv("WANDB_DISABLED", "").strip().lower()
+        if disabled in {"1", "true", "yes", "on"}:
+            return "disabled"
+
+        env_mode = os.getenv("WANDB_MODE")
+        if env_mode:
+            return env_mode.strip().lower()
 
         try:
-            return wandb.Settings(silent=True)
-        except Exception as e:
-            logger.warning(
-                f"Wandb silent setting is unsupported in this SDK ({type(e).__name__})."
+            settings = getattr(self.wandb, "settings", None) or getattr(
+                self.wandb, "_settings", None
             )
-            return None
+            mode = getattr(settings, "mode", None) or getattr(settings, "_mode", None)
+            if mode:
+                return str(mode).lower()
+        except Exception:
+            pass
+
+        return "online"
+
+    def _is_non_syncing_wandb_mode(self):
+        return self._get_wandb_mode() in {"disabled", "dryrun", "offline"}
 
     def init_wandb(self, reason="manual"):
         with self._lock:
@@ -132,6 +209,7 @@ class WandbManager:
 
         self._finish_locked()
 
+        self.run_id = self._get_run_id()
         self.wandb_start = datetime.date.today()
         wandb_project = self.validator.config.wandb.project_name
         wandb_entity = self.validator.config.wandb.entity
@@ -140,26 +218,33 @@ class WandbManager:
         try:
             init_kwargs = {
                 "id": self.run_id,
-                "resume": "allow",
                 "name": self.run_name,
                 "project": wandb_project,
                 "entity": wandb_entity,
+                "group": self.run_group,
                 "config": {
                     "uid": self.validator.uid,
                     "hotkey": self.validator.wallet.hotkey.ss58_address,
                     "version": version,
                     "type": "validator",
                     "wandb_run_id": self.run_id,
+                    "wandb_run_group": self.run_group,
                     "wandb_rotation_days": self.rotation_days,
                     "wandb_init_reason": reason,
+                    "wandb_console": self.console_mode,
+                    "wandb_console_multipart": self.console_multipart,
                 },
                 "allow_val_change": True,
             }
+            if os.getenv("WANDB_RUN_ID"):
+                init_kwargs["resume"] = "allow"
+
             settings = self._build_settings()
             if settings is not None:
                 init_kwargs["settings"] = settings
 
             self.wandb = wandb.init(**init_kwargs)
+            self._install_log_sink_locked()
         except Exception as e:
             self.wandb = None
             self.wandb_start = None
@@ -168,14 +253,67 @@ class WandbManager:
 
         logger.info(f"Init Wandb run {self.run_id}: {self.run_name} ({reason})")
         logger.info(
-            f"Wandb run URL: {self._get_public_run_url(wandb_entity, wandb_project)}"
+            "Wandb mode: "
+            f"{self._get_wandb_mode()}; console capture: {self.console_mode}; "
+            f"multipart: {self.console_multipart}"
         )
+        run_url = self._get_public_run_url(wandb_entity, wandb_project)
+        if run_url:
+            logger.info(f"Wandb run URL: {run_url}")
+        else:
+            logger.warning(
+                "Wandb is initialized in a non-syncing mode; remote logs will not "
+                "update until local runs are synced."
+            )
+        try:
+            self._log_heartbeat_locked("init")
+        except Exception as e:
+            logger.warning(f"Wandb startup heartbeat failed: {e}")
+
+    def _install_log_sink_locked(self):
+        self._remove_log_sink_locked()
+
+        run_dir = getattr(self.wandb, "dir", None)
+        if not run_dir:
+            logger.warning("Wandb run directory is unavailable; log file sync disabled.")
+            return
+
+        self.wandb_output_log_path = Path(run_dir) / "output.log"
+        self.wandb_output_log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.wandb_output_log_path.touch(exist_ok=True)
+        self.wandb_output_sink_id = logger.add(
+            self.wandb_output_log_path,
+            format=LOG_FORMAT,
+            level=self.log_level,
+            colorize=False,
+            enqueue=False,
+            backtrace=False,
+            diagnose=False,
+        )
+
+        try:
+            self.wandb.save(str(self.wandb_output_log_path), policy="live")
+        except Exception as e:
+            logger.warning(f"Failed to register Wandb output.log for live sync: {e}")
+
+        logger.info(f"Wandb output log sink: {self.wandb_output_log_path}")
+
+    def _remove_log_sink_locked(self):
+        if self.wandb_output_sink_id is None:
+            return
+
+        try:
+            logger.remove(self.wandb_output_sink_id)
+        except Exception as e:
+            logger.warning(f"Failed to remove Wandb output log sink: {e}")
+        self.wandb_output_sink_id = None
 
     def _finish_locked(self):
         if self.wandb is None and wandb.run is None:
             return
 
         try:
+            self._remove_log_sink_locked()
             if self.wandb is not None:
                 self.wandb.finish()
             elif wandb.run is not None:
@@ -197,6 +335,15 @@ class WandbManager:
             days=self.rotation_days
         )
 
+    def _log_heartbeat_locked(self, event):
+        self.wandb.log(
+            {
+                "validator_heartbeat": 1,
+                "validator_uptime_seconds": int(time.time() - self.process_start_time),
+                "validator_wandb_event": event,
+            }
+        )
+
     def maintain(self):
         if not self.enabled:
             return
@@ -213,14 +360,7 @@ class WandbManager:
                 return
 
             try:
-                self.wandb.log(
-                    {
-                        "validator_heartbeat": 1,
-                        "validator_uptime_seconds": int(
-                            time.time() - self.process_start_time
-                        ),
-                    }
-                )
+                self._log_heartbeat_locked("heartbeat")
             except Exception as e:
                 logger.warning(f"Wandb heartbeat failed; reinitializing run: {e}")
                 self._init_wandb("heartbeat-failed")
