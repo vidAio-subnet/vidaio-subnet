@@ -1301,7 +1301,7 @@ class Validator(base.BaseValidator):
             for uid, response in zip(uids, responses):
                 distorted_urls.append(response.miner_response.optimized_video_url)
 
-        logger.info(f"payload: {payload_urls[0]}\nresponses: {distorted_urls}")
+        logger.info(f"payload: {payload_urls[:SYNTHETIC_QUERIES_PER_MINER]}\nresponses: {distorted_urls}")
 
         duplicate_url_reasons = duplicate_url_reasons or {}
         scoring_indices = [
