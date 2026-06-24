@@ -21,7 +21,7 @@ from fastapi import FastAPI, HTTPException
 import torchvision.transforms as transforms
 from pieapp_metric import calculate_pieapp_score
 from vidaio_subnet_core.utilities.storage_client import storage_client
-from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video, trim_video_select, vmaf_metric_ffmpeg, is_vmaf_ffmpeg_available
+from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video, trim_video_select, vmaf_metric, vmaf_metric_ffmpeg, is_vmaf_ffmpeg_available
 from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
 from scoring_function import calculate_compression_score
 from upscaling_scoring import (
@@ -156,6 +156,7 @@ class CompressionScoringResponse(BaseModel):
     Response model for compression scoring. Contains the list of calculated scores for each distorted video.
     """
     vmaf_scores: List[float]
+    base_vmaf_scores: Optional[List[Optional[float]]] = None
     compression_rates: List[float]
     final_scores: List[float]
     reasons: List[str]
@@ -176,6 +177,7 @@ class OrganicsCompressionScoringResponse(BaseModel):
     Response model for organics scoring. Contains the list of calculated scores for each distorted video.
     """
     vmaf_scores: List[float]
+    base_vmaf_scores: Optional[List[Optional[float]]] = None
     compression_rates: List[float]
     final_scores: List[float]
     reasons: List[str]
@@ -199,6 +201,30 @@ async def get_shared_session() -> aiohttp.ClientSession:
         connector = aiohttp.TCPConnector(limit=50)  # Adjust concurrency limit as needed
         _shared_session = aiohttp.ClientSession(timeout=timeout, connector=connector)
     return _shared_session
+
+def calculate_base_vmaf_for_logging(ref_y4m_path: str, dist_y4m_path: str) -> Optional[float]:
+    """Calculate standard VMAF for logging without affecting compression scoring."""
+    output_file = None
+    try:
+        fd, output_file = tempfile.mkstemp(prefix="vmaf_base_", suffix=".xml")
+        os.close(fd)
+        base_vmaf_score = vmaf_metric(
+            ref_y4m_path,
+            dist_y4m_path,
+            output_file=output_file,
+            neg_model=False,
+        )
+        logger.info(f"Base VMAF score for logging only (Y4M fallback): {base_vmaf_score}")
+        return base_vmaf_score
+    except Exception as base_err:
+        logger.warning(
+            "Base VMAF calculation failed in Y4M fallback; continuing with "
+            f"VMAF NEG scoring result only: {base_err}"
+        )
+        return None
+    finally:
+        if output_file and os.path.exists(output_file):
+            os.unlink(output_file)
 
 async def verify_organic_proxy_download(video_url: str, session: Optional[aiohttp.ClientSession] = None) -> bool:
     """Check whether the organic proxy can download a miner's output URL."""
@@ -2251,7 +2277,12 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
     compression_rates = []
     final_scores = []
     vmaf_scores = []
+    base_vmaf_scores = []
     reasons = []
+
+    def append_vmaf_scores(vmaf_score, base_vmaf_score=None):
+        vmaf_scores.append(vmaf_score)
+        base_vmaf_scores.append(base_vmaf_score)
 
     if len(request.reference_paths) != len(request.distorted_file_paths):
         raise HTTPException(
@@ -2299,7 +2330,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             if idx in duplicate_reasons:
                 reason = duplicate_reasons[idx]
                 logger.error(f"UID {uid}: {reason}. Assigning score of 0.")
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)
                 final_scores.append(0.0)
                 reasons.append(reason)
@@ -2317,7 +2348,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 logger.info(f"  Current working directory: {os.getcwd()}")
                 logger.info(f"  Assigning score of 0.")
                 
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)   # No compression achieved
                 final_scores.append(-100)
                 reasons.append(f"error opening reference video file: {ref_path} (exists: {file_exists}, size: {file_size})")
@@ -2333,7 +2364,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
 
             if ref_total_frames < 10:
                 logger.error(f"Video must contain at least 10 frames. Assigning score of 0.")
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)   # No compression achieved
                 final_scores.append(-100)
                 reasons.append("reference video has fewer than 10 frames")
@@ -2345,7 +2376,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
 
             if not dist_path or not os.path.exists(dist_path):
                 logger.error(f"Distorted file path is missing or invalid: {dist_path}. Assigning score of 0.")
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)   # No compression achieved
                 final_scores.append(0.0)
                 reasons.append(f"Invalid or missing distorted video file")
@@ -2357,7 +2388,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             # Validate video using ffprobe (avoids AV1 warnings)
             if not is_valid_video(dist_path):
                 logger.error(f"Error opening distorted video file from {dist_path}. Assigning score of 0.")
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)   # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("error opening distorted video file")
@@ -2378,7 +2409,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             if not is_valid_encoding:
                 logger.error(f"Invalid encoding settings for distorted video {dist_path}: {encoding_msg}")
                 logger.info(f"  Required: {target_codec} codec family, proper profile, yuv420p, MP4 container, 1:1 SAR")
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999) 
                 final_scores.append(0.0)
                 reasons.append(f"invalid encoding settings: {encoding_msg}")
@@ -2399,7 +2430,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 logger.error(
                     f"Video length mismatch for pair {idx+1}: ref({ref_total_frames}) != dist({dist_total_frames}) & frame_tolerance({FRAME_TOLERANCE}). Assigning score of 0."
                 )
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)   # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("video length mismatch")
@@ -2429,6 +2460,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             try:
                 vmaf_start = time.time()
                 vmaf_score = None
+                base_vmaf_score = None
 
                 # Trim 1-second clips for VMAF calculation (frame-accurate)
                 ref_fps_val = get_video_fps(ref_path) or 30.0
@@ -2443,18 +2475,23 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 if VMAF_FFMPEG_AVAILABLE:
                     try:
                         logger.info("Attempting Docker-based VMAF calculation (libvmaf_cuda)...")
-                        vmaf_score = vmaf_metric_ffmpeg(
+                        vmaf_score, base_vmaf_score = vmaf_metric_ffmpeg(
                             dist_path=dist_path,
                             ref_path=ref_path,
                             neg_model=True,
+                            return_base_model_score=True,
                             # skip_frames=np.random.randint(0, ref_fps_val),
                             # n_subsample=np.random.randint(20, 30),
                         )
-                        logger.info(f"Docker VMAF calculation succeeded: {vmaf_score}")
+                        logger.info(
+                            f"Docker VMAF NEG calculation succeeded: {vmaf_score}; "
+                            f"base VMAF for logging: {base_vmaf_score}"
+                        )
                         used_docker_vmaf = True
                     except Exception as docker_err:
                         logger.warning(f"Docker VMAF failed, falling back to Y4M: {docker_err}")
                         vmaf_score = None
+                        base_vmaf_score = None
 
                 if vmaf_score is None:
                     # Fallback: Y4M-based VMAF calculation
@@ -2463,6 +2500,8 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                     ref_y4m_path = convert_mp4_to_y4m(ref_path, random_frames)
                     logger.info("The reference video has been successfully converted to Y4M format.")
                     vmaf_score, dist_y4m_path = calculate_vmaf(ref_y4m_path, dist_path, random_frames, neg_model=True, return_y4m_path=True)
+                    if vmaf_score is not None and dist_y4m_path:
+                        base_vmaf_score = calculate_base_vmaf_for_logging(ref_y4m_path, dist_y4m_path)
 
                 vmaf_calc_time = time.time() - vmaf_start
                 logger.info(f"☣️☣️ VMAF calculation took {vmaf_calc_time:.2f} seconds.")
@@ -2471,13 +2510,16 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 logger.info(f"♎️ 8. Completed VMAF calculation in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
                 if vmaf_score is not None:
-                    vmaf_scores.append(vmaf_score)
+                    append_vmaf_scores(vmaf_score, base_vmaf_score)
                 else:
                     vmaf_score = 0.0
-                    vmaf_scores.append(vmaf_score)
-                logger.info(f"🎾 VMAF score is {vmaf_score} , Threshold: {vmaf_threshold}, Diff: {vmaf_score - vmaf_threshold}")
+                    append_vmaf_scores(vmaf_score, base_vmaf_score)
+                logger.info(
+                    f"🎾 VMAF NEG score is {vmaf_score} , Base VMAF: {base_vmaf_score}, "
+                    f"Threshold: {vmaf_threshold}, Diff: {vmaf_score - vmaf_threshold}"
+                )
             except Exception as e:
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)   # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("failed to calculate VMAF score due to video dimension mismatch")
@@ -2602,7 +2644,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
         except Exception as e:
             error_msg = f"Failed to process video from {dist_path}: {str(e)}"
             logger.error(f"{error_msg}. Assigning score of 0.")
-            vmaf_scores.append(0.0)
+            append_vmaf_scores(0.0)
             compression_rates.append(0.9999)   # No compression achieved
             final_scores.append(0.0)
             reasons.append("failed to process video")
@@ -2636,6 +2678,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
     
     return CompressionScoringResponse(
         vmaf_scores=vmaf_scores,
+        base_vmaf_scores=base_vmaf_scores,
         compression_rates=compression_rates,
         final_scores=final_scores,
         reasons=reasons
@@ -3051,9 +3094,14 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
     logger.info("#################### 🤖 start scoring ####################")
     start_time = time.time()
     vmaf_scores = []
+    base_vmaf_scores = []
     compression_rates = []
     final_scores = []
     reasons = []
+
+    def append_vmaf_scores(vmaf_score, base_vmaf_score=None):
+        vmaf_scores.append(vmaf_score)
+        base_vmaf_scores.append(base_vmaf_score)
 
     proxy_downloadable_results = []
     distorted_video_paths = []
@@ -3105,7 +3153,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             # download reference video
             if len(ref_url) < 10:
                 logger.info(f"invalid reference download url: {ref_url}. skipping scoring")
-                vmaf_scores.append(-1)
+                append_vmaf_scores(-1)
                 compression_rates.append(-1)
                 reasons.append("invalid reference url - skipped")
                 final_scores.append(-1)  # -1 means skip, don't penalize
@@ -3123,7 +3171,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 logger.info(f"  File exists: {file_exists}")
                 logger.info(f"  File size: {file_size} bytes")
                 
-                vmaf_scores.append(-1)
+                append_vmaf_scores(-1)
                 compression_rates.append(-1)
                 reasons.append("corrupted reference video - skipped")
                 final_scores.append(-1)  # -1 means skip, don't penalize
@@ -3137,7 +3185,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
 
             if ref_total_frames < 10:
                 logger.info(f"reference video too short (<10 frames). skipping scoring")
-                vmaf_scores.append(-1)
+                append_vmaf_scores(-1)
                 compression_rates.append(-1)
                 reasons.append("reference video too short - skipped")
                 final_scores.append(-1)  # -1 means skip, don't penalize
@@ -3145,7 +3193,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
 
         except Exception as e:
             logger.error(f"system error processing reference video: {e}. skipping scoring")
-            vmaf_scores.append(-1)
+            append_vmaf_scores(-1)
             compression_rates.append(-1)
             reasons.append("system error with reference - skipped")
             final_scores.append(-1)  # -1 means skip, don't penalize
@@ -3162,7 +3210,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
 
             if not proxy_downloadable:
                 logger.error(f"organic proxy failed to download distorted video for uid {uid}. penalizing miner.")
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)
                 reasons.append("MINER FAILURE: distorted video is not downloadable through organic proxy")
                 final_scores.append(0.0)
@@ -3171,7 +3219,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             # check if distorted video failed to download
             if dist_path is None:
                 logger.error(f"failed to download distorted video for uid {uid}. penalizing miner.")
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)
                 reasons.append("MINER FAILURE: failed to download distorted video, invalid url")
                 final_scores.append(0.0)  # 0 = miner penalty
@@ -3180,7 +3228,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             # Check if miner's output can be opened (using ffprobe to avoid AV1 warnings)
             if not is_valid_video(dist_path):
                 logger.error(f"error opening distorted video from {dist_path}. penalizing miner.")
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)
                 reasons.append("MINER FAILURE: corrupted output video")
                 final_scores.append(0.0)  # 0 = miner penalty
@@ -3193,7 +3241,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             if not is_valid_encoding:
                 logger.error(f"Invalid encoding settings for distorted video {dist_path}: {encoding_msg}")
                 logger.info(f"  Required: {target_codec} codec family, proper profile, yuv420p, MP4 container, 1:1 SAR, {codec_mode} mode")
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)
                 final_scores.append(0.0)
                 reasons.append(f"invalid encoding settings: {encoding_msg}")
@@ -3210,7 +3258,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 logger.error(
                     f"Video length mismatch for pair {idx+1}: ref({ref_total_frames}) != dist({dist_total_frames}) & frame_tolerance({FRAME_TOLERANCE}). Assigning score of 0."
                 )
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)  # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("video length mismatch")
@@ -3251,21 +3299,27 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             try:
                 vmaf_start = time.time()
                 vmaf_score = None
+                base_vmaf_score = None
 
                 if VMAF_FFMPEG_AVAILABLE:
                     try:
                         logger.info("Attempting Docker-based VMAF calculation (libvmaf_cuda)...")
-                        vmaf_score = vmaf_metric_ffmpeg(
+                        vmaf_score, base_vmaf_score = vmaf_metric_ffmpeg(
                             dist_path=dist_path,
                             ref_path=ref_path,
                             skip_frames=0,
                             n_subsample=1,
                             neg_model=True,
+                            return_base_model_score=True,
                         )
-                        logger.info(f"Docker VMAF calculation succeeded: {vmaf_score}")
+                        logger.info(
+                            f"Docker VMAF NEG calculation succeeded: {vmaf_score}; "
+                            f"base VMAF for logging: {base_vmaf_score}"
+                        )
                     except Exception as docker_err:
                         logger.warning(f"Docker VMAF failed, falling back to Y4M: {docker_err}")
                         vmaf_score = None
+                        base_vmaf_score = None
 
                 if vmaf_score is None:
                     # Fallback: Y4M-based VMAF calculation
@@ -3275,6 +3329,8 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                     step_time = time.time() - uid_start_time
                     logger.info(f"♎️ 9. Converted full reference video to Y4M in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
                     vmaf_score, dist_y4m_path = calculate_vmaf(ref_y4m_path, dist_path, None, neg_model=True, return_y4m_path=True)
+                    if vmaf_score is not None and dist_y4m_path:
+                        base_vmaf_score = calculate_base_vmaf_for_logging(ref_y4m_path, dist_y4m_path)
 
                 vmaf_calc_time = time.time() - vmaf_start
                 logger.info(f"☣️☣️ VMAF calculation took {vmaf_calc_time:.2f} seconds.")
@@ -3283,13 +3339,13 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 logger.info(f"♎️ 10. Completed VMAF calculation in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
                 if vmaf_score is not None:
-                    vmaf_scores.append(vmaf_score)
+                    append_vmaf_scores(vmaf_score, base_vmaf_score)
                 else:
                     vmaf_score = 0.0
-                    vmaf_scores.append(vmaf_score)
-                logger.info(f"🎾 VMAF score is {vmaf_score}")
+                    append_vmaf_scores(vmaf_score, base_vmaf_score)
+                logger.info(f"🎾 VMAF NEG score is {vmaf_score}; Base VMAF: {base_vmaf_score}")
             except Exception as e:
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)   # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("failed to calculate VMAF score due to video dimension mismatch")
@@ -3369,7 +3425,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
         except Exception as e:
             error_msg = f"Failed to process video from {dist_url}: {str(e)}"
             logger.error(f"{error_msg}. Assigning score of 0.")
-            vmaf_scores.append(0.0)
+            append_vmaf_scores(0.0)
             compression_rates.append(0.9999)   # No compression achieved
             final_scores.append(0.0)
             reasons.append("failed to process video")
@@ -3389,6 +3445,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
 
     return OrganicsCompressionScoringResponse(
         vmaf_scores=vmaf_scores,
+        base_vmaf_scores=base_vmaf_scores,
         compression_rates=compression_rates,
         final_scores=final_scores,
         reasons=reasons

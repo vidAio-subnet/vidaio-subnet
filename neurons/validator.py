@@ -1338,6 +1338,7 @@ class Validator(base.BaseValidator):
         scored_compression_rates = response_data.get("compression_rates", [])
         scored_final_scores = response_data.get("final_scores", [])
         scored_vmaf_scores = response_data.get("vmaf_scores", [])
+        scored_base_vmaf_scores = response_data.get("base_vmaf_scores") or []
         scored_reasons = response_data.get("reasons", [])
 
         def merge_scored_values(scored_values, duplicate_default, missing_default):
@@ -1359,6 +1360,7 @@ class Validator(base.BaseValidator):
         )
         final_scores = merge_scored_values(scored_final_scores, lambda _idx: 0.0, 0.0)
         vmaf_scores = merge_scored_values(scored_vmaf_scores, lambda _idx: 0.0, 0.0)
+        base_vmaf_scores = merge_scored_values(scored_base_vmaf_scores, lambda _idx: None, None)
         reasons = merge_scored_values(
             scored_reasons,
             lambda idx: duplicate_url_reasons[idx],
@@ -1381,12 +1383,14 @@ class Validator(base.BaseValidator):
             len(uids),
             len(final_scores),
             len(vmaf_scores),
+            len(base_vmaf_scores),
             len(reasons),
             len(applied_multipliers),
             len(accumulate_scores),
         )
 
         vmaf_scores.extend([0.0] * (max_length - len(vmaf_scores)))
+        base_vmaf_scores.extend([None] * (max_length - len(base_vmaf_scores)))
         final_scores.extend([0.0] * (max_length - len(final_scores)))
         reasons.extend(["No reason provided"] * (max_length - len(reasons)))
         compression_rates.extend([0.5] * (max_length - len(compression_rates)))
@@ -1396,11 +1400,12 @@ class Validator(base.BaseValidator):
         logger.info(f"Synthetic compression scoring results for {len(uids)} miners")
         logger.info(f"Uids: {uids}")
 
-        for uid, vmaf_score, final_score, reason, compression_rate, applied_multiplier, vmaf_threshold in zip(
-            uids, vmaf_scores, final_scores, reasons, compression_rates, applied_multipliers, vmaf_thresholds
+        for uid, vmaf_score, base_vmaf_score, final_score, reason, compression_rate, applied_multiplier, vmaf_threshold in zip(
+            uids, vmaf_scores, base_vmaf_scores, final_scores, reasons, compression_rates, applied_multipliers, vmaf_thresholds
         ):
+            base_vmaf_log = f"{base_vmaf_score:.2f}" if base_vmaf_score is not None else "N/A"
             logger.info(
-                f"{uid} ** VMAF: {vmaf_score:.2f} "
+                f"{uid} ** VMAF NEG: {vmaf_score:.2f} ** VMAF: {base_vmaf_log} "
                 f"** VMAF Threshold: {vmaf_threshold} ** Compression Rate: {compression_rate:.4f} ** Final: {final_score:.4f} || {reason}"
             )
 
@@ -1577,12 +1582,14 @@ class Validator(base.BaseValidator):
         response_data = score_response.json()
         scores = response_data.get("final_scores", [])
         vmaf_scores = response_data.get("vmaf_scores", [])
+        base_vmaf_scores = response_data.get("base_vmaf_scores") or []
         compression_rates = response_data.get("compression_rates", [])
         reasons = response_data.get("reasons", [])
 
-        max_length = max(len(selected_uids), len(scores), len(vmaf_scores), len(compression_rates), len(reasons))
+        max_length = max(len(selected_uids), len(scores), len(vmaf_scores), len(base_vmaf_scores), len(compression_rates), len(reasons))
         scores.extend([0.0] * (max_length - len(scores)))
         vmaf_scores.extend([0.0] * (max_length - len(vmaf_scores)))
+        base_vmaf_scores.extend([None] * (max_length - len(base_vmaf_scores)))
         compression_rates.extend([0.5] * (max_length - len(compression_rates)))
         reasons.extend(["no reason provided"] * (max_length - len(reasons)))
 
@@ -1593,11 +1600,12 @@ class Validator(base.BaseValidator):
 
         logger.info(f"organic compression scoring results for {len(selected_uids)} miners")
         logger.info(f"uids: {selected_uids}")
-        for uid, vmaf_score, final_score, reason, compression_rate, applied_multiplier, vmaf_threshold in zip(
-            selected_uids, vmaf_scores, scores, reasons, compression_rates, applied_multipliers, selected_vmaf_thresholds
+        for uid, vmaf_score, base_vmaf_score, final_score, reason, compression_rate, applied_multiplier, vmaf_threshold in zip(
+            selected_uids, vmaf_scores, base_vmaf_scores, scores, reasons, compression_rates, applied_multipliers, selected_vmaf_thresholds
         ):
+            base_vmaf_log = f"{base_vmaf_score:.2f}" if base_vmaf_score is not None else "N/A"
             logger.info(
-                f"{uid} ** VMAF: {vmaf_score:.2f} "
+                f"{uid} ** VMAF NEG: {vmaf_score:.2f} ** VMAF: {base_vmaf_log} "
                 f"** VMAF Threshold: {vmaf_threshold} ** Compression Rate: {compression_rate:.4f} ** Final: {final_score:.4f} || {reason}"
             )
 
