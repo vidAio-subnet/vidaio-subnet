@@ -14,6 +14,7 @@ from loguru import logger
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from vidaio_subnet_core.utilities.version import get_version
+from vidaio_subnet_core.utilities.storage_client import storage_client
 from vidaio_subnet_core import validating, CONFIG, base, protocol
 from vidaio_subnet_core.utilities.wandb_manager import WandbManager
 from services.video_scheduler.video_utils import get_trim_video_path, get_perumted_video_path
@@ -911,6 +912,14 @@ class Validator(base.BaseValidator):
                 f"in {time.time() - batch_timer:.2f} seconds"
             )
 
+        for ref_path, payload_path, uploaded_object_name in zip(reference_video_paths, payload_urls, uploaded_object_names):
+            if os.path.exists(ref_path):
+                os.unlink(ref_path)
+            if payload_path and os.path.exists(payload_path):
+                os.unlink(payload_path)
+            # Delete the uploaded object
+            storage_client.delete_file(uploaded_object_name)
+
         batch_processed_time = time.time() - batch_start_time
         logger.info(f"Completed upscaling batch within {batch_processed_time:.2f} seconds")
         logger.info(f"Scored {total_scoring_responses} upscaling query responses from {num_miners} miners")
@@ -1081,19 +1090,17 @@ class Validator(base.BaseValidator):
             duplicate_url_reasons=duplicate_url_reasons,
         )
 
-        for path in distorted_file_paths:
-            if path and os.path.exists(path):
+        for dist_path, ref_path, uploaded_object_name in zip(distorted_file_paths, reference_video_paths, uploaded_object_names):
+            if dist_path and os.path.exists(dist_path):
                 try:
-                    os.unlink(path)
+                    os.unlink(dist_path)
                 except Exception as e:
-                    logger.error(f"Error deleting distorted video file {path}: {e}")
+                    logger.error(f"Error deleting distorted video file {dist_path}: {e}")
+            if os.path.exists(ref_path):
+                    os.unlink(ref_path)
 
-        try:
-            for reference_video_path in set(reference_video_paths):
-                if os.path.exists(reference_video_path):
-                    os.unlink(reference_video_path)
-        except Exception as e:
-            logger.error(f"Error deleting reference video file: {e}")
+            # Delete the uploaded object
+            storage_client.delete_file(uploaded_object_name)
 
     async def start_organic_loop(self):
         """Start organic processing loop for both upscaling and compression tasks asynchronously."""
