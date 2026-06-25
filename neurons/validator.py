@@ -81,6 +81,7 @@ except ValueError:
     SYNTHETIC_QUERIES_PER_MINER = 5
 
 UPSCALING_SCORING_BATCH_SIZE = 5
+COMPRESSION_SCORING_BATCH_SIZE = 5
 
 try:
     ORGANIC_QUERIES_PER_MINER = max(
@@ -1071,24 +1072,52 @@ class Validator(base.BaseValidator):
         batch_processed_time = time.time() - batch_start_time
         logger.info(f"Completed compression gathering and downloading within {batch_processed_time:.2f} seconds")
 
-        logger.info(f"Scoring {len(flat_uids)} compression query responses from {num_miners} miners")
-        await self.score_compressions(
-            flat_uids,
-            [],
-            distorted_file_paths,
-            flat_payload_urls,
-            flat_reference_paths,
-            timestamp,
-            flat_video_ids,
-            flat_uploaded_object_names,
-            flat_vmaf_thresholds,
-            target_codec,
-            codec_mode,
-            target_bitrate,
-            round_id,
-            distorted_urls=flat_distorted_urls,
-            duplicate_url_reasons=duplicate_url_reasons,
+        total_scoring_responses = len(flat_uids)
+        scoring_batch_size = COMPRESSION_SCORING_BATCH_SIZE
+        scoring_batch_count = (total_scoring_responses + scoring_batch_size - 1) // scoring_batch_size
+        logger.info(
+            f"Scoring {total_scoring_responses} compression query responses from "
+            f"{num_miners} miners in {scoring_batch_count} batches of up to {scoring_batch_size}"
         )
+
+        for batch_idx, batch_start in enumerate(range(0, total_scoring_responses, scoring_batch_size), start=1):
+            batch_end = min(batch_start + scoring_batch_size, total_scoring_responses)
+            batch_uids = flat_uids[batch_start:batch_end]
+            batch_timer = time.time()
+            logger.info(
+                f"Scoring compression batch {batch_idx}/{scoring_batch_count}: "
+                f"responses {batch_start + 1}-{batch_end}/{total_scoring_responses}, "
+                f"uids={batch_uids}"
+            )
+
+            batch_duplicate_url_reasons = {
+                idx - batch_start: reason
+                for idx, reason in duplicate_url_reasons.items()
+                if batch_start <= idx < batch_end
+            }
+
+            await self.score_compressions(
+                batch_uids,
+                [],
+                distorted_file_paths[batch_start:batch_end],
+                flat_payload_urls[batch_start:batch_end],
+                flat_reference_paths[batch_start:batch_end],
+                timestamp,
+                flat_video_ids[batch_start:batch_end],
+                flat_uploaded_object_names[batch_start:batch_end],
+                flat_vmaf_thresholds[batch_start:batch_end],
+                target_codec,
+                codec_mode,
+                target_bitrate,
+                round_id,
+                distorted_urls=flat_distorted_urls[batch_start:batch_end],
+                duplicate_url_reasons=batch_duplicate_url_reasons,
+            )
+
+            logger.info(
+                f"Completed compression scoring batch {batch_idx}/{scoring_batch_count} "
+                f"in {time.time() - batch_timer:.2f} seconds"
+            )
 
         for dist_path, ref_path, uploaded_object_name in zip(distorted_file_paths, reference_video_paths, uploaded_object_names):
             if dist_path and os.path.exists(dist_path):
@@ -1097,7 +1126,7 @@ class Validator(base.BaseValidator):
                 except Exception as e:
                     logger.error(f"Error deleting distorted video file {dist_path}: {e}")
             if os.path.exists(ref_path):
-                    os.unlink(ref_path)
+                os.unlink(ref_path)
 
             # Delete the uploaded object
             storage_client.delete_file(uploaded_object_name)
