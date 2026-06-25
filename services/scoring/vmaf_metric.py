@@ -274,6 +274,7 @@ def vmaf_metric_ffmpeg(
     n_subsample=1,
     docker_image="vmaf_ffmpeg",
     neg_model=False,
+    return_base_model_score=False,
 ):
     """
     Calculate VMAF score using the vmaf_ffmpeg Docker container with GPU-accelerated
@@ -290,9 +291,15 @@ def vmaf_metric_ffmpeg(
             drop the first 51 frames from both streams).
         n_subsample (int): Subsample every N-th frame for faster scoring.
         docker_image (str): Name of the Docker image (default "vmaf_ffmpeg").
+        neg_model (bool): Whether to use the VMAF NEG model for the returned
+            scoring value.
+        return_base_model_score (bool): If True, return a tuple of
+            (scoring_score, base_model_score). The base model score is
+            observational only and must not be used for final scoring.
 
     Returns:
-        float: The VMAF harmonic mean score.
+        float | tuple[float, float | None]: The selected VMAF harmonic mean score,
+        optionally paired with the base-model harmonic mean score.
     """
     dist_path = os.path.abspath(dist_path)
     ref_path = os.path.abspath(ref_path)
@@ -324,69 +331,93 @@ def vmaf_metric_ffmpeg(
         else:
             select_filter = ""
 
+        def run_vmaf(use_neg_model, output_path):
+            if use_neg_model:
+                logger.info("Using VMAF NEG model for scoring (ffmpeg/docker).")
+                model_param = ":model='version=vmaf_v0.6.1neg'"
+                model_label = "VMAF NEG"
+            else:
+                logger.info("Using base VMAF vmaf_v0.6.1 model (ffmpeg/docker).")
+                model_param = ":model='version=vmaf_v0.6.1'"
+                model_label = "VMAF"
+
+            filter_complex = (
+                f"[0:v]{select_filter}format=yuv420p,hwupload_cuda[dis];"
+                f"[1:v]{select_filter}format=yuv420p,hwupload_cuda[ref];"
+                f"[dis][ref]libvmaf_cuda=n_subsample={n_subsample}{model_param}"
+                f":log_fmt=json:log_path={output_path}"
+            )
+
+            # Assemble the full docker command
+            # Entrypoint of the image is "ffmpeg", so we only pass ffmpeg args
+            cmd = [
+                "docker", "run", "--rm",
+                "--gpus", "all",
+                *vol_args,
+                docker_image,
+                "-i", dist_path,
+                "-i", ref_path,
+                "-filter_complex", filter_complex,
+                "-f", "null", "-",
+            ]
+
+            logger.info(f"Running {model_label} via Docker: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True)
+
+            if result.returncode != 0:
+                raise Exception(
+                    f"Docker {model_label} command failed (exit {result.returncode}):\n"
+                    f"stdout: {result.stdout}\nstderr: {result.stderr}"
+                )
+
+            # Parse the JSON log produced by libvmaf_cuda
+            if not os.path.exists(output_path):
+                raise FileNotFoundError(
+                    f"Expected {model_label} JSON output '{output_path}' not found."
+                )
+
+            with open(output_path, "r") as f:
+                vmaf_data = json.load(f)
+
+            # Extract per-frame VMAF scores
+            frames = vmaf_data.get("frames", [])
+            if not frames:
+                raise ValueError(f"No frames found in {model_label} JSON output.")
+
+            scores = []
+            for frame in frames:
+                metrics = frame.get("metrics", {})
+                vmaf_score = metrics.get("vmaf")
+                if vmaf_score is not None and vmaf_score > 0:
+                    scores.append(vmaf_score)
+
+            if not scores:
+                raise ValueError(f"No valid (> 0) {model_label} scores found in output.")
+
+            # Compute harmonic mean: n / sum(1/x_i)
+            harmonic_mean = len(scores) / sum(1.0 / s for s in scores)
+            logger.info(f"{model_label} harmonic mean (ffmpeg/docker): {harmonic_mean:.4f}")
+            return harmonic_mean
+
+        harmonic_mean = run_vmaf(neg_model, output_json)
+        base_model_score = harmonic_mean if not neg_model else None
+
         if neg_model:
-            logger.info("Using VMAF NEG model for scoring (ffmpeg/docker).")
-            model_param = ":model='version=vmaf_v0.6.1neg'"
-        else:
-            logger.info("Using standard VMAF model for scoring (ffmpeg/docker).")
-            model_param = ""
+            base_output_json = os.path.join(tmp_dir, "vmaf_base_output.json")
+            try:
+                base_model_score = run_vmaf(False, base_output_json)
+                logger.info(
+                    f"Base VMAF harmonic mean for logging only (ffmpeg/docker): "
+                    f"{base_model_score:.4f}"
+                )
+            except Exception as base_err:
+                logger.warning(
+                    "Base VMAF calculation failed; continuing with VMAF NEG "
+                    f"scoring result only: {base_err}"
+                )
 
-        filter_complex = (
-            f"[0:v]{select_filter}format=yuv420p,hwupload_cuda[dis];"
-            f"[1:v]{select_filter}format=yuv420p,hwupload_cuda[ref];"
-            f"[dis][ref]libvmaf_cuda=n_subsample={n_subsample}{model_param}"
-            f":log_fmt=json:log_path={output_json}"
-        )
-
-        # Assemble the full docker command
-        # Entrypoint of the image is "ffmpeg", so we only pass ffmpeg args
-        cmd = [
-            "docker", "run", "--rm",
-            "--gpus", "all",
-            *vol_args,
-            docker_image,
-            "-i", dist_path,
-            "-i", ref_path,
-            "-filter_complex", filter_complex,
-            "-f", "null", "-",
-        ]
-
-        logger.info(f"Running VMAF via Docker: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True)
-
-        if result.returncode != 0:
-            raise Exception(
-                f"Docker VMAF command failed (exit {result.returncode}):\n"
-                f"stdout: {result.stdout}\nstderr: {result.stderr}"
-            )
-
-        # Parse the JSON log produced by libvmaf_cuda
-        if not os.path.exists(output_json):
-            raise FileNotFoundError(
-                f"Expected VMAF JSON output '{output_json}' not found."
-            )
-
-        with open(output_json, "r") as f:
-            vmaf_data = json.load(f)
-
-        # Extract per-frame VMAF scores
-        frames = vmaf_data.get("frames", [])
-        if not frames:
-            raise ValueError("No frames found in VMAF JSON output.")
-
-        scores = []
-        for frame in frames:
-            metrics = frame.get("metrics", {})
-            vmaf_score = metrics.get("vmaf")
-            if vmaf_score is not None and vmaf_score > 0:
-                scores.append(vmaf_score)
-
-        if not scores:
-            raise ValueError("No valid (> 0) VMAF scores found in output.")
-
-        # Compute harmonic mean: n / sum(1/x_i)
-        harmonic_mean = len(scores) / sum(1.0 / s for s in scores)
-        logger.info(f"VMAF harmonic mean (ffmpeg/docker): {harmonic_mean:.4f}")
+        if return_base_model_score:
+            return harmonic_mean, base_model_score
         return harmonic_mean
 
     except Exception as e:
