@@ -919,7 +919,7 @@ class Validator(base.BaseValidator):
             if payload_path and os.path.exists(payload_path):
                 os.unlink(payload_path)
             # Delete the uploaded object
-            storage_client.delete_file(uploaded_object_name)
+            await storage_client.delete_file(uploaded_object_name)
 
         batch_processed_time = time.time() - batch_start_time
         logger.info(f"Completed upscaling batch within {batch_processed_time:.2f} seconds")
@@ -1129,7 +1129,7 @@ class Validator(base.BaseValidator):
                 os.unlink(ref_path)
 
             # Delete the uploaded object
-            storage_client.delete_file(uploaded_object_name)
+            await storage_client.delete_file(uploaded_object_name)
 
     async def start_organic_loop(self):
         """Start organic processing loop for both upscaling and compression tasks asynchronously."""
