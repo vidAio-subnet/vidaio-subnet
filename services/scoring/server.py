@@ -2235,15 +2235,6 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 os.unlink(ref_y4m_path)
             if dist_path and os.path.exists(dist_path):
                 os.unlink(dist_path)
-            if payload_path and os.path.exists(payload_path):
-                os.unlink(payload_path)
-
-            # Delete the uploaded object
-            storage_client.delete_file(uploaded_object_name)
-
-    for ref_path in request.reference_paths:
-        if os.path.exists(ref_path):
-            os.unlink(ref_path)
 
     # tmp_directory = "/tmp"
     # try:
@@ -2656,9 +2647,6 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 os.unlink(ref_y4m_path)
             if dist_y4m_path and os.path.exists(dist_y4m_path):
                 os.unlink(dist_y4m_path)
-
-            # Delete the uploaded object
-            storage_client.delete_file(uploaded_object_name)
 
     # tmp_directory = "/tmp"
     # try:
