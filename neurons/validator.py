@@ -442,8 +442,8 @@ class Validator(base.BaseValidator):
         epoch_processed_time = time.time() - epoch_start_time
         logger.info(f"Completed one epoch within {epoch_processed_time:.2f} seconds")
 
-        logger.info(f"Sleeping for 3-5 hours before starting next cycle")
-        await asyncio.sleep(random.randint(3600 * 3, 3600 * 5)) 
+        logger.info(f"Sleeping for 1-2 hours before starting next cycle")
+        await asyncio.sleep(random.randint(3600 * 1, 3600 * 2)) 
 
     #   --------------------------------------------------------------------------- #
     #  Helper – turn the raw list of (axon, uid) into a dict {uid: (axon, uid)}
