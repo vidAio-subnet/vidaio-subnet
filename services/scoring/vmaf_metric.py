@@ -278,15 +278,16 @@ def vmaf_metric_ffmpeg(
 ):
     """
     Calculate VMAF score using the vmaf_ffmpeg Docker container with GPU-accelerated
-    libvmaf_cuda, operating directly on MP4 inputs.
+    libvmaf_cuda, operating directly on FFmpeg-readable video inputs (including
+    MP4 and Y4M).
 
     The libvmaf_cuda filter expects: distorted first, reference second.
     This matches FFmpeg's convention where the first -i is the distorted video
     and the second -i is the reference video.
 
     Args:
-        dist_path (str): Absolute path to the distorted MP4 video.
-        ref_path (str): Absolute path to the reference MP4 video.
+        dist_path (str): Path to the distorted video.
+        ref_path (str): Path to the reference video.
         skip_frames (int): Number of leading frames to skip (e.g. 51 to
             drop the first 51 frames from both streams).
         n_subsample (int): Subsample every N-th frame for faster scoring.
@@ -295,7 +296,8 @@ def vmaf_metric_ffmpeg(
             scoring value.
         return_base_model_score (bool): If True, return a tuple of
             (scoring_score, base_model_score). The base model score is
-            observational only and must not be used for final scoring.
+            observational only and must not be used for final scoring. When
+            scoring with the NEG model, this enables a second base-model pass.
 
     Returns:
         float | tuple[float, float | None]: The selected VMAF harmonic mean score,
@@ -402,7 +404,7 @@ def vmaf_metric_ffmpeg(
         harmonic_mean = run_vmaf(neg_model, output_json)
         base_model_score = harmonic_mean if not neg_model else None
 
-        if neg_model:
+        if neg_model and return_base_model_score:
             base_output_json = os.path.join(tmp_dir, "vmaf_base_output.json")
             try:
                 base_model_score = run_vmaf(False, base_output_json)

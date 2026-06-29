@@ -21,7 +21,7 @@ from fastapi import FastAPI, HTTPException
 import torchvision.transforms as transforms
 from pieapp_metric import calculate_pieapp_score
 from vidaio_subnet_core.utilities.storage_client import storage_client
-from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video, trim_video_select, vmaf_metric, vmaf_metric_ffmpeg, is_vmaf_ffmpeg_available
+from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video, trim_video_select, vmaf_metric_ffmpeg, is_vmaf_ffmpeg_available
 from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
 from scoring_function import calculate_compression_score
 from upscaling_scoring import (
@@ -257,29 +257,29 @@ async def get_shared_session() -> aiohttp.ClientSession:
         _shared_session = aiohttp.ClientSession(timeout=timeout, connector=connector)
     return _shared_session
 
-def calculate_base_vmaf_for_logging(ref_y4m_path: str, dist_y4m_path: str) -> Optional[float]:
-    """Calculate standard VMAF for logging without affecting compression scoring."""
-    output_file = None
+def calculate_base_vmaf_for_logging(
+    ref_y4m_path: str,
+    dist_y4m_path: str,
+    neg_model: bool = False,
+) -> Optional[float]:
+    """Calculate a logging-only VMAF score with GPU-accelerated libvmaf."""
+    model_label = "VMAF NEG v0.6.1" if neg_model else "VMAF v0.6.1"
     try:
-        fd, output_file = tempfile.mkstemp(prefix="vmaf_base_", suffix=".xml")
-        os.close(fd)
-        base_vmaf_score = vmaf_metric(
-            ref_y4m_path,
-            dist_y4m_path,
-            output_file=output_file,
-            neg_model=False,
+        vmaf_score = vmaf_metric_ffmpeg(
+            dist_path=dist_y4m_path,
+            ref_path=ref_y4m_path,
+            neg_model=neg_model,
         )
-        logger.info(f"Base VMAF score for logging only (Y4M fallback): {base_vmaf_score}")
-        return base_vmaf_score
-    except Exception as base_err:
+        logger.info(
+            f"{model_label} score for logging only (Y4M, ffmpeg/docker): {vmaf_score}"
+        )
+        return vmaf_score
+    except Exception as vmaf_err:
         logger.warning(
-            "Base VMAF calculation failed in Y4M fallback; continuing with "
-            f"VMAF NEG scoring result only: {base_err}"
+            f"{model_label} calculation failed in Y4M ffmpeg/docker path; "
+            f"continuing without the logging-only score: {vmaf_err}"
         )
         return None
-    finally:
-        if output_file and os.path.exists(output_file):
-            os.unlink(output_file)
 
 
 def _extract_tone_check_frame(video_path: str, timestamp_seconds: float, output_path: str):
