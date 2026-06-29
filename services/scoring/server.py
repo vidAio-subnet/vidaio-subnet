@@ -59,6 +59,61 @@ ORGANIC_PROXY_API_KEY = os.getenv("ORGANIC_PROXY_API_KEY", "")
 # Check if vmaf_ffmpeg Docker image with libvmaf_cuda is available
 VMAF_FFMPEG_AVAILABLE = is_vmaf_ffmpeg_available()
 
+import numpy as np
+from PIL import Image
+
+
+def detect_tone_manipulation(ref_png, dist_png):
+    """Detect contrast/levels preprocessing by fitting dist ~= slope*ref + offset."""
+    size = (320, 180)
+    with Image.open(ref_png) as ref_img, Image.open(dist_png) as dist_img:
+        r = np.asarray(ref_img.convert("L").resize(size, Image.BILINEAR), float).ravel()
+        d = np.asarray(dist_img.convert("L").resize(size, Image.BILINEAR), float).ravel()
+
+    # Drop near-clipped codes where the relationship saturates and biases slope.
+    m = (r > 6) & (r < 249)
+    if m.sum() < 500 or r[m].std() < 1.0:
+        return {
+            "slope": 1.0,
+            "offset": 0.0,
+            "detected": False,
+            "severity": "unknown",
+            "reason": "too little usable signal",
+        }
+
+    rm, dm = r[m], d[m]
+    corr = float(np.corrcoef(rm, dm)[0, 1])
+    slope, offset = (float(v) for v in np.polyfit(rm, dm, 1))
+
+    # Low correlation or implausible slope means mismatched frames, not a tone transform.
+    if corr < 0.9 or not (0.5 < slope < 1.6):
+        return {
+            "slope": 1.0,
+            "offset": 0.0,
+            "detected": False,
+            "severity": "unreliable",
+            "reason": f"frames don't correspond (corr={corr:.2f}, slope={slope:.3f})",
+        }
+
+    dev = abs(slope - 1.0)
+    if dev >= 0.012 or abs(offset) >= 2.0:
+        sev, detected = "alert", True
+        reason = f"contrast/levels stretch: dist ~= {slope:.3f}*ref {offset:+.1f}"
+    elif dev >= 0.005 or abs(offset) >= 1.0:
+        sev, detected = "info", False
+        reason = f"mild levels shift: {slope:.3f}*ref {offset:+.1f}"
+    else:
+        sev, detected = "good", False
+        reason = f"levels preserved: {slope:.3f}*ref {offset:+.1f}"
+
+    return {
+        "slope": round(slope, 4),
+        "offset": round(offset, 2),
+        "detected": detected,
+        "severity": sev,
+        "reason": reason,
+    }
+
 def validate_upscaling_file_size(reference_path, distorted_path, scale_factor):
     """Validate that an upscaled video stays within the allowed file size."""
     max_multiplier = UPSCALING_FILE_SIZE_MULTIPLIERS[scale_factor]
@@ -225,6 +280,57 @@ def calculate_base_vmaf_for_logging(ref_y4m_path: str, dist_y4m_path: str) -> Op
     finally:
         if output_file and os.path.exists(output_file):
             os.unlink(output_file)
+
+
+def _extract_tone_check_frame(video_path: str, timestamp_seconds: float, output_path: str):
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-ss",
+        f"{timestamp_seconds:.6f}",
+        "-i",
+        video_path,
+        "-frames:v",
+        "1",
+        output_path,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "ffmpeg frame extraction failed")
+    if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+        raise RuntimeError("ffmpeg did not produce a tone-check frame")
+
+
+def log_tone_manipulation_for_compression(
+    ref_path: str,
+    dist_path: str,
+    timestamp_seconds: float,
+    uid: Optional[int] = None,
+    context: str = "compression",
+):
+    """Log tone/levels manipulation diagnostics without changing scoring results."""
+    uid_label = f" UID {uid}" if uid is not None else ""
+    try:
+        timestamp_seconds = max(0.0, float(timestamp_seconds or 0.0))
+        with tempfile.TemporaryDirectory(prefix="tone_check_") as temp_dir:
+            ref_png = os.path.join(temp_dir, "ref.png")
+            dist_png = os.path.join(temp_dir, "dist.png")
+            _extract_tone_check_frame(ref_path, timestamp_seconds, ref_png)
+            _extract_tone_check_frame(dist_path, timestamp_seconds, dist_png)
+            tone_result = detect_tone_manipulation(ref_png, dist_png)
+
+        logger.info(
+            f"Tone manipulation check (logging only){uid_label} [{context}] "
+            f"at {timestamp_seconds:.3f}s: {tone_result}"
+        )
+    except Exception as e:
+        logger.warning(
+            f"Tone manipulation check failed (logging only){uid_label} "
+            f"[{context}] at {timestamp_seconds}s: {e}"
+        )
 
 async def verify_organic_proxy_download(video_url: str, session: Optional[aiohttp.ClientSession] = None) -> bool:
     """Check whether the organic proxy can download a miner's output URL."""
@@ -2526,6 +2632,14 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 # if dist_clip_vmaf_path and os.path.exists(dist_clip_vmaf_path):
                 #     os.unlink(dist_clip_vmaf_path)
 
+            log_tone_manipulation_for_compression(
+                ref_path=ref_path,
+                dist_path=dist_path,
+                timestamp_seconds=(vmaf_start_frame / ref_fps_val) if ref_fps_val else 0.0,
+                uid=uid,
+                context="synthetics compression",
+            )
+
             # === COLOR / CHROMA VALIDATION ===
             if used_docker_vmaf:
                 # Docker path: use FFmpeg signalstats on original videos with time bounds (no Y4M needed)
@@ -3200,7 +3314,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 logger.error(f"organic proxy failed to download distorted video for uid {uid}. penalizing miner.")
                 append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)
-                reasons.append("MINER FAILURE: distorted video is not downloadable through organic proxy")
+                reasons.append(f"MINER FAILURE: distorted video is not downloadable through organic proxy via endpoint: {ORGANIC_PROXY_VERIFY_DOWNLOAD_ENDPOINT}, miner is recommended to whitelist organic proxy IP in S3 compatible storage")
                 final_scores.append(0.0)
                 continue
 
@@ -3341,6 +3455,14 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 if dist_y4m_path and os.path.exists(dist_y4m_path):
                     os.unlink(dist_y4m_path)
                 continue
+
+            log_tone_manipulation_for_compression(
+                ref_path=ref_path,
+                dist_path=dist_path,
+                timestamp_seconds=(color_check_start_frame / ref_fps) if ref_fps else 0.0,
+                uid=uid,
+                context="organics compression",
+            )
 
             # === COLOR / CHROMA VALIDATION ===
             # Use a bounded window so these guard checks remain fast while VMAF
