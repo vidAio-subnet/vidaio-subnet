@@ -1439,9 +1439,9 @@ class Validator(base.BaseValidator):
         for uid, vmaf_score, base_vmaf_score, final_score, reason, compression_rate, applied_multiplier, vmaf_threshold in zip(
             uids, vmaf_scores, base_vmaf_scores, final_scores, reasons, compression_rates, applied_multipliers, vmaf_thresholds
         ):
-            base_vmaf_log = f"{base_vmaf_score:.2f}" if base_vmaf_score is not None else "N/A"
+            base_vmaf_display = f"{base_vmaf_score:.2f}" if base_vmaf_score is not None else "N/A"
             logger.info(
-                f"{uid} ** VMAF NEG: {vmaf_score:.2f} ** VMAF: {base_vmaf_log} "
+                f"{uid} ** VMAF NEG: {vmaf_score:.2f} ** VMAF: {base_vmaf_display} "
                 f"** VMAF Threshold: {vmaf_threshold} ** Compression Rate: {compression_rate:.4f} ** Final: {final_score:.4f} || {reason}"
             )
 
@@ -1639,9 +1639,9 @@ class Validator(base.BaseValidator):
         for uid, vmaf_score, base_vmaf_score, final_score, reason, compression_rate, applied_multiplier, vmaf_threshold in zip(
             selected_uids, vmaf_scores, base_vmaf_scores, scores, reasons, compression_rates, applied_multipliers, selected_vmaf_thresholds
         ):
-            base_vmaf_log = f"{base_vmaf_score:.2f}" if base_vmaf_score is not None else "N/A"
+            base_vmaf_display = f"{base_vmaf_score:.2f}" if base_vmaf_score is not None else "N/A"
             logger.info(
-                f"{uid} ** VMAF NEG: {vmaf_score:.2f} ** VMAF: {base_vmaf_log} "
+                f"{uid} ** VMAF NEG: {vmaf_score:.2f} ** VMAF: {base_vmaf_display} "
                 f"** VMAF Threshold: {vmaf_threshold} ** Compression Rate: {compression_rate:.4f} ** Final: {final_score:.4f} || {reason}"
             )
 

@@ -35,6 +35,7 @@ from upscaling_scoring import (
 COMPRESSION_RATE_WEIGHT = 0.7  # w_c
 COMPRESSION_VMAF_WEIGHT = 0.3  # w_vmaf
 SOFT_THRESHOLD_MARGIN = 5.0  # Margin below VMAF threshold for soft scoring zone
+MAX_VMAF_MODEL_DELTA = 3.0
 
 FRAME_TOLERANCE = 5  # Tolerance in frames for fast ffprobe frame count read
 UPSCALING_FILE_SIZE_MULTIPLIERS = {
@@ -257,12 +258,12 @@ async def get_shared_session() -> aiohttp.ClientSession:
         _shared_session = aiohttp.ClientSession(timeout=timeout, connector=connector)
     return _shared_session
 
-def calculate_base_vmaf_for_logging(
+def calculate_base_vmaf(
     ref_y4m_path: str,
     dist_y4m_path: str,
     neg_model: bool = False,
 ) -> Optional[float]:
-    """Calculate a logging-only VMAF score with GPU-accelerated libvmaf."""
+    """Calculate VMAF with GPU-accelerated libvmaf for Y4M inputs."""
     model_label = "VMAF NEG v0.6.1" if neg_model else "VMAF v0.6.1"
     try:
         vmaf_score = vmaf_metric_ffmpeg(
@@ -271,13 +272,13 @@ def calculate_base_vmaf_for_logging(
             neg_model=neg_model,
         )
         logger.info(
-            f"{model_label} score for logging only (Y4M, ffmpeg/docker): {vmaf_score}"
+            f"{model_label} score (Y4M, ffmpeg/docker): {vmaf_score}"
         )
         return vmaf_score
     except Exception as vmaf_err:
         logger.warning(
             f"{model_label} calculation failed in Y4M ffmpeg/docker path; "
-            f"continuing without the logging-only score: {vmaf_err}"
+            f"VMAF model delta check is unavailable: {vmaf_err}"
         )
         return None
 
@@ -2582,7 +2583,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                         )
                         logger.info(
                             f"Docker VMAF NEG calculation succeeded: {vmaf_score}; "
-                            f"base VMAF for logging: {base_vmaf_score}"
+                            f"base VMAF: {base_vmaf_score}"
                         )
                         used_docker_vmaf = True
                     except Exception as docker_err:
@@ -2598,7 +2599,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                     logger.info("The reference video has been successfully converted to Y4M format.")
                     vmaf_score, dist_y4m_path = calculate_vmaf(ref_y4m_path, dist_path, random_frames, neg_model=True, return_y4m_path=True)
                     if vmaf_score is not None and dist_y4m_path:
-                        base_vmaf_score = calculate_base_vmaf_for_logging(ref_y4m_path, dist_y4m_path)
+                        base_vmaf_score = calculate_base_vmaf(ref_y4m_path, dist_y4m_path)
 
                 vmaf_calc_time = time.time() - vmaf_start
                 logger.info(f"☣️☣️ VMAF calculation took {vmaf_calc_time:.2f} seconds.")
@@ -2631,6 +2632,23 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 #     os.unlink(ref_clip_vmaf_path)
                 # if dist_clip_vmaf_path and os.path.exists(dist_clip_vmaf_path):
                 #     os.unlink(dist_clip_vmaf_path)
+
+            if base_vmaf_score is not None:
+                vmaf_model_delta = abs(base_vmaf_score - vmaf_score)
+                logger.info(
+                    f"VMAF model delta: {vmaf_model_delta:.4f} "
+                    f"(maximum allowed: {MAX_VMAF_MODEL_DELTA:.4f})"
+                )
+                if vmaf_model_delta > MAX_VMAF_MODEL_DELTA:
+                    delta_reason = (
+                        f"VMAF model delta {vmaf_model_delta:.4f} exceeds maximum "
+                        f"{MAX_VMAF_MODEL_DELTA:.4f}"
+                    )
+                    logger.error(f"UID {uid}: {delta_reason}. Assigning score of 0.")
+                    compression_rates.append(compression_rate)
+                    final_scores.append(0.0)
+                    reasons.append(f"{delta_reason}; {encoding_msg}")
+                    continue
 
             log_tone_manipulation_for_compression(
                 ref_path=ref_path,
@@ -3416,7 +3434,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                         )
                         logger.info(
                             f"Docker VMAF NEG calculation succeeded: {vmaf_score}; "
-                            f"base VMAF for logging: {base_vmaf_score}"
+                            f"base VMAF: {base_vmaf_score}"
                         )
                     except Exception as docker_err:
                         logger.warning(f"Docker VMAF failed, falling back to Y4M: {docker_err}")
@@ -3432,7 +3450,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                     logger.info(f"♎️ 9. Converted full reference video to Y4M in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
                     vmaf_score, dist_y4m_path = calculate_vmaf(ref_y4m_path, dist_path, None, neg_model=True, return_y4m_path=True)
                     if vmaf_score is not None and dist_y4m_path:
-                        base_vmaf_score = calculate_base_vmaf_for_logging(ref_y4m_path, dist_y4m_path)
+                        base_vmaf_score = calculate_base_vmaf(ref_y4m_path, dist_y4m_path)
 
                 vmaf_calc_time = time.time() - vmaf_start
                 logger.info(f"☣️☣️ VMAF calculation took {vmaf_calc_time:.2f} seconds.")
@@ -3455,6 +3473,23 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 if dist_y4m_path and os.path.exists(dist_y4m_path):
                     os.unlink(dist_y4m_path)
                 continue
+
+            if base_vmaf_score is not None:
+                vmaf_model_delta = abs(base_vmaf_score - vmaf_score)
+                logger.info(
+                    f"VMAF model delta: {vmaf_model_delta:.4f} "
+                    f"(maximum allowed: {MAX_VMAF_MODEL_DELTA:.4f})"
+                )
+                if vmaf_model_delta > MAX_VMAF_MODEL_DELTA:
+                    delta_reason = (
+                        f"VMAF model delta {vmaf_model_delta:.4f} exceeds maximum "
+                        f"{MAX_VMAF_MODEL_DELTA:.4f}"
+                    )
+                    logger.error(f"UID {uid}: {delta_reason}. Assigning score of 0.")
+                    compression_rates.append(compression_rate)
+                    final_scores.append(0.0)
+                    reasons.append(f"{delta_reason}; {encoding_msg}")
+                    continue
 
             log_tone_manipulation_for_compression(
                 ref_path=ref_path,

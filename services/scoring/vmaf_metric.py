@@ -295,9 +295,8 @@ def vmaf_metric_ffmpeg(
         neg_model (bool): Whether to use the VMAF NEG model for the returned
             scoring value.
         return_base_model_score (bool): If True, return a tuple of
-            (scoring_score, base_model_score). The base model score is
-            observational only and must not be used for final scoring. When
-            scoring with the NEG model, this enables a second base-model pass.
+            (scoring_score, base_model_score). When scoring with the NEG model,
+            this enables a second base-model pass.
 
     Returns:
         float | tuple[float, float | None]: The selected VMAF harmonic mean score,
@@ -409,13 +408,13 @@ def vmaf_metric_ffmpeg(
             try:
                 base_model_score = run_vmaf(False, base_output_json)
                 logger.info(
-                    f"Base VMAF harmonic mean for logging only (ffmpeg/docker): "
+                    f"Base VMAF harmonic mean (ffmpeg/docker): "
                     f"{base_model_score:.4f}"
                 )
             except Exception as base_err:
                 logger.warning(
-                    "Base VMAF calculation failed; continuing with VMAF NEG "
-                    f"scoring result only: {base_err}"
+                    "Base VMAF calculation failed; VMAF model delta cannot be "
+                    f"evaluated. Returning the VMAF NEG result: {base_err}"
                 )
 
         if return_base_model_score:
