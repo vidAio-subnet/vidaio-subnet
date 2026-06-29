@@ -305,14 +305,14 @@ def _extract_tone_check_frame(video_path: str, timestamp_seconds: float, output_
         raise RuntimeError("ffmpeg did not produce a tone-check frame")
 
 
-def log_tone_manipulation_for_compression(
+def check_tone_manipulation_for_compression(
     ref_path: str,
     dist_path: str,
     timestamp_seconds: float,
     uid: Optional[int] = None,
     context: str = "compression",
-):
-    """Log tone/levels manipulation diagnostics without changing scoring results."""
+) -> Optional[dict]:
+    """Detect and log tone/levels manipulation for compression scoring."""
     uid_label = f" UID {uid}" if uid is not None else ""
     try:
         timestamp_seconds = max(0.0, float(timestamp_seconds or 0.0))
@@ -324,14 +324,16 @@ def log_tone_manipulation_for_compression(
             tone_result = detect_tone_manipulation(ref_png, dist_png)
 
         logger.info(
-            f"Tone manipulation check (logging only){uid_label} [{context}] "
+            f"Tone manipulation check{uid_label} [{context}] "
             f"at {timestamp_seconds:.3f}s: {tone_result}"
         )
+        return tone_result
     except Exception as e:
         logger.warning(
-            f"Tone manipulation check failed (logging only){uid_label} "
+            f"Tone manipulation check failed{uid_label} "
             f"[{context}] at {timestamp_seconds}s: {e}"
         )
+        return None
 
 async def verify_organic_proxy_download(video_url: str, session: Optional[aiohttp.ClientSession] = None) -> bool:
     """Check whether the organic proxy can download a miner's output URL."""
@@ -2650,13 +2652,20 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                     reasons.append(f"{delta_reason}; {encoding_msg}")
                     continue
 
-            log_tone_manipulation_for_compression(
+            tone_result = check_tone_manipulation_for_compression(
                 ref_path=ref_path,
                 dist_path=dist_path,
                 timestamp_seconds=(vmaf_start_frame / ref_fps_val) if ref_fps_val else 0.0,
                 uid=uid,
                 context="synthetics compression",
             )
+            if tone_result and tone_result.get("detected") is True:
+                tone_reason = f"Tone manipulation detected: {tone_result['reason']}"
+                logger.error(f"UID {uid}: {tone_reason}. Assigning score of 0.")
+                compression_rates.append(compression_rate)
+                final_scores.append(0.0)
+                reasons.append(f"{tone_reason}; {encoding_msg}")
+                continue
 
             # === COLOR / CHROMA VALIDATION ===
             if used_docker_vmaf:
@@ -3491,13 +3500,20 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                     reasons.append(f"{delta_reason}; {encoding_msg}")
                     continue
 
-            log_tone_manipulation_for_compression(
+            tone_result = check_tone_manipulation_for_compression(
                 ref_path=ref_path,
                 dist_path=dist_path,
                 timestamp_seconds=(color_check_start_frame / ref_fps) if ref_fps else 0.0,
                 uid=uid,
                 context="organics compression",
             )
+            if tone_result and tone_result.get("detected") is True:
+                tone_reason = f"Tone manipulation detected: {tone_result['reason']}"
+                logger.error(f"UID {uid}: {tone_reason}. Assigning score of 0.")
+                compression_rates.append(compression_rate)
+                final_scores.append(0.0)
+                reasons.append(f"{tone_reason}; {encoding_msg}")
+                continue
 
             # === COLOR / CHROMA VALIDATION ===
             # Use a bounded window so these guard checks remain fast while VMAF
