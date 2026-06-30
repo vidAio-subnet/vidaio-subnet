@@ -3,11 +3,10 @@ from typing import TypeAlias
 
 
 CompressionScoreSignature: TypeAlias = tuple[
-    float,
-    float | None,
-    float,
-    float,
-    float,
+    str,
+    str | None,
+    str,
+    str,
 ]
 CompressionScoreCache: TypeAlias = MutableMapping[
     str,
@@ -25,11 +24,14 @@ def find_duplicate_compression_scores(
     final_scores: Sequence[float],
     cache: CompressionScoreCache,
 ) -> dict[int, int]:
-    """Return result indices whose exact score signature was claimed by an earlier UID.
+    """Return result indices whose normalized signature belongs to an earlier UID.
 
     The cache is partitioned by synthetic input so two different challenges can
     legitimately produce the same metrics. Non-positive results do not represent
-    a successful solution and therefore neither claim nor consume a slot.
+    a successful solution and therefore neither claim nor consume a slot. Primary
+    metrics are normalized to their logged precision so insignificant raw float
+    differences do not let the same solution claim multiple slots. Final score is
+    derived from those metrics and is only used here to identify successful rows.
     """
     lengths = {
         len(uids),
@@ -67,11 +69,10 @@ def find_duplicate_compression_scores(
             continue
 
         signature: CompressionScoreSignature = (
-            vmaf_score,
-            base_vmaf_score,
-            vmaf_threshold,
-            compression_rate,
-            final_score,
+            f"{vmaf_score:.2f}",
+            f"{base_vmaf_score:.2f}" if base_vmaf_score is not None else None,
+            f"{vmaf_threshold:.2f}",
+            f"{compression_rate:.4f}",
         )
         input_cache = cache.setdefault(synthetic_input_id, {})
         first_uid = input_cache.setdefault(signature, uid)
