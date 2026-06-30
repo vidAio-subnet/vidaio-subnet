@@ -1437,7 +1437,7 @@ class Validator(base.BaseValidator):
         if duplicate_score_owners:
             logger.info(
                 f"Zeroed {len(duplicate_score_owners)} duplicate synthetic "
-                "compression results based on exact scoring metrics"
+                "compression results based on normalized primary scoring metrics"
             )
         
         logger.info(f"Updating miner manager with {len(compression_rates)} compression miner scores after synthetic requests processing")

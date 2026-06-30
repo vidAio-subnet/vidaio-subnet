@@ -34,6 +34,34 @@ class CompressionScoreCacheTests(unittest.TestCase):
         self.assertEqual(self.find_duplicates(cache, uid=83), {})
         self.assertEqual(self.find_duplicates(cache, uid=41), {0: 83})
 
+    def test_hidden_float_differences_and_derived_score_drift_still_match(self):
+        cache = {}
+
+        self.assertEqual(
+            self.find_duplicates(
+                cache,
+                uid=41,
+                vmaf_score=89.110001,
+                base_vmaf_score=91.110001,
+                vmaf_threshold=89.0,
+                compression_rate=0.08240001,
+                final_score=0.5714,
+            ),
+            {},
+        )
+        self.assertEqual(
+            self.find_duplicates(
+                cache,
+                uid=83,
+                vmaf_score=89.109999,
+                base_vmaf_score=91.109999,
+                vmaf_threshold=89.0,
+                compression_rate=0.08239999,
+                final_score=0.5715,
+            ),
+            {0: 41},
+        )
+
     def test_subsequent_uid_loses_each_matching_synthetic_input_slot(self):
         cache = {}
         input_ids = [f"video-{idx}" for idx in range(5)]
