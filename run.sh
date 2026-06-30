@@ -215,14 +215,6 @@ check_package_installed "jq"
 
 # pm2 start "PYTHONPATH=. python3 vidaio_subnet_core/utilities/storage_client.py" --name storage-client-debug #for debugging storage
 
-# pm2 start /usr/bin/bash --name video-validator -- -c "PYTHONPATH=. python3 -m neurons.validator --wallet.name default --wallet.hotkey default --subtensor.network finney --netuid 85 --axon.port 27000 --logging.debug"
-
-# pm2 start /usr/bin/bash --name video-validator -- -c "PYTHONPATH=. python3 -m neurons.validator --wallet.name v0 --wallet.hotkey v0 --subtensor.network finney --netuid 85 --axon.port 27000 --logging.debug"
-
-
-# pm2 start /usr/bin/bash --name video-validator-testnet -- -c "PYTHONPATH=. python3 -m neurons.validator --wallet.name bruh_dev_coldkey --wallet.hotkey bruh_dev_hotkey --subtensor.network test --netuid 292 --axon.port 27000 --logging.debug"
-# pm2 start "PYTHONPATH=. python3 neurons/miner.py --wallet.name bruh_dev_coldkey --wallet.hotkey bruh_dev_hotkey_2 --subtensor.network test --netuid 292 --axon.port 9002 --logging.debug" --name video-miner-testnet
-
 # 🚀 START THE ADDITIONAL PM2 PROCESSES
 ensure_process "scoring_endpoint_upscaling" "bash -c 'PYTHONPATH=. python3 services/scoring/server.py --port 8201'" "true"
 ensure_process "scoring_endpoint_compression" "bash -c 'PYTHONPATH=. python3 services/scoring/server.py --port 8202'" "true"
