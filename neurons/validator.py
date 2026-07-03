@@ -806,6 +806,9 @@ class Validator(base.BaseValidator):
         if num_miners == 0:
             return
 
+        miner_scores = {uid: miner.accumulate_score for uid, miner in self.miner_manager.query([uid for _, uid in upscaling_miners]).items()}
+        upscaling_miners.sort(key=lambda miner: miner_scores.get(miner[1], float("-inf")), reverse=True)
+
         query_count = SYNTHETIC_QUERIES_PER_MINER
         shared_content_length = min(upscaling_content_lengths.values()) if upscaling_content_lengths else 5
         content_lengths = [shared_content_length] * query_count
@@ -934,6 +937,9 @@ class Validator(base.BaseValidator):
         num_miners = len(compression_miners)
         if num_miners == 0:
             return
+
+        miner_scores = {uid: miner.accumulate_score for uid, miner in self.miner_manager.query([uid for _, uid in compression_miners]).items()}
+        compression_miners = sorted(compression_miners, key=lambda miner: miner_scores.get(miner[1], float("-inf")), reverse=True)
 
         query_count = SYNTHETIC_QUERIES_PER_MINER
         logger.info(
