@@ -626,39 +626,39 @@ penalty_f_multiplier = 1.0 - (penalty_f_count / 10) × 0.20
 
 ## Emission Weighting & Burn
 
-The final incentive layer is implemented in `vidaio_subnet_core/validating/managing/miner_manager.py` through the `MinerManager.weights` property. This layer converts accumulated miner scores into on-chain weights, allocates the miner pool across compression and upscaling, applies a steep winner-heavy rank curve inside each task pool, and burns a configured portion of the miner emission pool.
+The final incentive layer is implemented in `vidaio_subnet_core/validating/managing/miner_manager.py` through the `MinerManager.weights` property. This layer converts accumulated miner scores into on-chain weights, allocates the miner pool across compression and upscaling, splits each task pool equally among its top five miners, and burns a configured portion of the miner emission pool.
 
 ### Eligible Miner Set
 
 Only miners with a valid `accumulate_score` and a recognized `processing_task_type` participate in the emission calculation. Validators and miners with `accumulate_score == -1` are excluded before ranking.
 
-Eligible miners are separated by task type and ranked by `accumulate_score` in descending order inside their own task pools. Compression receives 60% of the pre-burn miner pool and upscaling receives 40%.
+Eligible miners are separated by task type and ranked by `accumulate_score` in descending order inside their own task pools. Compression receives 80% of the pre-burn miner pool and upscaling receives 20%.
 
-### Rank Curve Distribution
+### Top-Five Distribution
 
-Each task pool uses the same fixed rank curve:
+Each task pool is split equally among its top five miners:
 
 | Rank | Share of task pool |
 |------|---------------------|
-| 1 (winner) | 60% |
+| 1 | 20% |
 | 2 | 20% |
-| 3 | 10% |
-| 4 | 6% |
-| 5 | 4% |
+| 3 | 20% |
+| 4 | 20% |
+| 5 | 20% |
 | 6+ | 0% |
 
-The curve is winner-heavy by design: rank 1 receives a clear majority of its task pool, rank 2 receives a meaningful share, and lower ranks fall off quickly. Miners ranked 6 or lower in their task pool receive zero miner-side emission weight for that round.
+Rank determines eligibility, but all five eligible ranks receive the same share. Miners ranked 6 or lower in their task pool receive zero miner-side emission weight for that round.
 
 Before burn, this produces the following task-specific allocations:
 
 | Bucket | Rank 1 | Rank 2 | Rank 3 | Rank 4 | Rank 5 | Rank 6+ |
 |--------|--------|--------|--------|--------|--------|---------|
-| Compression pool (60%) | 36% | 12% | 6% | 3.6% | 2.4% | 0% |
-| Upscaling pool (40%) | 24% | 8% | 4% | 2.4% | 1.6% | 0% |
+| Compression pool (80%) | 16% | 16% | 16% | 16% | 16% | 0% |
+| Upscaling pool (20%) | 4% | 4% | 4% | 4% | 4% | 0% |
 
 ### Emissions Burn
 
-After the rank-curve allocations are calculated, the miner manager burns a fixed proportion of the miner emission pool. The current configuration is:
+After the top-five allocations are calculated, the miner manager burns a fixed proportion of the miner emission pool. The current configuration is:
 
 ```python
 burn_proportion = 0.8
@@ -666,10 +666,10 @@ burn_proportion = 0.8
 
 This means 80% of the calculated miner emissions are assigned to the subnet owner UID returned by `get_burn_uid()`, while the remaining 20% stays with the ranked miners.
 
-The burn is applied after ranking and rank-curve allocation:
+The burn is applied after ranking and the equal top-five split:
 
 ```text
-pre_burn_weight_i = rank-curve allocation for miner i
+pre_burn_weight_i = top-five allocation for miner i
 miner_weight_i = pre_burn_weight_i * (1 - burn_proportion)
 burn_weight = burn_proportion * sum(pre_burn_weights)
 ```
@@ -678,20 +678,20 @@ With the current `burn_proportion = 0.8`, the effective on-chain distribution is
 
 | Recipient bucket | Effective final allocation |
 |------------------|----------------------------|
-| Compression rank 1 winner | 7.2% |
-| Compression rank 2 | 2.4% |
-| Compression rank 3 | 1.2% |
-| Compression rank 4 | 0.72% |
-| Compression rank 5 | 0.48% |
-| Upscaling rank 1 winner | 4.8% |
-| Upscaling rank 2 | 1.6% |
+| Compression rank 1 | 3.2% |
+| Compression rank 2 | 3.2% |
+| Compression rank 3 | 3.2% |
+| Compression rank 4 | 3.2% |
+| Compression rank 5 | 3.2% |
+| Upscaling rank 1 | 0.8% |
+| Upscaling rank 2 | 0.8% |
 | Upscaling rank 3 | 0.8% |
-| Upscaling rank 4 | 0.48% |
-| Upscaling rank 5 | 0.32% |
+| Upscaling rank 4 | 0.8% |
+| Upscaling rank 5 | 0.8% |
 | Ranks 6+ in either task pool | 0% |
 | Burn UID / subnet owner UID | 80% |
 
-The task allocation and rank curve are applied before the burn. Therefore, only the top five compression miners and top five upscaling miners can receive non-zero miner-side emissions; all other miner-side emission is zeroed before the remaining eligible miner emissions are scaled by `1 - burn_proportion`.
+The task allocation and equal top-five split are applied before the burn. Therefore, only the top five compression miners and top five upscaling miners can receive non-zero miner-side emissions; all other miner-side emission is zeroed before the remaining eligible miner emissions are scaled by `1 - burn_proportion`.
 
 ---
 
@@ -750,9 +750,9 @@ The task allocation and rank curve are applied before the burn. Therefore, only 
 | **Quality Weight (W1)** | 0.5 | 0.0 - 1.0 | Fixed in current scoring service |
 | **Length Weight (W2)** | 0.5 | 0.0 - 1.0 | Fixed in current scoring service |
 | **Emission Burn Proportion** | 0.8 | Miner manager setting | Burns 80% of miner emissions to the subnet owner UID |
-| **Compression Emission Allocation** | 60% | Miner manager setting | Compression pool before burn and rank-curve split |
-| **Upscaling Emission Allocation** | 40% | Miner manager setting | Upscaling pool before burn and rank-curve split |
-| **Emission Rank Curve** | 60%, 20%, 10%, 6%, 4% | Miner manager setting | Applied separately inside compression and upscaling; only ranks 1-5 in each task pool receive non-zero miner-side emission weight |
+| **Compression Emission Allocation** | 80% | Miner manager setting | Compression pool before burn and top-five split |
+| **Upscaling Emission Allocation** | 20% | Miner manager setting | Upscaling pool before burn and top-five split |
+| **Emission Rank Shares** | 20%, 20%, 20%, 20%, 20% | Miner manager setting | Applied separately inside compression and upscaling; only ranks 1-5 in each task pool receive non-zero miner-side emission weight |
 
 ### Compression System Parameters
 
