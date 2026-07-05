@@ -100,21 +100,51 @@ class CompressionScoreCacheTests(unittest.TestCase):
         self.assertEqual(self.find_duplicates(cache, uid=83, input_id="video-1"), {})
         self.assertEqual(self.find_duplicates(cache, uid=41, input_id="video-2"), {})
 
-    def test_any_different_metric_gets_a_separate_slot(self):
+    def test_compression_rate_outside_tolerance_gets_a_separate_slot(self):
         cache = {}
 
         self.assertEqual(self.find_duplicates(cache, uid=83), {})
         self.assertEqual(
-            self.find_duplicates(cache, uid=41, compression_rate=0.0908),
+            self.find_duplicates(cache, uid=41, compression_rate=0.1010),
             {},
         )
+
+    def test_small_compression_rate_drift_across_batches_is_duplicate(self):
+        cache = {}
+        input_ids = [f"video-{idx}" for idx in range(5)]
+        vmaf_scores = [85.27, 85.40, 85.48, 85.22, 85.06]
+        base_vmaf_scores = [87.49, 87.39, 87.61, 87.32, 86.92]
+
+        first_duplicates = find_duplicate_compression_scores(
+            [23] * 5,
+            input_ids,
+            vmaf_scores,
+            base_vmaf_scores,
+            [85.0] * 5,
+            [0.0909, 0.1403, 0.1170, 0.1331, 0.1229],
+            [0.5359, 0.4097, 0.4574, 0.4217, 0.4415],
+            cache,
+        )
+        subsequent_duplicates = find_duplicate_compression_scores(
+            [164] * 5,
+            input_ids,
+            vmaf_scores,
+            base_vmaf_scores,
+            [85.0] * 5,
+            [0.0912, 0.1406, 0.1173, 0.1334, 0.1232],
+            [0.5347, 0.4092, 0.4566, 0.4211, 0.4409],
+            cache,
+        )
+
+        self.assertEqual(first_duplicates, {})
+        self.assertEqual(subsequent_duplicates, {idx: 23 for idx in range(5)})
 
     def test_non_positive_result_does_not_claim_a_slot(self):
         cache = {}
 
         self.assertEqual(self.find_duplicates(cache, uid=83, final_score=0.0), {})
         self.assertEqual(self.find_duplicates(cache, uid=41), {})
-        self.assertEqual(cache["video-1"].popitem()[1], 41)
+        self.assertEqual(cache["video-1"].popitem()[1], [(0.0907, 41)])
 
     def test_same_uid_can_reuse_its_own_signature(self):
         cache = {}
