@@ -9,6 +9,7 @@ CompressionScoreClaim: TypeAlias = tuple[
     float,
     int,
 ]
+CompressionScoreClaim: TypeAlias = tuple[float, int]
 CompressionScoreCache: TypeAlias = MutableMapping[
     str,
     MutableMapping[str, list[CompressionScoreClaim]],
