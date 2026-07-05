@@ -1,3 +1,4 @@
+import math
 from collections.abc import MutableMapping, Sequence
 from typing import TypeAlias
 
@@ -6,12 +7,15 @@ CompressionScoreSignature: TypeAlias = tuple[
     str,
     str | None,
     str,
-    str,
 ]
+CompressionScoreClaim: TypeAlias = tuple[float, int]
 CompressionScoreCache: TypeAlias = MutableMapping[
     str,
-    MutableMapping[CompressionScoreSignature, int],
+    MutableMapping[CompressionScoreSignature, list[CompressionScoreClaim]],
 ]
+
+
+COMPRESSION_RATE_DUPLICATE_TOLERANCE = 0.01
 
 
 def find_duplicate_compression_scores(
@@ -29,9 +33,10 @@ def find_duplicate_compression_scores(
     The cache is partitioned by synthetic input so two different challenges can
     legitimately produce the same metrics. Non-positive results do not represent
     a successful solution and therefore neither claim nor consume a slot. Primary
-    metrics are normalized to their logged precision so insignificant raw float
-    differences do not let the same solution claim multiple slots. Final score is
-    derived from those metrics and is only used here to identify successful rows.
+    VMAF metrics are normalized to their logged precision, while compression rate
+    uses an explicit tolerance so values on opposite sides of a rounding boundary
+    still match. Final score is derived from those metrics and is only used here
+    to identify successful rows.
     """
     lengths = {
         len(uids),
@@ -72,11 +77,25 @@ def find_duplicate_compression_scores(
             f"{vmaf_score:.2f}",
             f"{base_vmaf_score:.2f}" if base_vmaf_score is not None else None,
             f"{vmaf_threshold:.2f}",
-            f"{compression_rate:.4f}",
         )
         input_cache = cache.setdefault(synthetic_input_id, {})
-        first_uid = input_cache.setdefault(signature, uid)
-        if first_uid != uid:
+        claims = input_cache.setdefault(signature, [])
+        first_uid = next(
+            (
+                owner_uid
+                for claimed_rate, owner_uid in claims
+                if math.isclose(
+                    compression_rate,
+                    claimed_rate,
+                    rel_tol=0.0,
+                    abs_tol=COMPRESSION_RATE_DUPLICATE_TOLERANCE,
+                )
+            ),
+            None,
+        )
+        if first_uid is None:
+            claims.append((compression_rate, uid))
+        elif first_uid != uid:
             duplicate_owners[idx] = first_uid
 
     return duplicate_owners
