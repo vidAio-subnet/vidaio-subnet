@@ -11,10 +11,10 @@ The VIDAIO scoring mechanism has three primary layers:
 2. **Long-term miner score**: the smoothed reputation score used for ranking and reward allocation.
    - Stored as `accumulate_score`
 
-3. **Emission weighting**: the final on-chain weight calculation that allocates 60% to compression and 40% to upscaling, applies the top-5 rank curve inside each task pool, then burns the configured proportion of miner emissions.
+3. **Emission weighting**: the final on-chain weight calculation that allocates 80% to compression and 20% to upscaling, splits each task pool equally among its top five miners, then burns the configured proportion of miner emissions.
    - Implemented in `vidaio_subnet_core/validating/managing/miner_manager.py`
 
-The scoring process evaluates both immediate task performance and recent historical consistency. A miner's reward outcome is therefore determined by whether the submitted output is valid, whether it satisfies task-specific quality requirements, whether the miner has performed consistently across recent rounds, and whether the miner ranks inside the top-five emission curve for their task type.
+The scoring process evaluates both immediate task performance and recent historical consistency. A miner's reward outcome is therefore determined by whether the submitted output is valid, whether it satisfies task-specific quality requirements, whether the miner has performed consistently across recent rounds, and whether the miner ranks inside the top five for their task type.
 
 ## Upscaling Scoring
 
@@ -175,22 +175,22 @@ If a scorer returns `s_f = -100`, the round is skipped for accumulation. This is
 
 Final emissions are calculated in `MinerManager.weights` in `vidaio_subnet_core/validating/managing/miner_manager.py`.
 
-The miner manager excludes validators and miners with `accumulate_score == -1`, then separates eligible miners into compression and upscaling pools. Compression receives 60% of the pre-burn miner pool, and upscaling receives 40%.
+The miner manager excludes validators and miners with `accumulate_score == -1`, then separates eligible miners into compression and upscaling pools. Compression receives 80% of the pre-burn miner pool, and upscaling receives 20%.
 
-Inside each task pool, miners are ranked by `accumulate_score` descending and the same fixed rank curve is applied:
+Inside each task pool, miners are ranked by `accumulate_score` descending and the pool is split equally among the top five:
 
 ```text
-rank 1 (winner)  60% of that task pool
+rank 1           20% of that task pool
 rank 2           20% of that task pool
-rank 3           10% of that task pool
-rank 4           6% of that task pool
-rank 5           4% of that task pool
+rank 3           20% of that task pool
+rank 4           20% of that task pool
+rank 5           20% of that task pool
 ranks 6+         0%
 ```
 
 Only the top five compression miners and top five upscaling miners can receive non-zero miner-side emissions. Miners ranked 6 or lower in their task pool receive zero miner-side emission weight for that round.
 
-After rank-curve allocation, the miner manager applies the emissions burn:
+After the equal top-five allocation, the miner manager applies the emissions burn:
 
 ```text
 burn_proportion = 0.8
@@ -202,17 +202,17 @@ burn_weight = burn_proportion * sum(pre_burn_weights)
 With the current `burn_proportion = 0.8`, 80% of calculated miner emissions are assigned to the burn UID, which is the subnet owner UID returned by `get_burn_uid()`. The remaining 20% is distributed across the two task pools. Effective final allocations are:
 
 ```text
-compression rank 1  7.2%
-compression rank 2  2.4%
-compression rank 3  1.2%
-compression rank 4  0.72%
-compression rank 5  0.48%
+compression rank 1  3.2%
+compression rank 2  3.2%
+compression rank 3  3.2%
+compression rank 4  3.2%
+compression rank 5  3.2%
 
-upscaling rank 1    4.8%
-upscaling rank 2    1.6%
+upscaling rank 1    0.8%
+upscaling rank 2    0.8%
 upscaling rank 3    0.8%
-upscaling rank 4    0.48%
-upscaling rank 5    0.32%
+upscaling rank 4    0.8%
+upscaling rank 5    0.8%
 ```
 
 ## Performance Tier

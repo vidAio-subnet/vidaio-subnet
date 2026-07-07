@@ -32,9 +32,9 @@ class MinerManager:
         self.burn_proportion = 0.8   # 80% of miner emissions burnt
 
         # Task allocations and rank-based distribution within each task pool.
-        self.compression_emission_allocation = 0.60
-        self.upscaling_emission_allocation = 0.40
-        self.emission_rank_shares = [0.60, 0.20, 0.10, 0.06, 0.04]
+        self.compression_emission_allocation = 0.80
+        self.upscaling_emission_allocation = 0.20
+        self.emission_rank_shares = [0.20, 0.20, 0.20, 0.20, 0.20]
 
         self.metagraph = metagraph
         self.config_url = CONFIG.sql.url
@@ -1339,10 +1339,10 @@ class MinerManager:
     @property
     def weights(self):
         """
-        Calculate weights with fixed task allocations and a top-heavy rank curve.
-        Compression receives 60% and upscaling receives 40% of the pre-burn
-        miner pool. Within each task pool, the top five miners receive 60%,
-        20%, 10%, 6%, and 4% respectively; all lower ranks receive zero.
+        Calculate weights with fixed task allocations and equal top-five shares.
+        Compression receives 80% and upscaling receives 20% of the pre-burn
+        miner pool. Within each task pool, the top five miners receive 20%
+        each; all lower ranks receive zero.
         """
         # Collect eligible miners by task type, then rank each task pool separately.
         compression_miners = []
