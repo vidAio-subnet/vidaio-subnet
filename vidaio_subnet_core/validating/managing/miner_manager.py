@@ -29,7 +29,7 @@ class MinerManager:
 
         self.config = config
         self.subtensor = bt.Subtensor(config=self.config)
-        self.burn_proportion = 0.8   # 80% of miner emissions burnt
+        self.burn_proportion = 0.6   # 60% of miner emissions burnt
 
         # Task allocations and rank-based distribution within each task pool.
         self.compression_emission_allocation = 0.80

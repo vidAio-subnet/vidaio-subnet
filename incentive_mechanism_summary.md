@@ -193,26 +193,26 @@ Only the top five compression miners and top five upscaling miners can receive n
 After the equal top-five allocation, the miner manager applies the emissions burn:
 
 ```text
-burn_proportion = 0.8
+burn_proportion = 0.6
 
 miner_weight_i = pre_burn_weight_i * (1 - burn_proportion)
 burn_weight = burn_proportion * sum(pre_burn_weights)
 ```
 
-With the current `burn_proportion = 0.8`, 80% of calculated miner emissions are assigned to the burn UID, which is the subnet owner UID returned by `get_burn_uid()`. The remaining 20% is distributed across the two task pools. Effective final allocations are:
+With the current `burn_proportion = 0.6`, 60% of calculated miner emissions are assigned to the burn UID, which is the subnet owner UID returned by `get_burn_uid()`. The remaining 40% is distributed across the two task pools. Effective final allocations are:
 
 ```text
-compression rank 1  3.2%
-compression rank 2  3.2%
-compression rank 3  3.2%
-compression rank 4  3.2%
-compression rank 5  3.2%
+compression rank 1  6.4%
+compression rank 2  6.4%
+compression rank 3  6.4%
+compression rank 4  6.4%
+compression rank 5  6.4%
 
-upscaling rank 1    0.8%
-upscaling rank 2    0.8%
-upscaling rank 3    0.8%
-upscaling rank 4    0.8%
-upscaling rank 5    0.8%
+upscaling rank 1    1.6%
+upscaling rank 2    1.6%
+upscaling rank 3    1.6%
+upscaling rank 4    1.6%
+upscaling rank 5    1.6%
 ```
 
 ## Performance Tier

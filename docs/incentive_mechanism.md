@@ -661,10 +661,10 @@ Before burn, this produces the following task-specific allocations:
 After the top-five allocations are calculated, the miner manager burns a fixed proportion of the miner emission pool. The current configuration is:
 
 ```python
-burn_proportion = 0.8
+burn_proportion = 0.6
 ```
 
-This means 80% of the calculated miner emissions are assigned to the subnet owner UID returned by `get_burn_uid()`, while the remaining 20% stays with the ranked miners.
+This means 60% of the calculated miner emissions are assigned to the subnet owner UID returned by `get_burn_uid()`, while the remaining 40% stays with the ranked miners.
 
 The burn is applied after ranking and the equal top-five split:
 
@@ -674,22 +674,22 @@ miner_weight_i = pre_burn_weight_i * (1 - burn_proportion)
 burn_weight = burn_proportion * sum(pre_burn_weights)
 ```
 
-With the current `burn_proportion = 0.8`, the effective on-chain distribution is:
+With the current `burn_proportion = 0.6`, the effective on-chain distribution is:
 
 | Recipient bucket | Effective final allocation |
 |------------------|----------------------------|
-| Compression rank 1 | 3.2% |
-| Compression rank 2 | 3.2% |
-| Compression rank 3 | 3.2% |
-| Compression rank 4 | 3.2% |
-| Compression rank 5 | 3.2% |
-| Upscaling rank 1 | 0.8% |
-| Upscaling rank 2 | 0.8% |
-| Upscaling rank 3 | 0.8% |
-| Upscaling rank 4 | 0.8% |
-| Upscaling rank 5 | 0.8% |
+| Compression rank 1 | 6.4% |
+| Compression rank 2 | 6.4% |
+| Compression rank 3 | 6.4% |
+| Compression rank 4 | 6.4% |
+| Compression rank 5 | 6.4% |
+| Upscaling rank 1 | 1.6% |
+| Upscaling rank 2 | 1.6% |
+| Upscaling rank 3 | 1.6% |
+| Upscaling rank 4 | 1.6% |
+| Upscaling rank 5 | 1.6% |
 | Ranks 6+ in either task pool | 0% |
-| Burn UID / subnet owner UID | 80% |
+| Burn UID / subnet owner UID | 60% |
 
 The task allocation and equal top-five split are applied before the burn. Therefore, only the top five compression miners and top five upscaling miners can receive non-zero miner-side emissions; all other miner-side emission is zeroed before the remaining eligible miner emissions are scaled by `1 - burn_proportion`.
 
@@ -749,7 +749,7 @@ The task allocation and equal top-five split are applied before the burn. Theref
 | **Default Content Length** | 5s | 5s - 10s | Actively configurable by miners |
 | **Quality Weight (W1)** | 0.5 | 0.0 - 1.0 | Fixed in current scoring service |
 | **Length Weight (W2)** | 0.5 | 0.0 - 1.0 | Fixed in current scoring service |
-| **Emission Burn Proportion** | 0.8 | Miner manager setting | Burns 80% of miner emissions to the subnet owner UID |
+| **Emission Burn Proportion** | 0.6 | Miner manager setting | Burns 60% of miner emissions to the subnet owner UID |
 | **Compression Emission Allocation** | 80% | Miner manager setting | Compression pool before burn and top-five split |
 | **Upscaling Emission Allocation** | 20% | Miner manager setting | Upscaling pool before burn and top-five split |
 | **Emission Rank Shares** | 20%, 20%, 20%, 20%, 20% | Miner manager setting | Applied separately inside compression and upscaling; only ranks 1-5 in each task pool receive non-zero miner-side emission weight |
