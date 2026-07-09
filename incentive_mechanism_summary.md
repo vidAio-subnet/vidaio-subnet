@@ -192,7 +192,7 @@ ranks 6+         0%
 
 Only the top five compression miners and top five upscaling miners can receive non-zero miner-side emissions. Miners ranked 6 or lower in their task pool receive zero miner-side emission weight for that round.
 
-The optional alpha stake boost is controlled by `CONFIG.score.alpha_stake_weight_boost_factor`, which defaults to `0.0`. At the default value, the equal top-five split is unchanged. When the factor is positive, each task pool's non-zero recipients are multiplied by:
+The optional alpha stake boost is controlled by `CONFIG.score.alpha_stake_weight_boost_factor`, which defaults to `2.0`. At the value of `0.0`, the equal top-five split is unchanged. When the factor is positive, each task pool's non-zero recipients are multiplied by:
 
 ```text
 1 + alpha_stake_weight_boost_factor * alpha_stake_i / sum(alpha_stake_top_nonzero_task_pool)
