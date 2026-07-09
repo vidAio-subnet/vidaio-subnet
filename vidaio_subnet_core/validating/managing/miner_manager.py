@@ -14,6 +14,7 @@ from datetime import datetime
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy import desc, text
 import os
+import math
 from pathlib import Path
 import requests
 import hashlib
@@ -35,6 +36,9 @@ class MinerManager:
         self.compression_emission_allocation = 0.80
         self.upscaling_emission_allocation = 0.20
         self.emission_rank_shares = [0.20, 0.20, 0.20, 0.20, 0.20]
+        self.alpha_stake_weight_boost_factor = (
+            CONFIG.score.alpha_stake_weight_boost_factor
+        )
 
         self.metagraph = metagraph
         self.config_url = CONFIG.sql.url
@@ -99,6 +103,7 @@ class MinerManager:
             "coldkey": "ALTER TABLE miner_metadata ADD COLUMN coldkey VARCHAR(64) NOT NULL DEFAULT ''",
             "ip_address": "ALTER TABLE miner_metadata ADD COLUMN ip_address VARCHAR(64) NOT NULL DEFAULT ''",
             "port": "ALTER TABLE miner_metadata ADD COLUMN port INTEGER NOT NULL DEFAULT 0",
+            "alpha_stake": "ALTER TABLE miner_metadata ADD COLUMN alpha_stake FLOAT NOT NULL DEFAULT 0.0",
         }
 
         with self.engine.begin() as connection:
@@ -152,6 +157,49 @@ class MinerManager:
                 return host
             return ip_text
 
+    def _stake_value_to_float(self, value: Any) -> float:
+        if value is None:
+            return 0.0
+
+        tao_value = getattr(value, "tao", None)
+        if tao_value is not None:
+            value = tao_value() if callable(tao_value) else tao_value
+
+        item = getattr(value, "item", None)
+        if callable(item):
+            try:
+                value = item()
+            except ValueError:
+                return 0.0
+
+        try:
+            stake = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+        if not math.isfinite(stake):
+            return 0.0
+        return max(0.0, stake)
+
+    def _alpha_stake_for_uid(self, uid: int) -> float:
+        for stake_attr in ("alpha_stake", "AS"):
+            try:
+                alpha_stakes = getattr(self.metagraph, stake_attr, None)
+            except AttributeError:
+                continue
+
+            if alpha_stakes is None:
+                continue
+
+            try:
+                return self._stake_value_to_float(alpha_stakes[uid])
+            except (IndexError, KeyError, TypeError) as e:
+                logger.debug(
+                    f"Unable to read metagraph {stake_attr} for UID {uid}: {e}"
+                )
+
+        return 0.0
+
     def _chain_metadata_for_uid(self, uid: int) -> dict[str, Any]:
         axon = self.metagraph.axons[uid]
         hotkey = ""
@@ -166,6 +214,7 @@ class MinerManager:
             "coldkey": coldkey or getattr(axon, "coldkey", "") or "",
             "ip_address": self._axon_ip_address(axon),
             "port": int(getattr(axon, "port", 0) or 0),
+            "alpha_stake": self._alpha_stake_for_uid(uid),
         }
 
     def _apply_chain_metadata(self, miner: MinerMetadata, uid: int, fallback_hotkey: str = "") -> None:
@@ -173,12 +222,19 @@ class MinerManager:
             metadata = self._chain_metadata_for_uid(uid)
         except Exception as e:
             logger.warning(f"Unable to fetch metagraph metadata for UID {uid}: {e}")
-            metadata = {"hotkey": fallback_hotkey, "coldkey": "", "ip_address": "", "port": 0}
+            metadata = {
+                "hotkey": fallback_hotkey,
+                "coldkey": "",
+                "ip_address": "",
+                "port": 0,
+                "alpha_stake": 0.0,
+            }
 
         miner.hotkey = metadata["hotkey"] or fallback_hotkey or miner.hotkey
         miner.coldkey = metadata["coldkey"]
         miner.ip_address = metadata["ip_address"]
         miner.port = metadata["port"]
+        miner.alpha_stake = metadata["alpha_stake"]
 
     def _new_miner_metadata(
         self,
@@ -191,7 +247,13 @@ class MinerManager:
             metadata = self._chain_metadata_for_uid(uid)
         except Exception as e:
             logger.warning(f"Unable to fetch metagraph metadata for new UID {uid}: {e}")
-            metadata = {"hotkey": fallback_hotkey, "coldkey": "", "ip_address": "", "port": 0}
+            metadata = {
+                "hotkey": fallback_hotkey,
+                "coldkey": "",
+                "ip_address": "",
+                "port": 0,
+                "alpha_stake": 0.0,
+            }
 
         return MinerMetadata(
             uid=uid,
@@ -199,6 +261,7 @@ class MinerManager:
             coldkey=metadata["coldkey"],
             ip_address=metadata["ip_address"],
             port=metadata["port"],
+            alpha_stake=metadata["alpha_stake"],
             processing_task_type=processing_task_type,
             **kwargs,
         )
@@ -1336,13 +1399,84 @@ class MinerManager:
 
         return sn_owner_uid
 
+    def _uid_has_validator_permit(self, uid: int) -> bool:
+        validator_permit = getattr(self.metagraph, "validator_permit", [])
+        try:
+            return bool(validator_permit[uid])
+        except (IndexError, KeyError, TypeError):
+            return False
+
+    def _boost_scores_by_alpha_stake(
+        self,
+        ranked_scores: List[tuple[int, float, float]],
+    ) -> List[tuple[int, float]]:
+        try:
+            boost_factor = max(0.0, float(self.alpha_stake_weight_boost_factor))
+        except (TypeError, ValueError):
+            boost_factor = 0.0
+
+        if boost_factor == 0.0:
+            return [(uid, score) for uid, score, _ in ranked_scores]
+
+        boosted_scores = [(uid, score) for uid, score, _ in ranked_scores]
+        # Only the rank recipients with non-zero emissions participate in the
+        # per-task alpha stake boost; lower ranks keep their zero score.
+        nonzero_scores = [
+            (index, uid, score, max(0.0, alpha_stake))
+            for index, (uid, score, alpha_stake) in enumerate(ranked_scores)
+            if score > 0.0
+        ]
+        if len(nonzero_scores) <= 1:
+            return boosted_scores
+
+        total_alpha_stake = sum(
+            alpha_stake for _, _, _, alpha_stake in nonzero_scores
+        )
+        if total_alpha_stake <= 0.0:
+            return boosted_scores
+
+        raw_scores = []
+        base_total = sum(score for _, _, score, _ in nonzero_scores)
+        for index, uid, score, alpha_stake in nonzero_scores:
+            alpha_share = alpha_stake / total_alpha_stake
+            raw_scores.append(
+                (index, uid, score * (1.0 + boost_factor * alpha_share))
+            )
+
+        raw_total = sum(score for _, _, score in raw_scores)
+        if raw_total <= 0.0:
+            return boosted_scores
+
+        total_preserving_scale = base_total / raw_total
+        for index, uid, raw_score in raw_scores:
+            boosted_scores[index] = (uid, raw_score * total_preserving_scale)
+
+        return boosted_scores
+
+    def _apply_rank_curve(
+        self,
+        miners: List[tuple[int, float, float]],
+        allocation: float,
+    ) -> List[tuple[int, float]]:
+        miners.sort(key=lambda x: x[1], reverse=True)
+        ranked_scores = []
+        for rank, (uid, _, alpha_stake) in enumerate(miners):
+            if rank < len(self.emission_rank_shares):
+                score = allocation * self.emission_rank_shares[rank]
+            else:
+                score = 0.0
+            ranked_scores.append((uid, score, alpha_stake))
+
+        return self._boost_scores_by_alpha_stake(ranked_scores)
+
     @property
     def weights(self):
         """
-        Calculate weights with fixed task allocations and equal top-five shares.
+        Calculate weights with fixed task allocations and top-five shares.
         Compression receives 80% and upscaling receives 20% of the pre-burn
-        miner pool. Within each task pool, the top five miners receive 20%
-        each; all lower ranks receive zero.
+        miner pool. Within each task pool, the top five miners start from 20%
+        each, then an optional alpha stake boost reallocates those non-zero
+        shares within the same task pool. All lower ranks receive zero.
         """
         # Collect eligible miners by task type, then rank each task pool separately.
         compression_miners = []
@@ -1351,33 +1485,34 @@ class MinerManager:
         owner_uid = self.get_burn_uid()
 
         self.check_database_connection()
+        self.sync_miner_chain_metadata()
 
         for uid, miner in self.query().items():
             # Exclude validator from getting weights set
-            if miner.accumulate_score == -1 or self.metagraph.validator_permit[uid]: 
+            if miner.accumulate_score == -1 or self._uid_has_validator_permit(uid):
                 continue
+            alpha_stake = miner.alpha_stake or 0.0
             if miner.processing_task_type == "compression":
-                compression_miners.append((uid, miner.accumulate_score))
+                compression_miners.append((uid, miner.accumulate_score, alpha_stake))
             elif miner.processing_task_type == "upscaling":
-                upscaling_miners.append((uid, miner.accumulate_score))
+                upscaling_miners.append((uid, miner.accumulate_score, alpha_stake))
         
         # Initialize result arrays
         uids = []
         scores = []
-        compression_count = len(compression_miners)
-        upscaling_count = len(upscaling_miners)
 
-        def _apply_rank_curve(miners, allocation):
-            miners.sort(key=lambda x: x[1], reverse=True)
-            for rank, (uid, _) in enumerate(miners):
-                uids.append(uid)
-                if rank < len(self.emission_rank_shares):
-                    scores.append(allocation * self.emission_rank_shares[rank])
-                else:
-                    scores.append(0.0)
-
-        _apply_rank_curve(compression_miners, self.compression_emission_allocation)
-        _apply_rank_curve(upscaling_miners, self.upscaling_emission_allocation)
+        for uid, score in self._apply_rank_curve(
+            compression_miners,
+            self.compression_emission_allocation,
+        ):
+            uids.append(uid)
+            scores.append(score)
+        for uid, score in self._apply_rank_curve(
+            upscaling_miners,
+            self.upscaling_emission_allocation,
+        ):
+            uids.append(uid)
+            scores.append(score)
         
         # burn self.burn_proportion fraction of miner emissions
         total_scores = sum(scores)
@@ -1397,12 +1532,22 @@ class MinerManager:
         # Log distribution summary
         compression_count = len(compression_miners)
         upscaling_count = len(upscaling_miners)
-        compression_total_weight = sum(scores[i] for i, uid in enumerate(uids) if uid in [c[0] for c in compression_miners])
-        upscaling_total_weight = sum(scores[i] for i, uid in enumerate(uids) if uid in [u[0] for u in upscaling_miners])
+        compression_uids = {uid for uid, _, _ in compression_miners}
+        upscaling_uids = {uid for uid, _, _ in upscaling_miners}
+        compression_total_weight = sum(
+            scores[i] for i, uid in enumerate(uids) if uid in compression_uids
+        )
+        upscaling_total_weight = sum(
+            scores[i] for i, uid in enumerate(uids) if uid in upscaling_uids
+        )
         
-        logger.info(f"Reward distribution: {compression_count} compression miners ({compression_total_weight:.3f} weight), "
-                   f"{upscaling_count} upscaling miners ({upscaling_total_weight:.3f} weight)"
-                   f"Rewards data will be distributed as: {[(int(uid), float(score)) for uid, score in zip(uids, scores)]}"
-                   )
+        logger.info(
+            f"Reward distribution: {compression_count} compression miners "
+            f"({compression_total_weight:.3f} weight), {upscaling_count} "
+            f"upscaling miners ({upscaling_total_weight:.3f} weight), alpha "
+            f"stake boost factor: {self.alpha_stake_weight_boost_factor:.3f}. "
+            f"Rewards data will be distributed as: "
+            f"{[(int(uid), float(score)) for uid, score in zip(uids, scores)]}"
+        )
         
         return uids, scores
