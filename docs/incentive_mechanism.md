@@ -626,7 +626,7 @@ penalty_f_multiplier = 1.0 - (penalty_f_count / 10) × 0.20
 
 ## Emission Weighting & Burn
 
-The final incentive layer is implemented in `vidaio_subnet_core/validating/managing/miner_manager.py` through the `MinerManager.weights` property. This layer converts accumulated miner scores into on-chain weights, allocates the miner pool across compression and upscaling, starts each task pool from equal top-five rank shares, optionally reallocates those non-zero shares by alpha stake, and burns a configured portion of the miner emission pool.
+The final incentive layer is implemented in `vidaio_subnet_core/validating/managing/miner_manager.py` through the `MinerManager.weights` property. This layer converts accumulated miner scores into on-chain weights, allocates the miner pool across compression and upscaling, starts each task pool from equal top-five rank shares, optionally weighs those non-zero shares by alpha stake, and burns a configured portion of the miner emission pool.
 
 ### Eligible Miner Set
 
@@ -649,7 +649,7 @@ Each task pool starts from an equal split among its top five miners:
 | 5 | 20% |
 | 6+ | 0% |
 
-Rank determines eligibility, and with the default alpha stake boost factor of `0.0`, all five eligible ranks receive the same share. Miners ranked 6 or lower in their task pool receive zero miner-side emission weight for that round.
+Rank determines eligibility. When the alpha stake weigh factor is `0.0`, all five eligible ranks receive the same share. Miners ranked 6 or lower in their task pool receive zero miner-side emission weight for that round.
 
 Before burn, this produces the following task-specific allocations:
 
@@ -658,24 +658,24 @@ Before burn, this produces the following task-specific allocations:
 | Compression pool (80%) | 16% | 16% | 16% | 16% | 16% | 0% |
 | Upscaling pool (20%) | 4% | 4% | 4% | 4% | 4% | 0% |
 
-### Alpha Stake Boost
+### Alpha Stake Weighing
 
-After the base top-five allocation, the miner manager can optionally boost miner-side weights according to each non-validator miner's alpha stake proportion inside the same task pool. This behavior is controlled by:
+After the base top-five allocation, the miner manager can optionally weigh miner-side allocations according to each non-validator miner's alpha stake proportion inside the same task pool. This behavior is controlled by:
 
 ```python
-alpha_stake_weight_boost_factor = CONFIG.score.alpha_stake_weight_boost_factor
+alpha_stake_weigh_factor = CONFIG.score.alpha_stake_weigh_factor
 ```
 
-The default value is `0.0`, which preserves the equal top-five split exactly. When the factor is greater than zero, only miners that already have a non-zero base allocation participate in the alpha stake boost. In practice, this means only the top five compression miners and top five upscaling miners are eligible. Validators are excluded before this calculation, and miners ranked 6 or lower keep zero emission weight even if they have alpha stake.
+When the factor is `0.0`, the equal top-five split is preserved exactly. When the factor is greater than zero, only miners that already have a non-zero base allocation participate in the alpha stake weighing. In practice, this means only the top five compression miners and top five upscaling miners are eligible. Validators are excluded before this calculation, and miners ranked 6 or lower keep zero emission weight even if they have alpha stake.
 
-For each task pool, the boost uses alpha stake proportions among that task pool's non-zero recipients:
+For each task pool, the weighing calculation uses alpha stake proportions among that task pool's non-zero recipients:
 
 ```text
 alpha_share_i = alpha_stake_i / sum(alpha_stake_top_nonzero_task_pool)
-raw_boosted_weight_i = base_weight_i * (1 + alpha_stake_weight_boost_factor * alpha_share_i)
+raw_weighted_weight_i = base_weight_i * (1 + alpha_stake_weigh_factor * alpha_share_i)
 ```
 
-The boosted weights are then normalized back to the same task-pool total. This preserves the configured compression/upscaling allocation and the burn amount while tilting the top-five distribution toward miners with larger alpha stake.
+The weighted values are then normalized back to the same task-pool total. This preserves the configured compression/upscaling allocation and the burn amount while shifting the top-five distribution toward miners with larger alpha stake.
 
 Example final post-burn weights with `burn_proportion = 0.6` and top-five alpha stakes `[150, 100, 600, 1600, 20]`:
 
@@ -688,11 +688,11 @@ Example final post-burn weights with `burn_proportion = 0.6` and top-five alpha 
 | 5 | 20 | 0.81% | 6.40% | 4.65% | 4.10% | 1.60% | 1.16% | 1.02% |
 | Task-pool miner total | 2470 | 100.00% | 32.00% | 32.00% | 32.00% | 8.00% | 8.00% | 8.00% |
 
-The burn UID still receives 60% in both cases. The factor changes only the distribution among the non-zero top-five miners inside the task pool.
+The burn UID still receives 60% in all cases. The factor changes only the distribution among the non-zero top-five miners inside the task pool.
 
 ### Emissions Burn
 
-After the top-five allocations and optional alpha stake boost are calculated, the miner manager burns a fixed proportion of the miner emission pool. The current configuration is:
+After the top-five allocations and optional alpha stake weighing are calculated, the miner manager burns a fixed proportion of the miner emission pool. The current configuration is:
 
 ```python
 burn_proportion = 0.6
@@ -700,15 +700,15 @@ burn_proportion = 0.6
 
 This means 60% of the calculated miner emissions are assigned to the subnet owner UID returned by `get_burn_uid()`, while the remaining 40% stays with the ranked miners.
 
-The burn is applied after ranking, the base top-five split, and any alpha stake boost:
+The burn is applied after ranking, the base top-five split, and any alpha stake weighing:
 
 ```text
-pre_burn_weight_i = boosted top-five allocation for miner i
+pre_burn_weight_i = weighted top-five allocation for miner i
 miner_weight_i = pre_burn_weight_i * (1 - burn_proportion)
 burn_weight = burn_proportion * sum(pre_burn_weights)
 ```
 
-With the current `burn_proportion = 0.6` and default `alpha_stake_weight_boost_factor = 0.0`, the effective on-chain distribution is:
+With the current `burn_proportion = 0.6` and `alpha_stake_weigh_factor = 0.0`, the effective on-chain distribution is:
 
 | Recipient bucket | Effective final allocation |
 |------------------|----------------------------|
@@ -725,7 +725,7 @@ With the current `burn_proportion = 0.6` and default `alpha_stake_weight_boost_f
 | Ranks 6+ in either task pool | 0% |
 | Burn UID / subnet owner UID | 60% |
 
-The task allocation, base top-five split, and optional alpha stake boost are applied before the burn. Therefore, only the top five compression miners and top five upscaling miners can receive non-zero miner-side emissions; all other miner-side emission is zeroed before the remaining eligible miner emissions are scaled by `1 - burn_proportion`.
+The task allocation, base top-five split, and optional alpha stake weighing are applied before the burn. Therefore, only the top five compression miners and top five upscaling miners can receive non-zero miner-side emissions; all other miner-side emission is zeroed before the remaining eligible miner emissions are scaled by `1 - burn_proportion`.
 
 ---
 
@@ -787,7 +787,7 @@ The task allocation, base top-five split, and optional alpha stake boost are app
 | **Compression Emission Allocation** | 80% | Miner manager setting | Compression pool before burn and top-five split |
 | **Upscaling Emission Allocation** | 20% | Miner manager setting | Upscaling pool before burn and top-five split |
 | **Emission Rank Shares** | 20%, 20%, 20%, 20%, 20% | Miner manager setting | Base shares applied separately inside compression and upscaling; only ranks 1-5 in each task pool receive non-zero miner-side emission weight |
-| **Alpha Stake Weight Boost Factor** | 0.0 | `CONFIG.score.alpha_stake_weight_boost_factor` | Optional task-pool-local boost for non-validator top-five miners, normalized to preserve each task pool's total allocation |
+| **Alpha Stake Weigh Factor** | 3.0 | `CONFIG.score.alpha_stake_weigh_factor` | Optional task-pool-local weighing for non-validator top-five miners, normalized to preserve each task pool's total allocation |
 
 ### Compression System Parameters
 

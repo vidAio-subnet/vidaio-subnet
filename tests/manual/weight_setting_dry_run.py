@@ -75,11 +75,11 @@ def _build_config():
         help="Allow emission even if the validator tempo gate has not elapsed.",
     )
     parser.add_argument(
-        "--alpha-stake-weight-boost-factor",
+        "--alpha-stake-weigh-factor",
         type=float,
         default=None,
         help=(
-            "Override CONFIG.score.alpha_stake_weight_boost_factor for this run "
+            "Override CONFIG.score.alpha_stake_weigh_factor for this run "
             "without editing config files."
         ),
     )
@@ -88,12 +88,12 @@ def _build_config():
 
 def main() -> int:
     config = _build_config()
-    override_boost_factor = getattr(config, "alpha_stake_weight_boost_factor", None)
-    if override_boost_factor is not None:
-        CONFIG.score.alpha_stake_weight_boost_factor = override_boost_factor
+    override_weigh_factor = getattr(config, "alpha_stake_weigh_factor", None)
+    if override_weigh_factor is not None:
+        CONFIG.score.alpha_stake_weigh_factor = override_weigh_factor
         logger.info(
-            "Overriding alpha stake weight boost factor for this run: "
-            f"{override_boost_factor}"
+            "Overriding alpha stake weigh factor for this run: "
+            f"{override_weigh_factor}"
         )
 
     logger.info(

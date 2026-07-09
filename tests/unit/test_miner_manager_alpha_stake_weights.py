@@ -77,7 +77,7 @@ class TensorValue:
 class MinerManagerAlphaStakeWeightTests(unittest.TestCase):
     def manager(self):
         manager = MinerManager.__new__(MinerManager)
-        manager.alpha_stake_weight_boost_factor = 0.0
+        manager.alpha_stake_weigh_factor = 0.0
         manager.burn_proportion = 0.6
         manager.compression_emission_allocation = 0.80
         manager.upscaling_emission_allocation = 0.20
@@ -95,7 +95,7 @@ class MinerManagerAlphaStakeWeightTests(unittest.TestCase):
         self.assertEqual(manager._alpha_stake_for_uid(0), 3.0)
         self.assertEqual(manager._alpha_stake_for_uid(1), 12.5)
 
-    def test_zero_boost_keeps_equal_top_five_scores(self):
+    def test_zero_weigh_factor_keeps_equal_top_five_scores(self):
         manager = self.manager()
         miners = [
             (1, 5.0, 10.0),
@@ -110,9 +110,9 @@ class MinerManagerAlphaStakeWeightTests(unittest.TestCase):
         for uid in range(1, 6):
             self.assertAlmostEqual(scores[uid], 0.16)
 
-    def test_alpha_stake_boost_preserves_pool_total_and_rewards_higher_stake(self):
+    def test_alpha_stake_weighing_preserves_pool_total_and_rewards_higher_stake(self):
         manager = self.manager()
-        manager.alpha_stake_weight_boost_factor = 1.0
+        manager.alpha_stake_weigh_factor = 1.0
         miners = [
             (1, 6.0, 10.0),
             (2, 5.0, 20.0),
@@ -129,9 +129,9 @@ class MinerManagerAlphaStakeWeightTests(unittest.TestCase):
         self.assertGreater(scores[4], 0.16)
         self.assertLess(scores[5], 0.16)
 
-    def test_weights_exclude_validators_and_boost_within_each_task_pool(self):
+    def test_weights_exclude_validators_and_weigh_within_each_task_pool(self):
         manager = self.manager()
-        manager.alpha_stake_weight_boost_factor = 1.0
+        manager.alpha_stake_weigh_factor = 1.0
         manager.metagraph.validator_permit[2] = True
         manager.get_burn_uid = lambda: 99
         manager.check_database_connection = lambda: None

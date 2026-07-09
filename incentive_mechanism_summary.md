@@ -11,7 +11,7 @@ The VIDAIO scoring mechanism has three primary layers:
 2. **Long-term miner score**: the smoothed reputation score used for ranking and reward allocation.
    - Stored as `accumulate_score`
 
-3. **Emission weighting**: the final on-chain weight calculation that allocates 80% to compression and 20% to upscaling, starts each task pool from equal top-five shares, optionally reallocates those non-zero shares by alpha stake, then burns the configured proportion of miner emissions.
+3. **Emission weighting**: the final on-chain weight calculation that allocates 80% to compression and 20% to upscaling, starts each task pool from equal top-five shares, optionally weighs those non-zero shares by alpha stake, then burns the configured proportion of miner emissions.
    - Implemented in `vidaio_subnet_core/validating/managing/miner_manager.py`
 
 The scoring process evaluates both immediate task performance and recent historical consistency. A miner's reward outcome is therefore determined by whether the submitted output is valid, whether it satisfies task-specific quality requirements, whether the miner has performed consistently across recent rounds, and whether the miner ranks inside the top five for their task type.
@@ -192,13 +192,13 @@ ranks 6+         0%
 
 Only the top five compression miners and top five upscaling miners can receive non-zero miner-side emissions. Miners ranked 6 or lower in their task pool receive zero miner-side emission weight for that round.
 
-The optional alpha stake boost is controlled by `CONFIG.score.alpha_stake_weight_boost_factor`, which defaults to `3.0`. At the value of `0.0`, the equal top-five split is unchanged. When the factor is positive, each task pool's non-zero recipients are multiplied by:
+The optional alpha stake weighing is controlled by `CONFIG.score.alpha_stake_weigh_factor`, which defaults to `3.0`. At the value of `0.0`, the equal top-five split is unchanged. When the factor is positive, each task pool's non-zero recipients are multiplied by:
 
 ```text
-1 + alpha_stake_weight_boost_factor * alpha_stake_i / sum(alpha_stake_top_nonzero_task_pool)
+1 + alpha_stake_weigh_factor * alpha_stake_i / sum(alpha_stake_top_nonzero_task_pool)
 ```
 
-The boosted weights are normalized back to the same task-pool total, so the boost tilts the top-five distribution without changing the 80/20 task allocation or the burn total.
+The weighted values are normalized back to the same task-pool total, so the weighing factor shifts the top-five distribution without changing the 80/20 task allocation or the burn total.
 
 For example, with `burn_proportion = 0.6` and top-five alpha stakes `[150, 100, 600, 1600, 20]`, the final post-burn weights are:
 
@@ -211,19 +211,19 @@ For example, with `burn_proportion = 0.6` and top-five alpha stakes `[150, 100, 
 | 5 | 20 | 0.81% | 6.40% | 4.65% | 4.10% | 1.60% | 1.16% | 1.02% |
 | Task-pool miner total | 2470 | 100.00% | 32.00% | 32.00% | 32.00% | 8.00% | 8.00% | 8.00% |
 
-The burn UID remains at 60% in both factor settings.
+The burn UID remains at 60% in all factor settings.
 
-After the base top-five allocation and optional alpha stake boost, the miner manager applies the emissions burn:
+After the base top-five allocation and optional alpha stake weighing, the miner manager applies the emissions burn:
 
 ```text
 burn_proportion = 0.6
 
-pre_burn_weight_i = boosted top-five allocation for miner i
+pre_burn_weight_i = weighted top-five allocation for miner i
 miner_weight_i = pre_burn_weight_i * (1 - burn_proportion)
 burn_weight = burn_proportion * sum(pre_burn_weights)
 ```
 
-With the current `burn_proportion = 0.6` and default `alpha_stake_weight_boost_factor = 0.0`, 60% of calculated miner emissions are assigned to the burn UID, which is the subnet owner UID returned by `get_burn_uid()`. The remaining 40% is distributed across the two task pools. Effective final allocations are:
+With the current `burn_proportion = 0.6` and `alpha_stake_weigh_factor = 0.0`, 60% of calculated miner emissions are assigned to the burn UID, which is the subnet owner UID returned by `get_burn_uid()`. The remaining 40% is distributed across the two task pools. Effective final allocations are:
 
 ```text
 compression rank 1  6.4%
@@ -253,4 +253,4 @@ upscaling rank 5    1.6%
 else    Poor Performance
 ```
 
-In summary, `s_q` represents upscaling quality, `s_f` represents the task-level final round score, `total_multiplier` adjusts the round score based on recent consistency, `accumulate_score` is the smoothed long-term score used for miner ranking, `alpha_stake_weight_boost_factor` optionally tilts non-zero top-five task-pool weights by alpha stake, and `burn_proportion` determines how much of the calculated miner emission pool is burned before the remaining emissions reach top-ranked miners.
+In summary, `s_q` represents upscaling quality, `s_f` represents the task-level final round score, `total_multiplier` adjusts the round score based on recent consistency, `accumulate_score` is the smoothed long-term score used for miner ranking, `alpha_stake_weigh_factor` optionally weighs non-zero top-five task-pool allocations by alpha stake, and `burn_proportion` determines how much of the calculated miner emission pool is burned before the remaining emissions reach top-ranked miners.

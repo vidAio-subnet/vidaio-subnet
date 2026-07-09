@@ -36,9 +36,7 @@ class MinerManager:
         self.compression_emission_allocation = 0.80
         self.upscaling_emission_allocation = 0.20
         self.emission_rank_shares = [0.20, 0.20, 0.20, 0.20, 0.20]
-        self.alpha_stake_weight_boost_factor = (
-            CONFIG.score.alpha_stake_weight_boost_factor
-        )
+        self.alpha_stake_weigh_factor = CONFIG.score.alpha_stake_weigh_factor
 
         self.metagraph = metagraph
         self.config_url = CONFIG.sql.url
@@ -1096,9 +1094,9 @@ class MinerManager:
                 #     organic_s_l = 0.5
                 #     success = True
 
-                #     boost_percentage = 0.03
-                #     boost_amount = current_score * boost_percentage
-                #     acc_score = current_score + boost_amount
+                #     increase_percentage = 0.03
+                #     increase_amount = current_score * increase_percentage
+                #     acc_score = current_score + increase_amount
 
                 # elif score == 2.0:
                 #     organic_s_f = 0.3
@@ -1427,11 +1425,11 @@ class MinerManager:
         )
         return f"{header}\n{separator}\n{body}"
 
-    def _log_alpha_stake_boost(
+    def _log_alpha_stake_weighing(
         self,
         task_type: str,
         rows: List[dict[str, Any]],
-        boost_factor: float,
+        weigh_factor: float,
         total_alpha_stake: float,
         base_total: float,
         raw_total: float,
@@ -1441,34 +1439,34 @@ class MinerManager:
             return
 
         logger.info(
-            f"Alpha stake boost details for {task_type} task pool: "
-            f"factor={boost_factor:.4f}, total_alpha_stake={total_alpha_stake:.6f}, "
-            f"base_pre_burn_total={base_total:.10f}, raw_boosted_total={raw_total:.10f}, "
+            f"Alpha stake weighing details for {task_type} task pool: "
+            f"factor={weigh_factor:.4f}, total_alpha_stake={total_alpha_stake:.6f}, "
+            f"base_pre_burn_total={base_total:.10f}, raw_weighted_total={raw_total:.10f}, "
             f"normalization_scale={total_preserving_scale:.10f}, "
             f"post_burn_scale={(1 - self.burn_proportion):.4f}\n"
             f"{self._format_log_table(rows)}"
         )
 
-    def _boost_scores_by_alpha_stake(
+    def _weigh_scores_by_alpha_stake(
         self,
         ranked_scores: List[tuple[int, float, float]],
         task_type: str = "unknown",
     ) -> List[tuple[int, float]]:
         try:
-            boost_factor = max(0.0, float(self.alpha_stake_weight_boost_factor))
+            weigh_factor = max(0.0, float(self.alpha_stake_weigh_factor))
         except (TypeError, ValueError):
-            boost_factor = 0.0
+            weigh_factor = 0.0
 
-        boosted_scores = [(uid, score) for uid, score, _ in ranked_scores]
+        weighted_scores = [(uid, score) for uid, score, _ in ranked_scores]
         # Only the rank recipients with non-zero emissions participate in the
-        # per-task alpha stake boost; lower ranks keep their zero score.
+        # per-task alpha stake weighing; lower ranks keep their zero score.
         nonzero_scores = [
             (index, uid, score, max(0.0, alpha_stake))
             for index, (uid, score, alpha_stake) in enumerate(ranked_scores)
             if score > 0.0
         ]
         if not nonzero_scores:
-            return boosted_scores
+            return weighted_scores
 
         total_alpha_stake = sum(
             alpha_stake for _, _, _, alpha_stake in nonzero_scores
@@ -1483,7 +1481,7 @@ class MinerManager:
                 if total_alpha_stake > 0.0
                 else 0.0
             )
-            raw_multiplier = 1.0 + boost_factor * alpha_share
+            raw_multiplier = 1.0 + weigh_factor * alpha_share
             raw_score = score * raw_multiplier
             raw_scores.append((index, uid, raw_score, alpha_share, raw_multiplier))
 
@@ -1492,8 +1490,8 @@ class MinerManager:
 
         for index, uid, raw_score, alpha_share, raw_multiplier in raw_scores:
             normalized_score = raw_score * total_preserving_scale
-            if boost_factor > 0.0 and total_alpha_stake > 0.0:
-                boosted_scores[index] = (uid, normalized_score)
+            if weigh_factor > 0.0 and total_alpha_stake > 0.0:
+                weighted_scores[index] = (uid, normalized_score)
 
             base_score = ranked_scores[index][1]
             alpha_stake = max(0.0, ranked_scores[index][2])
@@ -1506,7 +1504,7 @@ class MinerManager:
                     "base_pre_burn": f"{base_score:.10f}",
                     "base_final": f"{base_score * (1 - self.burn_proportion):.10f}",
                     "raw_multiplier": f"{raw_multiplier:.10f}",
-                    "raw_boosted": f"{raw_score:.10f}",
+                    "raw_weighted": f"{raw_score:.10f}",
                     "normalized_pre_burn": f"{normalized_score:.10f}",
                     "normalized_final": (
                         f"{normalized_score * (1 - self.burn_proportion):.10f}"
@@ -1514,17 +1512,17 @@ class MinerManager:
                 }
             )
 
-        self._log_alpha_stake_boost(
+        self._log_alpha_stake_weighing(
             task_type=task_type,
             rows=log_rows,
-            boost_factor=boost_factor,
+            weigh_factor=weigh_factor,
             total_alpha_stake=total_alpha_stake,
             base_total=base_total,
             raw_total=raw_total,
             total_preserving_scale=total_preserving_scale,
         )
 
-        return boosted_scores
+        return weighted_scores
 
     def _apply_rank_curve(
         self,
@@ -1541,7 +1539,7 @@ class MinerManager:
                 score = 0.0
             ranked_scores.append((uid, score, alpha_stake))
 
-        return self._boost_scores_by_alpha_stake(ranked_scores, task_type)
+        return self._weigh_scores_by_alpha_stake(ranked_scores, task_type)
 
     @property
     def weights(self):
@@ -1549,7 +1547,7 @@ class MinerManager:
         Calculate weights with fixed task allocations and top-five shares.
         Compression receives 80% and upscaling receives 20% of the pre-burn
         miner pool. Within each task pool, the top five miners start from 20%
-        each, then an optional alpha stake boost reallocates those non-zero
+        each, then optional alpha stake weighing reallocates those non-zero
         shares within the same task pool. All lower ranks receive zero.
         """
         # Collect eligible miners by task type, then rank each task pool separately.
@@ -1621,7 +1619,7 @@ class MinerManager:
             f"Reward distribution: {compression_count} compression miners "
             f"({compression_total_weight:.3f} weight), {upscaling_count} "
             f"upscaling miners ({upscaling_total_weight:.3f} weight), alpha "
-            f"stake boost factor: {self.alpha_stake_weight_boost_factor:.3f}. "
+            f"stake weigh factor: {self.alpha_stake_weigh_factor:.3f}. "
             f"Rewards data will be distributed as: "
             f"{[(int(uid), float(score)) for uid, score in zip(uids, scores)]}"
         )
