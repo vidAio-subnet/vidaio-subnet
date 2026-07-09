@@ -1406,17 +1406,58 @@ class MinerManager:
         except (IndexError, KeyError, TypeError):
             return False
 
+    def _format_log_table(self, rows: List[dict[str, Any]]) -> str:
+        if not rows:
+            return ""
+
+        columns = list(rows[0].keys())
+        column_widths = {
+            column: max(len(str(column)), *(len(str(row[column])) for row in rows))
+            for column in columns
+        }
+        header = " | ".join(
+            str(column).ljust(column_widths[column]) for column in columns
+        )
+        separator = "-+-".join("-" * column_widths[column] for column in columns)
+        body = "\n".join(
+            " | ".join(
+                str(row[column]).ljust(column_widths[column]) for column in columns
+            )
+            for row in rows
+        )
+        return f"{header}\n{separator}\n{body}"
+
+    def _log_alpha_stake_boost(
+        self,
+        task_type: str,
+        rows: List[dict[str, Any]],
+        boost_factor: float,
+        total_alpha_stake: float,
+        base_total: float,
+        raw_total: float,
+        total_preserving_scale: float,
+    ) -> None:
+        if not rows:
+            return
+
+        logger.info(
+            f"Alpha stake boost details for {task_type} task pool: "
+            f"factor={boost_factor:.4f}, total_alpha_stake={total_alpha_stake:.6f}, "
+            f"base_pre_burn_total={base_total:.10f}, raw_boosted_total={raw_total:.10f}, "
+            f"normalization_scale={total_preserving_scale:.10f}, "
+            f"post_burn_scale={(1 - self.burn_proportion):.4f}\n"
+            f"{self._format_log_table(rows)}"
+        )
+
     def _boost_scores_by_alpha_stake(
         self,
         ranked_scores: List[tuple[int, float, float]],
+        task_type: str = "unknown",
     ) -> List[tuple[int, float]]:
         try:
             boost_factor = max(0.0, float(self.alpha_stake_weight_boost_factor))
         except (TypeError, ValueError):
             boost_factor = 0.0
-
-        if boost_factor == 0.0:
-            return [(uid, score) for uid, score, _ in ranked_scores]
 
         boosted_scores = [(uid, score) for uid, score, _ in ranked_scores]
         # Only the rank recipients with non-zero emissions participate in the
@@ -1426,30 +1467,62 @@ class MinerManager:
             for index, (uid, score, alpha_stake) in enumerate(ranked_scores)
             if score > 0.0
         ]
-        if len(nonzero_scores) <= 1:
+        if not nonzero_scores:
             return boosted_scores
 
         total_alpha_stake = sum(
             alpha_stake for _, _, _, alpha_stake in nonzero_scores
         )
-        if total_alpha_stake <= 0.0:
-            return boosted_scores
-
-        raw_scores = []
         base_total = sum(score for _, _, score, _ in nonzero_scores)
+        raw_scores = []
+        log_rows = []
+
         for index, uid, score, alpha_stake in nonzero_scores:
-            alpha_share = alpha_stake / total_alpha_stake
-            raw_scores.append(
-                (index, uid, score * (1.0 + boost_factor * alpha_share))
+            alpha_share = (
+                alpha_stake / total_alpha_stake
+                if total_alpha_stake > 0.0
+                else 0.0
+            )
+            raw_multiplier = 1.0 + boost_factor * alpha_share
+            raw_score = score * raw_multiplier
+            raw_scores.append((index, uid, raw_score, alpha_share, raw_multiplier))
+
+        raw_total = sum(raw_score for _, _, raw_score, _, _ in raw_scores)
+        total_preserving_scale = base_total / raw_total if raw_total > 0.0 else 1.0
+
+        for index, uid, raw_score, alpha_share, raw_multiplier in raw_scores:
+            normalized_score = raw_score * total_preserving_scale
+            if boost_factor > 0.0 and total_alpha_stake > 0.0:
+                boosted_scores[index] = (uid, normalized_score)
+
+            base_score = ranked_scores[index][1]
+            alpha_stake = max(0.0, ranked_scores[index][2])
+            log_rows.append(
+                {
+                    "rank": index + 1,
+                    "uid": uid,
+                    "alpha_stake": f"{alpha_stake:.6f}",
+                    "alpha_share": f"{alpha_share * 100:.4f}%",
+                    "base_pre_burn": f"{base_score:.10f}",
+                    "base_final": f"{base_score * (1 - self.burn_proportion):.10f}",
+                    "raw_multiplier": f"{raw_multiplier:.10f}",
+                    "raw_boosted": f"{raw_score:.10f}",
+                    "normalized_pre_burn": f"{normalized_score:.10f}",
+                    "normalized_final": (
+                        f"{normalized_score * (1 - self.burn_proportion):.10f}"
+                    ),
+                }
             )
 
-        raw_total = sum(score for _, _, score in raw_scores)
-        if raw_total <= 0.0:
-            return boosted_scores
-
-        total_preserving_scale = base_total / raw_total
-        for index, uid, raw_score in raw_scores:
-            boosted_scores[index] = (uid, raw_score * total_preserving_scale)
+        self._log_alpha_stake_boost(
+            task_type=task_type,
+            rows=log_rows,
+            boost_factor=boost_factor,
+            total_alpha_stake=total_alpha_stake,
+            base_total=base_total,
+            raw_total=raw_total,
+            total_preserving_scale=total_preserving_scale,
+        )
 
         return boosted_scores
 
@@ -1457,6 +1530,7 @@ class MinerManager:
         self,
         miners: List[tuple[int, float, float]],
         allocation: float,
+        task_type: str = "unknown",
     ) -> List[tuple[int, float]]:
         miners.sort(key=lambda x: x[1], reverse=True)
         ranked_scores = []
@@ -1467,7 +1541,7 @@ class MinerManager:
                 score = 0.0
             ranked_scores.append((uid, score, alpha_stake))
 
-        return self._boost_scores_by_alpha_stake(ranked_scores)
+        return self._boost_scores_by_alpha_stake(ranked_scores, task_type)
 
     @property
     def weights(self):
@@ -1504,12 +1578,14 @@ class MinerManager:
         for uid, score in self._apply_rank_curve(
             compression_miners,
             self.compression_emission_allocation,
+            "compression",
         ):
             uids.append(uid)
             scores.append(score)
         for uid, score in self._apply_rank_curve(
             upscaling_miners,
             self.upscaling_emission_allocation,
+            "upscaling",
         ):
             uids.append(uid)
             scores.append(score)
