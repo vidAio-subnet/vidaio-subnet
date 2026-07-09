@@ -18,6 +18,7 @@ class MinerMetadata(Base):
     coldkey = Column(String(64), nullable=False, default="")
     ip_address = Column(String(64), nullable=False, default="")
     port = Column(Integer, nullable=False, default=0)
+    alpha_stake = Column(Float, nullable=False, default=0.0)
     accumulate_score = Column(Float, default=0.0)
     
     bonus_multiplier = Column(Float, default=1.0)
