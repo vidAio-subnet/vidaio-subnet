@@ -192,7 +192,7 @@ ranks 6+         0%
 
 Only the top five compression miners and top five upscaling miners can receive non-zero miner-side emissions. Miners ranked 6 or lower in their task pool receive zero miner-side emission weight for that round.
 
-The optional alpha stake weighing is controlled by `CONFIG.score.alpha_stake_weigh_factor`, which defaults to `3.0`. At the value of `0.0`, the equal top-five split is unchanged. When the factor is positive, each task pool's non-zero recipients are multiplied by:
+The optional alpha stake weighing is controlled by `CONFIG.score.alpha_stake_weigh_factor`, which defaults to `5.0`. At the value of `0.0`, the equal top-five split is unchanged. When the factor is positive, each task pool's non-zero recipients are multiplied by:
 
 ```text
 1 + alpha_stake_weigh_factor * alpha_stake_i / sum(alpha_stake_top_nonzero_task_pool)
@@ -202,13 +202,13 @@ The weighted values are normalized back to the same task-pool total, so the weig
 
 For example, with `burn_proportion = 0.6` and top-five alpha stakes `[150, 100, 600, 1600, 20]`, the final post-burn weights are:
 
-| Rank | Alpha stake | Alpha stake share | Compression, factor 0 | Compression, factor 2 | Compression, factor 3 | Upscaling, factor 0 | Upscaling, factor 2 | Upscaling, factor 3 |
+| Rank | Alpha stake | Alpha stake share | Compression, factor 0 | Compression, factor 2 | Compression, factor 5 | Upscaling, factor 0 | Upscaling, factor 2 | Upscaling, factor 5 |
 |------|-------------|-------------------|-----------------------|-----------------------|-----------------------|---------------------|---------------------|---------------------|
-| 1 | 150 | 6.07% | 6.40% | 5.13% | 4.73% | 1.60% | 1.28% | 1.18% |
-| 2 | 100 | 4.05% | 6.40% | 4.94% | 4.49% | 1.60% | 1.24% | 1.12% |
-| 3 | 600 | 24.29% | 6.40% | 6.79% | 6.91% | 1.60% | 1.70% | 1.73% |
-| 4 | 1600 | 64.78% | 6.40% | 10.49% | 11.77% | 1.60% | 2.62% | 2.94% |
-| 5 | 20 | 0.81% | 6.40% | 4.65% | 4.10% | 1.60% | 1.16% | 1.02% |
+| 1 | 150 | 6.07% | 6.40% | 5.13% | 4.17% | 1.60% | 1.28% | 1.04% |
+| 2 | 100 | 4.05% | 6.40% | 4.94% | 3.85% | 1.60% | 1.24% | 0.96% |
+| 3 | 600 | 24.29% | 6.40% | 6.79% | 7.09% | 1.60% | 1.70% | 1.77% |
+| 4 | 1600 | 64.78% | 6.40% | 10.49% | 13.56% | 1.60% | 2.62% | 3.39% |
+| 5 | 20 | 0.81% | 6.40% | 4.65% | 3.33% | 1.60% | 1.16% | 0.83% |
 | Task-pool miner total | 2470 | 100.00% | 32.00% | 32.00% | 32.00% | 8.00% | 8.00% | 8.00% |
 
 The burn UID remains at 60% in all factor settings.

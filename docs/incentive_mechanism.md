@@ -679,13 +679,13 @@ The weighted values are then normalized back to the same task-pool total. This p
 
 Example final post-burn weights with `burn_proportion = 0.6` and top-five alpha stakes `[150, 100, 600, 1600, 20]`:
 
-| Rank | Alpha stake | Alpha stake share | Compression, factor 0 | Compression, factor 2 | Compression, factor 3 | Upscaling, factor 0 | Upscaling, factor 2 | Upscaling, factor 3 |
+| Rank | Alpha stake | Alpha stake share | Compression, factor 0 | Compression, factor 2 | Compression, factor 5 | Upscaling, factor 0 | Upscaling, factor 2 | Upscaling, factor 5 |
 |------|-------------|-------------------|-----------------------|-----------------------|-----------------------|---------------------|---------------------|---------------------|
-| 1 | 150 | 6.07% | 6.40% | 5.13% | 4.73% | 1.60% | 1.28% | 1.18% |
-| 2 | 100 | 4.05% | 6.40% | 4.94% | 4.49% | 1.60% | 1.24% | 1.12% |
-| 3 | 600 | 24.29% | 6.40% | 6.79% | 6.91% | 1.60% | 1.70% | 1.73% |
-| 4 | 1600 | 64.78% | 6.40% | 10.49% | 11.77% | 1.60% | 2.62% | 2.94% |
-| 5 | 20 | 0.81% | 6.40% | 4.65% | 4.10% | 1.60% | 1.16% | 1.02% |
+| 1 | 150 | 6.07% | 6.40% | 5.13% | 4.17% | 1.60% | 1.28% | 1.04% |
+| 2 | 100 | 4.05% | 6.40% | 4.94% | 3.85% | 1.60% | 1.24% | 0.96% |
+| 3 | 600 | 24.29% | 6.40% | 6.79% | 7.09% | 1.60% | 1.70% | 1.77% |
+| 4 | 1600 | 64.78% | 6.40% | 10.49% | 13.56% | 1.60% | 2.62% | 3.39% |
+| 5 | 20 | 0.81% | 6.40% | 4.65% | 3.33% | 1.60% | 1.16% | 0.83% |
 | Task-pool miner total | 2470 | 100.00% | 32.00% | 32.00% | 32.00% | 8.00% | 8.00% | 8.00% |
 
 The burn UID still receives 60% in all cases. The factor changes only the distribution among the non-zero top-five miners inside the task pool.
@@ -787,7 +787,7 @@ The task allocation, base top-five split, and optional alpha stake weighing are 
 | **Compression Emission Allocation** | 80% | Miner manager setting | Compression pool before burn and top-five split |
 | **Upscaling Emission Allocation** | 20% | Miner manager setting | Upscaling pool before burn and top-five split |
 | **Emission Rank Shares** | 20%, 20%, 20%, 20%, 20% | Miner manager setting | Base shares applied separately inside compression and upscaling; only ranks 1-5 in each task pool receive non-zero miner-side emission weight |
-| **Alpha Stake Weigh Factor** | 3.0 | `CONFIG.score.alpha_stake_weigh_factor` | Optional task-pool-local weighing for non-validator top-five miners, normalized to preserve each task pool's total allocation |
+| **Alpha Stake Weigh Factor** | 5.0 | `CONFIG.score.alpha_stake_weigh_factor` | Optional task-pool-local weighing for non-validator top-five miners, normalized to preserve each task pool's total allocation |
 
 ### Compression System Parameters
 
