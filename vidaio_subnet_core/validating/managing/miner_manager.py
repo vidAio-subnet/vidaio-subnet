@@ -526,6 +526,25 @@ class MinerManager:
         self,
         session: Session,
     ) -> None:
+        def is_older_snapshot(
+            candidate: MinerEmissionEpochSnapshot,
+            current: MinerEmissionEpochSnapshot,
+        ) -> bool:
+            candidate_block = int(candidate.epoch_block or 0)
+            current_block = int(current.epoch_block or 0)
+            if candidate_block > 0 and current_block > 0:
+                return candidate_block < current_block
+            if candidate_block > 0:
+                return True
+            if current_block > 0:
+                return False
+
+            candidate_timestamp = candidate.timestamp or datetime.max
+            current_timestamp = current.timestamp or datetime.max
+            if candidate_timestamp != current_timestamp:
+                return candidate_timestamp < current_timestamp
+            return (candidate.id or 0) < (current.id or 0)
+
         snapshots = session.query(MinerEmissionEpochSnapshot).all()
         snapshots_by_uid_epoch: dict[tuple[int, int], MinerEmissionEpochSnapshot] = {}
         duplicate_snapshots = []
@@ -539,9 +558,7 @@ class MinerManager:
                 snapshots_by_uid_epoch[key] = snapshot
                 continue
 
-            existing_block = int(existing.epoch_block or 0)
-            snapshot_block = int(snapshot.epoch_block or 0)
-            if snapshot_block >= existing_block:
+            if is_older_snapshot(snapshot, existing):
                 duplicate_snapshots.append(existing)
                 snapshots_by_uid_epoch[key] = snapshot
             else:
@@ -577,7 +594,8 @@ class MinerManager:
 
         current_epoch_index = self._epoch_index_for_block(current_block)
         session = self.session
-        snapshot_count = 0
+        inserted_snapshot_count = 0
+        retained_existing_count = 0
 
         try:
             for uid, miner in miners_by_uid.items():
@@ -594,12 +612,15 @@ class MinerManager:
                     )
                     .first()
                 )
-                if snapshot is None:
-                    snapshot = MinerEmissionEpochSnapshot(
-                        uid=uid,
-                        epoch_index=current_epoch_index,
-                    )
-                    session.add(snapshot)
+                if snapshot is not None:
+                    retained_existing_count += 1
+                    continue
+
+                snapshot = MinerEmissionEpochSnapshot(
+                    uid=uid,
+                    epoch_index=current_epoch_index,
+                )
+                session.add(snapshot)
 
                 snapshot.hotkey = miner.hotkey or ""
                 snapshot.coldkey = miner.coldkey or ""
@@ -608,7 +629,7 @@ class MinerManager:
                 snapshot.alpha_stake = self._stake_value_to_float(miner.alpha_stake)
                 snapshot.emission = self._emission_for_uid(uid)
                 snapshot.timestamp = datetime.now()
-                snapshot_count += 1
+                inserted_snapshot_count += 1
 
             self._normalize_miner_emission_epoch_snapshot_indexes(session)
             self._prune_miner_emission_epoch_snapshots(
@@ -616,11 +637,13 @@ class MinerManager:
                 current_epoch_index,
             )
             session.commit()
-            if snapshot_count:
+            if inserted_snapshot_count or retained_existing_count:
                 logger.info(
-                    "Recorded miner emission snapshots for "
-                    f"{snapshot_count} miners at block={current_block}, "
+                    "Recorded miner emission snapshots at "
+                    f"block={current_block}, "
                     f"epoch_index={current_epoch_index}, "
+                    f"inserted={inserted_snapshot_count}, "
+                    f"retained_existing={retained_existing_count}, "
                     f"window_epochs={self._snapshot_window_epochs()}"
                 )
         except Exception as e:
@@ -684,9 +707,11 @@ class MinerManager:
             last_snapshot = snapshots[-1]
             first_epoch_index = self._epoch_index_for_snapshot(first_snapshot)
             last_epoch_index = self._epoch_index_for_snapshot(last_snapshot)
+            # Snapshots are boundary samples. With N snapshots there are N-1
+            # elapsed emission intervals, so skip the first boundary row.
             total_emission = sum(
                 max(0.0, float(snapshot.emission or 0.0))
-                for snapshot in snapshots
+                for snapshot in snapshots[1:]
             )
             alpha_stake_delta = max(
                 0.0,

@@ -120,7 +120,7 @@ class MinerManagerAlphaStakeWeightTests(unittest.TestCase):
 
         self.assertEqual(manager._epoch_index_for_block(1080), 3)
 
-    def test_record_snapshots_normalizes_legacy_epoch_index_scale(self):
+    def test_record_snapshots_normalizes_legacy_epoch_index_scale_and_keeps_oldest(self):
         manager = self.sqlite_manager(current_block=8589355)
         manager.metagraph.tempo = TensorValue(360)
         manager.metagraph.E[1] = 2.5
@@ -169,9 +169,45 @@ class MinerManagerAlphaStakeWeightTests(unittest.TestCase):
         )
         self.assertEqual(len(rows), 2)
         self.assertEqual([row.epoch_index for row in rows], [23858, 23859])
-        self.assertEqual(rows[-1].epoch_block, 8589355)
-        self.assertEqual(rows[-1].hotkey, "hotkey-1")
-        self.assertAlmostEqual(rows[-1].emission, 2.5)
+        self.assertEqual(rows[-1].epoch_block, 8589265)
+        self.assertEqual(rows[-1].hotkey, "legacy-hotkey")
+        self.assertAlmostEqual(rows[-1].emission, 1.5)
+
+    def test_record_snapshots_preserves_first_observation_for_same_epoch(self):
+        manager = self.sqlite_manager(current_block=1205)
+        manager.metagraph.E[1] = 9.0
+        miner = MinerMetadata(
+            uid=1,
+            hotkey="updated-hotkey",
+            coldkey="updated-coldkey",
+            alpha_stake=50.0,
+            processing_task_type="compression",
+            accumulate_score=1.0,
+        )
+        manager.session.add(miner)
+        manager.session.add(
+            MinerEmissionEpochSnapshot(
+                uid=1,
+                hotkey="first-hotkey",
+                coldkey="first-coldkey",
+                task_type="compression",
+                epoch_block=1200,
+                epoch_index=12,
+                alpha_stake=25.0,
+                emission=2.5,
+            )
+        )
+        manager.session.commit()
+
+        manager.record_miner_emission_epoch_snapshots({1: miner})
+
+        rows = manager.session.query(MinerEmissionEpochSnapshot).all()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].epoch_block, 1200)
+        self.assertEqual(rows[0].hotkey, "first-hotkey")
+        self.assertEqual(rows[0].coldkey, "first-coldkey")
+        self.assertAlmostEqual(rows[0].alpha_stake, 25.0)
+        self.assertAlmostEqual(rows[0].emission, 2.5)
 
     def test_zero_weigh_factor_keeps_equal_top_five_scores(self):
         manager = self.manager()
@@ -317,13 +353,41 @@ class MinerManagerAlphaStakeWeightTests(unittest.TestCase):
         stats = manager.recent_emission_liquidation_stats([1, 2])
 
         self.assertEqual(stats[1]["status"], "ok")
-        self.assertAlmostEqual(stats[1]["total_emission"], 30.0)
+        self.assertAlmostEqual(stats[1]["total_emission"], 20.0)
         self.assertAlmostEqual(stats[1]["retained_emission"], 12.0)
-        self.assertAlmostEqual(stats[1]["liquidated_emission"], 18.0)
-        self.assertAlmostEqual(stats[1]["liquidated_proportion"], 0.6)
-        self.assertAlmostEqual(stats[1]["retained_proportion"], 0.4)
+        self.assertAlmostEqual(stats[1]["liquidated_emission"], 8.0)
+        self.assertAlmostEqual(stats[1]["liquidated_proportion"], 0.4)
+        self.assertAlmostEqual(stats[1]["retained_proportion"], 0.6)
         self.assertEqual(stats[2]["status"], "new_or_insufficient_history")
         self.assertIsNone(stats[2]["retained_proportion"])
+
+    def test_recent_emission_liquidation_uses_elapsed_intervals_not_boundaries(self):
+        manager = self.sqlite_manager()
+        for epoch_index, alpha_stake, emission in [
+            (1, 100.0, 10.0),
+            (2, 108.0, 8.0),
+        ]:
+            manager.session.add(
+                MinerEmissionEpochSnapshot(
+                    uid=1,
+                    hotkey="hotkey-1",
+                    coldkey="coldkey-1",
+                    task_type="compression",
+                    epoch_block=epoch_index * 100,
+                    epoch_index=epoch_index,
+                    alpha_stake=alpha_stake,
+                    emission=emission,
+                )
+            )
+        manager.session.commit()
+
+        stats = manager.recent_emission_liquidation_stats([1])
+
+        self.assertEqual(stats[1]["status"], "ok")
+        self.assertAlmostEqual(stats[1]["total_emission"], 8.0)
+        self.assertAlmostEqual(stats[1]["retained_emission"], 8.0)
+        self.assertAlmostEqual(stats[1]["liquidated_emission"], 0.0)
+        self.assertAlmostEqual(stats[1]["liquidated_proportion"], 0.0)
 
     def test_emission_liquidation_weighing_preserves_total_and_assumes_unknown_half_liquidated(self):
         manager = self.manager()

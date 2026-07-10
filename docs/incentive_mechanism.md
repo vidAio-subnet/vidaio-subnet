@@ -636,7 +636,7 @@ Eligible miners are separated by task type and ranked by `accumulate_score` in d
 
 The miner metadata table also stores each miner UID's current `alpha_stake`. This value is synced from the Bittensor metagraph `alpha_stake` vector, exposed by the SDK as `metagraph.alpha_stake` / `metagraph.AS`, alongside the existing hotkey, coldkey, IP, and port metadata.
 
-The miner manager also maintains a rolling `miner_emission_epoch_snapshots` table to estimate recent emission liquidation behavior. Each snapshot includes the miner UID, hotkey, coldkey, task type, epoch block, epoch index, alpha stake, metagraph emission value, and timestamp. Snapshot rows are upserted once per `(uid, epoch_index)` and rows older than the configured 10-epoch window are pruned so the table does not grow indefinitely.
+The miner manager also maintains a rolling `miner_emission_epoch_snapshots` table to estimate recent emission liquidation behavior. Each snapshot includes the miner UID, hotkey, coldkey, task type, epoch block, epoch index, alpha stake, metagraph emission value, and timestamp. Snapshot rows are recorded once per `(uid, epoch_index)` and the first observation in that tempo epoch is retained. Rows older than the configured 10-epoch window are pruned so the table does not grow indefinitely.
 
 ### Top-Five Distribution
 
@@ -706,7 +706,7 @@ The window defaults to 10 tempo epochs. Epoch boundaries use `metagraph.tempo` w
 For each top-five non-validator recipient in a task pool, the miner manager reads up to the latest 10 `miner_emission_epoch_snapshots` rows and estimates:
 
 ```text
-total_recent_emission_i = sum(snapshot.emission over retained snapshot window)
+total_recent_emission_i = sum(snapshot.emission over snapshots after the first boundary)
 alpha_stake_delta_i = max(0, last_alpha_stake_i - first_alpha_stake_i)
 retained_emission_i = min(alpha_stake_delta_i, total_recent_emission_i)
 liquidated_emission_i = max(0, total_recent_emission_i - retained_emission_i)
