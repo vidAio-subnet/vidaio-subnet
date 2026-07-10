@@ -7,6 +7,9 @@ Default usage stops before the final Bittensor set_weights extrinsic:
 
 To actually emit weights, pass --emit-set-weights. If both --dry-run and
 --emit-set-weights are provided, --dry-run wins.
+
+Use --alpha-stake-weigh-factor, --emission-liquidation-weigh-factor, and
+--emission-liquidation-window-epochs to compare weighing settings locally.
 """
 
 import argparse
@@ -83,6 +86,24 @@ def _build_config():
             "without editing config files."
         ),
     )
+    parser.add_argument(
+        "--emission-liquidation-weigh-factor",
+        type=float,
+        default=None,
+        help=(
+            "Override CONFIG.score.emission_liquidation_weigh_factor for this run "
+            "without editing config files."
+        ),
+    )
+    parser.add_argument(
+        "--emission-liquidation-window-epochs",
+        type=int,
+        default=None,
+        help=(
+            "Override CONFIG.score.emission_liquidation_window_epochs for this run "
+            "without editing config files."
+        ),
+    )
     return bt.Config(parser)
 
 
@@ -94,6 +115,32 @@ def main() -> int:
         logger.info(
             "Overriding alpha stake weigh factor for this run: "
             f"{override_weigh_factor}"
+        )
+    override_liquidation_weigh_factor = getattr(
+        config,
+        "emission_liquidation_weigh_factor",
+        None,
+    )
+    if override_liquidation_weigh_factor is not None:
+        CONFIG.score.emission_liquidation_weigh_factor = (
+            override_liquidation_weigh_factor
+        )
+        logger.info(
+            "Overriding emission liquidation weigh factor for this run: "
+            f"{override_liquidation_weigh_factor}"
+        )
+    override_liquidation_window_epochs = getattr(
+        config,
+        "emission_liquidation_window_epochs",
+        None,
+    )
+    if override_liquidation_window_epochs is not None:
+        CONFIG.score.emission_liquidation_window_epochs = (
+            override_liquidation_window_epochs
+        )
+        logger.info(
+            "Overriding emission liquidation window epochs for this run: "
+            f"{override_liquidation_window_epochs}"
         )
 
     logger.info(
@@ -121,7 +168,8 @@ def main() -> int:
         metagraph=metagraph,
     )
     logger.info(
-        "MinerManager initialized; miner_metadata table has been created/migrated "
+        "MinerManager initialized; miner_metadata and "
+        "miner_emission_epoch_snapshots tables have been created/migrated, "
         "and metagraph metadata has been synced."
     )
 
