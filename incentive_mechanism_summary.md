@@ -194,7 +194,7 @@ ranks 6+         0%
 
 Only the top five compression miners and top five upscaling miners can receive non-zero miner-side emissions. Miners ranked 6 or lower in their task pool receive zero miner-side emission weight for that round.
 
-The optional alpha stake weighing is controlled by `CONFIG.score.alpha_stake_weigh_factor`, which defaults to `5.0`. At the value of `0.0`, the equal top-five split is unchanged. When the factor is positive, each task pool's non-zero recipients are multiplied by:
+The optional alpha stake weighing is controlled by `CONFIG.score.alpha_stake_weigh_factor`, which defaults to `0.0`. At this default, the equal top-five split is unchanged. When the factor is positive, each task pool's non-zero recipients are multiplied by:
 
 ```text
 1 + alpha_stake_weigh_factor * alpha_stake_i / sum(alpha_stake_top_nonzero_task_pool)
@@ -202,7 +202,7 @@ The optional alpha stake weighing is controlled by `CONFIG.score.alpha_stake_wei
 
 The weighted values are normalized back to the same task-pool total, so the weighing factor shifts the top-five distribution without changing the 80/20 task allocation or configured burn amount.
 
-For example, with `burn_proportion = 0.0` and top-five alpha stakes `[150, 100, 600, 1600, 20]`, the final weights are:
+For example, with `burn_proportion = 0.0` and top-five alpha stakes `[150, 100, 600, 1600, 20]`, the final weights are shown below. The factor 2 and factor 5 columns illustrate the effect if alpha stake weighing is enabled:
 
 | Rank | Alpha stake | Alpha stake share | Compression, factor 0 | Compression, factor 2 | Compression, factor 5 | Upscaling, factor 0 | Upscaling, factor 2 | Upscaling, factor 5 |
 |------|-------------|-------------------|-----------------------|-----------------------|-----------------------|---------------------|---------------------|---------------------|

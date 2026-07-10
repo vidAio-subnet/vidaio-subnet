@@ -668,7 +668,7 @@ After the base top-five allocation, the miner manager can optionally weigh miner
 alpha_stake_weigh_factor = CONFIG.score.alpha_stake_weigh_factor
 ```
 
-When the factor is `0.0`, the equal top-five split is preserved exactly. When the factor is greater than zero, only miners that already have a non-zero base allocation participate in the alpha stake weighing. In practice, this means only the top five compression miners and top five upscaling miners are eligible. Validators are excluded before this calculation, and miners ranked 6 or lower keep zero emission weight even if they have alpha stake.
+The current default is `0.0`, so this layer is disabled by default and the equal top-five split is preserved exactly. When the factor is greater than zero, only miners that already have a non-zero base allocation participate in the alpha stake weighing. In practice, this means only the top five compression miners and top five upscaling miners are eligible. Validators are excluded before this calculation, and miners ranked 6 or lower keep zero emission weight even if they have alpha stake.
 
 For each task pool, the weighing calculation uses alpha stake proportions among that task pool's non-zero recipients:
 
@@ -679,7 +679,7 @@ raw_weighted_weight_i = base_weight_i * (1 + alpha_stake_weigh_factor * alpha_sh
 
 The weighted values are then normalized back to the same task-pool total. This preserves the configured compression/upscaling allocation and configured burn amount while shifting the top-five distribution toward miners with larger alpha stake.
 
-Example final weights with `burn_proportion = 0.0` and top-five alpha stakes `[150, 100, 600, 1600, 20]`:
+Example final weights with `burn_proportion = 0.0` and top-five alpha stakes `[150, 100, 600, 1600, 20]`. The factor 2 and factor 5 columns illustrate the effect if alpha stake weighing is enabled:
 
 | Rank | Alpha stake | Alpha stake share | Compression, factor 0 | Compression, factor 2 | Compression, factor 5 | Upscaling, factor 0 | Upscaling, factor 2 | Upscaling, factor 5 |
 |------|-------------|-------------------|-----------------------|-----------------------|-----------------------|---------------------|---------------------|---------------------|
@@ -846,7 +846,7 @@ The task allocation, base top-five split, optional alpha stake weighing, and opt
 | **Compression Emission Allocation** | 80% | Miner manager setting | Compression pool before burn and top-five split |
 | **Upscaling Emission Allocation** | 20% | Miner manager setting | Upscaling pool before burn and top-five split |
 | **Emission Rank Shares** | 20%, 20%, 20%, 20%, 20% | Miner manager setting | Base shares applied separately inside compression and upscaling; only ranks 1-5 in each task pool receive non-zero miner-side emission weight |
-| **Alpha Stake Weigh Factor** | 5.0 | `CONFIG.score.alpha_stake_weigh_factor` | Optional task-pool-local weighing for non-validator top-five miners, normalized to preserve each task pool's total allocation |
+| **Alpha Stake Weigh Factor** | 0.0 | `CONFIG.score.alpha_stake_weigh_factor` | Disabled by default; optional task-pool-local weighing for non-validator top-five miners, normalized to preserve each task pool's total allocation |
 | **Emission Liquidation Weigh Factor** | 5.0 | `CONFIG.score.emission_liquidation_weigh_factor` | Optional task-pool-local weighing toward miners with lower estimated recent liquidation and higher retained emission proportion |
 | **Emission Liquidation Window** | 10 snapshots | `CONFIG.score.emission_liquidation_window_epochs` | Number of recent tempo-epoch snapshots retained in `miner_emission_epoch_snapshots`; the first retained snapshot is the alpha baseline, so 10 snapshots provide up to 9 comparable emission intervals |
 
