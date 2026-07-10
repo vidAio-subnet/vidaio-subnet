@@ -1,4 +1,14 @@
-from sqlalchemy import Column, String, Float, Integer, Boolean, DateTime, ForeignKey, Text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -93,3 +103,25 @@ class MinerPerformanceHistory(Base):
     
     def __repr__(self):
         return f"<Performance(uid='{self.uid}', round='{self.round_id}', s_f={self.s_f:.2f})>"
+
+
+class MinerEmissionEpochSnapshot(Base):
+    """
+    Stores per-epoch chain emission and alpha stake snapshots used to estimate
+    recent emission liquidation behavior.
+    """
+    __tablename__ = "miner_emission_epoch_snapshots"
+    __table_args__ = (
+        UniqueConstraint("uid", "epoch_index", name="uq_miner_emission_uid_epoch"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    uid = Column(Integer, nullable=False, index=True)
+    hotkey = Column(String(64), nullable=False, default="")
+    coldkey = Column(String(64), nullable=False, default="")
+    task_type = Column(String(32), nullable=True)
+    epoch_block = Column(Integer, nullable=False, index=True)
+    epoch_index = Column(Integer, nullable=False, index=True)
+    alpha_stake = Column(Float, nullable=False, default=0.0)
+    emission = Column(Float, nullable=False, default=0.0)
+    timestamp = Column(DateTime, default=datetime.now, index=True)
