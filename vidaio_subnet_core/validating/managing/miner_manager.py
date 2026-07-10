@@ -273,12 +273,29 @@ class MinerManager:
             logger.warning(f"Unable to read current block for emission snapshot: {e}")
             return None
 
+    def _tempo_blocks(self) -> int:
+        tempo_candidates = [
+            getattr(self.metagraph, "tempo", None),
+            getattr(getattr(self.metagraph, "hparams", None), "tempo", None),
+            CONFIG.SUBNET_TEMPO,
+        ]
+        for tempo_candidate in tempo_candidates:
+            item = getattr(tempo_candidate, "item", None)
+            if callable(item):
+                try:
+                    tempo_candidate = item()
+                except ValueError:
+                    continue
+            try:
+                tempo = int(tempo_candidate)
+            except (TypeError, ValueError):
+                continue
+            if tempo > 0:
+                return tempo
+        return 1
+
     def _epoch_index_for_block(self, block: int) -> int:
-        try:
-            tempo = max(1, int(CONFIG.SUBNET_TEMPO))
-        except (TypeError, ValueError):
-            tempo = 1
-        return max(0, int(block) // tempo)
+        return max(0, int(block) // self._tempo_blocks())
 
     def _chain_metadata_for_uid(self, uid: int) -> dict[str, Any]:
         axon = self.metagraph.axons[uid]
@@ -1724,7 +1741,7 @@ class MinerManager:
         rows: List[dict[str, Any]],
         weigh_factor: float,
         known_signal_count: int,
-        average_retained_proportion: float,
+        fallback_retained_proportion: float,
         base_total: float,
         raw_total: float,
         total_preserving_scale: float,
@@ -1737,7 +1754,7 @@ class MinerManager:
             f"factor={weigh_factor:.4f}, "
             f"window_epochs={self._snapshot_window_epochs()}, "
             f"known_signal_count={known_signal_count}, "
-            f"pool_average_retained_proportion={average_retained_proportion:.6f}, "
+            f"fallback_retained_proportion={fallback_retained_proportion:.6f}, "
             f"base_pre_burn_total={base_total:.10f}, "
             f"raw_weighted_total={raw_total:.10f}, "
             f"normalization_scale={total_preserving_scale:.10f}, "
@@ -1843,6 +1860,7 @@ class MinerManager:
             return weighted_scores
 
         stats_by_uid = emission_liquidation_stats or {}
+        fallback_retained_proportion = 0.5
         known_retained_proportions = []
         for _, uid, _ in nonzero_scores:
             stats = stats_by_uid.get(uid, {})
@@ -1854,11 +1872,6 @@ class MinerManager:
             )
 
         known_signal_count = len(known_retained_proportions)
-        average_retained_proportion = (
-            sum(known_retained_proportions) / known_signal_count
-            if known_signal_count
-            else 0.0
-        )
 
         base_total = sum(score for _, _, score in nonzero_scores)
         raw_scores = []
@@ -1871,10 +1884,8 @@ class MinerManager:
             )
             retained_proportion = stats.get("retained_proportion")
             if retained_proportion is None:
-                retained_signal = average_retained_proportion
-                signal_source = (
-                    "pool_average" if known_signal_count else "neutral_no_history"
-                )
+                retained_signal = fallback_retained_proportion
+                signal_source = "assumed_50pct_liquidated"
             else:
                 retained_signal = min(1.0, max(0.0, float(retained_proportion)))
                 signal_source = "history"
@@ -1953,7 +1964,7 @@ class MinerManager:
             rows=log_rows,
             weigh_factor=weigh_factor,
             known_signal_count=known_signal_count,
-            average_retained_proportion=average_retained_proportion,
+            fallback_retained_proportion=fallback_retained_proportion,
             base_total=base_total,
             raw_total=raw_total,
             total_preserving_scale=total_preserving_scale,

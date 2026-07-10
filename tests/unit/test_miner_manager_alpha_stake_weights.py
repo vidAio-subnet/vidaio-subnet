@@ -114,6 +114,12 @@ class MinerManagerAlphaStakeWeightTests(unittest.TestCase):
         self.assertEqual(manager._alpha_stake_for_uid(0), 3.0)
         self.assertEqual(manager._alpha_stake_for_uid(1), 12.5)
 
+    def test_epoch_index_prefers_metagraph_tempo(self):
+        manager = self.manager()
+        manager.metagraph.tempo = TensorValue(360)
+
+        self.assertEqual(manager._epoch_index_for_block(1080), 3)
+
     def test_zero_weigh_factor_keeps_equal_top_five_scores(self):
         manager = self.manager()
         miners = [
@@ -266,7 +272,7 @@ class MinerManagerAlphaStakeWeightTests(unittest.TestCase):
         self.assertEqual(stats[2]["status"], "new_or_insufficient_history")
         self.assertIsNone(stats[2]["retained_proportion"])
 
-    def test_emission_liquidation_weighing_preserves_total_and_keeps_unknown_neutral(self):
+    def test_emission_liquidation_weighing_preserves_total_and_assumes_unknown_half_liquidated(self):
         manager = self.manager()
         manager.emission_liquidation_weigh_factor = 2.0
         ranked_scores = [(1, 0.16), (2, 0.16), (3, 0.16)]
@@ -296,6 +302,23 @@ class MinerManagerAlphaStakeWeightTests(unittest.TestCase):
         self.assertAlmostEqual(sum(scores.values()), 0.48)
         self.assertGreater(scores[2], scores[3])
         self.assertGreater(scores[3], scores[1])
+
+    def test_emission_liquidation_weighing_keeps_all_unknown_pool_equal(self):
+        manager = self.manager()
+        manager.emission_liquidation_weigh_factor = 5.0
+        ranked_scores = [(uid, 0.16) for uid in range(1, 6)]
+
+        scores = dict(
+            manager._weigh_scores_by_emission_liquidation(
+                ranked_scores,
+                "compression",
+                {},
+            )
+        )
+
+        self.assertAlmostEqual(sum(scores.values()), 0.80)
+        for uid in range(1, 6):
+            self.assertAlmostEqual(scores[uid], 0.16)
 
 
 if __name__ == "__main__":

@@ -215,7 +215,7 @@ For example, with `burn_proportion = 0.6` and top-five alpha stakes `[150, 100, 
 
 The burn UID remains at 60% in all factor settings.
 
-The optional emission liquidation weighing is controlled separately by `CONFIG.score.emission_liquidation_weigh_factor`, which defaults to `5.0`, and `CONFIG.score.emission_liquidation_window_epochs`, which defaults to `10`. Setting the liquidation factor to `0.0` disables this layer. For each top-five non-validator miner in a task pool, the manager estimates:
+The optional emission liquidation weighing is controlled separately by `CONFIG.score.emission_liquidation_weigh_factor`, which defaults to `5.0`, and `CONFIG.score.emission_liquidation_window_epochs`, which defaults to `10` tempo epochs. Epoch boundaries use `metagraph.tempo` when available, falling back to `CONFIG.SUBNET_TEMPO`. Setting the liquidation factor to `0.0` disables this layer. For each top-five non-validator miner in a task pool, the manager estimates:
 
 ```text
 total_recent_emission_i = sum(snapshot.emission over retained snapshot window)
@@ -232,7 +232,7 @@ A positive liquidation weigh factor uses the retained side of the calculation:
 1 + emission_liquidation_weigh_factor * retained_proportion_i
 ```
 
-The values are normalized back to the same task-pool total. Miners with fewer than two snapshots or no recent emissions are treated as unknown, not as fully liquidated. Unknown miners use the known pool average when one exists; if the whole top-five task pool is unknown, this layer leaves the split unchanged.
+The values are normalized back to the same task-pool total. Miners with fewer than two snapshots or no recent emissions are assumed to have liquidated 50% of recent emissions, so their fallback retained signal is `0.5`. If the whole top-five task pool is missing history, every miner receives the same fallback signal and this layer leaves the split unchanged after normalization.
 
 For example, with `burn_proportion = 0.6`, no alpha stake weighing, and top-five recent liquidation percentages `[40%, 20%, 70%, 10%, 100%]`, the final post-burn weights are:
 

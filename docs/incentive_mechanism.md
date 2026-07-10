@@ -701,7 +701,7 @@ emission_liquidation_weigh_factor = CONFIG.score.emission_liquidation_weigh_fact
 emission_liquidation_window_epochs = CONFIG.score.emission_liquidation_window_epochs
 ```
 
-The window defaults to 10 epochs. The weigh factor defaults to `5.0`. Setting the factor to `0.0` disables this liquidation weighing layer.
+The window defaults to 10 tempo epochs. Epoch boundaries use `metagraph.tempo` when available, falling back to `CONFIG.SUBNET_TEMPO`. The weigh factor defaults to `5.0`. Setting the factor to `0.0` disables this liquidation weighing layer.
 
 For each top-five non-validator recipient in a task pool, the miner manager reads up to the latest 10 `miner_emission_epoch_snapshots` rows and estimates:
 
@@ -724,7 +724,7 @@ raw_weighted_weight_i = alpha_weighted_weight_i * (
 
 The raw values are normalized back to the same task-pool total, preserving the configured compression/upscaling allocation and the burn amount.
 
-If a miner has fewer than two snapshots or no recent emissions, its liquidation signal is treated as unknown rather than bad. Unknown top-five miners use the known pool average when at least one other top-five miner has a valid signal. If the whole task pool is unknown, the liquidation weighing pass leaves the split unchanged. This keeps completely new miners from being treated as if they liquidated 100% of emissions before there is any history.
+If a miner has fewer than two snapshots or no recent emissions, the miner manager assumes the miner liquidated 50% of recent emissions. In the formula this means `liquidated_proportion_i = 0.5` and `retained_proportion_i = 0.5` until enough history exists. If the whole task pool is missing history, every top-five miner receives the same fallback signal, so the liquidation weighing pass leaves the split unchanged after normalization.
 
 Example final post-burn weights with `burn_proportion = 0.6`, no alpha stake weighing, and top-five recent liquidation percentages `[40%, 20%, 70%, 10%, 100%]`:
 
