@@ -4,7 +4,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from loguru import logger
 import numpy as np
-from .sql_schemas import MinerMetadata, MinerPerformanceHistory, Base
+from .sql_schemas import (
+    Base,
+    MinerEmissionEpochSnapshot,
+    MinerMetadata,
+    MinerPerformanceHistory,
+)
 from .serving_counter import ServingCounter
 from ...global_config import CONFIG
 from ...utilities.rate_limit import build_rate_limit
@@ -14,6 +19,7 @@ from datetime import datetime
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy import desc, text
 import os
+import math
 from pathlib import Path
 import requests
 import hashlib
@@ -35,6 +41,13 @@ class MinerManager:
         self.compression_emission_allocation = 0.80
         self.upscaling_emission_allocation = 0.20
         self.emission_rank_shares = [0.20, 0.20, 0.20, 0.20, 0.20]
+        self.alpha_stake_weigh_factor = CONFIG.score.alpha_stake_weigh_factor
+        self.emission_liquidation_weigh_factor = (
+            CONFIG.score.emission_liquidation_weigh_factor
+        )
+        self.emission_liquidation_window_epochs = (
+            CONFIG.score.emission_liquidation_window_epochs
+        )
 
         self.metagraph = metagraph
         self.config_url = CONFIG.sql.url
@@ -54,6 +67,7 @@ class MinerManager:
         self.engine = create_engine("sqlite:///video_subnet_validator.db")
         Base.metadata.create_all(self.engine)
         self._migrate_miner_metadata_table()
+        self._migrate_miner_emission_epoch_snapshots_table()
         Session = sessionmaker(bind=self.engine)
         self.session = Session()
         self.sync_miner_chain_metadata()
@@ -99,6 +113,7 @@ class MinerManager:
             "coldkey": "ALTER TABLE miner_metadata ADD COLUMN coldkey VARCHAR(64) NOT NULL DEFAULT ''",
             "ip_address": "ALTER TABLE miner_metadata ADD COLUMN ip_address VARCHAR(64) NOT NULL DEFAULT ''",
             "port": "ALTER TABLE miner_metadata ADD COLUMN port INTEGER NOT NULL DEFAULT 0",
+            "alpha_stake": "ALTER TABLE miner_metadata ADD COLUMN alpha_stake FLOAT NOT NULL DEFAULT 0.0",
         }
 
         with self.engine.begin() as connection:
@@ -108,6 +123,43 @@ class MinerManager:
             for column_name, statement in migrations.items():
                 if column_name not in existing_columns:
                     logger.info(f"Applying miner metadata migration: add {column_name}")
+                    connection.execute(text(statement))
+
+    def _migrate_miner_emission_epoch_snapshots_table(self) -> None:
+        """Add snapshot columns without recreating existing SQLite data."""
+        migrations = {
+            "hotkey": "ALTER TABLE miner_emission_epoch_snapshots ADD COLUMN hotkey VARCHAR(64) NOT NULL DEFAULT ''",
+            "coldkey": "ALTER TABLE miner_emission_epoch_snapshots ADD COLUMN coldkey VARCHAR(64) NOT NULL DEFAULT ''",
+            "task_type": "ALTER TABLE miner_emission_epoch_snapshots ADD COLUMN task_type VARCHAR(32)",
+            "epoch_block": "ALTER TABLE miner_emission_epoch_snapshots ADD COLUMN epoch_block INTEGER NOT NULL DEFAULT 0",
+            "epoch_index": "ALTER TABLE miner_emission_epoch_snapshots ADD COLUMN epoch_index INTEGER NOT NULL DEFAULT 0",
+            "alpha_stake": "ALTER TABLE miner_emission_epoch_snapshots ADD COLUMN alpha_stake FLOAT NOT NULL DEFAULT 0.0",
+            "emission": "ALTER TABLE miner_emission_epoch_snapshots ADD COLUMN emission FLOAT NOT NULL DEFAULT 0.0",
+            "timestamp": "ALTER TABLE miner_emission_epoch_snapshots ADD COLUMN timestamp DATETIME",
+        }
+
+        with self.engine.begin() as connection:
+            table_exists = connection.execute(
+                text(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type='table' AND name='miner_emission_epoch_snapshots'"
+                )
+            ).fetchone()
+            if table_exists is None:
+                return
+
+            existing_columns = {
+                row[1]
+                for row in connection.execute(
+                    text("PRAGMA table_info(miner_emission_epoch_snapshots)")
+                )
+            }
+            for column_name, statement in migrations.items():
+                if column_name not in existing_columns:
+                    logger.info(
+                        "Applying miner emission snapshot migration: "
+                        f"add {column_name}"
+                    )
                     connection.execute(text(statement))
 
     def _axon_ip_address(self, axon) -> str:
@@ -152,6 +204,112 @@ class MinerManager:
                 return host
             return ip_text
 
+    def _stake_value_to_float(self, value: Any) -> float:
+        if value is None:
+            return 0.0
+
+        tao_value = getattr(value, "tao", None)
+        if tao_value is not None:
+            value = tao_value() if callable(tao_value) else tao_value
+
+        item = getattr(value, "item", None)
+        if callable(item):
+            try:
+                value = item()
+            except ValueError:
+                return 0.0
+
+        try:
+            stake = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+        if not math.isfinite(stake):
+            return 0.0
+        return max(0.0, stake)
+
+    def _alpha_stake_for_uid(self, uid: int) -> float:
+        for stake_attr in ("alpha_stake", "AS"):
+            try:
+                alpha_stakes = getattr(self.metagraph, stake_attr, None)
+            except AttributeError:
+                continue
+
+            if alpha_stakes is None:
+                continue
+
+            try:
+                return self._stake_value_to_float(alpha_stakes[uid])
+            except (IndexError, KeyError, TypeError) as e:
+                logger.debug(
+                    f"Unable to read metagraph {stake_attr} for UID {uid}: {e}"
+                )
+
+        return 0.0
+
+    def _emission_for_uid(self, uid: int) -> float:
+        for emission_attr in ("emission", "emissions", "E"):
+            try:
+                emissions = getattr(self.metagraph, emission_attr, None)
+            except AttributeError:
+                continue
+
+            if emissions is None:
+                continue
+
+            try:
+                return self._stake_value_to_float(emissions[uid])
+            except (IndexError, KeyError, TypeError) as e:
+                logger.debug(
+                    f"Unable to read metagraph {emission_attr} for UID {uid}: {e}"
+                )
+
+        return 0.0
+
+    def _current_epoch_block(self) -> int | None:
+        try:
+            return int(self.subtensor.get_current_block())
+        except Exception as e:
+            logger.warning(f"Unable to read current block for emission snapshot: {e}")
+            return None
+
+    def _tempo_blocks(self) -> int:
+        tempo_candidates = [
+            getattr(self.metagraph, "tempo", None),
+            getattr(getattr(self.metagraph, "hparams", None), "tempo", None),
+            CONFIG.SUBNET_TEMPO,
+        ]
+        for tempo_candidate in tempo_candidates:
+            item = getattr(tempo_candidate, "item", None)
+            if callable(item):
+                try:
+                    tempo_candidate = item()
+                except ValueError:
+                    continue
+            try:
+                tempo = int(tempo_candidate)
+            except (TypeError, ValueError):
+                continue
+            if tempo > 0:
+                return tempo
+        return 1
+
+    def _epoch_index_for_block(self, block: int) -> int:
+        return max(0, int(block) // self._tempo_blocks())
+
+    def _epoch_index_for_snapshot(self, snapshot: MinerEmissionEpochSnapshot) -> int:
+        try:
+            epoch_block = int(snapshot.epoch_block or 0)
+        except (TypeError, ValueError):
+            epoch_block = 0
+        if epoch_block > 0:
+            return self._epoch_index_for_block(epoch_block)
+
+        try:
+            return max(0, int(snapshot.epoch_index or 0))
+        except (TypeError, ValueError):
+            return 0
+
     def _chain_metadata_for_uid(self, uid: int) -> dict[str, Any]:
         axon = self.metagraph.axons[uid]
         hotkey = ""
@@ -166,6 +324,7 @@ class MinerManager:
             "coldkey": coldkey or getattr(axon, "coldkey", "") or "",
             "ip_address": self._axon_ip_address(axon),
             "port": int(getattr(axon, "port", 0) or 0),
+            "alpha_stake": self._alpha_stake_for_uid(uid),
         }
 
     def _apply_chain_metadata(self, miner: MinerMetadata, uid: int, fallback_hotkey: str = "") -> None:
@@ -173,12 +332,19 @@ class MinerManager:
             metadata = self._chain_metadata_for_uid(uid)
         except Exception as e:
             logger.warning(f"Unable to fetch metagraph metadata for UID {uid}: {e}")
-            metadata = {"hotkey": fallback_hotkey, "coldkey": "", "ip_address": "", "port": 0}
+            metadata = {
+                "hotkey": fallback_hotkey,
+                "coldkey": "",
+                "ip_address": "",
+                "port": 0,
+                "alpha_stake": 0.0,
+            }
 
         miner.hotkey = metadata["hotkey"] or fallback_hotkey or miner.hotkey
         miner.coldkey = metadata["coldkey"]
         miner.ip_address = metadata["ip_address"]
         miner.port = metadata["port"]
+        miner.alpha_stake = metadata["alpha_stake"]
 
     def _new_miner_metadata(
         self,
@@ -191,7 +357,13 @@ class MinerManager:
             metadata = self._chain_metadata_for_uid(uid)
         except Exception as e:
             logger.warning(f"Unable to fetch metagraph metadata for new UID {uid}: {e}")
-            metadata = {"hotkey": fallback_hotkey, "coldkey": "", "ip_address": "", "port": 0}
+            metadata = {
+                "hotkey": fallback_hotkey,
+                "coldkey": "",
+                "ip_address": "",
+                "port": 0,
+                "alpha_stake": 0.0,
+            }
 
         return MinerMetadata(
             uid=uid,
@@ -199,6 +371,7 @@ class MinerManager:
             coldkey=metadata["coldkey"],
             ip_address=metadata["ip_address"],
             port=metadata["port"],
+            alpha_stake=metadata["alpha_stake"],
             processing_task_type=processing_task_type,
             **kwargs,
         )
@@ -324,6 +497,295 @@ class MinerManager:
             query = query.filter(MinerMetadata.uid.in_(uids))
         result = {miner.uid: miner for miner in query.all()}
         return result
+
+    def _snapshot_window_epochs(self) -> int:
+        try:
+            return max(1, int(self.emission_liquidation_window_epochs))
+        except (TypeError, ValueError):
+            return 10
+
+    def _prune_miner_emission_epoch_snapshots(
+        self,
+        session: Session,
+        current_epoch_index: int,
+    ) -> None:
+        window_epochs = self._snapshot_window_epochs()
+        oldest_retained_epoch = max(0, current_epoch_index - window_epochs + 1)
+        deleted = (
+            session.query(MinerEmissionEpochSnapshot)
+            .filter(MinerEmissionEpochSnapshot.epoch_index < oldest_retained_epoch)
+            .delete(synchronize_session=False)
+        )
+        if deleted:
+            logger.info(
+                "Pruned miner emission epoch snapshots older than "
+                f"epoch_index={oldest_retained_epoch}: deleted {deleted} rows"
+            )
+
+    def _normalize_miner_emission_epoch_snapshot_indexes(
+        self,
+        session: Session,
+    ) -> None:
+        def is_older_snapshot(
+            candidate: MinerEmissionEpochSnapshot,
+            current: MinerEmissionEpochSnapshot,
+        ) -> bool:
+            candidate_block = int(candidate.epoch_block or 0)
+            current_block = int(current.epoch_block or 0)
+            if candidate_block > 0 and current_block > 0:
+                return candidate_block < current_block
+            if candidate_block > 0:
+                return True
+            if current_block > 0:
+                return False
+
+            candidate_timestamp = candidate.timestamp or datetime.max
+            current_timestamp = current.timestamp or datetime.max
+            if candidate_timestamp != current_timestamp:
+                return candidate_timestamp < current_timestamp
+            return (candidate.id or 0) < (current.id or 0)
+
+        snapshots = session.query(MinerEmissionEpochSnapshot).all()
+        snapshots_by_uid_epoch: dict[tuple[int, int], MinerEmissionEpochSnapshot] = {}
+        duplicate_snapshots = []
+        normalized_updates = 0
+
+        for snapshot in snapshots:
+            normalized_epoch_index = self._epoch_index_for_snapshot(snapshot)
+            key = (snapshot.uid, normalized_epoch_index)
+            existing = snapshots_by_uid_epoch.get(key)
+            if existing is None:
+                snapshots_by_uid_epoch[key] = snapshot
+                continue
+
+            if is_older_snapshot(snapshot, existing):
+                duplicate_snapshots.append(existing)
+                snapshots_by_uid_epoch[key] = snapshot
+            else:
+                duplicate_snapshots.append(snapshot)
+
+        for snapshot in duplicate_snapshots:
+            session.delete(snapshot)
+        if duplicate_snapshots:
+            session.flush()
+
+        duplicate_ids = {snapshot.id for snapshot in duplicate_snapshots}
+        for (uid, normalized_epoch_index), snapshot in snapshots_by_uid_epoch.items():
+            if snapshot.id in duplicate_ids:
+                continue
+            if snapshot.epoch_index != normalized_epoch_index:
+                snapshot.epoch_index = normalized_epoch_index
+                normalized_updates += 1
+
+        if duplicate_snapshots or normalized_updates:
+            logger.info(
+                "Normalized miner emission snapshot epoch indexes: "
+                f"updated={normalized_updates}, "
+                f"deleted_duplicate_rows={len(duplicate_snapshots)}"
+            )
+
+    def record_miner_emission_epoch_snapshots(
+        self,
+        miners_by_uid: Dict[int, MinerMetadata],
+    ) -> None:
+        current_block = self._current_epoch_block()
+        if current_block is None:
+            return
+
+        current_epoch_index = self._epoch_index_for_block(current_block)
+        session = self.session
+        inserted_snapshot_count = 0
+        retained_existing_count = 0
+
+        try:
+            for uid, miner in miners_by_uid.items():
+                if self._uid_has_validator_permit(uid):
+                    continue
+                if miner.processing_task_type not in ("compression", "upscaling"):
+                    continue
+
+                snapshot = (
+                    session.query(MinerEmissionEpochSnapshot)
+                    .filter(
+                        MinerEmissionEpochSnapshot.uid == uid,
+                        MinerEmissionEpochSnapshot.epoch_index == current_epoch_index,
+                    )
+                    .first()
+                )
+                if snapshot is not None:
+                    retained_existing_count += 1
+                    continue
+
+                snapshot = MinerEmissionEpochSnapshot(
+                    uid=uid,
+                    epoch_index=current_epoch_index,
+                )
+                session.add(snapshot)
+
+                snapshot.hotkey = miner.hotkey or ""
+                snapshot.coldkey = miner.coldkey or ""
+                snapshot.task_type = miner.processing_task_type
+                snapshot.epoch_block = current_block
+                snapshot.alpha_stake = self._stake_value_to_float(miner.alpha_stake)
+                snapshot.emission = self._emission_for_uid(uid)
+                snapshot.timestamp = datetime.now()
+                inserted_snapshot_count += 1
+
+            self._normalize_miner_emission_epoch_snapshot_indexes(session)
+            self._prune_miner_emission_epoch_snapshots(
+                session,
+                current_epoch_index,
+            )
+            session.commit()
+            if inserted_snapshot_count or retained_existing_count:
+                logger.info(
+                    "Recorded miner emission snapshots at "
+                    f"block={current_block}, "
+                    f"epoch_index={current_epoch_index}, "
+                    f"inserted={inserted_snapshot_count}, "
+                    f"retained_existing={retained_existing_count}, "
+                    f"window_epochs={self._snapshot_window_epochs()}"
+                )
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Unable to record miner emission epoch snapshots: {e}")
+
+    def _empty_emission_liquidation_stats(
+        self,
+        uid: int,
+        status: str,
+        snapshot_count: int = 0,
+    ) -> dict[str, Any]:
+        return {
+            "uid": uid,
+            "snapshot_count": snapshot_count,
+            "status": status,
+            "hotkey": "",
+            "coldkey": "",
+            "first_epoch_index": None,
+            "last_epoch_index": None,
+            "first_alpha_stake": 0.0,
+            "last_alpha_stake": 0.0,
+            "alpha_stake_delta": 0.0,
+            "first_excluded_emission": 0.0,
+            "total_emission": 0.0,
+            "retained_emission": 0.0,
+            "liquidated_emission": 0.0,
+            "liquidated_proportion": None,
+            "retained_proportion": None,
+            "emission_samples": "",
+            "alpha_stake_samples": "",
+        }
+
+    def recent_emission_liquidation_stats(
+        self,
+        uids: List[int],
+    ) -> dict[int, dict[str, Any]]:
+        stats: dict[int, dict[str, Any]] = {}
+        if not uids:
+            return stats
+
+        window_epochs = self._snapshot_window_epochs()
+        for uid in uids:
+            snapshots_desc = (
+                self.session.query(MinerEmissionEpochSnapshot)
+                .filter(MinerEmissionEpochSnapshot.uid == uid)
+                .order_by(
+                    MinerEmissionEpochSnapshot.epoch_block.desc(),
+                    MinerEmissionEpochSnapshot.epoch_index.desc(),
+                )
+                .limit(window_epochs)
+                .all()
+            )
+            snapshots = list(reversed(snapshots_desc))
+            if len(snapshots) < 2:
+                stats[uid] = self._empty_emission_liquidation_stats(
+                    uid,
+                    "new_or_insufficient_history",
+                    len(snapshots),
+                )
+                continue
+
+            first_snapshot = snapshots[0]
+            last_snapshot = snapshots[-1]
+            first_epoch_index = self._epoch_index_for_snapshot(first_snapshot)
+            last_epoch_index = self._epoch_index_for_snapshot(last_snapshot)
+            first_excluded_emission = max(
+                0.0,
+                float(first_snapshot.emission or 0.0),
+            )
+            emission_samples = ", ".join(
+                f"{self._epoch_index_for_snapshot(snapshot)}:"
+                f"{max(0.0, float(snapshot.emission or 0.0)):.6f}"
+                for snapshot in snapshots
+            )
+            alpha_stake_samples = ", ".join(
+                f"{self._epoch_index_for_snapshot(snapshot)}:"
+                f"{float(snapshot.alpha_stake or 0.0):.6f}"
+                for snapshot in snapshots
+            )
+            # Snapshots are boundary samples. The first row's emission belongs
+            # to the interval before the first alpha baseline in this window,
+            # so only emissions after that baseline are comparable.
+            total_emission = sum(
+                max(0.0, float(snapshot.emission or 0.0))
+                for snapshot in snapshots[1:]
+            )
+            alpha_stake_delta = max(
+                0.0,
+                float(last_snapshot.alpha_stake or 0.0)
+                - float(first_snapshot.alpha_stake or 0.0),
+            )
+
+            if total_emission <= 0.0:
+                stats[uid] = self._empty_emission_liquidation_stats(
+                    uid,
+                    "no_recent_emission",
+                    len(snapshots),
+                )
+                stats[uid].update(
+                    {
+                        "hotkey": last_snapshot.hotkey or "",
+                        "coldkey": last_snapshot.coldkey or "",
+                        "first_epoch_index": first_epoch_index,
+                        "last_epoch_index": last_epoch_index,
+                        "first_alpha_stake": float(first_snapshot.alpha_stake or 0.0),
+                        "last_alpha_stake": float(last_snapshot.alpha_stake or 0.0),
+                        "alpha_stake_delta": alpha_stake_delta,
+                        "first_excluded_emission": first_excluded_emission,
+                        "emission_samples": emission_samples,
+                        "alpha_stake_samples": alpha_stake_samples,
+                    }
+                )
+                continue
+
+            retained_emission = min(alpha_stake_delta, total_emission)
+            liquidated_emission = max(0.0, total_emission - retained_emission)
+            liquidated_proportion = liquidated_emission / total_emission
+            retained_proportion = retained_emission / total_emission
+
+            stats[uid] = {
+                "uid": uid,
+                "snapshot_count": len(snapshots),
+                "status": "ok",
+                "hotkey": last_snapshot.hotkey or "",
+                "coldkey": last_snapshot.coldkey or "",
+                "first_epoch_index": first_epoch_index,
+                "last_epoch_index": last_epoch_index,
+                "first_alpha_stake": float(first_snapshot.alpha_stake or 0.0),
+                "last_alpha_stake": float(last_snapshot.alpha_stake or 0.0),
+                "alpha_stake_delta": alpha_stake_delta,
+                "first_excluded_emission": first_excluded_emission,
+                "total_emission": total_emission,
+                "retained_emission": retained_emission,
+                "liquidated_emission": liquidated_emission,
+                "liquidated_proportion": liquidated_proportion,
+                "retained_proportion": retained_proportion,
+                "emission_samples": emission_samples,
+                "alpha_stake_samples": alpha_stake_samples,
+            }
+
+        return stats
 
     def step_synthetics_upscaling(
         self,
@@ -1033,9 +1495,9 @@ class MinerManager:
                 #     organic_s_l = 0.5
                 #     success = True
 
-                #     boost_percentage = 0.03
-                #     boost_amount = current_score * boost_percentage
-                #     acc_score = current_score + boost_amount
+                #     increase_percentage = 0.03
+                #     increase_amount = current_score * increase_percentage
+                #     acc_score = current_score + increase_amount
 
                 # elif score == 2.0:
                 #     organic_s_f = 0.3
@@ -1336,13 +1798,333 @@ class MinerManager:
 
         return sn_owner_uid
 
+    def _uid_has_validator_permit(self, uid: int) -> bool:
+        validator_permit = getattr(self.metagraph, "validator_permit", [])
+        try:
+            return bool(validator_permit[uid])
+        except (IndexError, KeyError, TypeError):
+            return False
+
+    def _format_log_table(self, rows: List[dict[str, Any]]) -> str:
+        if not rows:
+            return ""
+
+        columns = list(rows[0].keys())
+        column_widths = {
+            column: max(len(str(column)), *(len(str(row[column])) for row in rows))
+            for column in columns
+        }
+        header = " | ".join(
+            str(column).ljust(column_widths[column]) for column in columns
+        )
+        separator = "-+-".join("-" * column_widths[column] for column in columns)
+        body = "\n".join(
+            " | ".join(
+                str(row[column]).ljust(column_widths[column]) for column in columns
+            )
+            for row in rows
+        )
+        return f"{header}\n{separator}\n{body}"
+
+    def _log_alpha_stake_weighing(
+        self,
+        task_type: str,
+        rows: List[dict[str, Any]],
+        weigh_factor: float,
+        total_alpha_stake: float,
+        base_total: float,
+        raw_total: float,
+        total_preserving_scale: float,
+    ) -> None:
+        if not rows:
+            return
+
+        logger.info(
+            f"Alpha stake weighing details for {task_type} task pool: "
+            f"factor={weigh_factor:.4f}, total_alpha_stake={total_alpha_stake:.6f}, "
+            f"base_pre_burn_total={base_total:.10f}, raw_weighted_total={raw_total:.10f}, "
+            f"normalization_scale={total_preserving_scale:.10f}, "
+            f"post_burn_scale={(1 - self.burn_proportion):.4f}\n"
+            f"{self._format_log_table(rows)}"
+        )
+
+    def _log_emission_liquidation_weighing(
+        self,
+        task_type: str,
+        rows: List[dict[str, Any]],
+        weigh_factor: float,
+        known_signal_count: int,
+        fallback_retained_proportion: float,
+        base_total: float,
+        raw_total: float,
+        total_preserving_scale: float,
+    ) -> None:
+        if not rows:
+            return
+
+        logger.info(
+            f"Emission liquidation weighing details for {task_type} task pool: "
+            f"factor={weigh_factor:.4f}, "
+            f"window_epochs={self._snapshot_window_epochs()}, "
+            f"known_signal_count={known_signal_count}, "
+            f"fallback_retained_proportion={fallback_retained_proportion:.6f}, "
+            f"base_pre_burn_total={base_total:.10f}, "
+            f"raw_weighted_total={raw_total:.10f}, "
+            f"normalization_scale={total_preserving_scale:.10f}, "
+            f"post_burn_scale={(1 - self.burn_proportion):.4f}\n"
+            f"{self._format_log_table(rows)}"
+        )
+
+    def _weigh_scores_by_alpha_stake(
+        self,
+        ranked_scores: List[tuple[int, float, float]],
+        task_type: str = "unknown",
+    ) -> List[tuple[int, float]]:
+        try:
+            weigh_factor = max(0.0, float(self.alpha_stake_weigh_factor))
+        except (TypeError, ValueError):
+            weigh_factor = 0.0
+
+        weighted_scores = [(uid, score) for uid, score, _ in ranked_scores]
+        # Only the rank recipients with non-zero emissions participate in the
+        # per-task alpha stake weighing; lower ranks keep their zero score.
+        nonzero_scores = [
+            (index, uid, score, max(0.0, alpha_stake))
+            for index, (uid, score, alpha_stake) in enumerate(ranked_scores)
+            if score > 0.0
+        ]
+        if not nonzero_scores:
+            return weighted_scores
+
+        total_alpha_stake = sum(
+            alpha_stake for _, _, _, alpha_stake in nonzero_scores
+        )
+        base_total = sum(score for _, _, score, _ in nonzero_scores)
+        raw_scores = []
+        log_rows = []
+
+        for index, uid, score, alpha_stake in nonzero_scores:
+            alpha_share = (
+                alpha_stake / total_alpha_stake
+                if total_alpha_stake > 0.0
+                else 0.0
+            )
+            raw_multiplier = 1.0 + weigh_factor * alpha_share
+            raw_score = score * raw_multiplier
+            raw_scores.append((index, uid, raw_score, alpha_share, raw_multiplier))
+
+        raw_total = sum(raw_score for _, _, raw_score, _, _ in raw_scores)
+        total_preserving_scale = base_total / raw_total if raw_total > 0.0 else 1.0
+
+        for index, uid, raw_score, alpha_share, raw_multiplier in raw_scores:
+            normalized_score = raw_score * total_preserving_scale
+            if weigh_factor > 0.0 and total_alpha_stake > 0.0:
+                weighted_scores[index] = (uid, normalized_score)
+
+            base_score = ranked_scores[index][1]
+            alpha_stake = max(0.0, ranked_scores[index][2])
+            log_rows.append(
+                {
+                    "rank": index + 1,
+                    "uid": uid,
+                    "alpha_stake": f"{alpha_stake:.6f}",
+                    "alpha_share": f"{alpha_share * 100:.4f}%",
+                    "base_pre_burn": f"{base_score:.10f}",
+                    "base_final": f"{base_score * (1 - self.burn_proportion):.10f}",
+                    "raw_multiplier": f"{raw_multiplier:.10f}",
+                    "raw_weighted": f"{raw_score:.10f}",
+                    "normalized_pre_burn": f"{normalized_score:.10f}",
+                    "normalized_final": (
+                        f"{normalized_score * (1 - self.burn_proportion):.10f}"
+                    ),
+                }
+            )
+
+        self._log_alpha_stake_weighing(
+            task_type=task_type,
+            rows=log_rows,
+            weigh_factor=weigh_factor,
+            total_alpha_stake=total_alpha_stake,
+            base_total=base_total,
+            raw_total=raw_total,
+            total_preserving_scale=total_preserving_scale,
+        )
+
+        return weighted_scores
+
+    def _weigh_scores_by_emission_liquidation(
+        self,
+        ranked_scores: List[tuple[int, float]],
+        task_type: str = "unknown",
+        emission_liquidation_stats: dict[int, dict[str, Any]] | None = None,
+    ) -> List[tuple[int, float]]:
+        try:
+            weigh_factor = max(0.0, float(self.emission_liquidation_weigh_factor))
+        except (TypeError, ValueError):
+            weigh_factor = 0.0
+
+        weighted_scores = list(ranked_scores)
+        nonzero_scores = [
+            (index, uid, score)
+            for index, (uid, score) in enumerate(ranked_scores)
+            if score > 0.0
+        ]
+        if not nonzero_scores:
+            return weighted_scores
+
+        stats_by_uid = emission_liquidation_stats or {}
+        fallback_retained_proportion = 0.5
+        known_retained_proportions = []
+        for _, uid, _ in nonzero_scores:
+            stats = stats_by_uid.get(uid, {})
+            retained_proportion = stats.get("retained_proportion")
+            if retained_proportion is None:
+                continue
+            known_retained_proportions.append(
+                min(1.0, max(0.0, float(retained_proportion)))
+            )
+
+        known_signal_count = len(known_retained_proportions)
+
+        base_total = sum(score for _, _, score in nonzero_scores)
+        raw_scores = []
+        log_rows = []
+
+        for index, uid, score in nonzero_scores:
+            stats = stats_by_uid.get(
+                uid,
+                self._empty_emission_liquidation_stats(uid, "missing_snapshot"),
+            )
+            retained_proportion = stats.get("retained_proportion")
+            if retained_proportion is None:
+                retained_signal = fallback_retained_proportion
+                signal_source = "assumed_50pct_liquidated"
+            else:
+                retained_signal = min(1.0, max(0.0, float(retained_proportion)))
+                signal_source = "history"
+
+            raw_multiplier = 1.0 + weigh_factor * retained_signal
+            raw_score = score * raw_multiplier
+            raw_scores.append(
+                (
+                    index,
+                    uid,
+                    raw_score,
+                    retained_signal,
+                    raw_multiplier,
+                    stats,
+                    signal_source,
+                )
+            )
+
+        raw_total = sum(raw_score for _, _, raw_score, _, _, _, _ in raw_scores)
+        total_preserving_scale = base_total / raw_total if raw_total > 0.0 else 1.0
+
+        for (
+            index,
+            uid,
+            raw_score,
+            retained_signal,
+            raw_multiplier,
+            stats,
+            signal_source,
+        ) in raw_scores:
+            normalized_score = raw_score * total_preserving_scale
+            if weigh_factor > 0.0 and raw_total > 0.0:
+                weighted_scores[index] = (uid, normalized_score)
+
+            base_score = ranked_scores[index][1]
+            liquidated_proportion = stats.get("liquidated_proportion")
+            retained_proportion = stats.get("retained_proportion")
+            log_rows.append(
+                {
+                    "rank": index + 1,
+                    "uid": uid,
+                    "snapshots": stats.get("snapshot_count", 0),
+                    "status": stats.get("status", "missing_snapshot"),
+                    "epoch_first": stats.get("first_epoch_index", "n/a"),
+                    "epoch_last": stats.get("last_epoch_index", "n/a"),
+                    "alpha_first": f"{stats.get('first_alpha_stake', 0.0):.6f}",
+                    "alpha_last": f"{stats.get('last_alpha_stake', 0.0):.6f}",
+                    "alpha_delta": f"{stats.get('alpha_stake_delta', 0.0):.6f}",
+                    "first_excluded_emission": (
+                        f"{stats.get('first_excluded_emission', 0.0):.6f}"
+                    ),
+                    "settled_emission": f"{stats.get('total_emission', 0.0):.6f}",
+                    "retained_emission": f"{stats.get('retained_emission', 0.0):.6f}",
+                    "liquidated_emission": f"{stats.get('liquidated_emission', 0.0):.6f}",
+                    "liquidated_pct": (
+                        f"{liquidated_proportion * 100:.4f}%"
+                        if liquidated_proportion is not None
+                        else "n/a"
+                    ),
+                    "retained_pct": (
+                        f"{retained_proportion * 100:.4f}%"
+                        if retained_proportion is not None
+                        else "n/a"
+                    ),
+                    "retained_signal": f"{retained_signal:.6f}",
+                    "signal_source": signal_source,
+                    "epoch_emissions": stats.get("emission_samples", ""),
+                    "epoch_alpha_stakes": stats.get("alpha_stake_samples", ""),
+                    "base_pre_burn": f"{base_score:.10f}",
+                    "raw_multiplier": f"{raw_multiplier:.10f}",
+                    "raw_weighted": f"{raw_score:.10f}",
+                    "normalized_pre_burn": f"{normalized_score:.10f}",
+                    "normalized_final": (
+                        f"{normalized_score * (1 - self.burn_proportion):.10f}"
+                    ),
+                }
+            )
+
+        self._log_emission_liquidation_weighing(
+            task_type=task_type,
+            rows=log_rows,
+            weigh_factor=weigh_factor,
+            known_signal_count=known_signal_count,
+            fallback_retained_proportion=fallback_retained_proportion,
+            base_total=base_total,
+            raw_total=raw_total,
+            total_preserving_scale=total_preserving_scale,
+        )
+
+        return weighted_scores
+
+    def _apply_rank_curve(
+        self,
+        miners: List[tuple[int, float, float]],
+        allocation: float,
+        task_type: str = "unknown",
+        emission_liquidation_stats: dict[int, dict[str, Any]] | None = None,
+    ) -> List[tuple[int, float]]:
+        miners.sort(key=lambda x: x[1], reverse=True)
+        ranked_scores = []
+        for rank, (uid, _, alpha_stake) in enumerate(miners):
+            if rank < len(self.emission_rank_shares):
+                score = allocation * self.emission_rank_shares[rank]
+            else:
+                score = 0.0
+            ranked_scores.append((uid, score, alpha_stake))
+
+        alpha_weighted_scores = self._weigh_scores_by_alpha_stake(
+            ranked_scores,
+            task_type,
+        )
+        return self._weigh_scores_by_emission_liquidation(
+            alpha_weighted_scores,
+            task_type,
+            emission_liquidation_stats,
+        )
+
     @property
     def weights(self):
         """
-        Calculate weights with fixed task allocations and equal top-five shares.
+        Calculate weights with fixed task allocations and top-five shares.
         Compression receives 80% and upscaling receives 20% of the pre-burn
-        miner pool. Within each task pool, the top five miners receive 20%
-        each; all lower ranks receive zero.
+        miner pool. Within each task pool, the top five miners start from 20%
+        each, then optional alpha stake weighing reallocates those non-zero
+        shares and optional emission liquidation weighing reallocates them
+        again within the same task pool. All lower ranks receive zero.
         """
         # Collect eligible miners by task type, then rank each task pool separately.
         compression_miners = []
@@ -1351,33 +2133,45 @@ class MinerManager:
         owner_uid = self.get_burn_uid()
 
         self.check_database_connection()
+        self.sync_miner_chain_metadata()
 
-        for uid, miner in self.query().items():
+        miners_by_uid = self.query()
+        self.record_miner_emission_epoch_snapshots(miners_by_uid)
+
+        for uid, miner in miners_by_uid.items():
             # Exclude validator from getting weights set
-            if miner.accumulate_score == -1 or self.metagraph.validator_permit[uid]: 
+            if miner.accumulate_score == -1 or self._uid_has_validator_permit(uid):
                 continue
+            alpha_stake = miner.alpha_stake or 0.0
             if miner.processing_task_type == "compression":
-                compression_miners.append((uid, miner.accumulate_score))
+                compression_miners.append((uid, miner.accumulate_score, alpha_stake))
             elif miner.processing_task_type == "upscaling":
-                upscaling_miners.append((uid, miner.accumulate_score))
+                upscaling_miners.append((uid, miner.accumulate_score, alpha_stake))
+
+        emission_liquidation_stats = self.recent_emission_liquidation_stats(
+            [uid for uid, _, _ in compression_miners + upscaling_miners]
+        )
         
         # Initialize result arrays
         uids = []
         scores = []
-        compression_count = len(compression_miners)
-        upscaling_count = len(upscaling_miners)
 
-        def _apply_rank_curve(miners, allocation):
-            miners.sort(key=lambda x: x[1], reverse=True)
-            for rank, (uid, _) in enumerate(miners):
-                uids.append(uid)
-                if rank < len(self.emission_rank_shares):
-                    scores.append(allocation * self.emission_rank_shares[rank])
-                else:
-                    scores.append(0.0)
-
-        _apply_rank_curve(compression_miners, self.compression_emission_allocation)
-        _apply_rank_curve(upscaling_miners, self.upscaling_emission_allocation)
+        for uid, score in self._apply_rank_curve(
+            compression_miners,
+            self.compression_emission_allocation,
+            "compression",
+            emission_liquidation_stats,
+        ):
+            uids.append(uid)
+            scores.append(score)
+        for uid, score in self._apply_rank_curve(
+            upscaling_miners,
+            self.upscaling_emission_allocation,
+            "upscaling",
+            emission_liquidation_stats,
+        ):
+            uids.append(uid)
+            scores.append(score)
         
         # burn self.burn_proportion fraction of miner emissions
         total_scores = sum(scores)
@@ -1397,12 +2191,26 @@ class MinerManager:
         # Log distribution summary
         compression_count = len(compression_miners)
         upscaling_count = len(upscaling_miners)
-        compression_total_weight = sum(scores[i] for i, uid in enumerate(uids) if uid in [c[0] for c in compression_miners])
-        upscaling_total_weight = sum(scores[i] for i, uid in enumerate(uids) if uid in [u[0] for u in upscaling_miners])
+        compression_uids = {uid for uid, _, _ in compression_miners}
+        upscaling_uids = {uid for uid, _, _ in upscaling_miners}
+        compression_total_weight = sum(
+            scores[i] for i, uid in enumerate(uids) if uid in compression_uids
+        )
+        upscaling_total_weight = sum(
+            scores[i] for i, uid in enumerate(uids) if uid in upscaling_uids
+        )
         
-        logger.info(f"Reward distribution: {compression_count} compression miners ({compression_total_weight:.3f} weight), "
-                   f"{upscaling_count} upscaling miners ({upscaling_total_weight:.3f} weight)"
-                   f"Rewards data will be distributed as: {[(int(uid), float(score)) for uid, score in zip(uids, scores)]}"
-                   )
+        logger.info(
+            f"Reward distribution: {compression_count} compression miners "
+            f"({compression_total_weight:.3f} weight), {upscaling_count} "
+            f"upscaling miners ({upscaling_total_weight:.3f} weight), alpha "
+            f"stake weigh factor: {self.alpha_stake_weigh_factor:.3f}, "
+            f"emission liquidation weigh factor: "
+            f"{self.emission_liquidation_weigh_factor:.3f}, "
+            f"emission liquidation window epochs: "
+            f"{self._snapshot_window_epochs()}. "
+            f"Rewards data will be distributed as: "
+            f"{[(int(uid), float(score)) for uid, score in zip(uids, scores)]}"
+        )
         
         return uids, scores

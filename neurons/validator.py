@@ -2230,7 +2230,7 @@ class WeightSynthesizer:
                     await self.validator.set_weights()
             except Exception as e:
                 logger.error(f"Error in WeightSynthesizer: {e}", exc_info=True)
-            await asyncio.sleep(1200)  
+            await asyncio.sleep(60 * 72) # 72 minutes  
 
 
 if __name__ == "__main__":
