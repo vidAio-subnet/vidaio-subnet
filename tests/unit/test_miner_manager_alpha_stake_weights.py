@@ -86,7 +86,7 @@ class MinerManagerAlphaStakeWeightTests(unittest.TestCase):
         manager.alpha_stake_weigh_factor = 0.0
         manager.emission_liquidation_weigh_factor = 0.0
         manager.emission_liquidation_window_epochs = 10
-        manager.burn_proportion = 0.6
+        manager.burn_proportion = 0.0
         manager.compression_emission_allocation = 0.80
         manager.upscaling_emission_allocation = 0.20
         manager.emission_rank_shares = [0.20, 0.20, 0.20, 0.20, 0.20]
@@ -247,7 +247,9 @@ class MinerManagerAlphaStakeWeightTests(unittest.TestCase):
         manager = self.manager()
         manager.alpha_stake_weigh_factor = 1.0
         manager.metagraph.validator_permit[2] = True
-        manager.get_burn_uid = lambda: 99
+        manager.get_burn_uid = lambda: self.fail(
+            "get_burn_uid should not be called when burn_proportion is 0"
+        )
         manager.check_database_connection = lambda: None
         manager.sync_miner_chain_metadata = lambda: None
         manager.record_miner_emission_epoch_snapshots = lambda miners_by_uid: None
@@ -286,9 +288,9 @@ class MinerManagerAlphaStakeWeightTests(unittest.TestCase):
         self.assertNotIn(2, scores_by_uid)
         self.assertGreater(scores_by_uid[1], scores_by_uid[3])
         self.assertGreater(scores_by_uid[5], scores_by_uid[4])
-        self.assertAlmostEqual(scores_by_uid[1] + scores_by_uid[3], 0.128)
-        self.assertAlmostEqual(scores_by_uid[4] + scores_by_uid[5], 0.032)
-        self.assertAlmostEqual(scores_by_uid[99], 0.24)
+        self.assertAlmostEqual(scores_by_uid[1] + scores_by_uid[3], 0.32)
+        self.assertAlmostEqual(scores_by_uid[4] + scores_by_uid[5], 0.08)
+        self.assertNotIn(99, scores_by_uid)
 
     def test_emission_snapshot_records_hotkey_coldkey_and_prunes_window(self):
         manager = self.sqlite_manager(current_block=1200)

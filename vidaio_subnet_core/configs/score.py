@@ -16,6 +16,6 @@ class ScoreConfig(BaseModel):
     max_performance_records: int = Field(default=10)
     synthetics_hours_threshold: int = Field(default=5)
     synthetics_select_probability: float = Field(default=0.7)
-    alpha_stake_weigh_factor: float = Field(default=5.0)
+    alpha_stake_weigh_factor: float = Field(default=0.0)
     emission_liquidation_weigh_factor: float = Field(default=5.0)
     emission_liquidation_window_epochs: int = Field(default=10)
