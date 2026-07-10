@@ -667,6 +667,8 @@ class MinerManager:
             "first_alpha_stake": 0.0,
             "last_alpha_stake": 0.0,
             "alpha_stake_delta": 0.0,
+            "latest_unsettled_emission": 0.0,
+            "comparable_alpha_stake_delta": 0.0,
             "total_emission": 0.0,
             "retained_emission": 0.0,
             "liquidated_emission": 0.0,
@@ -695,7 +697,7 @@ class MinerManager:
                 .all()
             )
             snapshots = list(reversed(snapshots_desc))
-            if len(snapshots) < 2:
+            if len(snapshots) < 3:
                 stats[uid] = self._empty_emission_liquidation_stats(
                     uid,
                     "new_or_insufficient_history",
@@ -707,16 +709,25 @@ class MinerManager:
             last_snapshot = snapshots[-1]
             first_epoch_index = self._epoch_index_for_snapshot(first_snapshot)
             last_epoch_index = self._epoch_index_for_snapshot(last_snapshot)
-            # Snapshots are boundary samples. With N snapshots there are N-1
-            # elapsed emission intervals, so skip the first boundary row.
+            latest_unsettled_emission = max(
+                0.0,
+                float(last_snapshot.emission or 0.0),
+            )
+            # Snapshots are boundary samples. The latest boundary emission is
+            # already included in alpha_last and has not had a full interval to
+            # be liquidated, so compare only mature interval emissions.
             total_emission = sum(
                 max(0.0, float(snapshot.emission or 0.0))
-                for snapshot in snapshots[1:]
+                for snapshot in snapshots[1:-1]
             )
             alpha_stake_delta = max(
                 0.0,
                 float(last_snapshot.alpha_stake or 0.0)
                 - float(first_snapshot.alpha_stake or 0.0),
+            )
+            comparable_alpha_stake_delta = max(
+                0.0,
+                alpha_stake_delta - latest_unsettled_emission,
             )
 
             if total_emission <= 0.0:
@@ -734,11 +745,13 @@ class MinerManager:
                         "first_alpha_stake": float(first_snapshot.alpha_stake or 0.0),
                         "last_alpha_stake": float(last_snapshot.alpha_stake or 0.0),
                         "alpha_stake_delta": alpha_stake_delta,
+                        "latest_unsettled_emission": latest_unsettled_emission,
+                        "comparable_alpha_stake_delta": comparable_alpha_stake_delta,
                     }
                 )
                 continue
 
-            retained_emission = min(alpha_stake_delta, total_emission)
+            retained_emission = min(comparable_alpha_stake_delta, total_emission)
             liquidated_emission = max(0.0, total_emission - retained_emission)
             liquidated_proportion = liquidated_emission / total_emission
             retained_proportion = retained_emission / total_emission
@@ -754,6 +767,8 @@ class MinerManager:
                 "first_alpha_stake": float(first_snapshot.alpha_stake or 0.0),
                 "last_alpha_stake": float(last_snapshot.alpha_stake or 0.0),
                 "alpha_stake_delta": alpha_stake_delta,
+                "latest_unsettled_emission": latest_unsettled_emission,
+                "comparable_alpha_stake_delta": comparable_alpha_stake_delta,
                 "total_emission": total_emission,
                 "retained_emission": retained_emission,
                 "liquidated_emission": liquidated_emission,
@@ -2023,7 +2038,13 @@ class MinerManager:
                     "alpha_first": f"{stats.get('first_alpha_stake', 0.0):.6f}",
                     "alpha_last": f"{stats.get('last_alpha_stake', 0.0):.6f}",
                     "alpha_delta": f"{stats.get('alpha_stake_delta', 0.0):.6f}",
-                    "total_emission": f"{stats.get('total_emission', 0.0):.6f}",
+                    "latest_unsettled_emission": (
+                        f"{stats.get('latest_unsettled_emission', 0.0):.6f}"
+                    ),
+                    "comparable_delta": (
+                        f"{stats.get('comparable_alpha_stake_delta', 0.0):.6f}"
+                    ),
+                    "mature_emission": f"{stats.get('total_emission', 0.0):.6f}",
                     "retained_emission": f"{stats.get('retained_emission', 0.0):.6f}",
                     "liquidated_emission": f"{stats.get('liquidated_emission', 0.0):.6f}",
                     "liquidated_pct": (

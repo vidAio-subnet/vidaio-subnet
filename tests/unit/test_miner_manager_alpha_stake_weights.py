@@ -353,15 +353,48 @@ class MinerManagerAlphaStakeWeightTests(unittest.TestCase):
         stats = manager.recent_emission_liquidation_stats([1, 2])
 
         self.assertEqual(stats[1]["status"], "ok")
-        self.assertAlmostEqual(stats[1]["total_emission"], 20.0)
-        self.assertAlmostEqual(stats[1]["retained_emission"], 12.0)
+        self.assertAlmostEqual(stats[1]["total_emission"], 10.0)
+        self.assertAlmostEqual(stats[1]["latest_unsettled_emission"], 10.0)
+        self.assertAlmostEqual(stats[1]["comparable_alpha_stake_delta"], 2.0)
+        self.assertAlmostEqual(stats[1]["retained_emission"], 2.0)
         self.assertAlmostEqual(stats[1]["liquidated_emission"], 8.0)
-        self.assertAlmostEqual(stats[1]["liquidated_proportion"], 0.4)
-        self.assertAlmostEqual(stats[1]["retained_proportion"], 0.6)
+        self.assertAlmostEqual(stats[1]["liquidated_proportion"], 0.8)
+        self.assertAlmostEqual(stats[1]["retained_proportion"], 0.2)
         self.assertEqual(stats[2]["status"], "new_or_insufficient_history")
         self.assertIsNone(stats[2]["retained_proportion"])
 
-    def test_recent_emission_liquidation_uses_elapsed_intervals_not_boundaries(self):
+    def test_recent_emission_liquidation_excludes_latest_unsettled_boundary(self):
+        manager = self.sqlite_manager()
+        for epoch_index, alpha_stake, emission in [
+            (1, 100.0, 10.0),
+            (2, 108.0, 8.0),
+            (3, 110.0, 2.0),
+        ]:
+            manager.session.add(
+                MinerEmissionEpochSnapshot(
+                    uid=1,
+                    hotkey="hotkey-1",
+                    coldkey="coldkey-1",
+                    task_type="compression",
+                    epoch_block=epoch_index * 100,
+                    epoch_index=epoch_index,
+                    alpha_stake=alpha_stake,
+                    emission=emission,
+                )
+            )
+        manager.session.commit()
+
+        stats = manager.recent_emission_liquidation_stats([1])
+
+        self.assertEqual(stats[1]["status"], "ok")
+        self.assertAlmostEqual(stats[1]["total_emission"], 8.0)
+        self.assertAlmostEqual(stats[1]["latest_unsettled_emission"], 2.0)
+        self.assertAlmostEqual(stats[1]["comparable_alpha_stake_delta"], 8.0)
+        self.assertAlmostEqual(stats[1]["retained_emission"], 8.0)
+        self.assertAlmostEqual(stats[1]["liquidated_emission"], 0.0)
+        self.assertAlmostEqual(stats[1]["liquidated_proportion"], 0.0)
+
+    def test_recent_emission_liquidation_requires_mature_history(self):
         manager = self.sqlite_manager()
         for epoch_index, alpha_stake, emission in [
             (1, 100.0, 10.0),
@@ -383,11 +416,8 @@ class MinerManagerAlphaStakeWeightTests(unittest.TestCase):
 
         stats = manager.recent_emission_liquidation_stats([1])
 
-        self.assertEqual(stats[1]["status"], "ok")
-        self.assertAlmostEqual(stats[1]["total_emission"], 8.0)
-        self.assertAlmostEqual(stats[1]["retained_emission"], 8.0)
-        self.assertAlmostEqual(stats[1]["liquidated_emission"], 0.0)
-        self.assertAlmostEqual(stats[1]["liquidated_proportion"], 0.0)
+        self.assertEqual(stats[1]["status"], "new_or_insufficient_history")
+        self.assertIsNone(stats[1]["retained_proportion"])
 
     def test_emission_liquidation_weighing_preserves_total_and_assumes_unknown_half_liquidated(self):
         manager = self.manager()
