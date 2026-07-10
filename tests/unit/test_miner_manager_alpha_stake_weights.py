@@ -120,6 +120,59 @@ class MinerManagerAlphaStakeWeightTests(unittest.TestCase):
 
         self.assertEqual(manager._epoch_index_for_block(1080), 3)
 
+    def test_record_snapshots_normalizes_legacy_epoch_index_scale(self):
+        manager = self.sqlite_manager(current_block=8589355)
+        manager.metagraph.tempo = TensorValue(360)
+        manager.metagraph.E[1] = 2.5
+        miner = MinerMetadata(
+            uid=1,
+            hotkey="hotkey-1",
+            coldkey="coldkey-1",
+            alpha_stake=25.0,
+            processing_task_type="compression",
+            accumulate_score=1.0,
+        )
+        manager.session.add(miner)
+        manager.session.add(
+            MinerEmissionEpochSnapshot(
+                uid=1,
+                hotkey="legacy-hotkey",
+                coldkey="legacy-coldkey",
+                task_type="compression",
+                epoch_block=8589265,
+                epoch_index=85892,
+                alpha_stake=20.0,
+                emission=1.5,
+            )
+        )
+        manager.session.add(
+            MinerEmissionEpochSnapshot(
+                uid=1,
+                hotkey="older-hotkey",
+                coldkey="older-coldkey",
+                task_type="compression",
+                epoch_block=8588995,
+                epoch_index=85889,
+                alpha_stake=18.0,
+                emission=1.0,
+            )
+        )
+        manager.session.commit()
+
+        manager.record_miner_emission_epoch_snapshots({1: miner})
+
+        rows = (
+            manager.session.query(MinerEmissionEpochSnapshot)
+            .filter(MinerEmissionEpochSnapshot.uid == 1)
+            .order_by(MinerEmissionEpochSnapshot.epoch_block)
+            .all()
+        )
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([row.epoch_index for row in rows], [23858, 23859])
+        self.assertEqual(rows[-1].epoch_block, 8589355)
+        self.assertEqual(rows[-1].hotkey, "hotkey-1")
+        self.assertAlmostEqual(rows[-1].emission, 2.5)
+
     def test_zero_weigh_factor_keeps_equal_top_five_scores(self):
         manager = self.manager()
         miners = [

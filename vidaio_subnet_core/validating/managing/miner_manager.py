@@ -297,6 +297,19 @@ class MinerManager:
     def _epoch_index_for_block(self, block: int) -> int:
         return max(0, int(block) // self._tempo_blocks())
 
+    def _epoch_index_for_snapshot(self, snapshot: MinerEmissionEpochSnapshot) -> int:
+        try:
+            epoch_block = int(snapshot.epoch_block or 0)
+        except (TypeError, ValueError):
+            epoch_block = 0
+        if epoch_block > 0:
+            return self._epoch_index_for_block(epoch_block)
+
+        try:
+            return max(0, int(snapshot.epoch_index or 0))
+        except (TypeError, ValueError):
+            return 0
+
     def _chain_metadata_for_uid(self, uid: int) -> dict[str, Any]:
         axon = self.metagraph.axons[uid]
         hotkey = ""
@@ -509,6 +522,51 @@ class MinerManager:
                 f"epoch_index={oldest_retained_epoch}: deleted {deleted} rows"
             )
 
+    def _normalize_miner_emission_epoch_snapshot_indexes(
+        self,
+        session: Session,
+    ) -> None:
+        snapshots = session.query(MinerEmissionEpochSnapshot).all()
+        snapshots_by_uid_epoch: dict[tuple[int, int], MinerEmissionEpochSnapshot] = {}
+        duplicate_snapshots = []
+        normalized_updates = 0
+
+        for snapshot in snapshots:
+            normalized_epoch_index = self._epoch_index_for_snapshot(snapshot)
+            key = (snapshot.uid, normalized_epoch_index)
+            existing = snapshots_by_uid_epoch.get(key)
+            if existing is None:
+                snapshots_by_uid_epoch[key] = snapshot
+                continue
+
+            existing_block = int(existing.epoch_block or 0)
+            snapshot_block = int(snapshot.epoch_block or 0)
+            if snapshot_block >= existing_block:
+                duplicate_snapshots.append(existing)
+                snapshots_by_uid_epoch[key] = snapshot
+            else:
+                duplicate_snapshots.append(snapshot)
+
+        for snapshot in duplicate_snapshots:
+            session.delete(snapshot)
+        if duplicate_snapshots:
+            session.flush()
+
+        duplicate_ids = {snapshot.id for snapshot in duplicate_snapshots}
+        for (uid, normalized_epoch_index), snapshot in snapshots_by_uid_epoch.items():
+            if snapshot.id in duplicate_ids:
+                continue
+            if snapshot.epoch_index != normalized_epoch_index:
+                snapshot.epoch_index = normalized_epoch_index
+                normalized_updates += 1
+
+        if duplicate_snapshots or normalized_updates:
+            logger.info(
+                "Normalized miner emission snapshot epoch indexes: "
+                f"updated={normalized_updates}, "
+                f"deleted_duplicate_rows={len(duplicate_snapshots)}"
+            )
+
     def record_miner_emission_epoch_snapshots(
         self,
         miners_by_uid: Dict[int, MinerMetadata],
@@ -552,6 +610,7 @@ class MinerManager:
                 snapshot.timestamp = datetime.now()
                 snapshot_count += 1
 
+            self._normalize_miner_emission_epoch_snapshot_indexes(session)
             self._prune_miner_emission_epoch_snapshots(
                 session,
                 current_epoch_index,
@@ -605,7 +664,10 @@ class MinerManager:
             snapshots_desc = (
                 self.session.query(MinerEmissionEpochSnapshot)
                 .filter(MinerEmissionEpochSnapshot.uid == uid)
-                .order_by(MinerEmissionEpochSnapshot.epoch_index.desc())
+                .order_by(
+                    MinerEmissionEpochSnapshot.epoch_block.desc(),
+                    MinerEmissionEpochSnapshot.epoch_index.desc(),
+                )
                 .limit(window_epochs)
                 .all()
             )
@@ -620,6 +682,8 @@ class MinerManager:
 
             first_snapshot = snapshots[0]
             last_snapshot = snapshots[-1]
+            first_epoch_index = self._epoch_index_for_snapshot(first_snapshot)
+            last_epoch_index = self._epoch_index_for_snapshot(last_snapshot)
             total_emission = sum(
                 max(0.0, float(snapshot.emission or 0.0))
                 for snapshot in snapshots
@@ -640,8 +704,8 @@ class MinerManager:
                     {
                         "hotkey": last_snapshot.hotkey or "",
                         "coldkey": last_snapshot.coldkey or "",
-                        "first_epoch_index": first_snapshot.epoch_index,
-                        "last_epoch_index": last_snapshot.epoch_index,
+                        "first_epoch_index": first_epoch_index,
+                        "last_epoch_index": last_epoch_index,
                         "first_alpha_stake": float(first_snapshot.alpha_stake or 0.0),
                         "last_alpha_stake": float(last_snapshot.alpha_stake or 0.0),
                         "alpha_stake_delta": alpha_stake_delta,
@@ -660,8 +724,8 @@ class MinerManager:
                 "status": "ok",
                 "hotkey": last_snapshot.hotkey or "",
                 "coldkey": last_snapshot.coldkey or "",
-                "first_epoch_index": first_snapshot.epoch_index,
-                "last_epoch_index": last_snapshot.epoch_index,
+                "first_epoch_index": first_epoch_index,
+                "last_epoch_index": last_epoch_index,
                 "first_alpha_stake": float(first_snapshot.alpha_stake or 0.0),
                 "last_alpha_stake": float(last_snapshot.alpha_stake or 0.0),
                 "alpha_stake_delta": alpha_stake_delta,
