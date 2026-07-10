@@ -701,22 +701,21 @@ emission_liquidation_weigh_factor = CONFIG.score.emission_liquidation_weigh_fact
 emission_liquidation_window_epochs = CONFIG.score.emission_liquidation_window_epochs
 ```
 
-The window defaults to 10 tempo epochs. Epoch boundaries use `metagraph.tempo` when available, falling back to `CONFIG.SUBNET_TEMPO`. The weigh factor defaults to `5.0`. Setting the factor to `0.0` disables this liquidation weighing layer.
+The window defaults to 10 retained tempo-epoch snapshots. Epoch boundaries use `metagraph.tempo` when available, falling back to `CONFIG.SUBNET_TEMPO`. The first retained snapshot is used as the alpha stake baseline, so a 10-snapshot window provides up to 9 comparable settled emission intervals. The weigh factor defaults to `5.0`. Setting the factor to `0.0` disables this liquidation weighing layer.
 
 For each top-five non-validator recipient in a task pool, the miner manager reads up to the latest 10 `miner_emission_epoch_snapshots` rows and estimates:
 
 ```text
-latest_unsettled_emission_i = last_snapshot.emission
-total_recent_emission_i = sum(snapshot.emission over snapshots after the first boundary and before the latest boundary)
+first_excluded_emission_i = first_snapshot.emission
+total_recent_emission_i = sum(snapshot.emission over snapshots after the first boundary)
 alpha_stake_delta_i = max(0, last_alpha_stake_i - first_alpha_stake_i)
-comparable_alpha_stake_delta_i = max(0, alpha_stake_delta_i - latest_unsettled_emission_i)
-retained_emission_i = min(comparable_alpha_stake_delta_i, total_recent_emission_i)
+retained_emission_i = min(alpha_stake_delta_i, total_recent_emission_i)
 liquidated_emission_i = max(0, total_recent_emission_i - retained_emission_i)
 liquidated_proportion_i = liquidated_emission_i / total_recent_emission_i
 retained_proportion_i = 1 - liquidated_proportion_i
 ```
 
-The latest boundary emission is excluded because it is already included in the latest alpha stake and has not had a full interval to be liquidated. The positive weigh signal is the retained side of the calculation. A positive `emission_liquidation_weigh_factor` therefore shifts weight toward miners that appear to retain more of their mature recent emissions as alpha stake:
+The first boundary emission is excluded because the rolling window does not include the previous alpha stake baseline needed to compare it. Emissions after the first boundary are treated as settled interval emissions and are compared with the alpha stake change across the same window. The positive weigh signal is the retained side of the calculation. A positive `emission_liquidation_weigh_factor` therefore shifts weight toward miners that appear to retain more of their recent emissions as alpha stake:
 
 ```text
 raw_weighted_weight_i = alpha_weighted_weight_i * (
@@ -726,7 +725,7 @@ raw_weighted_weight_i = alpha_weighted_weight_i * (
 
 The raw values are normalized back to the same task-pool total, preserving the configured compression/upscaling allocation and the burn amount.
 
-If a miner has fewer than three snapshots or no mature recent emissions, the miner manager assumes the miner liquidated 50% of recent emissions. In the formula this means `liquidated_proportion_i = 0.5` and `retained_proportion_i = 0.5` until enough history exists. If the whole task pool is missing history, every top-five miner receives the same fallback signal, so the liquidation weighing pass leaves the split unchanged after normalization.
+If a miner has fewer than two snapshots or no recent settled emissions in the comparable window, the miner manager assumes the miner liquidated 50% of recent emissions. In the formula this means `liquidated_proportion_i = 0.5` and `retained_proportion_i = 0.5` until enough history exists. If the whole task pool is missing history, every top-five miner receives the same fallback signal, so the liquidation weighing pass leaves the split unchanged after normalization.
 
 Example final post-burn weights with `burn_proportion = 0.6`, no alpha stake weighing, and top-five recent liquidation percentages `[40%, 20%, 70%, 10%, 100%]`:
 
@@ -849,7 +848,7 @@ The task allocation, base top-five split, optional alpha stake weighing, and opt
 | **Emission Rank Shares** | 20%, 20%, 20%, 20%, 20% | Miner manager setting | Base shares applied separately inside compression and upscaling; only ranks 1-5 in each task pool receive non-zero miner-side emission weight |
 | **Alpha Stake Weigh Factor** | 5.0 | `CONFIG.score.alpha_stake_weigh_factor` | Optional task-pool-local weighing for non-validator top-five miners, normalized to preserve each task pool's total allocation |
 | **Emission Liquidation Weigh Factor** | 5.0 | `CONFIG.score.emission_liquidation_weigh_factor` | Optional task-pool-local weighing toward miners with lower estimated recent liquidation and higher retained emission proportion |
-| **Emission Liquidation Window** | 10 epochs | `CONFIG.score.emission_liquidation_window_epochs` | Number of recent snapshot epochs retained in `miner_emission_epoch_snapshots` and used for liquidation estimates |
+| **Emission Liquidation Window** | 10 snapshots | `CONFIG.score.emission_liquidation_window_epochs` | Number of recent tempo-epoch snapshots retained in `miner_emission_epoch_snapshots`; the first retained snapshot is the alpha baseline, so 10 snapshots provide up to 9 comparable emission intervals |
 
 ### Compression System Parameters
 
