@@ -626,72 +626,165 @@ penalty_f_multiplier = 1.0 - (penalty_f_count / 10) × 0.20
 
 ## Emission Weighting & Burn
 
-The final incentive layer is implemented in `vidaio_subnet_core/validating/managing/miner_manager.py` through the `MinerManager.weights` property. This layer converts accumulated miner scores into on-chain weights, allocates the miner pool across compression and upscaling, applies a steep winner-heavy rank curve inside each task pool, and burns a configured portion of the miner emission pool.
+The final incentive layer is implemented in `vidaio_subnet_core/validating/managing/miner_manager.py` through the `MinerManager.weights` property. This layer converts accumulated miner scores into on-chain weights, allocates the miner pool across compression and upscaling, starts each task pool from equal top-five rank shares, optionally weighs those non-zero shares by alpha stake and recent emission liquidation behavior, and applies the configured burn proportion to the miner emission pool. The current burn proportion is `0.0`, so no miner emissions are burned by default.
 
 ### Eligible Miner Set
 
-Only miners with a valid `accumulate_score` and a recognized `processing_task_type` participate in the emission calculation. Validators and miners with `accumulate_score == -1` are excluded before ranking.
+Only miners with a valid `accumulate_score` and a recognized `processing_task_type` participate in the emission calculation. Validators, identified by metagraph `validator_permit`, and miners with `accumulate_score == -1` are excluded before ranking.
 
-Eligible miners are separated by task type and ranked by `accumulate_score` in descending order inside their own task pools. Compression receives 60% of the pre-burn miner pool and upscaling receives 40%.
+Eligible miners are separated by task type and ranked by `accumulate_score` in descending order inside their own task pools. Compression receives 80% of the pre-burn miner pool and upscaling receives 20%.
 
-### Rank Curve Distribution
+The miner metadata table also stores each miner UID's current `alpha_stake`. This value is synced from the Bittensor metagraph `alpha_stake` vector, exposed by the SDK as `metagraph.alpha_stake` / `metagraph.AS`, alongside the existing hotkey, coldkey, IP, and port metadata.
 
-Each task pool uses the same fixed rank curve:
+The miner manager also maintains a rolling `miner_emission_epoch_snapshots` table to estimate recent emission liquidation behavior. Each snapshot includes the miner UID, hotkey, coldkey, task type, epoch block, epoch index, alpha stake, metagraph emission value, and timestamp. Snapshot rows are recorded once per `(uid, epoch_index)` and the first observation in that tempo epoch is retained. Rows older than the configured 10-epoch window are pruned so the table does not grow indefinitely.
+
+### Top-Five Distribution
+
+Each task pool starts from an equal split among its top five miners:
 
 | Rank | Share of task pool |
 |------|---------------------|
-| 1 (winner) | 60% |
+| 1 | 20% |
 | 2 | 20% |
-| 3 | 10% |
-| 4 | 6% |
-| 5 | 4% |
+| 3 | 20% |
+| 4 | 20% |
+| 5 | 20% |
 | 6+ | 0% |
 
-The curve is winner-heavy by design: rank 1 receives a clear majority of its task pool, rank 2 receives a meaningful share, and lower ranks fall off quickly. Miners ranked 6 or lower in their task pool receive zero miner-side emission weight for that round.
+Rank determines eligibility. When both optional weigh factors are `0.0`, all five eligible ranks receive the same share. Miners ranked 6 or lower in their task pool receive zero miner-side emission weight for that round.
 
 Before burn, this produces the following task-specific allocations:
 
 | Bucket | Rank 1 | Rank 2 | Rank 3 | Rank 4 | Rank 5 | Rank 6+ |
 |--------|--------|--------|--------|--------|--------|---------|
-| Compression pool (60%) | 36% | 12% | 6% | 3.6% | 2.4% | 0% |
-| Upscaling pool (40%) | 24% | 8% | 4% | 2.4% | 1.6% | 0% |
+| Compression pool (80%) | 16% | 16% | 16% | 16% | 16% | 0% |
+| Upscaling pool (20%) | 4% | 4% | 4% | 4% | 4% | 0% |
+
+### Alpha Stake Weighing
+
+After the base top-five allocation, the miner manager can optionally weigh miner-side allocations according to each non-validator miner's alpha stake proportion inside the same task pool. This behavior is controlled by:
+
+```python
+alpha_stake_weigh_factor = CONFIG.score.alpha_stake_weigh_factor
+```
+
+The current default is `0.0`, so this layer is disabled by default and the equal top-five split is preserved exactly. When the factor is greater than zero, only miners that already have a non-zero base allocation participate in the alpha stake weighing. In practice, this means only the top five compression miners and top five upscaling miners are eligible. Validators are excluded before this calculation, and miners ranked 6 or lower keep zero emission weight even if they have alpha stake.
+
+For each task pool, the weighing calculation uses alpha stake proportions among that task pool's non-zero recipients:
+
+```text
+alpha_share_i = alpha_stake_i / sum(alpha_stake_top_nonzero_task_pool)
+raw_weighted_weight_i = base_weight_i * (1 + alpha_stake_weigh_factor * alpha_share_i)
+```
+
+The weighted values are then normalized back to the same task-pool total. This preserves the configured compression/upscaling allocation and configured burn amount while shifting the top-five distribution toward miners with larger alpha stake.
+
+Example final weights with `burn_proportion = 0.0` and top-five alpha stakes `[150, 100, 600, 1600, 20]`. The factor 2 and factor 5 columns illustrate the effect if alpha stake weighing is enabled:
+
+| Rank | Alpha stake | Alpha stake share | Compression, factor 0 | Compression, factor 2 | Compression, factor 5 | Upscaling, factor 0 | Upscaling, factor 2 | Upscaling, factor 5 |
+|------|-------------|-------------------|-----------------------|-----------------------|-----------------------|---------------------|---------------------|---------------------|
+| 1 | 150 | 6.07% | 16.00% | 12.82% | 10.43% | 4.00% | 3.20% | 2.61% |
+| 2 | 100 | 4.05% | 16.00% | 12.35% | 9.62% | 4.00% | 3.09% | 2.40% |
+| 3 | 600 | 24.29% | 16.00% | 16.98% | 17.72% | 4.00% | 4.25% | 4.43% |
+| 4 | 1600 | 64.78% | 16.00% | 26.23% | 33.91% | 4.00% | 6.56% | 8.48% |
+| 5 | 20 | 0.81% | 16.00% | 11.61% | 8.32% | 4.00% | 2.90% | 2.08% |
+| Task-pool miner total | 2470 | 100.00% | 80.00% | 80.00% | 80.00% | 20.00% | 20.00% | 20.00% |
+
+The burn UID receives 0% in all factor settings. The factor changes only the distribution among the non-zero top-five miners inside the task pool.
+
+### Recent Emission Liquidation Weighing
+
+After the alpha stake weighing pass, the miner manager can apply a second optional pass based on each miner's estimated proportion of recent emissions liquidated over the rolling snapshot window. This behavior is controlled by:
+
+```python
+emission_liquidation_weigh_factor = CONFIG.score.emission_liquidation_weigh_factor
+emission_liquidation_window_epochs = CONFIG.score.emission_liquidation_window_epochs
+```
+
+The window defaults to 10 retained tempo-epoch snapshots. Epoch boundaries use `metagraph.tempo` when available, falling back to `CONFIG.SUBNET_TEMPO`. The first retained snapshot is used as the alpha stake baseline, so a 10-snapshot window provides up to 9 comparable settled emission intervals. The weigh factor defaults to `5.0`. Setting the factor to `0.0` disables this liquidation weighing layer.
+
+For each top-five non-validator recipient in a task pool, the miner manager reads up to the latest 10 `miner_emission_epoch_snapshots` rows and estimates:
+
+```text
+first_excluded_emission_i = first_snapshot.emission
+total_recent_emission_i = sum(snapshot.emission over snapshots after the first boundary)
+alpha_stake_delta_i = max(0, last_alpha_stake_i - first_alpha_stake_i)
+retained_emission_i = min(alpha_stake_delta_i, total_recent_emission_i)
+liquidated_emission_i = max(0, total_recent_emission_i - retained_emission_i)
+liquidated_proportion_i = liquidated_emission_i / total_recent_emission_i
+retained_proportion_i = 1 - liquidated_proportion_i
+```
+
+The first boundary emission is excluded because the rolling window does not include the previous alpha stake baseline needed to compare it. Emissions after the first boundary are treated as settled interval emissions and are compared with the alpha stake change across the same window. The positive weigh signal is the retained side of the calculation. A positive `emission_liquidation_weigh_factor` therefore shifts weight toward miners that appear to retain more of their recent emissions as alpha stake:
+
+```text
+raw_weighted_weight_i = alpha_weighted_weight_i * (
+    1 + emission_liquidation_weigh_factor * retained_proportion_i
+)
+```
+
+The raw values are normalized back to the same task-pool total, preserving the configured compression/upscaling allocation and configured burn amount.
+
+If a miner has fewer than two snapshots or no recent settled emissions in the comparable window, the miner manager assumes the miner liquidated 50% of recent emissions. In the formula this means `liquidated_proportion_i = 0.5` and `retained_proportion_i = 0.5` until enough history exists. If the whole task pool is missing history, every top-five miner receives the same fallback signal, so the liquidation weighing pass leaves the split unchanged after normalization.
+
+Example final weights with `burn_proportion = 0.0`, no alpha stake weighing, and top-five recent liquidation percentages `[40%, 20%, 70%, 10%, 100%]`:
+
+| Rank | Liquidated | Retained signal | Compression, factor 0 | Compression, factor 2 | Compression, factor 5 | Upscaling, factor 0 | Upscaling, factor 2 | Upscaling, factor 5 |
+|------|------------|-----------------|-----------------------|-----------------------|-----------------------|---------------------|---------------------|---------------------|
+| 1 | 40% | 60% | 16.00% | 17.25% | 17.78% | 4.00% | 4.31% | 4.44% |
+| 2 | 20% | 80% | 16.00% | 20.39% | 22.22% | 4.00% | 5.10% | 5.56% |
+| 3 | 70% | 30% | 16.00% | 12.55% | 11.11% | 4.00% | 3.14% | 2.78% |
+| 4 | 10% | 90% | 16.00% | 21.96% | 24.44% | 4.00% | 5.49% | 6.11% |
+| 5 | 100% | 0% | 16.00% | 7.84% | 4.44% | 4.00% | 1.96% | 1.11% |
+| Task-pool miner total | n/a | n/a | 80.00% | 80.00% | 80.00% | 20.00% | 20.00% | 20.00% |
+
+When both `alpha_stake_weigh_factor = 5.0` and `emission_liquidation_weigh_factor = 5.0`, using top-five alpha stakes `[150, 100, 600, 1600, 20]` and recent liquidation percentages `[40%, 20%, 70%, 10%, 100%]`, the final weights are:
+
+| Rank | Alpha stake | Liquidated | Alpha-only factor 5, compression | Both factors 5, compression | Alpha-only factor 5, upscaling | Both factors 5, upscaling |
+|------|-------------|------------|----------------------------------|-----------------------------|--------------------------------|---------------------------|
+| 1 | 150 | 40% | 10.43% | 10.15% | 2.61% | 2.54% |
+| 2 | 100 | 20% | 9.62% | 11.70% | 2.40% | 2.92% |
+| 3 | 600 | 70% | 17.72% | 10.77% | 4.43% | 2.69% |
+| 4 | 1600 | 10% | 33.91% | 45.36% | 8.48% | 11.34% |
+| 5 | 20 | 100% | 8.32% | 2.02% | 2.08% | 0.51% |
+| Task-pool miner total | 2470 | n/a | 80.00% | 80.00% | 20.00% | 20.00% |
 
 ### Emissions Burn
 
-After the rank-curve allocations are calculated, the miner manager burns a fixed proportion of the miner emission pool. The current configuration is:
+After the top-five allocations and optional alpha stake and emission liquidation weighing are calculated, the miner manager applies a configured burn proportion to the miner emission pool. The current configuration is:
 
 ```python
-burn_proportion = 0.8
+burn_proportion = 0.0
 ```
 
-This means 80% of the calculated miner emissions are assigned to the subnet owner UID returned by `get_burn_uid()`, while the remaining 20% stays with the ranked miners.
+This means no calculated miner emissions are assigned to the subnet owner UID returned by `get_burn_uid()`, while 100% stays with the ranked miners.
 
-The burn is applied after ranking and rank-curve allocation:
+The burn is applied after ranking, the base top-five split, any alpha stake weighing, and any emission liquidation weighing:
 
 ```text
-pre_burn_weight_i = rank-curve allocation for miner i
+pre_burn_weight_i = weighted top-five allocation for miner i
 miner_weight_i = pre_burn_weight_i * (1 - burn_proportion)
 burn_weight = burn_proportion * sum(pre_burn_weights)
 ```
 
-With the current `burn_proportion = 0.8`, the effective on-chain distribution is:
+With `burn_proportion = 0.0`, `alpha_stake_weigh_factor = 0.0`, and `emission_liquidation_weigh_factor = 0.0`, the effective on-chain distribution is:
 
 | Recipient bucket | Effective final allocation |
 |------------------|----------------------------|
-| Compression rank 1 winner | 7.2% |
-| Compression rank 2 | 2.4% |
-| Compression rank 3 | 1.2% |
-| Compression rank 4 | 0.72% |
-| Compression rank 5 | 0.48% |
-| Upscaling rank 1 winner | 4.8% |
-| Upscaling rank 2 | 1.6% |
-| Upscaling rank 3 | 0.8% |
-| Upscaling rank 4 | 0.48% |
-| Upscaling rank 5 | 0.32% |
+| Compression rank 1 | 16% |
+| Compression rank 2 | 16% |
+| Compression rank 3 | 16% |
+| Compression rank 4 | 16% |
+| Compression rank 5 | 16% |
+| Upscaling rank 1 | 4% |
+| Upscaling rank 2 | 4% |
+| Upscaling rank 3 | 4% |
+| Upscaling rank 4 | 4% |
+| Upscaling rank 5 | 4% |
 | Ranks 6+ in either task pool | 0% |
-| Burn UID / subnet owner UID | 80% |
+| Burn UID / subnet owner UID | 0% |
 
-The task allocation and rank curve are applied before the burn. Therefore, only the top five compression miners and top five upscaling miners can receive non-zero miner-side emissions; all other miner-side emission is zeroed before the remaining eligible miner emissions are scaled by `1 - burn_proportion`.
+The task allocation, base top-five split, optional alpha stake weighing, and optional emission liquidation weighing are applied before the burn. Therefore, only the top five compression miners and top five upscaling miners can receive non-zero miner-side emissions; all other miner-side emission is zeroed before the remaining eligible miner emissions are scaled by `1 - burn_proportion`.
 
 ---
 
@@ -749,10 +842,13 @@ The task allocation and rank curve are applied before the burn. Therefore, only 
 | **Default Content Length** | 5s | 5s - 10s | Actively configurable by miners |
 | **Quality Weight (W1)** | 0.5 | 0.0 - 1.0 | Fixed in current scoring service |
 | **Length Weight (W2)** | 0.5 | 0.0 - 1.0 | Fixed in current scoring service |
-| **Emission Burn Proportion** | 0.8 | Miner manager setting | Burns 80% of miner emissions to the subnet owner UID |
-| **Compression Emission Allocation** | 60% | Miner manager setting | Compression pool before burn and rank-curve split |
-| **Upscaling Emission Allocation** | 40% | Miner manager setting | Upscaling pool before burn and rank-curve split |
-| **Emission Rank Curve** | 60%, 20%, 10%, 6%, 4% | Miner manager setting | Applied separately inside compression and upscaling; only ranks 1-5 in each task pool receive non-zero miner-side emission weight |
+| **Emission Burn Proportion** | 0.0 | Miner manager setting | No miner emissions are burned by default |
+| **Compression Emission Allocation** | 80% | Miner manager setting | Compression pool before burn and top-five split |
+| **Upscaling Emission Allocation** | 20% | Miner manager setting | Upscaling pool before burn and top-five split |
+| **Emission Rank Shares** | 20%, 20%, 20%, 20%, 20% | Miner manager setting | Base shares applied separately inside compression and upscaling; only ranks 1-5 in each task pool receive non-zero miner-side emission weight |
+| **Alpha Stake Weigh Factor** | 0.0 | `CONFIG.score.alpha_stake_weigh_factor` | Disabled by default; optional task-pool-local weighing for non-validator top-five miners, normalized to preserve each task pool's total allocation |
+| **Emission Liquidation Weigh Factor** | 5.0 | `CONFIG.score.emission_liquidation_weigh_factor` | Optional task-pool-local weighing toward miners with lower estimated recent liquidation and higher retained emission proportion |
+| **Emission Liquidation Window** | 10 snapshots | `CONFIG.score.emission_liquidation_window_epochs` | Number of recent tempo-epoch snapshots retained in `miner_emission_epoch_snapshots`; the first retained snapshot is the alpha baseline, so 10 snapshots provide up to 9 comparable emission intervals |
 
 ### Compression System Parameters
 

@@ -34,6 +34,10 @@ from sqlalchemy import desc, asc, func, select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta
 from services.dashboard.server import send_upscaling_data_to_dashboard, send_compression_data_to_dashboard
+from services.scoring.compression_score_cache import (
+    CompressionScoreCache,
+    find_duplicate_compression_scores,
+)
 from services.video_scheduler.redis_utils import (
     get_redis_connection, 
     get_organic_upscaling_queue_size, 
@@ -802,6 +806,9 @@ class Validator(base.BaseValidator):
         if num_miners == 0:
             return
 
+        miner_scores = {uid: miner.accumulate_score for uid, miner in self.miner_manager.query([uid for _, uid in upscaling_miners]).items()}
+        upscaling_miners.sort(key=lambda miner: miner_scores.get(miner[1], float("-inf")), reverse=True)
+
         query_count = SYNTHETIC_QUERIES_PER_MINER
         shared_content_length = min(upscaling_content_lengths.values()) if upscaling_content_lengths else 5
         content_lengths = [shared_content_length] * query_count
@@ -930,6 +937,9 @@ class Validator(base.BaseValidator):
         num_miners = len(compression_miners)
         if num_miners == 0:
             return
+
+        miner_scores = {uid: miner.accumulate_score for uid, miner in self.miner_manager.query([uid for _, uid in compression_miners]).items()}
+        compression_miners = sorted(compression_miners, key=lambda miner: miner_scores.get(miner[1], float("-inf")), reverse=True)
 
         query_count = SYNTHETIC_QUERIES_PER_MINER
         logger.info(
@@ -1080,6 +1090,7 @@ class Validator(base.BaseValidator):
             f"{num_miners} miners in {scoring_batch_count} batches of up to {scoring_batch_size}"
         )
 
+        compression_score_cache: CompressionScoreCache = {}
         for batch_idx, batch_start in enumerate(range(0, total_scoring_responses, scoring_batch_size), start=1):
             batch_end = min(batch_start + scoring_batch_size, total_scoring_responses)
             batch_uids = flat_uids[batch_start:batch_end]
@@ -1112,6 +1123,7 @@ class Validator(base.BaseValidator):
                 round_id,
                 distorted_urls=flat_distorted_urls[batch_start:batch_end],
                 duplicate_url_reasons=batch_duplicate_url_reasons,
+                compression_score_cache=compression_score_cache,
             )
 
             logger.info(
@@ -1331,6 +1343,7 @@ class Validator(base.BaseValidator):
         round_id: str,
         distorted_urls: list[str] | None = None,
         duplicate_url_reasons: dict[int, str] | None = None,
+        compression_score_cache: CompressionScoreCache | None = None,
     ):
         if distorted_urls is None:
             distorted_urls = []
@@ -1402,6 +1415,36 @@ class Validator(base.BaseValidator):
             lambda idx: duplicate_url_reasons[idx],
             "No reason provided",
         )
+
+        if compression_score_cache is None:
+            compression_score_cache = {}
+
+        duplicate_score_owners = find_duplicate_compression_scores(
+            uids,
+            video_ids,
+            vmaf_scores,
+            base_vmaf_scores,
+            vmaf_thresholds,
+            compression_rates,
+            final_scores,
+            compression_score_cache,
+        )
+        for idx, first_uid in duplicate_score_owners.items():
+            duplicate_reason = (
+                "MINER FAILURE: duplicate synthetic compression score metrics "
+                f"for input {video_ids[idx]}; matches earlier UID {first_uid}"
+            )
+            logger.warning(
+                f"UID {uids[idx]}: {duplicate_reason}. Assigning score of 0."
+            )
+            final_scores[idx] = 0.0
+            reasons[idx] = f"{duplicate_reason}; original scorer result: {reasons[idx]}"
+
+        if duplicate_score_owners:
+            logger.info(
+                f"Zeroed {len(duplicate_score_owners)} duplicate synthetic "
+                "compression results based on normalized primary scoring metrics"
+            )
         
         logger.info(f"Updating miner manager with {len(compression_rates)} compression miner scores after synthetic requests processing")
 
@@ -2187,7 +2230,7 @@ class WeightSynthesizer:
                     await self.validator.set_weights()
             except Exception as e:
                 logger.error(f"Error in WeightSynthesizer: {e}", exc_info=True)
-            await asyncio.sleep(1200)  
+            await asyncio.sleep(60 * 72) # 72 minutes  
 
 
 if __name__ == "__main__":

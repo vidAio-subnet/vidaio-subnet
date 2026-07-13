@@ -72,8 +72,8 @@ def get_organic_forward_uids(self, count: int = None, task_type : str = None, vp
     """
     Get a list of UIDs that are available for forwarding, selected from
     the top 5 miners by accumulate_score for the given task_type.
-    Miner slots are sampled with the same rank probability curve used for
-    emissions within each task pool: 60%, 20%, 10%, 6%, and 4%.
+    Miner slots are sampled with the same equal shares used for emissions
+    within each task pool: 20% for each of the top five miners.
 
     Args:
         count (int): Number of UIDs to return
@@ -89,7 +89,7 @@ def get_organic_forward_uids(self, count: int = None, task_type : str = None, vp
     rank_shares = getattr(
         self.miner_manager,
         "emission_rank_shares",
-        [0.60, 0.20, 0.10, 0.06, 0.04],
+        [0.20, 0.20, 0.20, 0.20, 0.20],
     )
 
     # Get top 5 hotkeys for this task type from MinerMetadata, ordered by accumulate_score desc.
@@ -136,7 +136,7 @@ def get_organic_forward_uids(self, count: int = None, task_type : str = None, vp
     probabilities = np.array(candidate_weights, dtype=float)
     probabilities = probabilities / probabilities.sum()
 
-    # Sample miner slots from the task-specific top 5 using the emissions rank curve.
+    # Sample miner slots from the task-specific top 5 using the emissions shares.
     # Replacement keeps the requested organic capacity while preserving the intended
     # long-run routing probability for each rank.
     selected = np.random.choice(
