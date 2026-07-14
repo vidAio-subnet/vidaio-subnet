@@ -27,6 +27,8 @@ import time
 import ipaddress
 
 class MinerManager:
+    OWNER_COLDKEY_STAKE_SOURCE = "owner_coldkey"
+
     def __init__(self, uid, config, wallet, metagraph):
         logger.info(f"Initializing MinerManager with uid: {uid}")
         self.uid = uid
@@ -134,6 +136,10 @@ class MinerManager:
             "epoch_block": "ALTER TABLE miner_emission_epoch_snapshots ADD COLUMN epoch_block INTEGER NOT NULL DEFAULT 0",
             "epoch_index": "ALTER TABLE miner_emission_epoch_snapshots ADD COLUMN epoch_index INTEGER NOT NULL DEFAULT 0",
             "alpha_stake": "ALTER TABLE miner_emission_epoch_snapshots ADD COLUMN alpha_stake FLOAT NOT NULL DEFAULT 0.0",
+            # Existing rows contain metagraph alpha_stake, which is aggregate
+            # hotkey stake. Mark them as legacy so they cannot be combined
+            # with owner-coldkey stake in liquidation calculations.
+            "stake_source": "ALTER TABLE miner_emission_epoch_snapshots ADD COLUMN stake_source VARCHAR(32) NOT NULL DEFAULT 'total_hotkey'",
             "emission": "ALTER TABLE miner_emission_epoch_snapshots ADD COLUMN emission FLOAT NOT NULL DEFAULT 0.0",
             "timestamp": "ALTER TABLE miner_emission_epoch_snapshots ADD COLUMN timestamp DATETIME",
         }
@@ -246,6 +252,58 @@ class MinerManager:
                 )
 
         return 0.0
+
+    def _owner_alpha_stake_for_uid(self, uid: int) -> float | None:
+        """Return alpha stake on this hotkey owned by its registered coldkey.
+
+        Metagraph ``alpha_stake`` is the aggregate for a hotkey and includes
+        delegations from unrelated coldkeys. Using it for retention allows a
+        third party to manipulate a miner's liquidation signal. The chain's
+        coldkey/hotkey pair query isolates stake owned by the miner.
+
+        ``None`` means the pair could not be verified. Callers must skip the
+        sample rather than recording zero, which could look like an unstake.
+        """
+        hotkeys = getattr(self.metagraph, "hotkeys", [])
+        coldkeys = getattr(self.metagraph, "coldkeys", [])
+        try:
+            hotkey = hotkeys[uid]
+            coldkey = coldkeys[uid]
+        except (IndexError, KeyError, TypeError):
+            logger.warning(
+                f"Unable to resolve owner coldkey/hotkey pair for UID {uid}"
+            )
+            return None
+
+        if not hotkey or not coldkey:
+            logger.warning(
+                f"Missing owner coldkey/hotkey pair for UID {uid}; "
+                "skipping emission liquidation stake sample"
+            )
+            return None
+
+        try:
+            stakes_by_netuid = self.subtensor.get_stake_for_coldkey_and_hotkey(
+                coldkey_ss58=coldkey,
+                hotkey_ss58=hotkey,
+                netuids=[self.config.netuid],
+            )
+            stake_info = stakes_by_netuid.get(self.config.netuid)
+            if stake_info is None or getattr(stake_info, "stake", None) is None:
+                logger.warning(
+                    "Owner-coldkey stake query returned no verified pair for "
+                    f"UID {uid}, hotkey={hotkey}, coldkey={coldkey}"
+                )
+                return None
+            owner_stake = stake_info.stake
+        except Exception as e:
+            logger.warning(
+                "Unable to read owner-coldkey alpha stake for "
+                f"UID {uid}, hotkey={hotkey}, coldkey={coldkey}: {e}"
+            )
+            return None
+
+        return self._stake_value_to_float(owner_stake)
 
     def _emission_for_uid(self, uid: int) -> float:
         for emission_attr in ("emission", "emissions", "E"):
@@ -596,6 +654,7 @@ class MinerManager:
         session = self.session
         inserted_snapshot_count = 0
         retained_existing_count = 0
+        skipped_unverified_stake_count = 0
 
         try:
             for uid, miner in miners_by_uid.items():
@@ -616,6 +675,11 @@ class MinerManager:
                     retained_existing_count += 1
                     continue
 
+                owner_alpha_stake = self._owner_alpha_stake_for_uid(uid)
+                if owner_alpha_stake is None:
+                    skipped_unverified_stake_count += 1
+                    continue
+
                 snapshot = MinerEmissionEpochSnapshot(
                     uid=uid,
                     epoch_index=current_epoch_index,
@@ -626,7 +690,8 @@ class MinerManager:
                 snapshot.coldkey = miner.coldkey or ""
                 snapshot.task_type = miner.processing_task_type
                 snapshot.epoch_block = current_block
-                snapshot.alpha_stake = self._stake_value_to_float(miner.alpha_stake)
+                snapshot.alpha_stake = owner_alpha_stake
+                snapshot.stake_source = self.OWNER_COLDKEY_STAKE_SOURCE
                 snapshot.emission = self._emission_for_uid(uid)
                 snapshot.timestamp = datetime.now()
                 inserted_snapshot_count += 1
@@ -637,13 +702,18 @@ class MinerManager:
                 current_epoch_index,
             )
             session.commit()
-            if inserted_snapshot_count or retained_existing_count:
+            if (
+                inserted_snapshot_count
+                or retained_existing_count
+                or skipped_unverified_stake_count
+            ):
                 logger.info(
                     "Recorded miner emission snapshots at "
                     f"block={current_block}, "
                     f"epoch_index={current_epoch_index}, "
                     f"inserted={inserted_snapshot_count}, "
                     f"retained_existing={retained_existing_count}, "
+                    f"skipped_unverified_stake={skipped_unverified_stake_count}, "
                     f"window_epochs={self._snapshot_window_epochs()}"
                 )
         except Exception as e:
@@ -667,6 +737,7 @@ class MinerManager:
             "first_alpha_stake": 0.0,
             "last_alpha_stake": 0.0,
             "alpha_stake_delta": 0.0,
+            "stake_source": self.OWNER_COLDKEY_STAKE_SOURCE,
             "first_excluded_emission": 0.0,
             "total_emission": 0.0,
             "retained_emission": 0.0,
@@ -689,7 +760,11 @@ class MinerManager:
         for uid in uids:
             snapshots_desc = (
                 self.session.query(MinerEmissionEpochSnapshot)
-                .filter(MinerEmissionEpochSnapshot.uid == uid)
+                .filter(
+                    MinerEmissionEpochSnapshot.uid == uid,
+                    MinerEmissionEpochSnapshot.stake_source
+                    == self.OWNER_COLDKEY_STAKE_SOURCE,
+                )
                 .order_by(
                     MinerEmissionEpochSnapshot.epoch_block.desc(),
                     MinerEmissionEpochSnapshot.epoch_index.desc(),
@@ -752,6 +827,7 @@ class MinerManager:
                         "first_alpha_stake": float(first_snapshot.alpha_stake or 0.0),
                         "last_alpha_stake": float(last_snapshot.alpha_stake or 0.0),
                         "alpha_stake_delta": alpha_stake_delta,
+                        "stake_source": self.OWNER_COLDKEY_STAKE_SOURCE,
                         "first_excluded_emission": first_excluded_emission,
                         "emission_samples": emission_samples,
                         "alpha_stake_samples": alpha_stake_samples,
@@ -775,6 +851,7 @@ class MinerManager:
                 "first_alpha_stake": float(first_snapshot.alpha_stake or 0.0),
                 "last_alpha_stake": float(last_snapshot.alpha_stake or 0.0),
                 "alpha_stake_delta": alpha_stake_delta,
+                "stake_source": self.OWNER_COLDKEY_STAKE_SOURCE,
                 "first_excluded_emission": first_excluded_emission,
                 "total_emission": total_emission,
                 "retained_emission": retained_emission,
@@ -2044,9 +2121,16 @@ class MinerManager:
                     "status": stats.get("status", "missing_snapshot"),
                     "epoch_first": stats.get("first_epoch_index", "n/a"),
                     "epoch_last": stats.get("last_epoch_index", "n/a"),
-                    "alpha_first": f"{stats.get('first_alpha_stake', 0.0):.6f}",
-                    "alpha_last": f"{stats.get('last_alpha_stake', 0.0):.6f}",
-                    "alpha_delta": f"{stats.get('alpha_stake_delta', 0.0):.6f}",
+                    "owner_alpha_first": (
+                        f"{stats.get('first_alpha_stake', 0.0):.6f}"
+                    ),
+                    "owner_alpha_last": (
+                        f"{stats.get('last_alpha_stake', 0.0):.6f}"
+                    ),
+                    "owner_alpha_delta": (
+                        f"{stats.get('alpha_stake_delta', 0.0):.6f}"
+                    ),
+                    "stake_source": stats.get("stake_source", "unknown"),
                     "first_excluded_emission": (
                         f"{stats.get('first_excluded_emission', 0.0):.6f}"
                     ),
@@ -2066,7 +2150,9 @@ class MinerManager:
                     "retained_signal": f"{retained_signal:.6f}",
                     "signal_source": signal_source,
                     "epoch_emissions": stats.get("emission_samples", ""),
-                    "epoch_alpha_stakes": stats.get("alpha_stake_samples", ""),
+                    "epoch_owner_alpha_stakes": stats.get(
+                        "alpha_stake_samples", ""
+                    ),
                     "base_pre_burn": f"{base_score:.10f}",
                     "raw_multiplier": f"{raw_multiplier:.10f}",
                     "raw_weighted": f"{raw_score:.10f}",

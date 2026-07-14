@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 
@@ -90,9 +90,12 @@ class MinerManagerAlphaStakeWeightTests(unittest.TestCase):
         manager.compression_emission_allocation = 0.80
         manager.upscaling_emission_allocation = 0.20
         manager.emission_rank_shares = [0.20, 0.20, 0.20, 0.20, 0.20]
+        manager.config = SimpleNamespace(netuid=85)
         manager.metagraph = SimpleNamespace(
             alpha_stake=[0.0] * 100,
             E=[0.0] * 100,
+            hotkeys=[f"hotkey-{uid}" for uid in range(100)],
+            coldkeys=[f"coldkey-{uid}" for uid in range(100)],
             validator_permit=[False] * 100,
         )
         return manager
@@ -105,6 +108,9 @@ class MinerManagerAlphaStakeWeightTests(unittest.TestCase):
         manager.engine = engine
         manager.session = session_factory()
         manager.subtensor = SimpleNamespace(get_current_block=lambda: current_block)
+        manager._owner_alpha_stake_for_uid = lambda uid: manager._stake_value_to_float(
+            manager.session.get(MinerMetadata, uid).alpha_stake
+        )
         return manager
 
     def test_reads_alpha_stake_from_metagraph_vector(self):
@@ -113,6 +119,65 @@ class MinerManagerAlphaStakeWeightTests(unittest.TestCase):
 
         self.assertEqual(manager._alpha_stake_for_uid(0), 3.0)
         self.assertEqual(manager._alpha_stake_for_uid(1), 12.5)
+
+    def test_reads_only_registered_coldkey_stake_for_liquidation(self):
+        manager = self.manager()
+        manager.metagraph.alpha_stake[1] = 1025.0
+        calls = []
+
+        def get_stake_for_coldkey_and_hotkey(**kwargs):
+            calls.append(kwargs)
+            return {85: SimpleNamespace(stake=BalanceValue(25.0))}
+
+        manager.subtensor = SimpleNamespace(
+            get_stake_for_coldkey_and_hotkey=get_stake_for_coldkey_and_hotkey
+        )
+
+        self.assertEqual(manager._owner_alpha_stake_for_uid(1), 25.0)
+        self.assertEqual(
+            calls,
+            [
+                {
+                    "coldkey_ss58": "coldkey-1",
+                    "hotkey_ss58": "hotkey-1",
+                    "netuids": [85],
+                }
+            ],
+        )
+
+    def test_snapshot_migration_marks_existing_aggregate_stake_as_legacy(self):
+        manager = self.manager()
+        manager.engine = create_engine("sqlite:///:memory:")
+        with manager.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "CREATE TABLE miner_emission_epoch_snapshots ("
+                    "id INTEGER PRIMARY KEY, uid INTEGER NOT NULL, "
+                    "hotkey VARCHAR(64) NOT NULL DEFAULT '', "
+                    "coldkey VARCHAR(64) NOT NULL DEFAULT '', "
+                    "task_type VARCHAR(32), epoch_block INTEGER NOT NULL DEFAULT 0, "
+                    "epoch_index INTEGER NOT NULL DEFAULT 0, "
+                    "alpha_stake FLOAT NOT NULL DEFAULT 0.0, "
+                    "emission FLOAT NOT NULL DEFAULT 0.0, timestamp DATETIME)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO miner_emission_epoch_snapshots "
+                    "(id, uid, alpha_stake) VALUES (1, 1, 1000.0)"
+                )
+            )
+
+        manager._migrate_miner_emission_epoch_snapshots_table()
+
+        with manager.engine.begin() as connection:
+            stake_source = connection.execute(
+                text(
+                    "SELECT stake_source FROM miner_emission_epoch_snapshots "
+                    "WHERE id = 1"
+                )
+            ).scalar_one()
+        self.assertEqual(stake_source, "total_hotkey")
 
     def test_epoch_index_prefers_metagraph_tempo(self):
         manager = self.manager()
@@ -334,6 +399,88 @@ class MinerManagerAlphaStakeWeightTests(unittest.TestCase):
         self.assertEqual(rows[-1].coldkey, "coldkey-1")
         self.assertAlmostEqual(rows[-1].alpha_stake, 25.0)
         self.assertAlmostEqual(rows[-1].emission, 2.5)
+
+    def test_emission_snapshot_uses_owner_stake_not_aggregate_hotkey_stake(self):
+        manager = self.sqlite_manager(current_block=1200)
+        manager.metagraph.alpha_stake[1] = 1025.0
+        manager.metagraph.E[1] = 2.5
+        manager._owner_alpha_stake_for_uid = lambda uid: 25.0
+        miner = MinerMetadata(
+            uid=1,
+            hotkey="hotkey-1",
+            coldkey="coldkey-1",
+            alpha_stake=1025.0,
+            processing_task_type="compression",
+            accumulate_score=1.0,
+        )
+        manager.session.add(miner)
+        manager.session.commit()
+
+        manager.record_miner_emission_epoch_snapshots({1: miner})
+
+        snapshot = manager.session.query(MinerEmissionEpochSnapshot).one()
+        self.assertAlmostEqual(snapshot.alpha_stake, 25.0)
+        self.assertEqual(snapshot.stake_source, "owner_coldkey")
+
+    def test_emission_snapshot_skips_unverified_owner_stake(self):
+        manager = self.sqlite_manager(current_block=1200)
+        manager._owner_alpha_stake_for_uid = lambda uid: None
+        miner = MinerMetadata(
+            uid=1,
+            hotkey="hotkey-1",
+            coldkey="coldkey-1",
+            alpha_stake=1025.0,
+            processing_task_type="compression",
+            accumulate_score=1.0,
+        )
+        manager.session.add(miner)
+        manager.session.commit()
+
+        manager.record_miner_emission_epoch_snapshots({1: miner})
+
+        self.assertEqual(
+            manager.session.query(MinerEmissionEpochSnapshot).count(),
+            0,
+        )
+
+    def test_liquidation_stats_ignore_legacy_aggregate_stake_snapshots(self):
+        manager = self.sqlite_manager()
+        for epoch_index, alpha_stake in [(1, 20.0), (2, 25.0)]:
+            manager.session.add(
+                MinerEmissionEpochSnapshot(
+                    uid=1,
+                    hotkey="hotkey-1",
+                    coldkey="coldkey-1",
+                    task_type="compression",
+                    epoch_block=epoch_index * 100,
+                    epoch_index=epoch_index,
+                    alpha_stake=alpha_stake,
+                    stake_source="owner_coldkey",
+                    emission=10.0,
+                )
+            )
+        for epoch_index, alpha_stake in [(3, 100.0), (4, 1100.0)]:
+            manager.session.add(
+                MinerEmissionEpochSnapshot(
+                    uid=1,
+                    hotkey="hotkey-1",
+                    coldkey="coldkey-1",
+                    task_type="compression",
+                    epoch_block=epoch_index * 100,
+                    epoch_index=epoch_index,
+                    alpha_stake=alpha_stake,
+                    stake_source="total_hotkey",
+                    emission=10.0,
+                )
+            )
+        manager.session.commit()
+
+        stats = manager.recent_emission_liquidation_stats([1])[1]
+
+        self.assertEqual(stats["snapshot_count"], 2)
+        self.assertEqual(stats["stake_source"], "owner_coldkey")
+        self.assertAlmostEqual(stats["alpha_stake_delta"], 5.0)
+        self.assertAlmostEqual(stats["retained_proportion"], 0.5)
 
     def test_recent_emission_liquidation_stats_from_snapshot_window(self):
         manager = self.sqlite_manager()

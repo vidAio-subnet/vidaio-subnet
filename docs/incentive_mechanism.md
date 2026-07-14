@@ -636,7 +636,7 @@ Eligible miners are separated by task type and ranked by `accumulate_score` in d
 
 The miner metadata table also stores each miner UID's current `alpha_stake`. This value is synced from the Bittensor metagraph `alpha_stake` vector, exposed by the SDK as `metagraph.alpha_stake` / `metagraph.AS`, alongside the existing hotkey, coldkey, IP, and port metadata.
 
-The miner manager also maintains a rolling `miner_emission_epoch_snapshots` table to estimate recent emission liquidation behavior. Each snapshot includes the miner UID, hotkey, coldkey, task type, epoch block, epoch index, alpha stake, metagraph emission value, and timestamp. Snapshot rows are recorded once per `(uid, epoch_index)` and the first observation in that tempo epoch is retained. Rows older than the configured 10-epoch window are pruned so the table does not grow indefinitely.
+The miner manager also maintains a rolling `miner_emission_epoch_snapshots` table to estimate recent emission liquidation behavior. Each snapshot includes the miner UID, hotkey, coldkey, task type, epoch block, epoch index, owner alpha stake, stake source, metagraph emission value, and timestamp. The liquidation snapshot's owner alpha stake is queried for the exact `(miner coldkey, miner hotkey, subnet)` tuple, so stake placed on the hotkey by other coldkeys is excluded. Snapshot rows are recorded once per `(uid, epoch_index)` and the first observation in that tempo epoch is retained. If the owner-pair query fails, the sample is skipped instead of writing zero. Legacy snapshots based on aggregate hotkey stake are marked separately and excluded from liquidation history. Rows older than the configured 10-epoch window are pruned so the table does not grow indefinitely.
 
 ### Top-Five Distribution
 
@@ -701,21 +701,21 @@ emission_liquidation_weigh_factor = CONFIG.score.emission_liquidation_weigh_fact
 emission_liquidation_window_epochs = CONFIG.score.emission_liquidation_window_epochs
 ```
 
-The window defaults to 10 retained tempo-epoch snapshots. Epoch boundaries use `metagraph.tempo` when available, falling back to `CONFIG.SUBNET_TEMPO`. The first retained snapshot is used as the alpha stake baseline, so a 10-snapshot window provides up to 9 comparable settled emission intervals. The weigh factor defaults to `5.0`. Setting the factor to `0.0` disables this liquidation weighing layer.
+The window defaults to 10 retained tempo-epoch snapshots. Epoch boundaries use `metagraph.tempo` when available, falling back to `CONFIG.SUBNET_TEMPO`. Only verified owner-coldkey snapshots participate. The first retained snapshot is used as the owner alpha stake baseline, so a 10-snapshot window provides up to 9 comparable settled emission intervals. The weigh factor defaults to `5.0`. Setting the factor to `0.0` disables this liquidation weighing layer.
 
 For each top-five non-validator recipient in a task pool, the miner manager reads up to the latest 10 `miner_emission_epoch_snapshots` rows and estimates:
 
 ```text
 first_excluded_emission_i = first_snapshot.emission
 total_recent_emission_i = sum(snapshot.emission over snapshots after the first boundary)
-alpha_stake_delta_i = max(0, last_alpha_stake_i - first_alpha_stake_i)
-retained_emission_i = min(alpha_stake_delta_i, total_recent_emission_i)
+owner_alpha_stake_delta_i = max(0, last_owner_alpha_stake_i - first_owner_alpha_stake_i)
+retained_emission_i = min(owner_alpha_stake_delta_i, total_recent_emission_i)
 liquidated_emission_i = max(0, total_recent_emission_i - retained_emission_i)
 liquidated_proportion_i = liquidated_emission_i / total_recent_emission_i
 retained_proportion_i = 1 - liquidated_proportion_i
 ```
 
-The first boundary emission is excluded because the rolling window does not include the previous alpha stake baseline needed to compare it. Emissions after the first boundary are treated as settled interval emissions and are compared with the alpha stake change across the same window. The positive weigh signal is the retained side of the calculation. A positive `emission_liquidation_weigh_factor` therefore shifts weight toward miners that appear to retain more of their recent emissions as alpha stake:
+The first boundary emission is excluded because the rolling window does not include the previous owner alpha stake baseline needed to compare it. Emissions after the first boundary are treated as settled interval emissions and are compared with the miner-owner coldkey's stake change across the same window. Stake movements by any outside coldkey cannot change this signal. The positive weigh signal is the retained side of the calculation. A positive `emission_liquidation_weigh_factor` therefore shifts weight toward miners that appear to retain more of their recent emissions as owner alpha stake:
 
 ```text
 raw_weighted_weight_i = alpha_weighted_weight_i * (
@@ -758,21 +758,21 @@ emission_liquidation_weigh_factor = CONFIG.score.emission_liquidation_weigh_fact
 emission_liquidation_window_epochs = CONFIG.score.emission_liquidation_window_epochs
 ```
 
-The window defaults to 10 retained tempo-epoch snapshots. Epoch boundaries use `metagraph.tempo` when available, falling back to `CONFIG.SUBNET_TEMPO`. The first retained snapshot is used as the alpha stake baseline, so a 10-snapshot window provides up to 9 comparable settled emission intervals. The weigh factor defaults to `5.0`. Setting the factor to `0.0` disables this liquidation weighing layer.
+The window defaults to 10 retained tempo-epoch snapshots. Epoch boundaries use `metagraph.tempo` when available, falling back to `CONFIG.SUBNET_TEMPO`. Only verified owner-coldkey snapshots participate. The first retained snapshot is used as the owner alpha stake baseline, so a 10-snapshot window provides up to 9 comparable settled emission intervals. The weigh factor defaults to `5.0`. Setting the factor to `0.0` disables this liquidation weighing layer.
 
 For each top-five non-validator recipient in a task pool, the miner manager reads up to the latest 10 `miner_emission_epoch_snapshots` rows and estimates:
 
 ```text
 first_excluded_emission_i = first_snapshot.emission
 total_recent_emission_i = sum(snapshot.emission over snapshots after the first boundary)
-alpha_stake_delta_i = max(0, last_alpha_stake_i - first_alpha_stake_i)
-retained_emission_i = min(alpha_stake_delta_i, total_recent_emission_i)
+owner_alpha_stake_delta_i = max(0, last_owner_alpha_stake_i - first_owner_alpha_stake_i)
+retained_emission_i = min(owner_alpha_stake_delta_i, total_recent_emission_i)
 liquidated_emission_i = max(0, total_recent_emission_i - retained_emission_i)
 liquidated_proportion_i = liquidated_emission_i / total_recent_emission_i
 retained_proportion_i = 1 - liquidated_proportion_i
 ```
 
-The first boundary emission is excluded because the rolling window does not include the previous alpha stake baseline needed to compare it. Emissions after the first boundary are treated as settled interval emissions and are compared with the alpha stake change across the same window. The positive weigh signal is the retained side of the calculation. A positive `emission_liquidation_weigh_factor` therefore shifts weight toward miners that appear to retain more of their recent emissions as alpha stake:
+The first boundary emission is excluded because the rolling window does not include the previous owner alpha stake baseline needed to compare it. Emissions after the first boundary are treated as settled interval emissions and are compared with the miner-owner coldkey's stake change across the same window. Stake movements by any outside coldkey cannot change this signal. The positive weigh signal is the retained side of the calculation. A positive `emission_liquidation_weigh_factor` therefore shifts weight toward miners that appear to retain more of their recent emissions as owner alpha stake:
 
 ```text
 raw_weighted_weight_i = alpha_weighted_weight_i * (

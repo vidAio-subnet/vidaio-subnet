@@ -123,5 +123,9 @@ class MinerEmissionEpochSnapshot(Base):
     epoch_block = Column(Integer, nullable=False, index=True)
     epoch_index = Column(Integer, nullable=False, index=True)
     alpha_stake = Column(Float, nullable=False, default=0.0)
+    # Identifies whether alpha_stake is aggregate hotkey stake (legacy) or
+    # stake owned by the miner's own coldkey. Liquidation calculations must
+    # never mix the two scopes.
+    stake_source = Column(String(32), nullable=False, default="owner_coldkey")
     emission = Column(Float, nullable=False, default=0.0)
     timestamp = Column(DateTime, default=datetime.now, index=True)
