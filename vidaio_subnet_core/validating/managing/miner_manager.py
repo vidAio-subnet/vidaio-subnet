@@ -35,7 +35,7 @@ class MinerManager:
 
         self.config = config
         self.subtensor = bt.Subtensor(config=self.config)
-        self.burn_proportion = 0.6   # 60% of miner emissions burnt
+        self.burn_proportion = 0.0   # No miner emissions burned by default
 
         # Task allocations and rank-based distribution within each task pool.
         self.compression_emission_allocation = 0.80
@@ -2130,8 +2130,6 @@ class MinerManager:
         compression_miners = []
         upscaling_miners = []
 
-        owner_uid = self.get_burn_uid()
-
         self.check_database_connection()
         self.sync_miner_chain_metadata()
 
@@ -2173,11 +2171,13 @@ class MinerManager:
             uids.append(uid)
             scores.append(score)
         
-        # burn self.burn_proportion fraction of miner emissions
+        # Apply the configured burn only when it assigns a positive weight.
         total_scores = sum(scores)
+        burn_weight = self.burn_proportion * total_scores
         scores = [x * (1 - self.burn_proportion) for x in scores]
-        uids.append(owner_uid)
-        scores.append(self.burn_proportion * total_scores)
+        if burn_weight > 0.0:
+            uids.append(self.get_burn_uid())
+            scores.append(burn_weight)
 
         # Convert to numpy arrays and sort by UID
         uids = np.array(uids)
