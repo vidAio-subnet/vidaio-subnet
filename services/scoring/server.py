@@ -1,6 +1,7 @@
 import os
 import cv2
 import glob
+import hashlib
 import json
 import time
 import torch
@@ -11,6 +12,7 @@ from loguru import logger
 import tempfile
 import subprocess
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 from pydantic import BaseModel
 from typing import Optional, List
 from collections import defaultdict
@@ -36,6 +38,9 @@ COMPRESSION_RATE_WEIGHT = 0.7  # w_c
 COMPRESSION_VMAF_WEIGHT = 0.3  # w_vmaf
 SOFT_THRESHOLD_MARGIN = 5.0  # Margin below VMAF threshold for soft scoring zone
 MAX_VMAF_MODEL_DELTA = 3.0
+TONE_CHECK_SAMPLE_COUNT = 5
+TONE_CHECK_EXTRACTION_TIMEOUT = 6.5
+_TONE_SAMPLE_SALT = os.urandom(16)
 
 FRAME_TOLERANCE = 5  # Tolerance in frames for fast ffprobe frame count read
 UPSCALING_FILE_SIZE_MULTIPLIERS = {
@@ -65,11 +70,18 @@ from PIL import Image
 
 
 def detect_tone_manipulation(ref_png, dist_png):
-    """Detect contrast/levels preprocessing by fitting dist ~= slope*ref + offset."""
+    """Detect affine, nonlinear, local, and chroma tone manipulation on one frame."""
     size = (320, 180)
     with Image.open(ref_png) as ref_img, Image.open(dist_png) as dist_img:
-        r = np.asarray(ref_img.convert("L").resize(size, Image.BILINEAR), float).ravel()
-        d = np.asarray(dist_img.convert("L").resize(size, Image.BILINEAR), float).ravel()
+        ref_rgb = np.asarray(ref_img.convert("RGB").resize(size, Image.BILINEAR), float)
+        dist_rgb = np.asarray(dist_img.convert("RGB").resize(size, Image.BILINEAR), float)
+
+    # Match PIL's grayscale conversion closely while retaining color for the
+    # chroma checks below. Inputs are already small, so this analysis is cheap.
+    ref_y = 0.299 * ref_rgb[..., 0] + 0.587 * ref_rgb[..., 1] + 0.114 * ref_rgb[..., 2]
+    dist_y = 0.299 * dist_rgb[..., 0] + 0.587 * dist_rgb[..., 1] + 0.114 * dist_rgb[..., 2]
+    r = ref_y.ravel()
+    d = dist_y.ravel()
 
     # Drop near-clipped codes where the relationship saturates and biases slope.
     m = (r > 6) & (r < 249)
@@ -80,6 +92,7 @@ def detect_tone_manipulation(ref_png, dist_png):
             "detected": False,
             "severity": "unknown",
             "reason": "too little usable signal",
+            "reliable": False,
         }
 
     rm, dm = r[m], d[m]
@@ -89,22 +102,91 @@ def detect_tone_manipulation(ref_png, dist_png):
     # Low correlation or implausible slope means mismatched frames, not a tone transform.
     if corr < 0.9 or not (0.5 < slope < 1.6):
         return {
-            "slope": 1.0,
-            "offset": 0.0,
+            "slope": round(slope, 4),
+            "offset": round(offset, 2),
             "detected": False,
             "severity": "unreliable",
             "reason": f"frames don't correspond (corr={corr:.2f}, slope={slope:.3f})",
+            "reliable": False,
         }
 
     dev = abs(slope - 1.0)
-    if dev >= 0.012 or abs(offset) >= 2.0:
-        sev, detected = "alert", True
-        reason = f"contrast/levels stretch: dist ~= {slope:.3f}*ref {offset:+.1f}"
+
+    # A global fit can hide an S-curve whose positive and negative changes
+    # cancel. Measure the median residual in luminance bins, including the
+    # shadows/highlights excluded from the affine fit.
+    predicted_y = slope * r + offset
+    bin_residuals = []
+    raw_bin_deltas = []
+    for low in range(0, 256, 16):
+        bin_mask = (r >= low) & (r < low + 16)
+        if bin_mask.sum() >= 100:
+            bin_residuals.append(float(np.median(d[bin_mask] - predicted_y[bin_mask])))
+            raw_bin_deltas.append(float(np.median(d[bin_mask] - r[bin_mask])))
+    max_nonlinear_delta = max((abs(value) for value in bin_residuals), default=0.0)
+    max_tone_curve_delta = max((abs(value) for value in raw_bin_deltas), default=0.0)
+
+    # Detect spatially selective adjustments that disappear in the whole-frame
+    # regression. Requiring two affected tiles filters isolated codec errors.
+    local_alerts = 0
+    global_residual = dist_y - (slope * ref_y + offset)
+    for tile_y in np.array_split(global_residual, 4, axis=0):
+        for tile in np.array_split(tile_y, 4, axis=1):
+            if abs(float(np.median(tile))) >= 2.0:
+                local_alerts += 1
+
+    # Compare chroma vectors directly. This catches saturation and hue changes
+    # that preserve grayscale luminance and therefore evade the slope check.
+    def chroma_vectors(rgb):
+        y = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
+        cb = (rgb[..., 2] - y) * 0.564
+        cr = (rgb[..., 0] - y) * 0.713
+        return cb.ravel(), cr.ravel()
+
+    ref_cb, ref_cr = chroma_vectors(ref_rgb)
+    dist_cb, dist_cr = chroma_vectors(dist_rgb)
+    ref_energy = float(np.mean(ref_cb**2 + ref_cr**2))
+    dist_energy = float(np.mean(dist_cb**2 + dist_cr**2))
+    saturation_ratio = (dist_energy / ref_energy) ** 0.5 if ref_energy >= 4.0 else 1.0
+    dot = float(np.sum(ref_cb * dist_cb + ref_cr * dist_cr))
+    cross = float(np.sum(ref_cb * dist_cr - ref_cr * dist_cb))
+    hue_shift_degrees = float(np.degrees(np.arctan2(cross, dot))) if ref_energy >= 4.0 else 0.0
+    chroma_mean_shift = float(np.hypot(np.mean(dist_cb - ref_cb), np.mean(dist_cr - ref_cr)))
+
+    affine_alert = dev >= 0.012 or abs(offset) >= 2.0
+    # These are per-frame candidate thresholds. The batch aggregator requires
+    # the signal on at least two frames unless it is twice as strong, which
+    # keeps ordinary codec noise from becoming a rejection.
+    nonlinear_alert = max_nonlinear_delta >= 1.0 or max_tone_curve_delta >= 2.0
+    local_alert = local_alerts >= 2
+    chroma_alert = (
+        abs(saturation_ratio - 1.0) >= 0.08
+        or abs(hue_shift_degrees) >= 2.0
+        or chroma_mean_shift >= 2.0
+    )
+    detected = affine_alert or nonlinear_alert or local_alert or chroma_alert
+
+    signals = []
+    if affine_alert:
+        signals.append(f"affine={slope:.3f}*ref{offset:+.1f}")
+    if nonlinear_alert:
+        signals.append(f"nonlinear_delta={max_nonlinear_delta:.2f}")
+    if local_alert:
+        signals.append(f"local_tiles={local_alerts}/16")
+    if chroma_alert:
+        signals.append(
+            f"chroma(sat={saturation_ratio:.3f}, hue={hue_shift_degrees:+.2f}deg, "
+            f"mean_shift={chroma_mean_shift:.2f})"
+        )
+
+    if detected:
+        sev = "alert"
+        reason = "tone manipulation signals: " + ", ".join(signals)
     elif dev >= 0.005 or abs(offset) >= 1.0:
-        sev, detected = "info", False
+        sev = "info"
         reason = f"mild levels shift: {slope:.3f}*ref {offset:+.1f}"
     else:
-        sev, detected = "good", False
+        sev = "good"
         reason = f"levels preserved: {slope:.3f}*ref {offset:+.1f}"
 
     return {
@@ -113,7 +195,16 @@ def detect_tone_manipulation(ref_png, dist_png):
         "detected": detected,
         "severity": sev,
         "reason": reason,
+        "reliable": True,
+        "correlation": round(corr, 4),
+        "nonlinear_delta": round(max_nonlinear_delta, 2),
+        "tone_curve_delta": round(max_tone_curve_delta, 2),
+        "local_alert_tiles": local_alerts,
+        "saturation_ratio": round(saturation_ratio, 4),
+        "hue_shift_degrees": round(hue_shift_degrees, 2),
+        "chroma_mean_shift": round(chroma_mean_shift, 2),
     }
+
 
 def validate_upscaling_file_size(reference_path, distorted_path, scale_factor):
     """Validate that an upscaled video stays within the allowed file size."""
@@ -283,26 +374,172 @@ def calculate_base_vmaf(
         return None
 
 
-def _extract_tone_check_frame(video_path: str, timestamp_seconds: float, output_path: str):
+def _tone_sample_timestamps(
+    duration_seconds: Optional[float],
+    sample_key: Optional[str],
+    fallback_timestamp: float,
+    sample_count: int = TONE_CHECK_SAMPLE_COUNT,
+) -> List[float]:
+    """Choose unpredictable, repeatable, stratified timestamps for one source video."""
+    duration = float(duration_seconds or 0.0)
+    if duration <= 0.0 or sample_count <= 1:
+        return [max(0.0, float(fallback_timestamp or 0.0))]
+
+    # The process-local salt prevents miners from predicting the exact samples.
+    # sample_key keeps timestamps identical when different miners encode the
+    # same source on this scoring worker.
+    key = str(sample_key or f"duration:{duration:.6f}").encode("utf-8")
+    seed = int.from_bytes(hashlib.sha256(_TONE_SAMPLE_SALT + key).digest()[:8], "big")
+    rng = random.Random(seed)
+    latest_safe_timestamp = max(0.0, duration - (1.0 / 30.0))
+    timestamps = []
+    for index in range(sample_count):
+        # Keep away from exact stratum boundaries and randomly jitter within
+        # each fifth of the video.
+        fraction = (index + rng.uniform(0.15, 0.85)) / sample_count
+        timestamps.append(min(latest_safe_timestamp, fraction * duration))
+    return timestamps
+
+
+def _extract_tone_check_frames(
+    video_path: str,
+    timestamps_seconds: List[float],
+    output_paths: List[str],
+):
+    """Extract several random-access frames with one FFmpeg process."""
+    if len(timestamps_seconds) != len(output_paths) or not output_paths:
+        raise ValueError("tone-check timestamps and outputs must have the same non-zero length")
+
     cmd = [
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
         "error",
         "-y",
-        "-ss",
-        f"{timestamp_seconds:.6f}",
-        "-i",
-        video_path,
-        "-frames:v",
-        "1",
-        output_path,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    for timestamp_seconds in timestamps_seconds:
+        cmd.extend(["-ss", f"{timestamp_seconds:.6f}", "-i", video_path])
+    for input_index, output_path in enumerate(output_paths):
+        cmd.extend(
+            [
+                "-map",
+                f"{input_index}:v:0",
+                "-frames:v",
+                "1",
+                "-vf",
+                "scale=320:180:flags=bilinear",
+                "-compression_level",
+                "1",
+                output_path,
+            ]
+        )
+
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=TONE_CHECK_EXTRACTION_TIMEOUT,
+    )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "ffmpeg frame extraction failed")
-    if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
-        raise RuntimeError("ffmpeg did not produce a tone-check frame")
+    missing_outputs = [
+        output_path
+        for output_path in output_paths
+        if not os.path.exists(output_path) or os.path.getsize(output_path) == 0
+    ]
+    if missing_outputs:
+        raise RuntimeError(f"ffmpeg did not produce {len(missing_outputs)} tone-check frame(s)")
+
+
+def _extract_tone_check_frame(video_path: str, timestamp_seconds: float, output_path: str):
+    """Backward-compatible single-frame wrapper."""
+    _extract_tone_check_frames(video_path, [timestamp_seconds], [output_path])
+
+
+def _aggregate_tone_results(frame_results: List[dict], timestamps: List[float]) -> dict:
+    """Combine frame evidence while resisting isolated codec artifacts."""
+    reliable_results = [result for result in frame_results if result.get("reliable") is True]
+    unreliable_count = len(frame_results) - len(reliable_results)
+    alert_results = [result for result in reliable_results if result.get("detected") is True]
+
+    def is_strong_alert(result):
+        return (
+            abs(float(result.get("slope", 1.0)) - 1.0) >= 0.024
+            or abs(float(result.get("offset", 0.0))) >= 4.0
+            or float(result.get("nonlinear_delta", 0.0)) >= 3.0
+            or float(result.get("tone_curve_delta", 0.0)) >= 6.0
+            or int(result.get("local_alert_tiles", 0)) >= 4
+            or abs(float(result.get("saturation_ratio", 1.0)) - 1.0) >= 0.16
+            or abs(float(result.get("hue_shift_degrees", 0.0))) >= 4.0
+            or float(result.get("chroma_mean_shift", 0.0)) >= 4.0
+        )
+
+    strong_alerts = sum(is_strong_alert(result) for result in alert_results)
+    verification_failed = unreliable_count > len(frame_results) // 2
+    detected = len(alert_results) >= 2 or strong_alerts >= 1 or verification_failed
+
+    slopes = [float(result.get("slope", 1.0)) for result in reliable_results] or [1.0]
+    offsets = [float(result.get("offset", 0.0)) for result in reliable_results] or [0.0]
+    slope = float(np.median(slopes))
+    offset = float(np.median(offsets))
+    max_nonlinear_delta = max(
+        (float(result.get("nonlinear_delta", 0.0)) for result in reliable_results),
+        default=0.0,
+    )
+    max_tone_curve_delta = max(
+        (float(result.get("tone_curve_delta", 0.0)) for result in reliable_results),
+        default=0.0,
+    )
+    max_hue_shift = max(
+        (abs(float(result.get("hue_shift_degrees", 0.0))) for result in reliable_results),
+        default=0.0,
+    )
+    max_saturation_deviation = max(
+        (abs(float(result.get("saturation_ratio", 1.0)) - 1.0) for result in reliable_results),
+        default=0.0,
+    )
+
+    if verification_failed:
+        severity = "alert"
+        reason = (
+            f"tone verification unreliable on {unreliable_count}/{len(frame_results)} frames"
+        )
+    elif detected:
+        severity = "alert"
+        reason = (
+            f"tone manipulation detected on {len(alert_results)}/{len(frame_results)} frames; "
+            f"strong_alerts={strong_alerts}; max_nonlinear_delta={max_nonlinear_delta:.2f}; "
+            f"max_hue_shift={max_hue_shift:.2f}deg"
+        )
+    elif alert_results:
+        severity = "info"
+        reason = (
+            f"isolated tone signal on 1/{len(frame_results)} frames; "
+            f"median levels preserved: {slope:.3f}*ref {offset:+.1f}"
+        )
+    else:
+        severity = "good" if reliable_results else "unknown"
+        reason = (
+            f"levels preserved across {len(reliable_results)}/{len(frame_results)} frames: "
+            f"median {slope:.3f}*ref {offset:+.1f}"
+        )
+
+    return {
+        "slope": round(slope, 4),
+        "offset": round(offset, 2),
+        "detected": detected,
+        "severity": severity,
+        "reason": reason,
+        "sample_count": len(frame_results),
+        "reliable_samples": len(reliable_results),
+        "alert_samples": len(alert_results),
+        "strong_alerts": strong_alerts,
+        "max_nonlinear_delta": round(max_nonlinear_delta, 2),
+        "max_tone_curve_delta": round(max_tone_curve_delta, 2),
+        "max_hue_shift_degrees": round(max_hue_shift, 2),
+        "max_saturation_deviation": round(max_saturation_deviation, 4),
+        "timestamps": [round(timestamp, 3) for timestamp in timestamps],
+    }
 
 
 def check_tone_manipulation_for_compression(
@@ -311,29 +548,69 @@ def check_tone_manipulation_for_compression(
     timestamp_seconds: float,
     uid: Optional[int] = None,
     context: str = "compression",
+    duration_seconds: Optional[float] = None,
+    sample_key: Optional[str] = None,
 ) -> Optional[dict]:
-    """Detect and log tone/levels manipulation for compression scoring."""
+    """Detect and log multi-frame tone/levels manipulation for compression scoring."""
     uid_label = f" UID {uid}" if uid is not None else ""
+    check_started = time.monotonic()
     try:
         timestamp_seconds = max(0.0, float(timestamp_seconds or 0.0))
+        timestamps = _tone_sample_timestamps(
+            duration_seconds,
+            sample_key,
+            timestamp_seconds,
+        )
         with tempfile.TemporaryDirectory(prefix="tone_check_") as temp_dir:
-            ref_png = os.path.join(temp_dir, "ref.png")
-            dist_png = os.path.join(temp_dir, "dist.png")
-            _extract_tone_check_frame(ref_path, timestamp_seconds, ref_png)
-            _extract_tone_check_frame(dist_path, timestamp_seconds, dist_png)
-            tone_result = detect_tone_manipulation(ref_png, dist_png)
+            ref_pngs = [
+                os.path.join(temp_dir, f"ref_{index}.png")
+                for index in range(len(timestamps))
+            ]
+            dist_pngs = [
+                os.path.join(temp_dir, f"dist_{index}.png")
+                for index in range(len(timestamps))
+            ]
 
+            # Reference and distorted seeks are independent. Running the two
+            # batched commands concurrently keeps five-frame sampling near the
+            # latency of the previous two sequential single-frame commands.
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                ref_future = executor.submit(
+                    _extract_tone_check_frames,
+                    ref_path,
+                    timestamps,
+                    ref_pngs,
+                )
+                dist_future = executor.submit(
+                    _extract_tone_check_frames,
+                    dist_path,
+                    timestamps,
+                    dist_pngs,
+                )
+                ref_future.result()
+                dist_future.result()
+
+            frame_results = [
+                detect_tone_manipulation(ref_png, dist_png)
+                for ref_png, dist_png in zip(ref_pngs, dist_pngs)
+            ]
+            tone_result = _aggregate_tone_results(frame_results, timestamps)
+
+        elapsed = time.monotonic() - check_started
+        tone_result["elapsed_seconds"] = round(elapsed, 3)
         logger.info(
             f"Tone manipulation check{uid_label} [{context}] "
-            f"at {timestamp_seconds:.3f}s: {tone_result}"
+            f"across {len(timestamps)} frames in {elapsed:.3f}s: {tone_result}"
         )
         return tone_result
     except Exception as e:
+        elapsed = time.monotonic() - check_started
         logger.warning(
             f"Tone manipulation check failed{uid_label} "
-            f"[{context}] at {timestamp_seconds}s: {e}"
+            f"[{context}] after {elapsed:.3f}s: {e}"
         )
         return None
+
 
 async def verify_organic_proxy_download(video_url: str, session: Optional[aiohttp.ClientSession] = None) -> bool:
     """Check whether the organic proxy can download a miner's output URL."""
@@ -2658,6 +2935,8 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 timestamp_seconds=(vmaf_start_frame / ref_fps_val) if ref_fps_val else 0.0,
                 uid=uid,
                 context="synthetics compression",
+                duration_seconds=((ref_total_frames - 1) / ref_fps_val) if ref_fps_val else None,
+                sample_key=video_id,
             )
             if tone_result and tone_result.get("detected") is True:
                 tone_reason = f"Tone manipulation detected: {tone_result['reason']}"
@@ -3506,6 +3785,8 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 timestamp_seconds=(color_check_start_frame / ref_fps) if ref_fps else 0.0,
                 uid=uid,
                 context="organics compression",
+                duration_seconds=((ref_total_frames - 1) / ref_fps) if ref_fps else None,
+                sample_key=ref_url,
             )
             if tone_result and tone_result.get("detected") is True:
                 tone_reason = f"Tone manipulation detected: {tone_result['reason']}"
