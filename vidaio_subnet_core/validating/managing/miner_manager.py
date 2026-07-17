@@ -658,8 +658,6 @@ class MinerManager:
 
         try:
             for uid, miner in miners_by_uid.items():
-                if self._uid_has_validator_permit(uid):
-                    continue
                 if miner.processing_task_type not in ("compression", "upscaling"):
                     continue
 
@@ -1875,13 +1873,6 @@ class MinerManager:
 
         return sn_owner_uid
 
-    def _uid_has_validator_permit(self, uid: int) -> bool:
-        validator_permit = getattr(self.metagraph, "validator_permit", [])
-        try:
-            return bool(validator_permit[uid])
-        except (IndexError, KeyError, TypeError):
-            return False
-
     def _format_log_table(self, rows: List[dict[str, Any]]) -> str:
         if not rows:
             return ""
@@ -2223,8 +2214,9 @@ class MinerManager:
         self.record_miner_emission_epoch_snapshots(miners_by_uid)
 
         for uid, miner in miners_by_uid.items():
-            # Exclude validator from getting weights set
-            if miner.accumulate_score == -1 or self._uid_has_validator_permit(uid):
+            # Every row in miner_metadata is treated as a miner, regardless of
+            # whether its UID currently has a validator permit.
+            if miner.accumulate_score == -1:
                 continue
             alpha_stake = miner.alpha_stake or 0.0
             if miner.processing_task_type == "compression":
