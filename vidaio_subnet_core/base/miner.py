@@ -16,6 +16,9 @@ from vidaio_subnet_core.protocol import (
 )
 import argparse
 from .config import add_common_config
+from vidaio_subnet_core.utilities.bittensor_compat import (
+    apply_single_field_composite_encoding_patch,
+)
 import os
 
 
@@ -25,6 +28,7 @@ class BaseMiner(ABC):
         self.init_bittensor()
 
     def init_bittensor(self):
+        apply_single_field_composite_encoding_patch()
         self.subtensor = bt.Subtensor(config=self.config)
         logger.info(f"Subtensor: {self.subtensor}")
         self.wallet = bt.Wallet(config=self.config)
