@@ -7,6 +7,9 @@ import time
 import threading
 from .config import add_common_config
 from abc import abstractmethod, ABC
+from vidaio_subnet_core.utilities.bittensor_compat import (
+    apply_single_field_composite_encoding_patch,
+)
 from loguru import logger
 
 
@@ -57,6 +60,7 @@ class BaseValidator(ABC):
 
     def setup_bittensor_objects(self):
         logger.info("Setting up Bittensor objects.")
+        apply_single_field_composite_encoding_patch()
         self.wallet = bt.Wallet(config=self.config)
         logger.info(f"Wallet: {self.wallet}")
         self.subtensor = bt.Subtensor(config=self.config)
