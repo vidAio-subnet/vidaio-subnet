@@ -9,6 +9,7 @@ modal>=1.0.0
 opencv-python==4.12.0.88
 loguru==0.7.3
 bittensor==10.1.0
+async-substrate-interface==1.6.4
 redis==6.4.0
 sqlalchemy==2.0.43
 pandas==2.3.2

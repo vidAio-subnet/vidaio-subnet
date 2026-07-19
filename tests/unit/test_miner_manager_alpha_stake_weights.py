@@ -243,7 +243,7 @@ class MinerManagerAlphaStakeWeightTests(unittest.TestCase):
         self.assertGreater(scores[4], 0.16)
         self.assertLess(scores[5], 0.16)
 
-    def test_weights_exclude_validators_and_weigh_within_each_task_pool(self):
+    def test_weights_include_validator_permit_uids_from_miner_metadata(self):
         manager = self.manager()
         manager.alpha_stake_weigh_factor = 1.0
         manager.metagraph.validator_permit[2] = True
@@ -285,12 +285,37 @@ class MinerManagerAlphaStakeWeightTests(unittest.TestCase):
         uids, scores = MinerManager.weights.fget(manager)
         scores_by_uid = {int(uid): float(score) for uid, score in zip(uids, scores)}
 
-        self.assertNotIn(2, scores_by_uid)
+        self.assertIn(2, scores_by_uid)
+        self.assertGreater(scores_by_uid[2], scores_by_uid[1])
         self.assertGreater(scores_by_uid[1], scores_by_uid[3])
         self.assertGreater(scores_by_uid[5], scores_by_uid[4])
-        self.assertAlmostEqual(scores_by_uid[1] + scores_by_uid[3], 0.32)
+        self.assertAlmostEqual(
+            scores_by_uid[1] + scores_by_uid[2] + scores_by_uid[3],
+            0.48,
+        )
         self.assertAlmostEqual(scores_by_uid[4] + scores_by_uid[5], 0.08)
         self.assertNotIn(99, scores_by_uid)
+
+    def test_emission_snapshots_include_validator_permit_uids(self):
+        manager = self.sqlite_manager(current_block=1200)
+        manager.metagraph.validator_permit[1] = True
+        manager.metagraph.E[1] = 2.5
+        miner = MinerMetadata(
+            uid=1,
+            hotkey="hotkey-1",
+            coldkey="coldkey-1",
+            alpha_stake=25.0,
+            processing_task_type="compression",
+            accumulate_score=1.0,
+        )
+        manager.session.add(miner)
+        manager.session.commit()
+
+        manager.record_miner_emission_epoch_snapshots({1: miner})
+
+        snapshot = manager.session.query(MinerEmissionEpochSnapshot).one()
+        self.assertEqual(snapshot.uid, 1)
+        self.assertAlmostEqual(snapshot.emission, 2.5)
 
     def test_emission_snapshot_records_hotkey_coldkey_and_prunes_window(self):
         manager = self.sqlite_manager(current_block=1200)
