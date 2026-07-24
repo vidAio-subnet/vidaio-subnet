@@ -920,13 +920,27 @@ class Validator(base.BaseValidator):
                 f"in {time.time() - batch_timer:.2f} seconds"
             )
 
-        for ref_path, payload_path, uploaded_object_name in zip(reference_video_paths, payload_urls, uploaded_object_names):
-            if os.path.exists(ref_path):
-                os.unlink(ref_path)
+        # These collections do not necessarily have the same length, so clean
+        # each kind of resource independently.
+        for ref_path in reference_video_paths:
+            if ref_path and os.path.exists(ref_path):
+                try:
+                    os.unlink(ref_path)
+                except Exception as e:
+                    logger.error(f"Error deleting reference video file {ref_path}: {e}")
+
+        for payload_path in payload_urls:
             if payload_path and os.path.exists(payload_path):
-                os.unlink(payload_path)
-            # Delete the uploaded object
-            await storage_client.delete_file(uploaded_object_name)
+                try:
+                    os.unlink(payload_path)
+                except Exception as e:
+                    logger.error(f"Error deleting payload video file {payload_path}: {e}")
+
+        for uploaded_object_name in uploaded_object_names:
+            try:
+                await storage_client.delete_file(uploaded_object_name)
+            except Exception as e:
+                logger.error(f"Error deleting uploaded object {uploaded_object_name}: {e}")
 
         batch_processed_time = time.time() - batch_start_time
         logger.info(f"Completed upscaling batch within {batch_processed_time:.2f} seconds")
@@ -1131,17 +1145,35 @@ class Validator(base.BaseValidator):
                 f"in {time.time() - batch_timer:.2f} seconds"
             )
 
-        for dist_path, ref_path, uploaded_object_name in zip(distorted_file_paths, reference_video_paths, uploaded_object_names):
+        # There is one distorted file per miner response, but only one reference
+        # and uploaded object per query.  Zipping these lists would stop after the
+        # query count and leak the remaining distorted files.
+        for dist_path in distorted_file_paths:
             if dist_path and os.path.exists(dist_path):
                 try:
                     os.unlink(dist_path)
                 except Exception as e:
                     logger.error(f"Error deleting distorted video file {dist_path}: {e}")
-            if os.path.exists(ref_path):
-                os.unlink(ref_path)
 
-            # Delete the uploaded object
-            await storage_client.delete_file(uploaded_object_name)
+        for ref_path in reference_video_paths:
+            if ref_path and os.path.exists(ref_path):
+                try:
+                    os.unlink(ref_path)
+                except Exception as e:
+                    logger.error(f"Error deleting reference video file {ref_path}: {e}")
+
+        for payload_path in payload_urls:
+            if payload_path and os.path.exists(payload_path):
+                try:
+                    os.unlink(payload_path)
+                except Exception as e:
+                    logger.error(f"Error deleting payload video file {payload_path}: {e}")
+
+        for uploaded_object_name in uploaded_object_names:
+            try:
+                await storage_client.delete_file(uploaded_object_name)
+            except Exception as e:
+                logger.error(f"Error deleting uploaded object {uploaded_object_name}: {e}")
 
     async def start_organic_loop(self):
         """Start organic processing loop for both upscaling and compression tasks asynchronously."""
