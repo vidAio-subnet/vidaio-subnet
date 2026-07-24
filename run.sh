@@ -2,13 +2,15 @@
 
 script="neurons/validator.py"
 autoRunLoc=$(readlink -f "$0")
-proc_name="video-validator"
+inference_proc_name="video-validator-inference"
+competition_proc_name="video-validator-competition"
 args=()
 version_location="./vidaio_subnet_core/__init__.py"
 version="__version__"
 old_args=$@
 subnet=85
 restart_video_scheduler=true
+competition_score_port="${SCORE__COMPRESSION_COMPETITION_SCORE_PORT:-8205}"
 
 if ! command -v pm2 &> /dev/null
 then
@@ -148,17 +150,19 @@ branch=$(git branch --show-current)
 echo "Watching branch: $branch"
 echo "Reapplying git stash"
 git stash pop
-echo "PM2 process name: $proc_name"
+echo "PM2 inference process name: $inference_proc_name"
+echo "PM2 competition process name: $competition_proc_name"
 if [[ -n "$subnet" ]]; then
     echo "Subnet: $subnet"
 fi
 echo "Restart video scheduler: $restart_video_scheduler"
+echo "Competition scoring port: $competition_score_port"
 
 current_version=$(read_version_value)
 
-if pm2 status | grep -q $proc_name; then
-    echo "The script is already running with pm2. Stopping and restarting..."
-    pm2 delete $proc_name
+if pm2 describe "video-validator" &>/dev/null; then
+    echo "Removing legacy combined video-validator process..."
+    pm2 delete "video-validator"
 fi
 
 echo "Running $script with the following PM2 config:"
@@ -182,12 +186,23 @@ joined_args=${joined_args%,}
 
 echo "module.exports = {
   apps : [{
-    name   : '$proc_name',
+    name   : '$inference_proc_name',
     script : '$script',
     interpreter: 'python3',
     min_uptime: '5m',
     max_restarts: '5',
-    args: [$joined_args],
+    args: [$joined_args, '--validator-mode', 'inference'],
+    cwd: '$(pwd)',
+    env: {
+      PYTHONPATH: '.'
+    }
+  }, {
+    name   : '$competition_proc_name',
+    script : '$script',
+    interpreter: 'python3',
+    min_uptime: '5m',
+    max_restarts: '5',
+    args: [$joined_args, '--validator-mode', 'competition'],
     cwd: '$(pwd)',
     env: {
       PYTHONPATH: '.'
@@ -196,7 +211,8 @@ echo "module.exports = {
 }" > app.config.js
 
 cat app.config.js
-ensure_config_process "app.config.js" "$proc_name" "true"
+ensure_process "scoring_endpoint_compression_competition" "bash -c 'PYTHONPATH=. python3 services/scoring/server.py --port $competition_score_port'" "true"
+ensure_config_process "app.config.js" "$inference_proc_name" "true"
 
 
 check_package_installed "jq"
@@ -206,6 +222,7 @@ check_package_installed "jq"
 # pm2 start "PYTHONPATH=. python3 services/scoring/server.py --port 8202" --name scoring_endpoint_compression
 # pm2 start "PYTHONPATH=. python3 services/scoring/server.py --port 8203" --name scoring_endpoint_upscaling_organics
 # pm2 start "PYTHONPATH=. python3 services/scoring/server.py --port 8204" --name scoring_endpoint_compression_organics
+# pm2 start "PYTHONPATH=. python3 services/scoring/server.py --port 8205" --name scoring_endpoint_compression_comp
 
 # pm2 start "PYTHONPATH=. python3 services/video_scheduler/worker.py" --name video_scheduler_worker
 # pm2 start "PYTHONPATH=. python3 services/video_scheduler/server.py" --name video_scheduler_endpoint
@@ -223,6 +240,12 @@ ensure_process "scoring_endpoint_compression_organics" "bash -c 'PYTHONPATH=. py
 ensure_process "video_scheduler_worker" "bash -c 'PYTHONPATH=. python3 services/video_scheduler/worker.py'" "$restart_video_scheduler"
 ensure_process "video_scheduler_endpoint" "bash -c 'PYTHONPATH=. python3 services/video_scheduler/server.py'" "$restart_video_scheduler"
 ensure_process "organic-gateway" "bash -c 'PYTHONPATH=. python3 services/organic_gateway/server.py'" "true"
+
+
+# pm2 start /usr/bin/bash --name video-validator-testnet -- -c "PYTHONPATH=. python3 -m neurons.validator --wallet.name bruh_dev_coldkey --wallet.hotkey bruh_dev_hotkey_3 --subtensor.network test --netuid 292 --axon.port 27000 --logging.debug"
+# pm2 start /usr/bin/bash --name video-validator-testnet-comp -- -c "PYTHONPATH=. python3 -m neurons.validator --wallet.name bruh_dev_coldkey --wallet.hotkey bruh_dev_hotkey_3 --subtensor.network test --netuid 292 --axon.port 27000 --logging.debug --validator-mode competition"
+
+# pm2 start "PYTHONPATH=. python3 neurons/miner.py --wallet.name new_ckey --wallet.hotkey new_hkey --subtensor.network finney --netuid 85 --axon.port 9001 --logging.debug" --name video-miner
 
 # Auto-update loop
 last_restart_time=$(date +%s)
@@ -261,11 +284,13 @@ while true; do
                 echo "30 hours passed. Performing periodic PM2 restart..."
                 pm2 restart scoring_endpoint_upscaling
                 pm2 restart scoring_endpoint_compression
+                pm2 restart scoring_endpoint_compression_competition
                 if [[ "$restart_video_scheduler" == "true" ]]; then
                     pm2 restart video_scheduler_worker
                     pm2 restart video_scheduler_endpoint
                 fi
-                pm2 restart video-validator
+                pm2 restart "$inference_proc_name"
+                pm2 restart "$competition_proc_name"
 
                 last_restart_time=$current_time
                 echo "Periodic restart completed."

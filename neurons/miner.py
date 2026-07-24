@@ -29,6 +29,12 @@ from vidaio_subnet_core.protocol import (
     VideoUpscalingPollProtocol,
     JobKickoffResponse,
     PollResponse,
+    CompetitionType,
+    CompetitionSubmissionStatus,
+    CompetitionInvitationResponse,
+    CompetitionSubmissionResponse,
+    CompetitionInvitationProtocol,
+    CompetitionSubmissionProtocol,
 )
 
 from vidaio_subnet_core.utilities.version import check_version
@@ -39,6 +45,28 @@ load_dotenv(REPO_ROOT / "miner" / ".env", override=False)
 MAX_CONTENT_LEN = ContentLength.FIVE
 warrant_task = TaskType.UPSCALING
 DEV_MODE = os.getenv("DEV_MODE", "False").lower() == "true"
+
+
+def _parse_csv_set(value: str) -> frozenset[str]:
+    return frozenset(item.strip().lower() for item in value.split(",") if item.strip())
+
+
+MINER_MODES = _parse_csv_set(os.getenv("MINER_MODES", "inference"))
+if not MINER_MODES or not MINER_MODES <= {"inference", "competition"}:
+    raise ValueError("MINER_MODES must contain inference, competition, or both")
+MINER_COMPETITION_TYPES = frozenset(
+    item.strip().upper()
+    for item in os.getenv("MINER_COMPETITION_TYPES", "COMPRESSION").split(",")
+    if item.strip()
+)
+if not MINER_COMPETITION_TYPES <= {CompetitionType.COMPRESSION.value}:
+    raise ValueError("only COMPRESSION competition mode is supported")
+MINER_COMPETITION_REPOSITORY_URL = os.getenv(
+    "MINER_COMPETITION_REPOSITORY_URL", ""
+).strip()
+MINER_COMPETITION_GITHUB_PAT_ENV = os.getenv(
+    "MINER_COMPETITION_GITHUB_PAT_ENV", "MINER_COMPETITION_GITHUB_PAT"
+).strip()
 
 UPSCALING_SERVICE_URL = os.getenv("MINER_UPSCALING_SERVICE_URL", "http://localhost:8003").rstrip("/")
 COMPRESSION_SERVICE_URL = os.getenv("MINER_COMPRESSION_SERVICE_URL", "http://localhost:8004").rstrip("/")
@@ -113,13 +141,6 @@ TASK_TYPE_TO_SCALE = {
     "4K28K": 2,
 }
 
-COMPRESSION_CQ_BY_TYPE = {
-    "Low": 40,
-    "Medium": 35,
-    "High": 30,
-}
-
-
 def _is_url(path: str) -> bool:
     return path.startswith("http://") or path.startswith("https://")
 
@@ -138,6 +159,137 @@ class Miner(BaseMiner):
         self._cleanup_stop_event = threading.Event()
         self._cleanup_thread: threading.Thread | None = None
         self._start_shared_volume_cleanup_worker()
+
+    def enabled_miner_modes(self) -> frozenset[str]:
+        return MINER_MODES
+
+    async def forward_competition_invitation(
+        self, synapse: CompetitionInvitationProtocol
+    ) -> CompetitionInvitationProtocol:
+        now = datetime.now(timezone.utc)
+        deadline = synapse.registration_deadline
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=timezone.utc)
+        valid_invitation = synapse.is_open_invitation(now)
+        participating = (
+            valid_invitation
+            and "competition" in MINER_MODES
+            and synapse.competition_type.value in MINER_COMPETITION_TYPES
+            and now <= deadline.astimezone(timezone.utc)
+        )
+        synapse.invitation_response = CompetitionInvitationResponse(
+            competition_id=synapse.competition_id,
+            echo_nonce=synapse.invitation_nonce,
+            participating=participating,
+            supported_competition_type=CompetitionType.COMPRESSION
+            if participating
+            else None,
+            refusal_reason=(
+                None
+                if participating
+                else (
+                    "invalid or expired competition invitation"
+                    if not valid_invitation
+                    else "competition mode unavailable"
+                )
+            ),
+        )
+        logger.info(
+            "Competition invitation handled: competition_id={} participating={}",
+            synapse.competition_id,
+            participating,
+        )
+        return synapse
+
+    async def forward_competition_submission(
+        self, synapse: CompetitionSubmissionProtocol
+    ) -> CompetitionSubmissionProtocol:
+        logger.info(
+            "Competition submission feedback: competition_id={} revision={} "
+            "status={} reason_code={} reason_detail={} pinned_commit={}",
+            synapse.competition_id,
+            synapse.submission_revision,
+            synapse.last_submission_status.value,
+            synapse.last_submission_reason_code,
+            synapse.last_submission_reason_detail,
+            synapse.last_pinned_commit_sha,
+        )
+        valid_request = synapse.is_fresh_request(datetime.now(timezone.utc))
+        credential = os.getenv(MINER_COMPETITION_GITHUB_PAT_ENV, "")
+        ready = bool(
+            valid_request
+            and "competition" in MINER_MODES
+            and CompetitionType.COMPRESSION.value in MINER_COMPETITION_TYPES
+            and MINER_COMPETITION_REPOSITORY_URL
+            and credential
+        )
+        try:
+            synapse.submission_response = CompetitionSubmissionResponse(
+                competition_id=synapse.competition_id,
+                echo_nonce=synapse.request_nonce,
+                status=CompetitionSubmissionStatus.READY
+                if ready
+                else CompetitionSubmissionStatus.NOT_READY,
+                repository_url=MINER_COMPETITION_REPOSITORY_URL if ready else "",
+                github_pat=credential if ready else "",
+                reason=(
+                    None
+                    if ready
+                    else (
+                        "invalid or stale competition submission request"
+                        if not valid_request
+                        else "repository submission is not configured"
+                    )
+                ),
+            )
+        finally:
+            credential = ""
+        logger.info(
+            "Competition submission poll handled: competition_id={} status={}",
+            synapse.competition_id,
+            synapse.submission_response.status.value,
+        )
+        return synapse
+
+    async def _blacklist_competition_request(self, synapse) -> Tuple[bool, str]:
+        if not synapse.dendrite or not synapse.dendrite.hotkey:
+            return True, "Missing dendrite or hotkey"
+        try:
+            uid = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
+        except ValueError:
+            return True, "Unknown hotkey"
+        if self._should_blacklist_non_validator(uid):
+            return True, "Non-validator hotkey"
+        return False, "Hotkey recognized!"
+
+    async def _competition_priority(self, synapse) -> float:
+        if not synapse.dendrite or not synapse.dendrite.hotkey:
+            return 0.0
+        try:
+            uid = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
+        except ValueError:
+            return 0.0
+        return float(self.metagraph.S[uid])
+
+    async def blacklist_competition_invitation(
+        self, synapse: CompetitionInvitationProtocol
+    ) -> Tuple[bool, str]:
+        return await self._blacklist_competition_request(synapse)
+
+    async def priority_competition_invitation(
+        self, synapse: CompetitionInvitationProtocol
+    ) -> float:
+        return await self._competition_priority(synapse)
+
+    async def blacklist_competition_submission(
+        self, synapse: CompetitionSubmissionProtocol
+    ) -> Tuple[bool, str]:
+        return await self._blacklist_competition_request(synapse)
+
+    async def priority_competition_submission(
+        self, synapse: CompetitionSubmissionProtocol
+    ) -> float:
+        return await self._competition_priority(synapse)
 
     def stop_run_thread(self):
         super().stop_run_thread()
@@ -409,18 +561,12 @@ class Miner(BaseMiner):
             "task_id": task_id,
         }
 
-    def _compression_type_from_payload(self, payload) -> str:
+    def _compression_type_from_payload(self, payload) -> str | None:
         task_data = payload.model_dump() if hasattr(payload, "model_dump") else {}
         compression_type = task_data.get("compression_type") or getattr(payload, "compression_type", None)
-        if compression_type in COMPRESSION_CQ_BY_TYPE:
+        if compression_type in {"Low", "Medium", "High"}:
             return compression_type
-
-        vmaf_threshold = float(payload.vmaf_threshold)
-        if vmaf_threshold >= 93:
-            return "High"
-        if vmaf_threshold >= 89:
-            return "Medium"
-        return "Low"
+        return None
 
     def _compression_service_payload(self, payload, video_path: str, task_id: str) -> dict:
         compression_type = self._compression_type_from_payload(payload)
@@ -430,14 +576,11 @@ class Miner(BaseMiner):
             "codec": payload.target_codec,
             "codec_mode": payload.codec_mode.upper(),
             "target_bitrate": int(float(payload.target_bitrate) * 1_000_000),
+            "vmaf_threshold": float(payload.vmaf_threshold),
         }
 
-        if compression_type == "Low":
-            compression_config["cq"] = 40
-        elif compression_type == "Medium":
-            compression_config["cq"] = 35
-        elif compression_type == "High":
-            compression_config["cq"] = 30
+        if compression_type is not None:
+            compression_config["compression_type"] = compression_type
 
         return compression_config
 

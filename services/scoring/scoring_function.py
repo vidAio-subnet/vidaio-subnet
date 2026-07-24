@@ -14,7 +14,7 @@ def calculate_compression_score(
     Scoring Philosophy:
     - Compression is primary goal (70% weight by default)
     - VMAF at/above threshold is rewarded with diminishing returns (30% weight)
-    - 15x compression ratio = 1.0 compression component
+    - 20x compression ratio = 1.0 compression component
     - Exceeding VMAF threshold gives modest bonus (not penalty)
     
     Three scoring zones:
@@ -156,7 +156,11 @@ def calculate_compression_score(
         
         This provides steady linear growth from 0.7 to 1.0 as VMAF approaches perfect quality.
         """
-        quality_component = 0.7 + 0.3 * min(1.0, vmaf_excess / max_vmaf_excess)
+        quality_component = (
+            1.0
+            if max_vmaf_excess <= 0
+            else 0.7 + 0.3 * min(1.0, vmaf_excess / max_vmaf_excess)
+        )
         
         # Calculate compression component (compression_rate < 0.80 guaranteed by CASE 0)
         compression_ratio = 1 / compression_rate

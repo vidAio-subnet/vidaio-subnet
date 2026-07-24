@@ -4,6 +4,7 @@ import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -17,11 +18,11 @@ bt.logging = SimpleNamespace(
     error=lambda *args, **kwargs: None,
     info=lambda *args, **kwargs: None,
 )
-sys.modules.setdefault("bittensor", bt)
+sys.modules["bittensor"] = bt
 
 redis = types.ModuleType("redis")
 redis.Redis = lambda *args, **kwargs: None
-sys.modules.setdefault("redis", redis)
+sys.modules["redis"] = redis
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -81,14 +82,44 @@ class TensorValue:
 
 
 class MinerManagerAlphaStakeWeightTests(unittest.TestCase):
+    def test_reuses_injected_subtensor_connection(self):
+        subtensor = object()
+        metagraph = SimpleNamespace(uids=[])
+
+        with (
+            patch.object(bt, "Subtensor") as subtensor_factory,
+            patch.object(miner_manager_module, "create_engine") as create_engine,
+            patch.object(miner_manager_module.Base.metadata, "create_all"),
+            patch.object(miner_manager_module, "sessionmaker") as sessionmaker,
+            patch.object(MinerManager, "_migrate_miner_metadata_table"),
+            patch.object(MinerManager, "_migrate_miner_emission_epoch_snapshots_table"),
+            patch.object(MinerManager, "sync_miner_chain_metadata"),
+            patch.object(MinerManager, "initialize_serving_counter"),
+        ):
+            create_engine.return_value = object()
+            sessionmaker.return_value.return_value = object()
+
+            manager = MinerManager(
+                uid=1,
+                config=SimpleNamespace(),
+                wallet=object(),
+                metagraph=metagraph,
+                subtensor=subtensor,
+            )
+
+        self.assertIs(manager.subtensor, subtensor)
+        subtensor_factory.assert_not_called()
+
     def manager(self):
         manager = MinerManager.__new__(MinerManager)
         manager.alpha_stake_weigh_factor = 0.0
         manager.emission_liquidation_weigh_factor = 0.0
         manager.emission_liquidation_window_epochs = 10
         manager.burn_proportion = 0.0
+        manager.competition_repository = None
         manager.compression_emission_allocation = 0.80
         manager.upscaling_emission_allocation = 0.20
+        manager.competition_emission_allocation = 0.20
         manager.emission_rank_shares = [0.20, 0.20, 0.20, 0.20, 0.20]
         manager.metagraph = SimpleNamespace(
             alpha_stake=[0.0] * 100,
@@ -96,6 +127,213 @@ class MinerManagerAlphaStakeWeightTests(unittest.TestCase):
             validator_permit=[False] * 100,
         )
         return manager
+
+    def prepare_weight_run(self, manager, recipients):
+        manager.metagraph.hotkeys = [f"hotkey-{uid}" for uid in range(100)]
+        manager.competition_repository = SimpleNamespace(
+            latest_competition_reward_context=lambda: recipients
+        )
+        manager.get_burn_uid = lambda: self.fail(
+            "get_burn_uid should not be called when burn_proportion is 0"
+        )
+        manager.check_database_connection = lambda: None
+        manager.sync_miner_chain_metadata = lambda: None
+        manager.record_miner_emission_epoch_snapshots = lambda miners_by_uid: None
+        manager.recent_emission_liquidation_stats = lambda uids: {}
+        manager.query = lambda: {
+            uid: SimpleNamespace(
+                accumulate_score=float(20 - uid),
+                processing_task_type=(
+                    "compression" if uid <= 5 else "upscaling"
+                ),
+                alpha_stake=0.0,
+            )
+            for uid in range(1, 11)
+        }
+
+    def test_competition_podium_uses_70_20_10_and_merges_inference_uids(self):
+        manager = self.manager()
+        manager.metagraph.hotkeys = [f"hotkey-{uid}" for uid in range(100)]
+        manager.metagraph.validator_permit[11] = True
+        manager.competition_repository = SimpleNamespace(
+            latest_competition_reward_context=lambda: (
+                "competition-test",
+                (
+                    ("hotkey-1", 1, 0.70),
+                    ("hotkey-6", 2, 0.20),
+                    ("hotkey-11", 3, 0.10),
+                ),
+            )
+        )
+        manager.get_burn_uid = lambda: self.fail(
+            "get_burn_uid should not be called when burn_proportion is 0"
+        )
+        manager.check_database_connection = lambda: None
+        manager.sync_miner_chain_metadata = lambda: None
+        manager.record_miner_emission_epoch_snapshots = lambda miners_by_uid: None
+        manager.recent_emission_liquidation_stats = lambda uids: {}
+        manager.query = lambda: {
+            uid: SimpleNamespace(
+                accumulate_score=float(20 - uid),
+                processing_task_type=(
+                    "compression" if uid <= 5 else "upscaling"
+                ),
+                alpha_stake=0.0,
+            )
+            for uid in range(1, 11)
+        }
+
+        with patch.object(miner_manager_module.logger, "info") as log_info:
+            uids, scores = MinerManager.weights.fget(manager)
+        scores_by_uid = {int(uid): float(score) for uid, score in zip(uids, scores)}
+
+        self.assertEqual(len(uids), len(set(int(uid) for uid in uids)))
+        self.assertAlmostEqual(sum(scores), 1.0)
+        self.assertAlmostEqual(scores_by_uid[1], 0.12 + 0.14)
+        self.assertAlmostEqual(scores_by_uid[6], 0.04 + 0.04)
+        self.assertAlmostEqual(scores_by_uid[11], 0.02)
+        self.assertAlmostEqual(sum(scores_by_uid[uid] for uid in range(1, 6)), 0.74)
+        self.assertAlmostEqual(sum(scores_by_uid[uid] for uid in range(6, 11)), 0.24)
+        overlap_logs = [
+            call
+            for call in log_info.call_args_list
+            if call.args
+            and "Inference/competition reward overlap" in call.args[0]
+        ]
+        self.assertEqual(len(overlap_logs), 2)
+        self.assertEqual(
+            {(call.args[1], call.args[2], call.args[3]) for call in overlap_logs},
+            {
+                ("competition-test", "hotkey-1", 1),
+                ("competition-test", "hotkey-6", 6),
+            },
+        )
+        overlap_by_uid = {call.args[3]: call.args for call in overlap_logs}
+        self.assertEqual(overlap_by_uid[1][4:6], ("compression", 1))
+        self.assertAlmostEqual(overlap_by_uid[1][6], 0.12)
+        self.assertAlmostEqual(overlap_by_uid[1][7], 0.14)
+        self.assertAlmostEqual(overlap_by_uid[1][8], 0.26)
+        self.assertAlmostEqual(overlap_by_uid[1][9], 0.26)
+        self.assertEqual(overlap_by_uid[6][4:6], ("upscaling", 2))
+        self.assertAlmostEqual(overlap_by_uid[6][6], 0.04)
+        self.assertAlmostEqual(overlap_by_uid[6][7], 0.04)
+        self.assertAlmostEqual(overlap_by_uid[6][8], 0.08)
+        self.assertAlmostEqual(overlap_by_uid[6][9], 0.08)
+        self.assertTrue(all(call.args[-1] for call in overlap_logs))
+        distribution_log = next(
+            call.args[0]
+            for call in log_info.call_args_list
+            if call.args and call.args[0].startswith("Reward distribution:")
+        )
+        self.assertIn("competition_id=competition-test", distribution_log)
+        self.assertIn("compression miners (0.600 weight)", distribution_log)
+        self.assertIn("upscaling miners (0.200 weight)", distribution_log)
+        self.assertIn("competition podium (0.200 weight)", distribution_log)
+
+    def test_competition_podium_receives_full_weight_without_inference_metadata(self):
+        manager = self.manager()
+        manager.metagraph.hotkeys = [f"hotkey-{uid}" for uid in range(100)]
+        manager.metagraph.validator_permit[1] = True
+        manager.competition_repository = SimpleNamespace(
+            latest_competition_reward_context=lambda: (
+                "competition-test",
+                (
+                    ("hotkey-1", 1, 0.70),
+                    ("hotkey-6", 2, 0.20),
+                    ("hotkey-11", 3, 0.10),
+                ),
+            )
+        )
+        manager.get_burn_uid = lambda: self.fail(
+            "get_burn_uid should not be called when burn_proportion is 0"
+        )
+        manager.check_database_connection = lambda: None
+        manager.sync_miner_chain_metadata = lambda: None
+        manager.record_miner_emission_epoch_snapshots = lambda miners_by_uid: None
+        manager.recent_emission_liquidation_stats = lambda uids: {}
+        manager.query = lambda: {}
+
+        with patch.object(miner_manager_module.logger, "info") as log_info:
+            uids, scores = MinerManager.weights.fget(manager)
+        scores_by_uid = {int(uid): float(score) for uid, score in zip(uids, scores)}
+
+        self.assertEqual(set(scores_by_uid), {1, 6, 11})
+        self.assertAlmostEqual(scores_by_uid[1], 0.70)
+        self.assertAlmostEqual(scores_by_uid[6], 0.20)
+        self.assertAlmostEqual(scores_by_uid[11], 0.10)
+        self.assertAlmostEqual(sum(scores), 1.0)
+        distribution_log = next(
+            call.args[0]
+            for call in log_info.call_args_list
+            if call.args and call.args[0].startswith("Reward distribution:")
+        )
+        self.assertIn("0 compression miners (0.000 weight)", distribution_log)
+        self.assertIn("0 upscaling miners (0.000 weight)", distribution_log)
+        self.assertIn("competition podium (1.000 weight)", distribution_log)
+        self.assertIn("competition_id=competition-test", distribution_log)
+
+    def test_pre_podium_keeps_legacy_80_20_inference_split(self):
+        manager = self.manager()
+        self.prepare_weight_run(manager, (None, ()))
+
+        uids, scores = MinerManager.weights.fget(manager)
+        scores_by_uid = {int(uid): float(score) for uid, score in zip(uids, scores)}
+
+        self.assertAlmostEqual(sum(scores), 1.0)
+        self.assertAlmostEqual(sum(scores_by_uid[uid] for uid in range(1, 6)), 0.80)
+        self.assertAlmostEqual(sum(scores_by_uid[uid] for uid in range(6, 11)), 0.20)
+        self.assertEqual(set(scores_by_uid), set(range(1, 11)))
+
+    def test_missing_lower_podium_members_return_shares_to_compression(self):
+        manager = self.manager()
+        self.prepare_weight_run(
+            manager,
+            ("competition-test", (("hotkey-11", 1, 0.70),)),
+        )
+
+        uids, scores = MinerManager.weights.fget(manager)
+        scores_by_uid = {int(uid): float(score) for uid, score in zip(uids, scores)}
+
+        self.assertAlmostEqual(sum(scores), 1.0)
+        self.assertAlmostEqual(sum(scores_by_uid[uid] for uid in range(1, 6)), 0.66)
+        self.assertAlmostEqual(sum(scores_by_uid[uid] for uid in range(6, 11)), 0.20)
+        self.assertAlmostEqual(scores_by_uid[11], 0.14)
+
+    def test_missing_winner_disables_podium_and_restores_legacy_split(self):
+        manager = self.manager()
+        self.prepare_weight_run(
+            manager,
+            (
+                "competition-test",
+                (
+                    ("missing-winner", 1, 0.70),
+                    ("hotkey-6", 2, 0.20),
+                ),
+            ),
+        )
+
+        uids, scores = MinerManager.weights.fget(manager)
+        scores_by_uid = {int(uid): float(score) for uid, score in zip(uids, scores)}
+
+        self.assertAlmostEqual(sum(scores), 1.0)
+        self.assertAlmostEqual(sum(scores_by_uid[uid] for uid in range(1, 6)), 0.80)
+        self.assertAlmostEqual(sum(scores_by_uid[uid] for uid in range(6, 11)), 0.20)
+        self.assertAlmostEqual(scores_by_uid[6], 0.04)
+
+    def test_podium_hotkey_is_resolved_to_its_current_uid(self):
+        manager = self.manager()
+        self.prepare_weight_run(
+            manager,
+            ("competition-test", (("moving-winner", 1, 0.70),)),
+        )
+        manager.metagraph.hotkeys[42] = "moving-winner"
+
+        uids, scores = MinerManager.weights.fget(manager)
+        scores_by_uid = {int(uid): float(score) for uid, score in zip(uids, scores)}
+
+        self.assertAlmostEqual(scores_by_uid[42], 0.14)
+        self.assertNotIn(41, scores_by_uid)
+        self.assertAlmostEqual(sum(scores), 1.0)
 
     def sqlite_manager(self, current_block=1000):
         manager = self.manager()

@@ -16,13 +16,14 @@ import time
 import uuid
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from pathlib import Path
+from typing import Literal, Optional
 
 import boto3
 import httpx
 from botocore.config import Config
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,8 +48,22 @@ app = FastAPI(title="Video Compression Service", lifespan=lifespan)
 
 SHARED_VOLUME_PATH = os.getenv("SHARED_VOLUME_PATH", "/tmp/organic-proxy")
 MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_COMPRESSION", "2"))
-MAX_QUEUE_SIZE = int(os.getenv("MAX_QUEUE_SIZE_COMPRESSION") or os.getenv("MAX_QUEUE_SIZE", "5"))
-DISABLE_REMOTE_IO = os.getenv("DISABLE_REMOTE_IO", "false").lower() in ("1", "true", "yes")
+MAX_QUEUE_SIZE = int(
+    os.getenv("MAX_QUEUE_SIZE_COMPRESSION") or os.getenv("MAX_QUEUE_SIZE", "5")
+)
+DISABLE_REMOTE_IO = os.getenv("DISABLE_REMOTE_IO", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+COMPETITION_INPUT_ROOT = os.getenv("COMPETITION_INPUT_ROOT", "/evaluation-inputs")
+COMPETITION_OUTPUT_ROOT = os.getenv("COMPETITION_OUTPUT_ROOT", "/output")
+DEFAULT_COMPRESSION_CQ = 35
+COMPRESSION_CQ_BY_TYPE = {
+    "Low": 40,
+    "Medium": 35,
+    "High": 30,
+}
 
 # Storage provider label only. Uploads use one S3-compatible code path.
 STORAGE_PROVIDER = os.getenv("MINER_STORAGE_PROVIDER", "s3").lower()
@@ -66,22 +81,32 @@ S3_PRESIGNED_EXPIRY = int(
     or os.getenv("S3_PRESIGNED_EXPIRY")
     or "3600"
 )
-PRESIGNED_URL_CLEANUP_GRACE_SECONDS = int(os.getenv("PRESIGNED_URL_CLEANUP_GRACE_SECONDS", "600"))
+PRESIGNED_URL_CLEANUP_GRACE_SECONDS = int(
+    os.getenv("PRESIGNED_URL_CLEANUP_GRACE_SECONDS", "600")
+)
 TEMP_FILE_TTL_SECONDS = int(
     os.getenv("MINER_TEMP_FILE_TTL_SECONDS")
     or os.getenv("TEMP_FILE_TTL_SECONDS")
     or str(min(S3_PRESIGNED_EXPIRY, 604800) + PRESIGNED_URL_CLEANUP_GRACE_SECONDS)
 )
 CLEANUP_INTERVAL_SECONDS = int(
-    os.getenv("MINER_CLEANUP_INTERVAL_SECONDS") or os.getenv("CLEANUP_INTERVAL_SECONDS") or "300"
+    os.getenv("MINER_CLEANUP_INTERVAL_SECONDS")
+    or os.getenv("CLEANUP_INTERVAL_SECONDS")
+    or "300"
 )
 CLEANUP_MAX_VOLUME_BYTES = int(
-    os.getenv("MINER_CLEANUP_MAX_VOLUME_BYTES") or os.getenv("CLEANUP_MAX_VOLUME_BYTES") or "9000000000"
+    os.getenv("MINER_CLEANUP_MAX_VOLUME_BYTES")
+    or os.getenv("CLEANUP_MAX_VOLUME_BYTES")
+    or "9000000000"
 )
 CLEANUP_MIN_FILE_AGE_SECONDS = int(
-    os.getenv("MINER_CLEANUP_MIN_FILE_AGE_SECONDS") or os.getenv("CLEANUP_MIN_FILE_AGE_SECONDS") or "60"
+    os.getenv("MINER_CLEANUP_MIN_FILE_AGE_SECONDS")
+    or os.getenv("CLEANUP_MIN_FILE_AGE_SECONDS")
+    or "60"
 )
-CLEANUP_ENABLED = os.getenv("MINER_CLEANUP_ENABLED", os.getenv("CLEANUP_ENABLED", "true")).lower() in (
+CLEANUP_ENABLED = os.getenv(
+    "MINER_CLEANUP_ENABLED", os.getenv("CLEANUP_ENABLED", "true")
+).lower() in (
     "1",
     "true",
     "yes",
@@ -91,7 +116,9 @@ STORAGE_CLEANUP_ENABLED = os.getenv(
 ).lower() in ("1", "true", "yes")
 STORAGE_CLEANUP_PREFIXES = [
     prefix.strip()
-    for prefix in os.getenv("MINER_STORAGE_CLEANUP_PREFIXES", "processing/,upscaling/").split(",")
+    for prefix in os.getenv(
+        "MINER_STORAGE_CLEANUP_PREFIXES", "processing/,upscaling/"
+    ).split(",")
     if prefix.strip()
 ]
 STORAGE_OBJECT_TTL_SECONDS = int(
@@ -99,16 +126,50 @@ STORAGE_OBJECT_TTL_SECONDS = int(
     or os.getenv("STORAGE_OBJECT_TTL_SECONDS")
     or str(min(S3_PRESIGNED_EXPIRY, 604800) + PRESIGNED_URL_CLEANUP_GRACE_SECONDS)
 )
-COMPRESSION_CHUNKING_ENABLED = os.getenv("COMPRESSION_CHUNKING_ENABLED", "true").lower() in (
+COMPRESSION_CHUNKING_ENABLED = os.getenv(
+    "COMPRESSION_CHUNKING_ENABLED", "true"
+).lower() in (
     "1",
     "true",
     "yes",
 )
-COMPRESSION_CHUNK_MIN_DURATION_SECONDS = int(os.getenv("COMPRESSION_CHUNK_MIN_DURATION_SECONDS", "1200"))
-COMPRESSION_CHUNK_TARGET_SECONDS = int(os.getenv("COMPRESSION_CHUNK_TARGET_SECONDS", "600"))
-COMPRESSION_CHUNK_PARALLELISM = max(1, int(os.getenv("COMPRESSION_CHUNK_PARALLELISM", "2")))
+COMPRESSION_CHUNK_MIN_DURATION_SECONDS = int(
+    os.getenv("COMPRESSION_CHUNK_MIN_DURATION_SECONDS", "1200")
+)
+COMPRESSION_CHUNK_TARGET_SECONDS = int(
+    os.getenv("COMPRESSION_CHUNK_TARGET_SECONDS", "600")
+)
+COMPRESSION_CHUNK_PARALLELISM = max(
+    1, int(os.getenv("COMPRESSION_CHUNK_PARALLELISM", "2"))
+)
 FFPROBE_BIN = os.getenv("FFPROBE_BIN", "ffprobe")
 FFMPEG_BIN = os.getenv("FFMPEG_BIN", "ffmpeg")
+
+
+def resolve_compression_cq(
+    *,
+    explicit_cq: int | None = None,
+    compression_type: Literal["Low", "Medium", "High"] | None = None,
+    vmaf_threshold: float | None = None,
+) -> int:
+    """Resolve CQ once for inference and competition requests.
+
+    Explicit legacy overrides retain precedence. Otherwise an explicit quality
+    tier wins, followed by the VMAF target and the historical medium default.
+    """
+
+    if explicit_cq is not None:
+        return explicit_cq
+    if compression_type is not None:
+        return COMPRESSION_CQ_BY_TYPE[compression_type]
+    if vmaf_threshold is not None:
+        if vmaf_threshold >= 93:
+            return COMPRESSION_CQ_BY_TYPE["High"]
+        if vmaf_threshold >= 89:
+            return COMPRESSION_CQ_BY_TYPE["Medium"]
+        return COMPRESSION_CQ_BY_TYPE["Low"]
+    return DEFAULT_COMPRESSION_CQ
+
 
 _semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 _queue_size = 0
@@ -185,7 +246,7 @@ async def _download_url(url: str, dest: str):
             with open(dest, "wb") as f:
                 async for chunk in resp.aiter_bytes(chunk_size=8192):
                     f.write(chunk)
-    log.info(f"Downloaded {os.path.getsize(dest) / (1024*1024):.1f} MB → {dest}")
+    log.info(f"Downloaded {os.path.getsize(dest) / (1024 * 1024):.1f} MB → {dest}")
 
 
 def _upload_to_s3(local_path: str, key: str) -> str:
@@ -226,7 +287,9 @@ def _format_process_output(stdout: bytes, stderr: bytes) -> str:
     return "\n\n".join(parts)
 
 
-async def _run_process(cmd: list[str], task_label: str, step: str) -> tuple[int | None, bytes, bytes, str]:
+async def _run_process(
+    cmd: list[str], task_label: str, step: str
+) -> tuple[int | None, bytes, bytes, str]:
     try:
         log.info(f"[{task_label}] {step}: {' '.join(cmd)}")
         proc = await asyncio.create_subprocess_exec(
@@ -245,12 +308,17 @@ async def _run_process(cmd: list[str], task_label: str, step: str) -> tuple[int 
 async def _probe_duration_seconds(path: str, task_label: str) -> float | None:
     cmd = [
         FFPROBE_BIN,
-        "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
         path,
     ]
-    returncode, stdout, stderr, run_error = await _run_process(cmd, task_label, "ffprobe duration")
+    returncode, stdout, stderr, run_error = await _run_process(
+        cmd, task_label, "ffprobe duration"
+    )
     if returncode != 0 or run_error:
         detail = run_error or stderr.decode(errors="replace").strip()
         log.warning(f"[{task_label}] Failed to probe duration: {detail}")
@@ -294,28 +362,42 @@ async def _log_chunk_seams(segments: list[str], task_label: str) -> list[float]:
             {
                 "seam_seconds": [round(seam, 3) for seam in seams],
                 "seam_timestamps": [_format_timestamp(seam) for seam in seams],
-                "segment_durations_seconds": [round(duration, 3) for duration in durations],
+                "segment_durations_seconds": [
+                    round(duration, 3) for duration in durations
+                ],
             }
         )
     )
     return seams
 
 
-def _build_ffmpeg_args(local_input: str, output_path: str, req: "CompressRequest", encoder: str) -> list[str]:
+def _build_ffmpeg_args(
+    local_input: str, output_path: str, req: "CompressRequest", encoder: str
+) -> list[str]:
+    resolved_cq = resolve_compression_cq(
+        explicit_cq=req.cq,
+        compression_type=req.compression_type,
+        vmaf_threshold=req.vmaf_threshold,
+    )
     ffmpeg_args = [
         FFMPEG_BIN,
         "-y",
-        "-hwaccel", "cuda",
-        "-i", local_input,
-        "-map", "0:v:0",
-        "-map", "0:a?",
-        "-c:v", encoder,
+        "-hwaccel",
+        "cuda",
+        "-i",
+        local_input,
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-c:v",
+        encoder,
     ]
 
     if req.codec_mode == "VBR" and req.target_bitrate:
         ffmpeg_args.extend(["-b:v", str(req.target_bitrate)])
     else:
-        ffmpeg_args.extend(["-cq", str(req.cq)])
+        ffmpeg_args.extend(["-cq", str(resolved_cq)])
 
     ffmpeg_args.extend(["-preset", req.preset])
 
@@ -328,7 +410,9 @@ def _build_ffmpeg_args(local_input: str, output_path: str, req: "CompressRequest
     video_filters.append("setsar=1")
     ffmpeg_args.extend(["-vf", ",".join(video_filters)])
 
-    ffmpeg_args.extend(["-c:a", "copy", "-sn", "-dn", "-movflags", "+faststart", output_path])
+    ffmpeg_args.extend(
+        ["-c:a", "copy", "-sn", "-dn", "-movflags", "+faststart", output_path]
+    )
     return ffmpeg_args
 
 
@@ -359,21 +443,35 @@ async def _split_at_keyframes(
         FFMPEG_BIN,
         "-hide_banner",
         "-y",
-        "-i", local_input,
-        "-map", "0:v:0",
-        "-map", "0:a?",
-        "-c", "copy",
+        "-i",
+        local_input,
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-c",
+        "copy",
         "-sn",
         "-dn",
-        "-f", "segment",
-        "-segment_time", str(chunk_duration_seconds),
-        "-reset_timestamps", "1",
-        "-segment_format", "mp4",
+        "-f",
+        "segment",
+        "-segment_time",
+        str(chunk_duration_seconds),
+        "-reset_timestamps",
+        "1",
+        "-segment_format",
+        "mp4",
         segment_pattern,
     ]
-    returncode, stdout, stderr, run_error = await _run_process(cmd, task_label, "split segments")
+    returncode, stdout, stderr, run_error = await _run_process(
+        cmd, task_label, "split segments"
+    )
     if returncode != 0 or run_error:
-        detail = run_error or _format_process_output(stdout, stderr) or "segment split failed"
+        detail = (
+            run_error
+            or _format_process_output(stdout, stderr)
+            or "segment split failed"
+        )
         raise RuntimeError(detail)
 
     segments = sorted(
@@ -393,16 +491,22 @@ async def _compress_chunked(
     encoder: str,
     task_label: str,
 ) -> None:
-    chunk_duration_seconds = req.chunk_duration_seconds or COMPRESSION_CHUNK_TARGET_SECONDS
+    chunk_duration_seconds = (
+        req.chunk_duration_seconds or COMPRESSION_CHUNK_TARGET_SECONDS
+    )
     parallelism = max(1, req.chunk_parallelism or COMPRESSION_CHUNK_PARALLELISM)
     work_dir = os.path.join(SHARED_VOLUME_PATH, f"{task_label}_chunks")
     encoded_dir = os.path.join(work_dir, "encoded")
     tracked_paths: list[str] = []
 
     try:
-        input_segments = await _split_at_keyframes(local_input, work_dir, task_label, chunk_duration_seconds)
+        input_segments = await _split_at_keyframes(
+            local_input, work_dir, task_label, chunk_duration_seconds
+        )
         if len(input_segments) < 2:
-            raise RuntimeError("segment split produced one chunk; falling back to single-pass compression")
+            raise RuntimeError(
+                "segment split produced one chunk; falling back to single-pass compression"
+            )
         await _log_chunk_seams(input_segments, task_label)
 
         os.makedirs(encoded_dir, exist_ok=True)
@@ -428,10 +532,16 @@ async def _compress_chunked(
                     f"compress chunk {index + 1}/{len(input_segments)}",
                 )
                 if returncode != 0 or run_error:
-                    detail = run_error or _format_process_output(stdout, stderr) or "chunk compression failed"
+                    detail = (
+                        run_error
+                        or _format_process_output(stdout, stderr)
+                        or "chunk compression failed"
+                    )
                     raise RuntimeError(f"chunk {index + 1} failed: {detail}")
                 if not os.path.exists(segment_output):
-                    raise RuntimeError(f"chunk {index + 1} output missing: {segment_output}")
+                    raise RuntimeError(
+                        f"chunk {index + 1} output missing: {segment_output}"
+                    )
 
         chunk_results = await asyncio.gather(
             *[
@@ -440,7 +550,9 @@ async def _compress_chunked(
             ],
             return_exceptions=True,
         )
-        chunk_errors = [result for result in chunk_results if isinstance(result, Exception)]
+        chunk_errors = [
+            result for result in chunk_results if isinstance(result, Exception)
+        ]
         if chunk_errors:
             raise RuntimeError(str(chunk_errors[0]))
 
@@ -453,16 +565,27 @@ async def _compress_chunked(
             FFMPEG_BIN,
             "-hide_banner",
             "-y",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", concat_list,
-            "-c", "copy",
-            "-movflags", "+faststart",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            concat_list,
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
             output_path,
         ]
-        returncode, stdout, stderr, run_error = await _run_process(cmd, task_label, "merge chunks")
+        returncode, stdout, stderr, run_error = await _run_process(
+            cmd, task_label, "merge chunks"
+        )
         if returncode != 0 or run_error:
-            detail = run_error or _format_process_output(stdout, stderr) or "chunk merge failed"
+            detail = (
+                run_error
+                or _format_process_output(stdout, stderr)
+                or "chunk merge failed"
+            )
             raise RuntimeError(detail)
     finally:
         await _untrack_temp_files(*tracked_paths)
@@ -494,7 +617,10 @@ def _normalize_path(path: str) -> str:
 
 def _is_shared_path(path: str) -> bool:
     try:
-        return os.path.commonpath([_shared_root(), _normalize_path(path)]) == _shared_root()
+        return (
+            os.path.commonpath([_shared_root(), _normalize_path(path)])
+            == _shared_root()
+        )
     except ValueError:
         return False
 
@@ -712,26 +838,119 @@ class CompressRequest(BaseModel):
         max_length=5,
         description="Input video path or URL list, up to 5 items",
     )
+    output_paths: list[str] = Field(
+        default_factory=list,
+        max_length=5,
+        description="Optional caller-owned local output paths",
+    )
     task_id: str = Field("", description="Task ID for logging")
     codec: str = Field("AV1", description="Target codec: AV1, H264, HEVC, VP9")
     codec_mode: str = Field("CRF", description="Rate control mode: CRF or VBR")
-    cq: int = Field(35, description="Constant quality value (lower = higher quality)")
+    cq: Optional[int] = Field(
+        None,
+        ge=0,
+        le=63,
+        description="Optional explicit CQ override (lower = higher quality)",
+    )
+    compression_type: Optional[Literal["Low", "Medium", "High"]] = Field(
+        None,
+        description="Optional inference quality tier used when cq is omitted",
+    )
     preset: str = Field("p4", description="Encoder preset")
-    target_bitrate: Optional[int] = Field(None, description="Target bitrate in bps (for VBR mode)")
-    target_width: Optional[int] = Field(None, description="Target width for downscaling")
-    target_height: Optional[int] = Field(None, description="Target height for downscaling")
-    chunked: Optional[bool] = Field(None, description="Override automatic long-video chunking")
-    chunk_duration_seconds: Optional[int] = Field(None, description="Target chunk duration")
-    chunk_parallelism: Optional[int] = Field(None, description="Parallel chunk encodes per request")
+    target_bitrate: Optional[int] = Field(
+        None, description="Target bitrate in bps (for VBR mode)"
+    )
+    target_width: Optional[int] = Field(
+        None, description="Target width for downscaling"
+    )
+    target_height: Optional[int] = Field(
+        None, description="Target height for downscaling"
+    )
+    chunked: Optional[bool] = Field(
+        None, description="Override automatic long-video chunking"
+    )
+    chunk_duration_seconds: Optional[int] = Field(
+        None, description="Target chunk duration"
+    )
+    chunk_parallelism: Optional[int] = Field(
+        None, description="Parallel chunk encodes per request"
+    )
+    vmaf_threshold: Optional[float] = Field(
+        None,
+        ge=0,
+        le=100,
+        description="Competition quality floor communicated to customized solutions",
+    )
+
+    @model_validator(mode="after")
+    def validate_output_paths(self):
+        if self.output_paths and len(self.output_paths) != len(self.video_paths):
+            raise ValueError("output_paths must have the same length as video_paths")
+        if len(self.output_paths) != len(set(self.output_paths)):
+            raise ValueError("output_paths values must be unique")
+        return self
 
 
 class CompressResponse(BaseModel):
-    output_paths: list[str] = Field(default_factory=list, description="Per-input local output paths")
-    output_urls: list[str] = Field(default_factory=list, description="Per-input S3 presigned URLs")
-    errors: list[Optional[str]] = Field(default_factory=list, description="Per-input errors")
+    output_paths: list[str] = Field(
+        default_factory=list, description="Per-input local output paths"
+    )
+    output_urls: list[str] = Field(
+        default_factory=list, description="Per-input S3 presigned URLs"
+    )
+    errors: list[Optional[str]] = Field(
+        default_factory=list, description="Per-input errors"
+    )
     success: bool
     active_tasks: Optional[int] = None
     queued_tasks: Optional[int] = None
+
+
+class CompetitionCompressionItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    evaluation_id: str = Field(
+        min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._-]+$"
+    )
+    input_path: str
+    output_path: str
+    codec: Literal["AV1"] = "AV1"
+    codec_mode: Literal["CRF", "VBR"] = "CRF"
+    target_bitrate: Literal[5_000_000, 8_000_000, 10_000_000] | None = None
+    vmaf_threshold: float = Field(ge=0, le=100)
+
+    @model_validator(mode="after")
+    def validate_rate_control(self):
+        if self.codec_mode == "VBR" and self.target_bitrate is None:
+            raise ValueError("VBR competition item requires target_bitrate")
+        if self.codec_mode == "CRF" and self.target_bitrate is not None:
+            raise ValueError("CRF competition item cannot set target_bitrate")
+        return self
+
+
+class CompetitionCompressionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    competition_id: str = Field(min_length=1, max_length=64)
+    hotkey: str = Field(min_length=1, max_length=128)
+    batch_id: str = Field(min_length=1, max_length=128)
+    items: list[CompetitionCompressionItem] = Field(min_length=1, max_length=5)
+
+    @model_validator(mode="after")
+    def validate_unique_values(self):
+        if len({item.evaluation_id for item in self.items}) != len(self.items):
+            raise ValueError("evaluation_id values must be unique")
+        if len({item.output_path for item in self.items}) != len(self.items):
+            raise ValueError("output_path values must be unique")
+        return self
+
+
+class CompetitionCompressionResult(BaseModel):
+    output_path: str | None = None
+
+
+class CompetitionCompressionResponse(BaseModel):
+    results: list[CompetitionCompressionResult]
 
 
 @app.get("/health")
@@ -743,6 +962,11 @@ async def health():
         "storage": _storage_config_status(),
         "cleanup": _cleanup_config_status(),
         "compression": _compression_config_status(),
+        "competition_local_io": {
+            "remote_io_disabled": DISABLE_REMOTE_IO,
+            "input_root": COMPETITION_INPUT_ROOT,
+            "output_root": COMPETITION_OUTPUT_ROOT,
+        },
     }
 
 
@@ -751,12 +975,26 @@ async def queue_status():
     return await _queue_snapshot()
 
 
-async def _compress_one(req: CompressRequest, input_video: str, task_label: str) -> CompressResponse:
+async def _compress_one(
+    req: CompressRequest,
+    input_video: str,
+    task_label: str,
+    *,
+    requested_output_path: str | None = None,
+) -> CompressResponse:
     remote_mode = _is_url(input_video)
     encoder = CODEC_MAP.get(req.codec.upper(), "av1_nvenc")
+    resolved_cq = resolve_compression_cq(
+        explicit_cq=req.cq,
+        compression_type=req.compression_type,
+        vmaf_threshold=req.vmaf_threshold,
+    )
 
     if remote_mode and DISABLE_REMOTE_IO:
-        return CompressResponse(success=False, errors=["Remote URL input is disabled for this local-only service"])
+        return CompressResponse(
+            success=False,
+            errors=["Remote URL input is disabled for this local-only service"],
+        )
 
     local_input = ""
     output_path = ""
@@ -770,7 +1008,7 @@ async def _compress_one(req: CompressRequest, input_video: str, task_label: str)
         async with _queued_task(task_label) as (queue_position, snapshot):
             log.info(
                 f"[{task_label}] Queued compression "
-                f"(codec={encoder}, cq={req.cq}, position={queue_position}, "
+                f"(codec={encoder}, cq={resolved_cq}, position={queue_position}, "
                 f"waiting={snapshot['queued_tasks']}, remote={remote_mode})"
             )
 
@@ -778,22 +1016,30 @@ async def _compress_one(req: CompressRequest, input_video: str, task_label: str)
 
             # --- Resolve input to local path ---
             if remote_mode:
-                local_input = os.path.join(SHARED_VOLUME_PATH, f"{task_label}_input.mp4")
+                local_input = os.path.join(
+                    SHARED_VOLUME_PATH, f"{task_label}_input.mp4"
+                )
                 await _track_temp_files(local_input)
                 try:
                     await _download_url(input_video, local_input)
                 except Exception as e:
                     _cleanup(local_input)
-                    return CompressResponse(success=False, errors=[f"Failed to download input: {e}"])
+                    return CompressResponse(
+                        success=False, errors=[f"Failed to download input: {e}"]
+                    )
             else:
                 local_input = input_video
                 if not os.path.exists(local_input):
-                    raise HTTPException(status_code=400, detail=f"Input file not found: {local_input}")
+                    raise HTTPException(
+                        status_code=400, detail=f"Input file not found: {local_input}"
+                    )
                 await _track_temp_files(local_input)
 
             basename = os.path.splitext(os.path.basename(local_input))[0]
             output_filename = f"{basename}_compressed.mp4"
-            output_path = os.path.join(SHARED_VOLUME_PATH, output_filename)
+            output_path = requested_output_path or os.path.join(
+                SHARED_VOLUME_PATH, output_filename
+            )
             await _track_temp_files(output_path)
 
             duration_seconds = await _probe_duration_seconds(local_input, task_label)
@@ -809,12 +1055,16 @@ async def _compress_one(req: CompressRequest, input_video: str, task_label: str)
 
                 if use_chunked:
                     try:
-                        await _compress_chunked(local_input, output_path, req, encoder, task_label)
+                        await _compress_chunked(
+                            local_input, output_path, req, encoder, task_label
+                        )
                         returncode = 0
                     except RuntimeError as e:
                         if "falling back to single-pass compression" in str(e):
                             log.warning(f"[{task_label}] {e}")
-                            cmd = _build_ffmpeg_args(local_input, output_path, req, encoder)
+                            cmd = _build_ffmpeg_args(
+                                local_input, output_path, req, encoder
+                            )
                             returncode, stdout, stderr, run_error = await _run_process(
                                 cmd,
                                 task_label,
@@ -822,7 +1072,9 @@ async def _compress_one(req: CompressRequest, input_video: str, task_label: str)
                             )
                         else:
                             run_error = str(e)
-                            log.error(f"[{task_label}] Chunked compression failed: {run_error}")
+                            log.error(
+                                f"[{task_label}] Chunked compression failed: {run_error}"
+                            )
                 else:
                     cmd = _build_ffmpeg_args(local_input, output_path, req, encoder)
                     returncode, stdout, stderr, run_error = await _run_process(
@@ -832,16 +1084,26 @@ async def _compress_one(req: CompressRequest, input_video: str, task_label: str)
                     )
 
         snapshot = await _queue_snapshot()
-        stats = dict(active_tasks=snapshot["active_tasks"], queued_tasks=snapshot["queued_tasks"])
+        stats = dict(
+            active_tasks=snapshot["active_tasks"], queued_tasks=snapshot["queued_tasks"]
+        )
 
         if returncode is None:
             _cleanup(output_path)
             if remote_mode:
                 _cleanup(local_input)
-            return CompressResponse(success=False, errors=[run_error or "compression did not start"], **stats)
+            return CompressResponse(
+                success=False,
+                errors=[run_error or "compression did not start"],
+                **stats,
+            )
 
         if returncode != 0:
-            err_msg = run_error or _format_process_output(stdout, stderr) or "compression failed without output"
+            err_msg = (
+                run_error
+                or _format_process_output(stdout, stderr)
+                or "compression failed without output"
+            )
             log.error(f"[{task_label}] ffmpeg failed (rc={returncode}): {err_msg}")
             _cleanup(output_path)
             if remote_mode:
@@ -852,30 +1114,46 @@ async def _compress_one(req: CompressRequest, input_video: str, task_label: str)
             log.error(f"[{task_label}] Output file not found: {output_path}")
             if remote_mode:
                 _cleanup(local_input)
-            return CompressResponse(success=False, errors=["Output file not created"], **stats)
+            return CompressResponse(
+                success=False, errors=["Output file not created"], **stats
+            )
 
         # --- Remote mode: upload result to S3, return URL ---
         if remote_mode:
             try:
                 s3_key = f"processing/{task_label}/{output_filename}"
                 output_url = _upload_to_s3(output_path, s3_key)
-                log.info(f"[{task_label}] Compression complete (remote): {output_url[:80]}...")
-                return CompressResponse(output_urls=[output_url], errors=[None], success=True, **stats)
+                log.info(
+                    f"[{task_label}] Compression complete (remote): {output_url[:80]}..."
+                )
+                return CompressResponse(
+                    output_urls=[output_url], errors=[None], success=True, **stats
+                )
             except Exception as e:
                 log.error(f"[{task_label}] S3 upload failed: {e}")
-                return CompressResponse(success=False, errors=[f"S3 upload failed: {e}"], **stats)
+                return CompressResponse(
+                    success=False, errors=[f"S3 upload failed: {e}"], **stats
+                )
             finally:
                 _cleanup(local_input, output_path)
 
         log.info(f"[{task_label}] Compression complete (local): {output_path}")
-        return CompressResponse(output_paths=[output_path], errors=[None], success=True, **stats)
+        return CompressResponse(
+            output_paths=[output_path], errors=[None], success=True, **stats
+        )
     finally:
         await _untrack_temp_files(local_input, output_path)
 
 
 def _combine_compress_responses(responses: list[CompressResponse]) -> CompressResponse:
-    output_paths = [response.output_paths[0] if response.output_paths else "" for response in responses]
-    output_urls = [response.output_urls[0] if response.output_urls else "" for response in responses]
+    output_paths = [
+        response.output_paths[0] if response.output_paths else ""
+        for response in responses
+    ]
+    output_urls = [
+        response.output_urls[0] if response.output_urls else ""
+        for response in responses
+    ]
     errors = [response.errors[0] if response.errors else None for response in responses]
     success = all(response.success for response in responses)
     latest = responses[-1] if responses else None
@@ -890,22 +1168,147 @@ def _combine_compress_responses(responses: list[CompressResponse]) -> CompressRe
     )
 
 
-@app.post("/compress", response_model=CompressResponse)
-async def compress(req: CompressRequest):
+def _competition_input_path(raw_path: str) -> Path:
+    if _is_url(raw_path) or not os.path.isabs(raw_path):
+        raise ValueError("competition input must be an absolute local path")
+    root = Path(COMPETITION_INPUT_ROOT).resolve(strict=True)
+    path = Path(raw_path).resolve(strict=True)
+    if path == root or not path.is_relative_to(root) or not path.is_file():
+        raise ValueError("competition input must be a file below /evaluation-inputs")
+    return path
+
+
+def _competition_output_path(raw_path: str) -> Path:
+    if (
+        _is_url(raw_path)
+        or not os.path.isabs(raw_path)
+        or not raw_path.lower().endswith(".mp4")
+    ):
+        raise ValueError("competition output must be an absolute local MP4 path")
+    root = Path(COMPETITION_OUTPUT_ROOT).resolve(strict=True)
+    path = Path(raw_path)
+    if ".." in path.parts:
+        raise ValueError("competition output cannot contain traversal")
+    lexical_root = Path(COMPETITION_OUTPUT_ROOT).absolute()
+    if path == lexical_root or not path.is_relative_to(lexical_root):
+        raise ValueError("competition output must be below /output")
+    parent = path.parent
+    if not parent.is_dir():
+        raise ValueError("competition output parent must already exist")
+    resolved = path.resolve(strict=False)
+    if resolved == root or not resolved.is_relative_to(root):
+        raise ValueError("competition output must be below /output")
+    current = root
+    for part in resolved.relative_to(root).parts[:-1]:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError("competition output cannot traverse symlinks")
+    if path.exists() or path.is_symlink():
+        raise ValueError("competition output must not overwrite an existing path")
+    return resolved
+
+
+async def _compress_competition(
+    req: CompetitionCompressionRequest,
+) -> CompetitionCompressionResponse:
+    if not DISABLE_REMOTE_IO:
+        raise HTTPException(
+            status_code=503, detail="competition route requires DISABLE_REMOTE_IO=true"
+        )
+    prepared: list[tuple[CompetitionCompressionItem, Path, Path]] = []
+    try:
+        for item in req.items:
+            prepared.append(
+                (
+                    item,
+                    _competition_input_path(item.input_path),
+                    _competition_output_path(item.output_path),
+                )
+            )
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    log.info(
+        "[competition:%s] Batch received (hotkey=%s, items=%s)",
+        req.batch_id,
+        req.hotkey,
+        [item.evaluation_id for item, _, _ in prepared],
+    )
+
+    async def run(
+        item: CompetitionCompressionItem, input_path: Path, output_path: Path
+    ) -> CompetitionCompressionResult:
+        legacy = CompressRequest(
+            video_paths=[str(input_path)],
+            task_id=item.evaluation_id,
+            codec=item.codec,
+            codec_mode=item.codec_mode,
+            target_bitrate=item.target_bitrate,
+            vmaf_threshold=item.vmaf_threshold,
+        )
+        response = await _compress_one(
+            legacy,
+            str(input_path),
+            item.evaluation_id,
+            requested_output_path=str(output_path),
+        )
+        if not response.success:
+            log.error(
+                "[%s] Competition compression failed: %s",
+                item.evaluation_id,
+                response.errors[0] if response.errors else "compression failed",
+            )
+            return CompetitionCompressionResult(output_path=None)
+        return CompetitionCompressionResult(output_path=item.output_path)
+
+    results = await asyncio.gather(*(run(*item) for item in prepared))
+    log.info(
+        "[competition:%s] Batch complete (scored_outputs=%s, failed_outputs=%s)",
+        req.batch_id,
+        sum(result.output_path is not None for result in results),
+        sum(result.output_path is None for result in results),
+    )
+    return CompetitionCompressionResponse(results=list(results))
+
+
+@app.post("/compress", response_model=CompressResponse | CompetitionCompressionResponse)
+async def compress(req: CompressRequest | CompetitionCompressionRequest):
+    if isinstance(req, CompetitionCompressionRequest):
+        return await _compress_competition(req)
+
     input_videos = [video_path.strip() for video_path in req.video_paths]
     if any(not video_path for video_path in input_videos):
         raise HTTPException(status_code=400, detail="video_paths entries are required")
 
     base_task_id = req.task_id or uuid.uuid4().hex[:8]
+    requested_outputs: list[str | None] = [None] * len(input_videos)
+    if req.output_paths:
+        if not DISABLE_REMOTE_IO:
+            raise HTTPException(
+                status_code=400,
+                detail="caller-owned output_paths require DISABLE_REMOTE_IO=true",
+            )
+        try:
+            requested_outputs = [
+                str(_competition_output_path(path)) for path in req.output_paths
+            ]
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     responses = await asyncio.gather(
         *[
             _compress_one(
                 req,
                 input_video,
-                base_task_id if len(input_videos) == 1 else f"{base_task_id}-{index + 1}",
+                base_task_id
+                if len(input_videos) == 1
+                else f"{base_task_id}-{index + 1}",
+                requested_output_path=requested_outputs[index],
             )
             for index, input_video in enumerate(input_videos)
         ]
     )
 
-    return responses[0] if len(responses) == 1 else _combine_compress_responses(responses)
+    return (
+        responses[0] if len(responses) == 1 else _combine_compress_responses(responses)
+    )
