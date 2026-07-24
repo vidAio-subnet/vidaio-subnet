@@ -31,10 +31,11 @@ LOG_FORMAT = (
 
 
 class WandbManager:
-    def __init__(self, validator=None):
+    def __init__(self, validator=None, *, run_suffix=""):
         self.wandb = None
         self.wandb_start = None
         self.validator = validator
+        self.run_suffix = self._normalize_run_suffix(run_suffix)
         self.process_start_time = time.time()
         self.rotation_days = self._get_env_int(
             "WANDB_RUN_ROTATION_DAYS", DEFAULT_ROTATION_DAYS
@@ -54,7 +55,10 @@ class WandbManager:
         )
         self.run_group = self._get_run_group()
         self.run_id = None
-        self.run_name = os.getenv("WANDB_RUN_NAME") or f"validator-{self.validator.uid}"
+        base_run_name = (
+            os.getenv("WANDB_RUN_NAME") or f"validator-{self.validator.uid}"
+        )
+        self.run_name = self._with_run_suffix(base_run_name)
         self.log_level = os.getenv("WANDB_LOG_LEVEL", DEFAULT_LOG_LEVEL)
         self.wandb_output_sink_id = None
         self.wandb_output_log_path = None
@@ -99,20 +103,38 @@ class WandbManager:
     def _get_run_id(self):
         configured_run_id = os.getenv("WANDB_RUN_ID")
         if configured_run_id:
-            return self._sanitize_run_id(configured_run_id)
+            return self._sanitize_run_id(self._with_run_suffix(configured_run_id))
 
         timestamp = datetime.datetime.now(datetime.timezone.utc).strftime(
             "%Y%m%d-%H%M%S"
         )
         suffix = uuid.uuid4().hex[:8]
-        return self._sanitize_run_id(f"{self.run_group}-{timestamp}-{suffix}")
+        id_group = self.run_group
+        if self.run_suffix and id_group.endswith(self.run_suffix):
+            id_group = id_group[: -len(self.run_suffix)]
+        generated_id = f"{id_group}-{timestamp}-{suffix}"
+        return self._sanitize_run_id(self._with_run_suffix(generated_id))
 
     def _get_run_group(self):
         network = self._sanitize_run_id(str(self.validator.config.subtensor.network))
         hotkey_hash = hashlib.sha1(
             self.validator.wallet.hotkey.ss58_address.encode("utf-8")
         ).hexdigest()[:12]
-        return f"validator-{network}-{self.validator.config.netuid}-{hotkey_hash}"
+        group = f"validator-{network}-{self.validator.config.netuid}-{hotkey_hash}"
+        return self._with_run_suffix(group)
+
+    def _normalize_run_suffix(self, value):
+        raw_value = str(value or "").strip()
+        if not raw_value:
+            return ""
+        normalized = self._sanitize_run_id(raw_value)
+        return f"-{normalized.lstrip('-')}"
+
+    def _with_run_suffix(self, value):
+        value = str(value)
+        if not self.run_suffix or value.endswith(self.run_suffix):
+            return value
+        return f"{value}{self.run_suffix}"
 
     def _sanitize_run_id(self, value):
         value = re.sub(r"[/\\#?%:\s]+", "-", value.strip())
@@ -213,6 +235,8 @@ class WandbManager:
         self.wandb_start = datetime.date.today()
         wandb_project = self.validator.config.wandb.project_name
         wandb_entity = self.validator.config.wandb.entity
+        validator_mode = getattr(self.validator, "validator_mode", "inference")
+        validator_mode = getattr(validator_mode, "value", validator_mode)
         os.environ.setdefault("WANDB_SILENT", "true")
         logger.info("Initializing wandb entity and project.")
         try:
@@ -227,6 +251,7 @@ class WandbManager:
                     "hotkey": self.validator.wallet.hotkey.ss58_address,
                     "version": version,
                     "type": "validator",
+                    "validator_mode": validator_mode,
                     "wandb_run_id": self.run_id,
                     "wandb_run_group": self.run_group,
                     "wandb_rotation_days": self.rotation_days,

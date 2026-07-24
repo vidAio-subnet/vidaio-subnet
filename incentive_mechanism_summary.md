@@ -175,7 +175,11 @@ If a scorer returns `s_f = -100`, the round is skipped for accumulation. This is
 
 Final emissions are calculated in `MinerManager.weights` in `vidaio_subnet_core/validating/managing/miner_manager.py`.
 
-The miner manager excludes validators, identified by metagraph `validator_permit`, and miners with `accumulate_score == -1`, then separates eligible miners into compression and upscaling pools. Compression receives 80% of the pre-burn miner pool, and upscaling receives 20%.
+The miner manager excludes miners with `accumulate_score == -1`, then separates
+eligible miners into compression and upscaling pools. A metagraph
+`validator_permit` is not an exclusion criterion because the chain may assign
+one to a miner based on its alpha stake. Compression receives 80% of the
+pre-burn miner pool, and upscaling receives 20%.
 
 Each miner row stores the UID's current `alpha_stake`, synced from the Bittensor metagraph `alpha_stake` vector exposed as `metagraph.alpha_stake` / `metagraph.AS`.
 
@@ -215,7 +219,7 @@ For example, with `burn_proportion = 0.0` and top-five alpha stakes `[150, 100, 
 
 The burn UID remains at 0% in all factor settings.
 
-The optional emission liquidation weighing is controlled separately by `CONFIG.score.emission_liquidation_weigh_factor`, which defaults to `5.0`, and `CONFIG.score.emission_liquidation_window_epochs`, which defaults to `10` retained tempo-epoch snapshots. Epoch boundaries use `metagraph.tempo` when available, falling back to `CONFIG.SUBNET_TEMPO`. The first retained snapshot is used as the alpha stake baseline, so a 10-snapshot window provides up to 9 comparable settled emission intervals. Setting the liquidation factor to `0.0` disables this layer. For each top-five non-validator miner in a task pool, the manager estimates:
+The optional emission liquidation weighing is controlled separately by `CONFIG.score.emission_liquidation_weigh_factor`, which defaults to `5.0`, and `CONFIG.score.emission_liquidation_window_epochs`, which defaults to `10` retained tempo-epoch snapshots. Epoch boundaries use `metagraph.tempo` when available, falling back to `CONFIG.SUBNET_TEMPO`. The first retained snapshot is used as the alpha stake baseline, so a 10-snapshot window provides up to 9 comparable settled emission intervals. Setting the liquidation factor to `0.0` disables this layer. For each top-five miner in a task pool, the manager estimates:
 
 ```text
 first_excluded_emission_i = first_snapshot.emission

@@ -6,6 +6,9 @@ import bittensor as bt
 import time
 import threading
 from .config import add_common_config
+from vidaio_subnet_core.utilities.bittensor_compat import (
+    apply_single_field_composite_encoding_patch,
+)
 from abc import abstractmethod, ABC
 from vidaio_subnet_core.utilities.bittensor_compat import (
     apply_single_field_composite_encoding_patch,
