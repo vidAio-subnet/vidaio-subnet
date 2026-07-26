@@ -269,6 +269,35 @@ class StaticValidationTests(unittest.TestCase):
             self.assertEqual(report.status, ValidationStatus.ACCEPTED)
             self.assertEqual(report.reason_code, ValidationReason.ACCEPTED)
 
+    def test_sandbox_preferences_are_bounded_by_the_manifest(self) -> None:
+        cases = (
+            ({"gpu": "RTX-PRO-6000"}, ("L4", "L40S"), 32),
+            ({"cpus": 17}, ("L4", "L40S"), 16),
+            ({"gpu": "L40S", "cpus": 8, "secret": "no"}, ("L4", "L40S"), 16),
+        )
+        for resources, allowed_gpus, max_cpu_cores in cases:
+            with self.subTest(resources=resources), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                write_template(root)
+                descriptor_path = root / "competition_solution.json"
+                descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+                descriptor["sandbox_resources"] = resources
+                descriptor_path.write_text(
+                    json.dumps(descriptor), encoding="utf-8"
+                )
+
+                report = RepositoryStaticValidator().validate(
+                    root,
+                    allowed_gpus=allowed_gpus,
+                    max_cpu_cores=max_cpu_cores,
+                )
+
+                self.assertEqual(report.status, ValidationStatus.REJECTED)
+                self.assertEqual(
+                    report.reason_code,
+                    ValidationReason.INVALID_SOLUTION_DESCRIPTOR,
+                )
+
     def test_local_sdk_exports_are_excluded_from_repository_validation(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -407,6 +436,16 @@ class FakeGitTransport:
         (destination / ".git").mkdir()
         (destination / ".git" / "config").write_text("[core]\n", encoding="utf-8")
         return "a" * 40, "b" * 40, "2026-07-14T10:00:00+00:00"
+
+
+class PreferredResourceGitTransport(FakeGitTransport):
+    def clone_and_pin(self, repository_url: str, github_pat: str, destination: Path):
+        pinned = super().clone_and_pin(repository_url, github_pat, destination)
+        descriptor_path = destination / "competition_solution.json"
+        descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+        descriptor["sandbox_resources"] = {"gpu": "L40S", "cpus": 12}
+        descriptor_path.write_text(json.dumps(descriptor), encoding="utf-8")
+        return pinned
 
 
 class ObfuscatedFakeGitTransport(FakeGitTransport):
@@ -602,6 +641,53 @@ class IntakeTests(unittest.TestCase):
         self.assertEqual(row.status, "ACCEPTED")
         self.assertEqual(events[-1].event_type, "CONTENDER_REPOSITORY_PINNED")
         self.assertNotIn("github_pat", events[-1].payload_json)
+
+    def test_cloned_sandbox_preferences_are_persisted_with_the_contender(self) -> None:
+        now = datetime(2026, 7, 14, tzinfo=timezone.utc)
+        manifest = load_manifest(
+            ROOT / "competitions/manifests/examples/compression-competition.json"
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repository = CompetitionRepository(f"sqlite:///{root / 'competition.db'}")
+            repository.insert_manifest(manifest, now=now, actor="validator:test")
+            service = CompetitionSubmissionIntakeService(
+                RepositoryIntake(
+                    root / "artifacts",
+                    transport=PreferredResourceGitTransport(),
+                ),
+                repository,
+                clock=lambda: now,
+            )
+
+            pinned = service.finalize(
+                RepositorySubmission(
+                    manifest.competition_id,
+                    "preferred-resource-hotkey",
+                    "https://github.com/acme/private.git",
+                    "github_pat-secret",
+                    "nonce",
+                ),
+                expected_competition_id=manifest.competition_id,
+                expected_hotkey="preferred-resource-hotkey",
+                expected_nonce="nonce",
+                actor="validator:test",
+                allowed_gpus=manifest.allowed_gpus,
+                max_cpu_cores=manifest.max_cpu_cores,
+            )
+            row = repository.get_contender(
+                manifest.competition_id, "preferred-resource-hotkey"
+            )
+            submission_metadata = json.loads(
+                (pinned.source_path.parent / "submission.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertEqual(row.sandbox_gpu, "L40S")
+        self.assertEqual(row.sandbox_cpus, 12)
+        self.assertEqual(submission_metadata["sandbox_gpu"], "L40S")
+        self.assertEqual(submission_metadata["sandbox_cpus"], 12)
 
     def test_obfuscated_submission_is_collected_as_rejected(self) -> None:
         now = datetime(2026, 7, 14, tzinfo=timezone.utc)

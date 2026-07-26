@@ -59,7 +59,7 @@ PRIVATE_BUCKET = "validator-private-artifacts"
 
 
 class _AcceptingBossValidator:
-    def validate(self, root: Path) -> ValidationReport:
+    def validate(self, root: Path, **_constraints) -> ValidationReport:
         files = [path for path in root.rglob("*") if path.is_file()]
         return ValidationReport(
             ValidationStatus.ACCEPTED,

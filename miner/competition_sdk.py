@@ -67,6 +67,7 @@ SUPPORTED_MODAL_GPU_REQUESTS = frozenset(GPU_PRICE_PER_SECOND_USD) | {
     "B200+",
     "H100!",
 }
+SANDBOX_RESOURCES_DESCRIPTOR_KEY = "sandbox_resources"
 SANDBOX_CPU_PRICE_PER_CORE_SECOND_USD = Decimal("0.00003942")
 MODAL_COST_ATTRIBUTION_METHOD = (
     "MODAL_PUBLIC_PRICE_2026-07-21_ACTUAL_RESOURCES_SANDBOX_WALL_RUNTIME"
@@ -402,11 +403,7 @@ def _duration_seconds(value: Any) -> float:
     return float(seconds)
 
 
-def load_modal_build_timeout_seconds(manifest_path: Path | None) -> float:
-    """Read the validator build deadline, defaulting to ten minutes."""
-
-    if manifest_path is None:
-        return DEFAULT_MODAL_BUILD_TIMEOUT_SECONDS
+def _load_manifest_payload(manifest_path: Path) -> dict[str, Any]:
     path = manifest_path.resolve(strict=True)
     try:
         if path.suffix.lower() == ".json":
@@ -423,6 +420,40 @@ def load_modal_build_timeout_seconds(manifest_path: Path | None) -> float:
         raise SdkError(f"cannot read competition manifest {path}: {exc}") from exc
     if not isinstance(payload, dict):
         raise SdkError("competition manifest root must be an object")
+    return payload
+
+
+def load_manifest_resource_limits(
+    manifest_path: Path | None,
+) -> tuple[tuple[str, ...] | None, int | None]:
+    """Read the competition-specific resource allowlist and CPU ceiling."""
+
+    if manifest_path is None:
+        return None, None
+    payload = _load_manifest_payload(manifest_path)
+    allowed_gpus = payload.get("allowed_gpus")
+    max_cpu_cores = payload.get("max_cpu_cores")
+    if (
+        not isinstance(allowed_gpus, list)
+        or not allowed_gpus
+        or any(not isinstance(gpu, str) or not gpu.strip() for gpu in allowed_gpus)
+    ):
+        raise SdkError("manifest allowed_gpus must be a non-empty list of strings")
+    if (
+        isinstance(max_cpu_cores, bool)
+        or not isinstance(max_cpu_cores, int)
+        or max_cpu_cores <= 0
+    ):
+        raise SdkError("manifest max_cpu_cores must be a positive integer")
+    return tuple(allowed_gpus), max_cpu_cores
+
+
+def load_modal_build_timeout_seconds(manifest_path: Path | None) -> float:
+    """Read the validator build deadline, defaulting to ten minutes."""
+
+    if manifest_path is None:
+        return DEFAULT_MODAL_BUILD_TIMEOUT_SECONDS
+    payload = _load_manifest_payload(manifest_path)
     return _duration_seconds(payload.get("modal_build_timeout", "10m"))
 
 
@@ -540,6 +571,74 @@ def _safe_export_name(repository_name: str) -> str:
     return name
 
 
+def _dotenv_value(path: Path, name: str) -> str | None:
+    """Read one non-secret export setting without loading the rest of .env."""
+
+    if not path.is_file():
+        return None
+    selected: str | None = None
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        key, separator, raw_value = line.partition("=")
+        if not separator or key.strip() != name:
+            continue
+        value = raw_value.strip()
+        if (
+            len(value) >= 2
+            and value[0] == value[-1]
+            and value[0] in {"'", '"'}
+        ):
+            value = value[1:-1]
+        elif " #" in value:
+            value = value.split(" #", 1)[0].rstrip()
+        selected = value
+    return selected
+
+
+def load_sandbox_resource_preferences(
+    source_root: Path,
+    *,
+    allowed_gpus: tuple[str, ...] | None = None,
+    max_cpu_cores: int | None = None,
+) -> dict[str, object] | None:
+    """Return the two safe resource preferences copied from miner/.env."""
+
+    env_path = source_root / "miner/.env"
+    gpu = (_dotenv_value(env_path, "SANDBOX_GPU") or "").strip()
+    cpus_raw = (_dotenv_value(env_path, "SANDBOX_CPUS") or "").strip()
+    if not gpu and not cpus_raw:
+        return None
+
+    preferences: dict[str, object] = {}
+    if gpu:
+        if allowed_gpus is not None and gpu not in allowed_gpus:
+            raise SdkError(
+                f"SANDBOX_GPU must be one of manifest allowed_gpus "
+                f"{list(allowed_gpus)}"
+            )
+        preferences["gpu"] = gpu
+    if cpus_raw:
+        try:
+            cpus = int(cpus_raw)
+        except ValueError as exc:
+            raise SdkError("SANDBOX_CPUS must be a positive integer") from exc
+        if cpus <= 0 or (max_cpu_cores is not None and cpus > max_cpu_cores):
+            raise SdkError(
+                "SANDBOX_CPUS must be a positive integer"
+                + (
+                    f" no greater than manifest max_cpu_cores ({max_cpu_cores})"
+                    if max_cpu_cores is not None
+                    else ""
+                )
+            )
+        preferences["cpus"] = cpus
+    return preferences
+
+
 @contextmanager
 def stable_modal_build_context(source: Path):
     """Keep heavyweight Docker layers independent of Python service revisions."""
@@ -559,6 +658,8 @@ def prepare_export(
     destination: Path,
     *,
     refresh: bool = False,
+    allowed_gpus: tuple[str, ...] | None = None,
+    max_cpu_cores: int | None = None,
 ) -> Path:
     source_root = source_root.resolve(strict=True)
     miner_source = source_root / "miner"
@@ -599,7 +700,24 @@ def prepare_export(
         ignore=_copy_ignore,
         symlinks=True,
     )
-    shutil.copy2(descriptor, destination / "competition_solution.json")
+    try:
+        descriptor_payload = json.loads(descriptor.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SdkError("competition_solution.json must be valid UTF-8 JSON") from exc
+    if not isinstance(descriptor_payload, dict):
+        raise SdkError("competition_solution.json must contain a JSON object")
+    descriptor_payload.pop(SANDBOX_RESOURCES_DESCRIPTOR_KEY, None)
+    sandbox_resources = load_sandbox_resource_preferences(
+        source_root,
+        allowed_gpus=allowed_gpus,
+        max_cpu_cores=max_cpu_cores,
+    )
+    if sandbox_resources is not None:
+        descriptor_payload[SANDBOX_RESOURCES_DESCRIPTOR_KEY] = sandbox_resources
+    (destination / "competition_solution.json").write_text(
+        json.dumps(descriptor_payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     shutil.copy2(miner_source / "requirements.txt", destination / "requirements.txt")
     build_worker = source_root / "scripts/competition_modal_build.py"
     if not build_worker.is_file():
@@ -653,6 +771,8 @@ credentials.
 
 def run_common_preflight(
     export: Path,
+    *,
+    manifest_path: Path | None = None,
 ) -> dict[str, Any]:
     _sdk_log("static", f"validating sanitized export at {export}")
     command = [
@@ -661,6 +781,8 @@ def run_common_preflight(
         "--repository",
         str(export),
     ]
+    if manifest_path is not None:
+        command.extend(["--manifest", str(manifest_path)])
     result = subprocess.run(
         command,
         check=False,
@@ -1539,8 +1661,8 @@ def parse_args() -> argparse.Namespace:
         "--manifest",
         type=Path,
         help=(
-            "competition JSON/YAML manifest supplying modal_build_timeout; "
-            "defaults to 10 minutes when omitted or absent"
+            "competition JSON/YAML manifest supplying allowed_gpus, "
+            "max_cpu_cores, and modal_build_timeout"
         ),
     )
     parser.add_argument("--pat-env", default="GITHUB_TOKEN")
@@ -1578,14 +1700,27 @@ def main() -> int:
             / _safe_export_name(repository_reference)
         )
         reusing_export_without_refresh = export.exists() and not args.refresh
+        manifest_path = getattr(args, "manifest", None)
+        if manifest_path is not None and not manifest_path.is_absolute():
+            manifest_path = args.source_root / manifest_path
+        allowed_gpus, max_cpu_cores = load_manifest_resource_limits(manifest_path)
         _sdk_log(
             "prepare",
             f"action={args.action} source={args.source_root} export={export} "
             f"refresh={args.refresh}",
         )
-        export = prepare_export(args.source_root, export, refresh=args.refresh)
+        export = prepare_export(
+            args.source_root,
+            export,
+            refresh=args.refresh,
+            allowed_gpus=allowed_gpus,
+            max_cpu_cores=max_cpu_cores,
+        )
         _sdk_log("prepare", "sanitized standalone export ready")
-        static_report = run_common_preflight(export)
+        static_report = run_common_preflight(
+            export,
+            manifest_path=manifest_path,
+        )
         if args.action == "prepare":
             print(
                 json.dumps(
@@ -1601,9 +1736,6 @@ def main() -> int:
             )
             return 0
 
-        manifest_path = getattr(args, "manifest", None)
-        if manifest_path is not None and not manifest_path.is_absolute():
-            manifest_path = args.source_root / manifest_path
         modal_build_timeout_seconds = load_modal_build_timeout_seconds(manifest_path)
         _sdk_log(
             "modal-build",

@@ -71,6 +71,83 @@ class ValidationReport:
         return value
 
 
+@dataclass(frozen=True)
+class SandboxResourcePreferences:
+    gpu: str | None = None
+    cpus: int | None = None
+
+
+def parse_sandbox_resource_preferences(
+    descriptor: object,
+    *,
+    allowed_gpus: Iterable[str] | None = None,
+    max_cpu_cores: int | None = None,
+) -> SandboxResourcePreferences:
+    """Parse optional, non-secret preferences from a solution descriptor."""
+
+    if not isinstance(descriptor, dict):
+        raise ValueError("descriptor must be a JSON object")
+    resources = descriptor.get("sandbox_resources")
+    if resources is None:
+        return SandboxResourcePreferences()
+    if (
+        not isinstance(resources, dict)
+        or not resources
+        or not set(resources) <= {"gpu", "cpus"}
+    ):
+        raise ValueError("sandbox_resources must contain only gpu and/or cpus")
+
+    gpu = resources.get("gpu")
+    if "gpu" in resources:
+        permitted_gpus = set(allowed_gpus) if allowed_gpus is not None else None
+        if (
+            not isinstance(gpu, str)
+            or not gpu.strip()
+            or (permitted_gpus is not None and gpu not in permitted_gpus)
+        ):
+            raise ValueError(
+                "sandbox_resources.gpu must be a non-empty string"
+                + (
+                    " allowed by the competition manifest"
+                    if permitted_gpus is not None
+                    else ""
+                )
+            )
+
+    cpus = resources.get("cpus")
+    if "cpus" in resources and (
+        isinstance(cpus, bool)
+        or not isinstance(cpus, int)
+        or cpus <= 0
+        or (max_cpu_cores is not None and cpus > max_cpu_cores)
+    ):
+        raise ValueError(
+            "sandbox_resources.cpus must be a positive integer"
+            + (
+                f" no greater than manifest max_cpu_cores ({max_cpu_cores})"
+                if max_cpu_cores is not None
+                else ""
+            )
+        )
+    return SandboxResourcePreferences(gpu=gpu, cpus=cpus)
+
+
+def load_sandbox_resource_preferences(
+    repository_root: Path,
+    *,
+    allowed_gpus: Iterable[str] | None = None,
+    max_cpu_cores: int | None = None,
+) -> SandboxResourcePreferences:
+    descriptor = json.loads(
+        (repository_root / "competition_solution.json").read_text(encoding="utf-8")
+    )
+    return parse_sandbox_resource_preferences(
+        descriptor,
+        allowed_gpus=allowed_gpus,
+        max_cpu_cores=max_cpu_cores,
+    )
+
+
 _SECRET_PATTERNS = (
     re.compile(rb"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(rb"ghp_[A-Za-z0-9]{20,}"),
@@ -147,6 +224,10 @@ _TRUSTED_SDK_DIGESTS = {
             "76841c91939673fd18949511015a13d58b7bcb03fabd45892c284db45a3a7812",
             # Output-path-only result contract.
             "b1c33f183bba6fe9f2a3441af06d9c7feec3489bb109511e4725dd93037cbc54",
+            # Output-path contract with the initial fixed Sandbox resource checks.
+            "38699cd7b93e1fe444fb0d631ff2e42280d4668cc12f696754ef1e3e1c8952d3",
+            # Output-path contract with manifest-driven Sandbox resource checks.
+            "24aa66310bc226d81f6ef2505a878e363ff1da7fb59818aa472c6f8fe3e1eb4f",
         }
     ),
     # Retain audited canonical releases that contenders may already have published.
@@ -164,6 +245,10 @@ _TRUSTED_SDK_DIGESTS = {
             "522e204bb9ef5916486482510150c5ea86f4b43ff3cac0662df1438a2a5333c3",
             # Schema v4 SDK with validator-parity activation probes.
             "ea87877762c084c60055555ab735e2a0afcf3d8f034ddf4a2f25f7abdf16248d",
+            # Schema v4 SDK with the initial fixed resource preference validation.
+            "e166d3b4ee02a87f95fa00ebafbd1147d848f120d5075dd88c2ddd2f743dea6c",
+            # Schema v4 SDK with manifest-driven Sandbox resource preference export.
+            "1e82059a3c5a556c4243a227c630e4c6779025347aef6de413389c92f42f87b7",
         }
     ),
 }
@@ -181,7 +266,13 @@ class RepositoryStaticValidator:
         self.max_file_bytes = max_file_bytes
         self.max_repository_bytes = max_repository_bytes
 
-    def validate(self, root: Path) -> ValidationReport:
+    def validate(
+        self,
+        root: Path,
+        *,
+        allowed_gpus: Iterable[str] | None = None,
+        max_cpu_cores: int | None = None,
+    ) -> ValidationReport:
         root = root.resolve(strict=True)
         findings: list[ValidationFinding] = []
         files: list[Path] = []
@@ -304,7 +395,13 @@ class RepositoryStaticValidator:
                 )
             )
 
-        findings.extend(self._validate_descriptor(root / "competition_solution.json"))
+        findings.extend(
+            self._validate_descriptor(
+                root / "competition_solution.json",
+                allowed_gpus=allowed_gpus,
+                max_cpu_cores=max_cpu_cores,
+            )
+        )
         for relative, trusted_digests in _TRUSTED_SDK_DIGESTS.items():
             path = root / relative
             if (
@@ -342,7 +439,13 @@ class RepositoryStaticValidator:
             status, reason, digest.hexdigest(), len(files), total_bytes, tuple(findings)
         )
 
-    def _validate_descriptor(self, path: Path) -> Iterable[ValidationFinding]:
+    def _validate_descriptor(
+        self,
+        path: Path,
+        *,
+        allowed_gpus: Iterable[str] | None,
+        max_cpu_cores: int | None,
+    ) -> Iterable[ValidationFinding]:
         if not path.is_file():
             return ()
         try:
@@ -408,6 +511,20 @@ class RepositoryStaticValidator:
                     ValidationReason.INVALID_SOLUTION_DESCRIPTOR,
                     path.name,
                     "sdk must be miner/competition_sdk.py",
+                ),
+            )
+        try:
+            parse_sandbox_resource_preferences(
+                descriptor,
+                allowed_gpus=allowed_gpus,
+                max_cpu_cores=max_cpu_cores,
+            )
+        except ValueError as exc:
+            return (
+                self._reject(
+                    ValidationReason.INVALID_SOLUTION_DESCRIPTOR,
+                    path.name,
+                    str(exc),
                 ),
             )
         return ()
@@ -609,9 +726,12 @@ def write_validation_report(report: ValidationReport, destination: Path) -> None
 
 __all__ = [
     "RepositoryStaticValidator",
+    "SandboxResourcePreferences",
     "ValidationFinding",
     "ValidationReason",
     "ValidationReport",
     "ValidationStatus",
+    "load_sandbox_resource_preferences",
+    "parse_sandbox_resource_preferences",
     "write_validation_report",
 ]

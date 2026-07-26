@@ -20,6 +20,7 @@ from .phase0 import SecretRedactor
 from .validation import (
     RepositoryStaticValidator,
     ValidationReport,
+    load_sandbox_resource_preferences,
     write_validation_report,
 )
 
@@ -66,6 +67,8 @@ class PinnedRepository:
     repository_display: str
     cloned_at: str
     validation: ValidationReport
+    sandbox_gpu: str | None = None
+    sandbox_cpus: int | None = None
     previous_artifact_path: Path | None = field(
         default=None, repr=False, compare=False
     )
@@ -213,17 +216,39 @@ class RepositoryIntake:
         self.transport = transport or SecureGitTransport()
         self.validator = validator or RepositoryStaticValidator()
 
-    def accept(self, submission: RepositorySubmission) -> PinnedRepository:
+    def accept(
+        self,
+        submission: RepositorySubmission,
+        *,
+        allowed_gpus: tuple[str, ...] | None = None,
+        max_cpu_cores: int | None = None,
+    ) -> PinnedRepository:
         try:
-            return self._accept(submission, replace_existing=False)
+            return self._accept(
+                submission,
+                replace_existing=False,
+                allowed_gpus=allowed_gpus,
+                max_cpu_cores=max_cpu_cores,
+            )
         finally:
             submission.github_pat = ""
 
-    def replace(self, submission: RepositorySubmission) -> PinnedRepository:
+    def replace(
+        self,
+        submission: RepositorySubmission,
+        *,
+        allowed_gpus: tuple[str, ...] | None = None,
+        max_cpu_cores: int | None = None,
+    ) -> PinnedRepository:
         """Stage and atomically install a replacement for a collected submission."""
 
         try:
-            return self._accept(submission, replace_existing=True)
+            return self._accept(
+                submission,
+                replace_existing=True,
+                allowed_gpus=allowed_gpus,
+                max_cpu_cores=max_cpu_cores,
+            )
         finally:
             submission.github_pat = ""
 
@@ -242,7 +267,12 @@ class RepositoryIntake:
             os.replace(pinned.previous_artifact_path, contender_root)
 
     def _accept(
-        self, submission: RepositorySubmission, *, replace_existing: bool
+        self,
+        submission: RepositorySubmission,
+        *,
+        replace_existing: bool,
+        allowed_gpus: tuple[str, ...] | None,
+        max_cpu_cores: int | None,
     ) -> PinnedRepository:
         match = GITHUB_REPOSITORY_PATTERN.fullmatch(submission.repository_url)
         if match is None:
@@ -272,7 +302,19 @@ class RepositoryIntake:
             commit, tree, committer_time = self.transport.clone_and_pin(
                 submission.repository_url, submission.github_pat, source
             )
-            report = self.validator.validate(source)
+            report = self.validator.validate(
+                source,
+                allowed_gpus=allowed_gpus,
+                max_cpu_cores=max_cpu_cores,
+            )
+            try:
+                preferences = load_sandbox_resource_preferences(
+                    source,
+                    allowed_gpus=allowed_gpus,
+                    max_cpu_cores=max_cpu_cores,
+                )
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                preferences = None
             owner, repository = match.groups()
             cloned_at = datetime.now(timezone.utc).isoformat()
             safe_submission = {
@@ -287,6 +329,12 @@ class RepositoryIntake:
                 "pinned_tree_sha": tree,
                 "latest_commit_time": committer_time,
                 "cloned_at": cloned_at,
+                "sandbox_gpu": (
+                    preferences.gpu if preferences is not None else None
+                ),
+                "sandbox_cpus": (
+                    preferences.cpus if preferences is not None else None
+                ),
             }
             (temporary / "submission.json").write_text(
                 json.dumps(safe_submission, indent=2, sort_keys=True) + "\n",
@@ -307,17 +355,19 @@ class RepositoryIntake:
                     previous_artifact = None
                 raise
             return PinnedRepository(
-                submission.competition_id,
-                submission.contender_hotkey,
-                contender_root / "source",
-                commit,
-                tree,
-                committer_time,
-                safe_submission["repository_url_hash"],
-                safe_submission["repository_display"],
-                cloned_at,
-                report,
-                previous_artifact,
+                competition_id=submission.competition_id,
+                contender_hotkey=submission.contender_hotkey,
+                source_path=contender_root / "source",
+                commit_sha=commit,
+                tree_sha=tree,
+                committer_time=committer_time,
+                repository_url_hash=safe_submission["repository_url_hash"],
+                repository_display=safe_submission["repository_display"],
+                cloned_at=cloned_at,
+                validation=report,
+                sandbox_gpu=safe_submission["sandbox_gpu"],
+                sandbox_cpus=safe_submission["sandbox_cpus"],
+                previous_artifact_path=previous_artifact,
             )
         except Exception:
             shutil.rmtree(temporary, ignore_errors=True)
@@ -348,6 +398,8 @@ class CompetitionSubmissionIntakeService:
         actor: str,
         uid_snapshot: int | None = None,
         coldkey_snapshot: str | None = None,
+        allowed_gpus: tuple[str, ...] | None = None,
+        max_cpu_cores: int | None = None,
     ) -> PinnedRepository:
         try:
             validate_polled_submission(
@@ -359,7 +411,11 @@ class CompetitionSubmissionIntakeService:
         except Exception:
             submission.github_pat = ""
             raise
-        pinned = self.intake.replace(submission)
+        pinned = self.intake.replace(
+            submission,
+            allowed_gpus=allowed_gpus,
+            max_cpu_cores=max_cpu_cores,
+        )
         try:
             self.repository.record_pinned_contender(
                 competition_id=pinned.competition_id,
@@ -374,6 +430,8 @@ class CompetitionSubmissionIntakeService:
                 actor=actor,
                 uid_snapshot=uid_snapshot,
                 coldkey_snapshot=coldkey_snapshot,
+                sandbox_gpu=pinned.sandbox_gpu,
+                sandbox_cpus=pinned.sandbox_cpus,
             )
         except Exception:
             self.intake.rollback(pinned)

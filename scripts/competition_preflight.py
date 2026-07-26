@@ -73,7 +73,11 @@ def validate_manifest_boss(
     resolved_boss = (repository_root.resolve(strict=True) / boss_path).resolve(
         strict=True
     )
-    report = RepositoryStaticValidator().validate(resolved_boss)
+    report = RepositoryStaticValidator().validate(
+        resolved_boss,
+        allowed_gpus=manifest.allowed_gpus,
+        max_cpu_cores=manifest.max_cpu_cores,
+    )
     return {
         "boss_hotkey": boss_hotkey,
         "repository_path": boss_path.as_posix(),
@@ -95,7 +99,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "status": "ACCEPTED",
     }
     if args.repository:
-        report = RepositoryStaticValidator().validate(args.repository)
+        report = RepositoryStaticValidator().validate(
+            args.repository,
+            allowed_gpus=manifest.allowed_gpus,
+            max_cpu_cores=manifest.max_cpu_cores,
+        )
         result["repository"] = report.as_dict()
         statuses.append(report.status.value)
     if args.validate_boss:

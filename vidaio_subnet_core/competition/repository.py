@@ -2938,6 +2938,8 @@ class CompetitionRepository:
         uid_snapshot: int | None = None,
         coldkey_snapshot: str | None = None,
         is_boss: bool = False,
+        sandbox_gpu: str | None = None,
+        sandbox_cpus: int | None = None,
     ) -> ContenderMetadata:
         """Persist only the credential-free result of a finalized clone."""
 
@@ -2951,6 +2953,21 @@ class CompetitionRepository:
             competition = session.get(Competition, competition_id)
             if competition is None:
                 raise KeyError(competition_id)
+            manifest = CompetitionManifest.model_validate_json(
+                competition.manifest_json
+            )
+            if sandbox_gpu is not None and sandbox_gpu not in manifest.allowed_gpus:
+                raise ValueError(
+                    "contender sandbox GPU is not allowed by the competition manifest"
+                )
+            if sandbox_cpus is not None and (
+                isinstance(sandbox_cpus, bool)
+                or not isinstance(sandbox_cpus, int)
+                or not 1 <= sandbox_cpus <= manifest.max_cpu_cores
+            ):
+                raise ValueError(
+                    "contender Sandbox CPUs exceed the competition manifest limit"
+                )
             row = session.scalar(
                 select(ContenderMetadata).where(
                     ContenderMetadata.competition_id == competition_id,
@@ -2978,6 +2995,8 @@ class CompetitionRepository:
                     "pinned_tree_sha": row.pinned_tree_sha,
                     "submission_revision": row.submission_revision or 0,
                     "validation_status": row.validation_status,
+                    "sandbox_gpu": row.sandbox_gpu,
+                    "sandbox_cpus": row.sandbox_cpus,
                 }
                 if replacing
                 else None
@@ -3001,6 +3020,8 @@ class CompetitionRepository:
             row.pinned_commit_sha = pinned_commit_sha
             row.pinned_tree_sha = pinned_tree_sha
             row.latest_commit_time = latest_commit_time
+            row.sandbox_gpu = sandbox_gpu
+            row.sandbox_cpus = sandbox_cpus
             row.submission_revision = int(row.submission_revision or 0) + 1
             row.validation_status = validation.status.value
             row.reason_code = validation.reason_code.value
@@ -3055,6 +3076,8 @@ class CompetitionRepository:
                     "validation_status": validation.status.value,
                     "reason_code": validation.reason_code.value,
                     "reason_detail": row.reason_detail,
+                    "sandbox_gpu": sandbox_gpu,
+                    "sandbox_cpus": sandbox_cpus,
                     "previous_submission": previous_submission,
                 },
                 now=now,

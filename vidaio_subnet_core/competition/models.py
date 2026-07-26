@@ -119,6 +119,8 @@ class ContenderMetadata(CompetitionBase):
     pinned_commit_sha = Column(String(64))
     pinned_tree_sha = Column(String(64))
     latest_commit_time = Column(String(40))
+    sandbox_gpu = Column(String(64))
+    sandbox_cpus = Column(Integer)
     submission_revision = Column(
         Integer, nullable=False, default=0, server_default="0"
     )

@@ -431,8 +431,8 @@ class PersistenceAndLifecycleTests(unittest.TestCase):
     def test_migration_is_explicit_idempotent_and_separate_from_inference(self) -> None:
         first = CompetitionRepository(self.database_url)
         second = CompetitionRepository(self.database_url)
-        self.assertEqual(first.schema_version, 1)
-        self.assertEqual(second.schema_version, 1)
+        self.assertEqual(first.schema_version, 2)
+        self.assertEqual(second.schema_version, 2)
         with first.engine.connect() as connection:
             migration_rows = connection.execute(
                 text(
@@ -442,8 +442,16 @@ class PersistenceAndLifecycleTests(unittest.TestCase):
             ).all()
         self.assertEqual(
             [tuple(row) for row in migration_rows],
-            [(1, "initial_competition_schema")],
+            [
+                (1, "initial_competition_schema"),
+                (2, "contender_sandbox_preferences"),
+            ],
         )
+        contender_columns = {
+            column["name"]
+            for column in inspect(first.engine).get_columns("contender_metadata")
+        }
+        self.assertTrue({"sandbox_gpu", "sandbox_cpus"} <= contender_columns)
         tables = set(inspect(first.engine).get_table_names())
         self.assertTrue(
             {
@@ -595,6 +603,59 @@ class PersistenceAndLifecycleTests(unittest.TestCase):
             RuntimeError, "retired pre-production migration history"
         ):
             apply_competition_migrations(engine)
+        engine.dispose()
+
+    def test_schema_version_one_adds_sandbox_preference_columns(self) -> None:
+        engine = create_engine(
+            f"sqlite:///{Path(self.temp.name) / 'schema-v1.db'}",
+            future=True,
+        )
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "CREATE TABLE competition_schema_migrations ("
+                    "version INTEGER PRIMARY KEY, name VARCHAR(128) NOT NULL, "
+                    "applied_at VARCHAR(40) NOT NULL)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE TABLE contender_metadata ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO competition_schema_migrations "
+                    "(version, name, applied_at) VALUES "
+                    "(1, 'initial_competition_schema', :applied_at)"
+                ),
+                {"applied_at": START.isoformat()},
+            )
+
+        apply_competition_migrations(engine)
+
+        self.assertTrue(
+            {"sandbox_gpu", "sandbox_cpus"}
+            <= {
+                column["name"]
+                for column in inspect(engine).get_columns("contender_metadata")
+            }
+        )
+        with engine.connect() as connection:
+            migrations = connection.execute(
+                text(
+                    "SELECT version, name FROM competition_schema_migrations "
+                    "ORDER BY version"
+                )
+            ).all()
+        self.assertEqual(
+            [tuple(row) for row in migrations],
+            [
+                (1, "initial_competition_schema"),
+                (2, "contender_sandbox_preferences"),
+            ],
+        )
         engine.dispose()
 
     def test_fake_clock_advances_and_resumes_every_state(self) -> None:

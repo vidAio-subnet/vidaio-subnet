@@ -737,8 +737,19 @@ class CompetitionModalRunner:
         output_volume = _output_volume_name(
             manifest.output_volume_prefix, manifest.competition_id, hotkey
         )
-        gpu = manifest.allowed_gpus[0]
-        cpu = float(manifest.requested_cpu_cores)
+        gpu = contender.sandbox_gpu or manifest.allowed_gpus[0]
+        cpu_cores = contender.sandbox_cpus or manifest.requested_cpu_cores
+        if gpu not in manifest.allowed_gpus:
+            raise SandboxRunnerError(
+                "SANDBOX_GPU_NOT_ALLOWED",
+                "persisted contender GPU is not allowed by the competition manifest",
+            )
+        if not 1 <= cpu_cores <= manifest.max_cpu_cores:
+            raise SandboxRunnerError(
+                "SANDBOX_CPUS_NOT_ALLOWED",
+                "persisted contender CPUs exceed the competition manifest limit",
+            )
+        cpu = float(cpu_cores)
         expires = now + MAX_SANDBOX_LIFETIME
         row = self.repository.reserve_sandbox_generation(
             competition_id=manifest.competition_id,
@@ -747,8 +758,8 @@ class CompetitionModalRunner:
             image_digest=contender.image_digest,
             output_volume_name=output_volume,
             gpu_type=gpu,
-            requested_cpu_cores=manifest.requested_cpu_cores,
-            max_cpu_cores=manifest.requested_cpu_cores,
+            requested_cpu_cores=cpu_cores,
+            max_cpu_cores=cpu_cores,
             batch_timeout_seconds=manifest.evaluation_batched_run_timeout.total_seconds(),
             created_at=now,
             expires_at=expires,

@@ -347,6 +347,8 @@ class CompetitionEnrollmentDispatcher:
                         actor=self.owner_id,
                         uid_snapshot=uid_snapshot,
                         coldkey_snapshot=coldkey_snapshot,
+                        allowed_gpus=manifest.allowed_gpus,
+                        max_cpu_cores=manifest.max_cpu_cores,
                     )
                 credential = ""
                 logger.info(

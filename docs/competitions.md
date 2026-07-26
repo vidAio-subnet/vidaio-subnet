@@ -103,17 +103,24 @@ competition_start_time
 
 | Field | Meaning |
 | --- | --- |
-| `allowed_gpus` | Validator allowlist. The sample allows `L4`, `L40S`, and `RTX-PRO-6000`. |
-| `requested_cpu_cores` | CPU request and hard limit used by the trusted launcher. |
+| `allowed_gpus` | Validator allowlist for an optional miner `SANDBOX_GPU` preference. The first entry is the fallback. |
+| `requested_cpu_cores` | CPU request and hard limit fallback when a miner omits `SANDBOX_CPUS`. |
 | `max_cpu_cores` | Manifest ceiling, currently no greater than 32. |
 | `container_size_limit_gb` | Single image rejection threshold, currently 25 GB. |
 | `modal_build_timeout` | Deadline for the validator-owned image build process. |
 | `max_parallel_contenders` | Maximum contenders built or evaluated concurrently. |
 | `max_attempts_per_item` | Legacy compatibility field. Automatic evaluation retries are disabled; only an explicit audited operator repair may create another attempt. |
 
-The miner never controls the actual Modal GPU, CPU, secrets, mounts, network
-policy, timeout, command, or sandbox lifetime. Requested and observed resources
-are persisted separately because Modal may allocate different hardware.
+During a refreshed SDK export, optional `SANDBOX_GPU` and `SANDBOX_CPUS` values
+from `miner/.env` are copied as non-secret `sandbox_resources` metadata in
+`competition_solution.json`; the `.env` file itself remains excluded. When
+`--manifest` is supplied, the SDK and shared preflight read `allowed_gpus` and
+`max_cpu_cores` from that exact manifest rather than using a built-in SKU list
+or CPU ceiling. Intake independently rejects a GPU outside `allowed_gpus` or
+CPUs above `max_cpu_cores`. The trusted launcher applies accepted preferences
+and otherwise uses `allowed_gpus[0]` and `requested_cpu_cores`. Modal may still
+allocate different hardware, so requested and observed resources are persisted
+separately.
 
 ### Batch and timeout fields
 
@@ -161,9 +168,10 @@ scoring_timeout =
 
 ### Dynamic miner timeout
 
-The model is deliberately GPU-independent across the allowed L4, L40S, and RTX
-PRO 6000 choices. The miner decides how to use its allocated GPU; the validator
-grants time from sealed video metadata.
+The model supports the allowed L4, L40S, and RTX PRO 6000 choices. A miner may
+request one allowed GPU, but should inspect the observed allocation because
+Modal can upgrade the requested hardware. The validator grants time from sealed
+video metadata.
 
 Constants:
 
@@ -417,7 +425,7 @@ controls Modal declarations. The validator-owned launcher:
 
 - binds the image to the pinned Git tree and immutable image ID/digest;
 - enforces or records the 25 GB image-size boundary;
-- selects the GPU and CPU request/hard limit;
+- applies the validated, pinned miner GPU/CPU preferences or manifest fallbacks;
 - starts with blocked networking, no secrets or identity token, and no public
   ports;
 - mounts only the immutable source Volume read-only and that contender's output
@@ -776,10 +784,10 @@ Competition-only tables include:
 - `competition_events`
 
 Before production, the historical development migrations were squashed into
-schema version 1. A fresh database creates the complete current schema and
-records the single `initial_competition_schema` baseline. Databases containing
-the retired development migration history are intentionally rejected; recreate
-those pre-production databases rather than carrying test data forward.
+schema version 1. Schema version 2 adds the optional contender Sandbox GPU/CPU
+preferences. Existing version-1 databases upgrade additively; fresh databases
+record both migrations. Databases containing the retired development migration
+history are intentionally rejected.
 
 For batch inspection, group dispatches by
 `competition_id + hotkey + canonical_batch_index`. Use `batch_id` to correlate

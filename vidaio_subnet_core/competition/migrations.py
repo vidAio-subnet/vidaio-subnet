@@ -10,8 +10,9 @@ from sqlalchemy.schema import CreateIndex, CreateTable
 from .models import CompetitionBase, CompetitionSchemaMigration
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 BASELINE_NAME = "initial_competition_schema"
+SANDBOX_PREFERENCES_MIGRATION_NAME = "contender_sandbox_preferences"
 
 
 def _utc_now() -> str:
@@ -19,7 +20,7 @@ def _utc_now() -> str:
 
 
 def apply_competition_migrations(engine: Engine) -> None:
-    """Create the current pre-production schema as one squashed baseline."""
+    """Create or upgrade the competition-only schema."""
 
     if engine.dialect.name != "sqlite":
         raise ValueError("competition persistence currently supports SQLite only")
@@ -52,11 +53,58 @@ def apply_competition_migrations(engine: Engine) -> None:
             )
         ).all()
         if applied:
-            expected = [(SCHEMA_VERSION, BASELINE_NAME)]
-            if [tuple(row) for row in applied] != expected:
+            applied_rows = [tuple(row) for row in applied]
+            baseline = [(1, BASELINE_NAME)]
+            current = [
+                *baseline,
+                (SCHEMA_VERSION, SANDBOX_PREFERENCES_MIGRATION_NAME),
+            ]
+            if applied_rows == baseline:
+                columns = {
+                    column["name"]
+                    for column in inspect(connection).get_columns(
+                        "contender_metadata"
+                    )
+                }
+                if "sandbox_gpu" not in columns:
+                    connection.execute(
+                        text(
+                            "ALTER TABLE contender_metadata "
+                            "ADD COLUMN sandbox_gpu VARCHAR(64)"
+                        )
+                    )
+                if "sandbox_cpus" not in columns:
+                    connection.execute(
+                        text(
+                            "ALTER TABLE contender_metadata "
+                            "ADD COLUMN sandbox_cpus INTEGER"
+                        )
+                    )
+                connection.execute(
+                    text(
+                        "INSERT INTO competition_schema_migrations"
+                        "(version, name, applied_at) "
+                        "VALUES (:version, :name, :applied_at)"
+                    ),
+                    {
+                        "version": SCHEMA_VERSION,
+                        "name": SANDBOX_PREFERENCES_MIGRATION_NAME,
+                        "applied_at": _utc_now(),
+                    },
+                )
+                return
+            if applied_rows != current:
                 raise RuntimeError(
                     "competition database uses the retired pre-production "
                     "migration history; recreate it for the squashed schema baseline"
+                )
+            columns = {
+                column["name"]
+                for column in inspect(connection).get_columns("contender_metadata")
+            }
+            if not {"sandbox_gpu", "sandbox_cpus"} <= columns:
+                raise RuntimeError(
+                    "competition schema migration history is ahead of its columns"
                 )
             return
 
@@ -75,15 +123,19 @@ def apply_competition_migrations(engine: Engine) -> None:
                 if (table.name, index.name) not in existing_indexes:
                     connection.execute(CreateIndex(index, if_not_exists=True))
 
+        applied_at = _utc_now()
         connection.execute(
             text(
                 "INSERT INTO competition_schema_migrations"
                 "(version, name, applied_at) "
-                "VALUES (:version, :name, :applied_at)"
+                "VALUES (:baseline_version, :baseline_name, :applied_at), "
+                "(:version, :name, :applied_at)"
             ),
             {
+                "baseline_version": 1,
+                "baseline_name": BASELINE_NAME,
                 "version": SCHEMA_VERSION,
-                "name": BASELINE_NAME,
-                "applied_at": _utc_now(),
+                "name": SANDBOX_PREFERENCES_MIGRATION_NAME,
+                "applied_at": applied_at,
             },
         )

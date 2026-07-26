@@ -310,6 +310,8 @@ or another immutable live-competition input changes.
 - [ ] Confirm each accepted submission has immutable commit SHA, tree SHA,
   committer timestamp, URL hash, safe display value, revision, and static
   validation result.
+- [ ] Confirm any pinned `sandbox_gpu` belongs to the manifest `allowed_gpus`
+  and any pinned `sandbox_cpus` is no greater than `max_cpu_cores`.
 - [ ] Confirm corrected submissions atomically replace prior artifacts only
   while enrollment remains open.
 - [ ] Resolve every `REVIEW_REQUIRED` row with a signed human decision before
@@ -333,6 +335,8 @@ or another immutable live-competition input changes.
 - [ ] In `EVALUATING`, confirm each contender Sandbox has no secrets/OIDC,
   blocked egress, read-only input, separate read-write v2 output, no public
   endpoint, and localhost-only route access.
+- [ ] Confirm each Sandbox request uses its pinned GPU/CPU preferences, or
+  `allowed_gpus[0]` and `requested_cpu_cores` when those preferences are absent.
 - [ ] Confirm every full batch contains `evaluation_batch_size` distinct source
   videos; partial retry/final batches may be smaller but must still contain no
   duplicated source.

@@ -101,7 +101,58 @@ def inspect_media(path: Path, *, ffprobe: str = "ffprobe") -> MediaInfo:
         ) from exc
 
 
-def validate_repository(repository: Path) -> dict[str, Any]:
+def load_manifest_resource_limits(
+    manifest_path: Path,
+) -> tuple[tuple[str, ...], int]:
+    path = manifest_path.resolve(strict=True)
+    try:
+        if path.suffix.lower() == ".json":
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        elif path.suffix.lower() in {".yaml", ".yml"}:
+            try:
+                import yaml
+            except ImportError as exc:
+                raise PreflightError(
+                    "MANIFEST_INVALID", "PyYAML is required for YAML manifests"
+                ) from exc
+            payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        else:
+            raise PreflightError(
+                "MANIFEST_INVALID", "competition manifest must be JSON or YAML"
+            )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PreflightError(
+            "MANIFEST_INVALID", f"cannot read competition manifest {path}: {exc}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise PreflightError("MANIFEST_INVALID", "manifest root must be an object")
+    allowed_gpus = payload.get("allowed_gpus")
+    max_cpu_cores = payload.get("max_cpu_cores")
+    if (
+        not isinstance(allowed_gpus, list)
+        or not allowed_gpus
+        or any(not isinstance(gpu, str) or not gpu.strip() for gpu in allowed_gpus)
+    ):
+        raise PreflightError(
+            "MANIFEST_INVALID", "allowed_gpus must be a non-empty list of strings"
+        )
+    if (
+        isinstance(max_cpu_cores, bool)
+        or not isinstance(max_cpu_cores, int)
+        or max_cpu_cores <= 0
+    ):
+        raise PreflightError(
+            "MANIFEST_INVALID", "max_cpu_cores must be a positive integer"
+        )
+    return tuple(allowed_gpus), max_cpu_cores
+
+
+def validate_repository(
+    repository: Path,
+    *,
+    allowed_gpus: tuple[str, ...] | None = None,
+    max_cpu_cores: int | None = None,
+) -> dict[str, Any]:
     root = repository.resolve(strict=True)
     required = (
         "competition_solution.json",
@@ -142,6 +193,48 @@ def validate_repository(repository: Path) -> dict[str, Any]:
         raise PreflightError(
             "REQUIRED_ROUTE_MISSING", "descriptor must declare /health and /compress"
         )
+    sandbox_resources = descriptor.get("sandbox_resources")
+    if sandbox_resources is not None:
+        if (
+            not isinstance(sandbox_resources, dict)
+            or not sandbox_resources
+            or not set(sandbox_resources) <= {"gpu", "cpus"}
+        ):
+            raise PreflightError(
+                "INVALID_SOLUTION_DESCRIPTOR",
+                "sandbox_resources must contain only gpu and/or cpus",
+            )
+        gpu = sandbox_resources.get("gpu")
+        if "gpu" in sandbox_resources and (
+            not isinstance(gpu, str)
+            or not gpu.strip()
+            or (allowed_gpus is not None and gpu not in allowed_gpus)
+        ):
+            raise PreflightError(
+                "INVALID_SOLUTION_DESCRIPTOR",
+                "sandbox_resources.gpu must be a non-empty string"
+                + (
+                    f" from manifest allowed_gpus {list(allowed_gpus)}"
+                    if allowed_gpus is not None
+                    else ""
+                ),
+            )
+        cpus = sandbox_resources.get("cpus")
+        if "cpus" in sandbox_resources and (
+            isinstance(cpus, bool)
+            or not isinstance(cpus, int)
+            or cpus <= 0
+            or (max_cpu_cores is not None and cpus > max_cpu_cores)
+        ):
+            raise PreflightError(
+                "INVALID_SOLUTION_DESCRIPTOR",
+                "sandbox_resources.cpus must be a positive integer"
+                + (
+                    f" no greater than manifest max_cpu_cores ({max_cpu_cores})"
+                    if max_cpu_cores is not None
+                    else ""
+                ),
+            )
 
     secret_patterns = (
         re.compile(rb"github_pat_[A-Za-z0-9_]{20,}"),
@@ -487,6 +580,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository", type=Path, default=default_root)
     parser.add_argument(
+        "--manifest",
+        type=Path,
+        help="Use allowed_gpus and max_cpu_cores from this competition manifest",
+    )
+    parser.add_argument(
         "--fixture",
         type=Path,
         help="Defaults to competitions/fixtures/compression_warmup_input.mp4",
@@ -531,7 +629,17 @@ def main() -> int:
     try:
         report: dict[str, Any] = {"fixture": asdict(validate_fixture(fixture))}
         if not args.runtime_only:
-            report["repository"] = validate_repository(repository)
+            allowed_gpus = None
+            max_cpu_cores = None
+            if args.manifest is not None:
+                allowed_gpus, max_cpu_cores = load_manifest_resource_limits(
+                    args.manifest
+                )
+            report["repository"] = validate_repository(
+                repository,
+                allowed_gpus=allowed_gpus,
+                max_cpu_cores=max_cpu_cores,
+            )
         if args.service_url:
             report["runtime"] = run_runtime_preflight(
                 fixture=fixture,

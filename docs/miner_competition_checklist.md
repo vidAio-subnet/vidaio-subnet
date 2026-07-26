@@ -84,8 +84,11 @@ must not assume that a batch contains repeated versions of one source video.
   overwrites.
 - [ ] Handle every video independently. Do not cache or reuse an encode merely
   because another item has similar criteria.
-- [ ] Keep processing within the manifest's declared GPU/CPU limits and make no
-  assumption about which allowed GPU the validator assigns.
+- [ ] Optionally set `SANDBOX_GPU` to one entry from the manifest's
+  `allowed_gpus` and/or set integer `SANDBOX_CPUS` no higher than
+  `max_cpu_cores` in `miner/.env`. Leave either blank for its manifest fallback.
+- [ ] Keep processing within the manifest's declared GPU/CPU limits and inspect
+  the observed GPU at runtime because Modal may upgrade the requested SKU.
 
 ## 4. Keep the export safe and reviewable
 
@@ -119,9 +122,14 @@ must not assume that a batch contains repeated versions of one source video.
 
   ```bash
   python miner/competition_sdk.py prepare \
-    --repository your-github-user/private-compressor
+    --repository your-github-user/private-compressor \
+    --manifest competitions/manifests/examples/compression-competition.json
   ```
 
+- [ ] Inspect the exported `competition_solution.json`. It should contain only
+  the selected `sandbox_resources`; the SDK must not copy `miner/.env`.
+- [ ] Confirm the SDK and shared preflight validated those preferences against
+  this manifest's exact `allowed_gpus` and `max_cpu_cores` values.
 - [ ] After any source change, rebuild the SDK-marked export with `--refresh`.
 - [ ] Validate the exact export using the operator-provided manifest:
 

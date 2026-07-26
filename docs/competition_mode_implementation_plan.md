@@ -114,10 +114,11 @@ Phase 3 moves that security contract to the validator side:
   currently supply that size attestation, and requires an explicit operator
   acknowledgement before it can run.
 - Accepted build evidence is persisted on the contender and is immutable.
-- The validator-owned Modal adapter uses the recorded image ID and ignores all
-  miner resource declarations. It fixes the service command, GPU, CPU hard
-  limit, lifetime, environment, network block, empty secrets/OIDC, empty public
-  ports, one read-only `/evaluation-inputs` mount, and one contender-specific
+- The validator-owned Modal adapter uses the recorded image ID and only honors
+  the sanitized, manifest-bounded GPU/CPU preferences pinned from
+  `competition_solution.json`. It fixes the service command, CPU hard limit,
+  lifetime, environment, network block, empty secrets/OIDC, empty public ports,
+  one read-only `/evaluation-inputs` mount, and one contender-specific
   read-write `/output` mount. No other contender or validator Volume is mounted;
   compression scoring reuses the immutable source input as its reference.
 - Every new or recovered sandbox must pass a validator-supplied active probe:
@@ -480,8 +481,8 @@ For every contender it will:
 1. Build or resolve the pinned contender image without importing contender Python into the validator.
 2. Record the immutable image ID/digest and measured image size.
 3. Create a uniquely named app/sandbox such as `vidaio-cmp-<competition>-<hotkey-prefix>` with full IDs in tags and structured logs.
-4. Select one GPU from the manifest allowlist; reject any contender attempt to control this value.
-5. Set `cpu=(requested_cpu_cores, min(requested_cpu_cores, 32))` so 32 is a hard limit, not merely a reservation.
+4. Apply the contender's pinned `sandbox_resources.gpu` when it is in the manifest allowlist; otherwise use `allowed_gpus[0]`.
+5. Apply the contender's pinned positive `sandbox_resources.cpus` up to `max_cpu_cores`; otherwise use `requested_cpu_cores`. Use the selected value as both the CPU request and hard limit.
 6. Mount only the immutable source-video Volume at `/evaluation-inputs` read-only. The scorer later mounts this same Volume as its reference; no separate reference Volume exists for compression.
 7. Mount exactly one contender-specific Volume at `/output` read-write. Never mount another contender's volume or the parent namespace.
 8. Start with `block_network=True`, no secrets, no identity token, and a trusted readiness probe.

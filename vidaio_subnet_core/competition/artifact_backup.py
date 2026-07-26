@@ -27,7 +27,11 @@ from .intake import (
 )
 from .phase0 import SecretRedactor
 from .state import CompetitionState
-from .validation import RepositoryStaticValidator, write_validation_report
+from .validation import (
+    RepositoryStaticValidator,
+    load_sandbox_resource_preferences,
+    write_validation_report,
+)
 
 
 LOG_REDACTOR = SecretRedactor()
@@ -314,7 +318,19 @@ class CompetitionArtifactBackupService:
         try:
             staged_source = staged / "source"
             shutil.copytree(source, staged_source, symlinks=True)
-            validation = self.boss_validator.validate(staged_source)
+            validation = self.boss_validator.validate(
+                staged_source,
+                allowed_gpus=manifest.allowed_gpus,
+                max_cpu_cores=manifest.max_cpu_cores,
+            )
+            try:
+                preferences = load_sandbox_resource_preferences(
+                    staged_source,
+                    allowed_gpus=manifest.allowed_gpus,
+                    max_cpu_cores=manifest.max_cpu_cores,
+                )
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                preferences = None
             tree_sha = validation.repository_tree_sha256
             snapshot_time = self.clock()
             repository_display = f"manifest:{manifest.boss.repository_path.as_posix()}"
@@ -334,6 +350,12 @@ class CompetitionArtifactBackupService:
                         "pinned_tree_sha": tree_sha,
                         "latest_commit_time": snapshot_time.isoformat(),
                         "cloned_at": snapshot_time.isoformat(),
+                        "sandbox_gpu": (
+                            preferences.gpu if preferences is not None else None
+                        ),
+                        "sandbox_cpus": (
+                            preferences.cpus if preferences is not None else None
+                        ),
                     },
                     indent=2,
                     sort_keys=True,
@@ -364,6 +386,12 @@ class CompetitionArtifactBackupService:
                         submitted_identity, "coldkey_snapshot", None
                     ),
                     is_boss=True,
+                    sandbox_gpu=(
+                        preferences.gpu if preferences is not None else None
+                    ),
+                    sandbox_cpus=(
+                        preferences.cpus if preferences is not None else None
+                    ),
                 )
             except Exception:
                 shutil.rmtree(destination, ignore_errors=True)

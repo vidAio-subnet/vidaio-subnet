@@ -93,7 +93,12 @@ class CompetitionSdkTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             source = self.make_source(root)
-            export = SDK.prepare_export(source, root / "export")
+            export = SDK.prepare_export(
+                source,
+                root / "export",
+                allowed_gpus=("L4", "L40S"),
+                max_cpu_cores=16,
+            )
             self.assertTrue((export / SDK.EXPORT_MARKER).is_file())
             self.assertTrue((export / "miner/common_preflight.py").is_file())
             self.assertTrue((export / "scripts/competition_modal_build.py").is_file())
@@ -103,6 +108,97 @@ class CompetitionSdkTests(unittest.TestCase):
             self.assertTrue((export / "miner/.env.template").is_file())
             report = PREFLIGHT.validate_repository(export)
             self.assertEqual(report["status"], "ACCEPTED")
+
+    def test_prepare_export_relays_only_sandbox_resource_preferences(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = self.make_source(root)
+            (source / "miner/.env").write_text(
+                "SECRET=do-not-copy\n"
+                "SANDBOX_GPU=L40S\n"
+                "SANDBOX_CPUS=12\n",
+                encoding="utf-8",
+            )
+
+            export = SDK.prepare_export(source, root / "export")
+            descriptor = json.loads(
+                (export / "competition_solution.json").read_text(encoding="utf-8")
+            )
+
+            self.assertEqual(
+                descriptor["sandbox_resources"],
+                {"gpu": "L40S", "cpus": 12},
+            )
+            self.assertFalse((export / "miner/.env").exists())
+            self.assertNotIn(
+                "do-not-copy",
+                (export / "competition_solution.json").read_text(encoding="utf-8"),
+            )
+            self.assertEqual(
+                PREFLIGHT.validate_repository(
+                    export,
+                    allowed_gpus=("L4", "L40S"),
+                    max_cpu_cores=16,
+                )["status"],
+                "ACCEPTED",
+            )
+
+    def test_prepare_export_rejects_invalid_sandbox_preferences(self) -> None:
+        for setting in ("SANDBOX_CPUS=0", "SANDBOX_CPUS=4.5"):
+            with self.subTest(setting=setting), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                source = self.make_source(root)
+                (source / "miner/.env").write_text(
+                    setting + "\n", encoding="utf-8"
+                )
+                with self.assertRaises(SDK.SdkError):
+                    SDK.prepare_export(source, root / "export")
+
+    def test_prepare_export_uses_manifest_specific_resource_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = self.make_source(root)
+            (source / "miner/.env").write_text(
+                "SANDBOX_GPU=H100\nSANDBOX_CPUS=24\n",
+                encoding="utf-8",
+            )
+
+            export = SDK.prepare_export(
+                source,
+                root / "export",
+                allowed_gpus=("H100", "B200"),
+                max_cpu_cores=24,
+            )
+            descriptor = json.loads(
+                (export / "competition_solution.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                descriptor["sandbox_resources"],
+                {"gpu": "H100", "cpus": 24},
+            )
+            self.assertEqual(
+                PREFLIGHT.validate_repository(
+                    export,
+                    allowed_gpus=("H100", "B200"),
+                    max_cpu_cores=24,
+                )["status"],
+                "ACCEPTED",
+            )
+
+            with self.assertRaisesRegex(SDK.SdkError, "allowed_gpus"):
+                SDK.prepare_export(
+                    source,
+                    root / "rejected-gpu",
+                    allowed_gpus=("L4",),
+                    max_cpu_cores=24,
+                )
+            with self.assertRaisesRegex(SDK.SdkError, "max_cpu_cores"):
+                SDK.prepare_export(
+                    source,
+                    root / "rejected-cpus",
+                    allowed_gpus=("H100",),
+                    max_cpu_cores=16,
+                )
 
     def test_prepare_refuses_to_reuse_unmarked_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -361,6 +457,56 @@ class CompetitionSdkTests(unittest.TestCase):
                 json.dumps({"modal_build_timeout": "PT2M"}), encoding="utf-8"
             )
             self.assertEqual(SDK.load_modal_build_timeout_seconds(manifest), 120)
+
+    def test_sandbox_resource_limits_come_from_manifest(self) -> None:
+        self.assertEqual(SDK.load_manifest_resource_limits(None), (None, None))
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = Path(temp) / "competition.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "allowed_gpus": ["H100", "B200"],
+                        "max_cpu_cores": 24,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                SDK.load_manifest_resource_limits(manifest),
+                (("H100", "B200"), 24),
+            )
+            self.assertEqual(
+                PREFLIGHT.load_manifest_resource_limits(manifest),
+                (("H100", "B200"), 24),
+            )
+
+    def test_sdk_passes_manifest_to_common_preflight(self) -> None:
+        report = {
+            "status": "STATIC_READY",
+            "repository": {"file_count": 7, "total_bytes": 123},
+        }
+        with patch.object(
+            SDK.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps(report),
+                stderr="",
+            ),
+        ) as run:
+            result = SDK.run_common_preflight(
+                Path("/tmp/export"),
+                manifest_path=Path("/tmp/competition.json"),
+            )
+
+        self.assertEqual(result, report)
+        command = run.call_args.args[0]
+        self.assertEqual(
+            command[-2:],
+            ["--manifest", "/tmp/competition.json"],
+        )
 
     def test_modal_build_timeout_stops_app_and_rejects_validation(self) -> None:
         stopped = []

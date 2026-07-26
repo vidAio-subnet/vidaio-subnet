@@ -532,6 +532,52 @@ class SandboxLifecycleTests(unittest.TestCase):
             spec.lifetime_seconds, int(MAX_SANDBOX_LIFETIME.total_seconds())
         )
 
+    def test_contender_sandbox_preferences_override_manifest_defaults(self) -> None:
+        hotkey = "preferred-resource-hotkey"
+        validation = ValidationReport(
+            ValidationStatus.ACCEPTED,
+            ValidationReason.ACCEPTED,
+            "f" * 64,
+            4,
+            100,
+            (),
+        )
+        self.repository.record_pinned_contender(
+            competition_id=self.manifest.competition_id,
+            hotkey=hotkey,
+            repository_url_hash="d" * 64,
+            repository_display="github.com/acme/preferred",
+            pinned_commit_sha="b" * 40,
+            pinned_tree_sha="c" * 40,
+            latest_commit_time=NOW.isoformat(),
+            validation=validation,
+            now=NOW,
+            actor="test",
+            sandbox_gpu="L40S",
+            sandbox_cpus=12,
+        )
+        self.repository.record_build_evidence(
+            competition_id=self.manifest.competition_id,
+            hotkey=hotkey,
+            image_id="im-preferred",
+            image_digest="sha256:" + "e" * 64,
+            image_size_bytes=IMAGE_SIZE_LIMIT_BYTES,
+            evidence=build_evidence(
+                source_tree_sha="c" * 40,
+                image_id="im-preferred",
+                image_digest="sha256:" + "e" * 64,
+            ).as_dict(),
+            now=NOW,
+            actor="test",
+        )
+
+        self.runner().ensure_warm(self.manifest, hotkey, now=NOW)
+
+        spec = self.backend.created[0]
+        self.assertEqual(spec.gpu_type, "L40S")
+        self.assertEqual(spec.cpu_request, 12)
+        self.assertEqual(spec.cpu_limit, 12)
+
     def test_process_recreation_reattaches_without_rebuild_or_new_sandbox(self) -> None:
         first = self.runner().ensure_warm(self.manifest, self.hotkey, now=NOW)
         recreated_repository = CompetitionRepository(self.database_url)
