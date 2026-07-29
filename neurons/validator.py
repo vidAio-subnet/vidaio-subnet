@@ -1301,6 +1301,7 @@ class Validator(base.BaseValidator):
             f"{num_miners} miners in {scoring_batch_count} batches of up to {scoring_batch_size}"
         )
 
+        deferred_scoring_results = []
         for batch_idx, batch_start in enumerate(range(0, total_scoring_responses, scoring_batch_size), start=1):
             batch_end = min(batch_start + scoring_batch_size, total_scoring_responses)
             batch_uids = flat_uids[batch_start:batch_end]
@@ -1317,7 +1318,7 @@ class Validator(base.BaseValidator):
                 if batch_start <= idx < batch_end
             }
 
-            await self.score_upscalings(
+            scoring_result = await self.score_upscalings(
                 batch_uids,
                 [],
                 flat_payload_urls[batch_start:batch_end],
@@ -1330,12 +1331,16 @@ class Validator(base.BaseValidator):
                 round_id,
                 distorted_urls=flat_distorted_urls[batch_start:batch_end],
                 duplicate_url_reasons=batch_duplicate_url_reasons,
+                commit_scores=False,
             )
+            deferred_scoring_results.append(scoring_result)
 
             logger.info(
                 f"Completed upscaling scoring batch {batch_idx}/{scoring_batch_count} "
                 f"in {time.time() - batch_timer:.2f} seconds"
             )
+
+        self._commit_upscaling_scores(deferred_scoring_results)
 
         # These collections do not necessarily have the same length, so clean
         # each kind of resource independently.
@@ -1513,10 +1518,20 @@ class Validator(base.BaseValidator):
         batch_processed_time = time.time() - batch_start_time
         logger.info(f"Completed compression gathering and downloading within {batch_processed_time:.2f} seconds")
 
-        try:
-            total_scoring_responses = len(flat_uids)
-            scoring_batch_size = COMPRESSION_SCORING_BATCH_SIZE
-            scoring_batch_count = (total_scoring_responses + scoring_batch_size - 1) // scoring_batch_size
+        total_scoring_responses = len(flat_uids)
+        scoring_batch_size = COMPRESSION_SCORING_BATCH_SIZE
+        scoring_batch_count = (total_scoring_responses + scoring_batch_size - 1) // scoring_batch_size
+        logger.info(
+            f"Scoring {total_scoring_responses} compression query responses from "
+            f"{num_miners} miners in {scoring_batch_count} batches of up to {scoring_batch_size}"
+        )
+
+        compression_score_cache: CompressionScoreCache = {}
+        deferred_scoring_results = []
+        for batch_idx, batch_start in enumerate(range(0, total_scoring_responses, scoring_batch_size), start=1):
+            batch_end = min(batch_start + scoring_batch_size, total_scoring_responses)
+            batch_uids = flat_uids[batch_start:batch_end]
+            batch_timer = time.time()
             logger.info(
                 f"Scoring {total_scoring_responses} compression query responses from "
                 f"{num_miners} miners in {scoring_batch_count} batches of up to {scoring_batch_size}"
@@ -1533,47 +1548,33 @@ class Validator(base.BaseValidator):
                     f"uids={batch_uids}"
                 )
 
-                batch_duplicate_url_reasons = {
-                    idx - batch_start: reason
-                    for idx, reason in duplicate_url_reasons.items()
-                    if batch_start <= idx < batch_end
-                }
-
-                await self.score_compressions(
-                    batch_uids,
-                    [],
-                    distorted_file_paths[batch_start:batch_end],
-                    flat_payload_urls[batch_start:batch_end],
-                    flat_reference_paths[batch_start:batch_end],
-                    timestamp,
-                    flat_video_ids[batch_start:batch_end],
-                    flat_uploaded_object_names[batch_start:batch_end],
-                    flat_vmaf_thresholds[batch_start:batch_end],
-                    target_codec,
-                    codec_mode,
-                    target_bitrate,
-                    round_id,
-                    distorted_urls=flat_distorted_urls[batch_start:batch_end],
-                    duplicate_url_reasons=batch_duplicate_url_reasons,
-                    compression_score_cache=compression_score_cache,
-                )
-
-                logger.info(
-                    f"Completed compression scoring batch {batch_idx}/{scoring_batch_count} "
-                    f"in {time.time() - batch_timer:.2f} seconds"
-                )
-        finally:
-            await cleanup_compression_artifacts(
-                distorted_file_paths,
-                reference_video_paths,
-                uploaded_object_names,
-                storage_client.delete_file,
+            scoring_result = await self.score_compressions(
+                batch_uids,
+                [],
+                distorted_file_paths[batch_start:batch_end],
+                flat_payload_urls[batch_start:batch_end],
+                flat_reference_paths[batch_start:batch_end],
+                timestamp,
+                flat_video_ids[batch_start:batch_end],
+                flat_uploaded_object_names[batch_start:batch_end],
+                flat_vmaf_thresholds[batch_start:batch_end],
+                target_codec,
+                codec_mode,
+                target_bitrate,
+                round_id,
+                distorted_urls=flat_distorted_urls[batch_start:batch_end],
+                duplicate_url_reasons=batch_duplicate_url_reasons,
+                compression_score_cache=compression_score_cache,
+                commit_scores=False,
             )
+            deferred_scoring_results.append(scoring_result)
 
             logger.info(
                 f"Completed compression scoring batch {batch_idx}/{scoring_batch_count} "
                 f"in {time.time() - batch_timer:.2f} seconds"
             )
+
+        self._commit_compression_scores(deferred_scoring_results)
 
         # There is one distorted file per miner response, but only one reference
         # and uploaded object per query.  Zipping these lists would stop after the
@@ -1651,6 +1652,7 @@ class Validator(base.BaseValidator):
         round_id: str,
         distorted_urls: list[str] | None = None,
         duplicate_url_reasons: dict[int, str] | None = None,
+        commit_scores: bool = True,
     ):
         if distorted_urls is None:
             distorted_urls = []
@@ -1720,7 +1722,52 @@ class Validator(base.BaseValidator):
             lambda idx: duplicate_url_reasons[idx],
             "No reason provided",
         )
-        
+
+        scoring_result = {
+            "round_id": round_id,
+            "uids": uids,
+            "vmaf_scores": vmaf_scores,
+            "pieapp_scores": pieapp_scores,
+            "quality_scores": quality_scores,
+            "length_scores": length_scores,
+            "final_scores": final_scores,
+            "reasons": reasons,
+            "content_lengths": content_lengths,
+            "payload_urls": payload_urls,
+            "distorted_urls": distorted_urls,
+            "timestamp": timestamp,
+        }
+        if commit_scores:
+            self._commit_upscaling_scores([scoring_result])
+        return scoring_result
+
+    def _commit_upscaling_scores(self, scoring_results):
+        if not scoring_results:
+            return
+
+        round_id = scoring_results[0]["round_id"]
+        if any(result["round_id"] != round_id for result in scoring_results):
+            raise ValueError("Cannot commit upscaling scores from different rounds")
+
+        def combine(key):
+            return [
+                value
+                for result in scoring_results
+                for value in result[key]
+            ]
+
+        uids = combine("uids")
+        vmaf_scores = combine("vmaf_scores")
+        pieapp_scores = combine("pieapp_scores")
+        quality_scores = combine("quality_scores")
+        length_scores = combine("length_scores")
+        final_scores = combine("final_scores")
+        reasons = combine("reasons")
+        content_lengths = combine("content_lengths")
+        payload_urls = combine("payload_urls")
+        distorted_urls = combine("distorted_urls")
+        timestamp = scoring_results[0]["timestamp"]
+
         logger.info(f"Updating miner manager with {len(quality_scores)} upscaling scores after synthetic requests processing")
 
         miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
@@ -1806,6 +1853,7 @@ class Validator(base.BaseValidator):
         distorted_urls: list[str] | None = None,
         duplicate_url_reasons: dict[int, str] | None = None,
         compression_score_cache: CompressionScoreCache | None = None,
+        commit_scores: bool = True,
     ):
         if distorted_urls is None:
             distorted_urls = []
@@ -1907,7 +1955,50 @@ class Validator(base.BaseValidator):
                 f"Zeroed {len(duplicate_score_owners)} duplicate synthetic "
                 "compression results based on normalized primary scoring metrics"
             )
-        
+
+        scoring_result = {
+            "round_id": round_id,
+            "uids": uids,
+            "vmaf_scores": vmaf_scores,
+            "base_vmaf_scores": base_vmaf_scores,
+            "final_scores": final_scores,
+            "reasons": reasons,
+            "compression_rates": compression_rates,
+            "vmaf_thresholds": vmaf_thresholds,
+            "payload_urls": payload_urls,
+            "distorted_urls": distorted_urls,
+            "timestamp": timestamp,
+        }
+        if commit_scores:
+            self._commit_compression_scores([scoring_result])
+        return scoring_result
+
+    def _commit_compression_scores(self, scoring_results):
+        if not scoring_results:
+            return
+
+        round_id = scoring_results[0]["round_id"]
+        if any(result["round_id"] != round_id for result in scoring_results):
+            raise ValueError("Cannot commit compression scores from different rounds")
+
+        def combine(key):
+            return [
+                value
+                for result in scoring_results
+                for value in result[key]
+            ]
+
+        uids = combine("uids")
+        vmaf_scores = combine("vmaf_scores")
+        base_vmaf_scores = combine("base_vmaf_scores")
+        final_scores = combine("final_scores")
+        reasons = combine("reasons")
+        compression_rates = combine("compression_rates")
+        vmaf_thresholds = combine("vmaf_thresholds")
+        payload_urls = combine("payload_urls")
+        distorted_urls = combine("distorted_urls")
+        timestamp = scoring_results[0]["timestamp"]
+
         logger.info(f"Updating miner manager with {len(compression_rates)} compression miner scores after synthetic requests processing")
 
         miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
