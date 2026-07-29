@@ -1533,20 +1533,16 @@ class Validator(base.BaseValidator):
             batch_uids = flat_uids[batch_start:batch_end]
             batch_timer = time.time()
             logger.info(
-                f"Scoring {total_scoring_responses} compression query responses from "
-                f"{num_miners} miners in {scoring_batch_count} batches of up to {scoring_batch_size}"
+                f"Scoring compression batch {batch_idx}/{scoring_batch_count}: "
+                f"responses {batch_start + 1}-{batch_end}/{total_scoring_responses}, "
+                f"uids={batch_uids}"
             )
 
-            compression_score_cache: CompressionScoreCache = {}
-            for batch_idx, batch_start in enumerate(range(0, total_scoring_responses, scoring_batch_size), start=1):
-                batch_end = min(batch_start + scoring_batch_size, total_scoring_responses)
-                batch_uids = flat_uids[batch_start:batch_end]
-                batch_timer = time.time()
-                logger.info(
-                    f"Scoring compression batch {batch_idx}/{scoring_batch_count}: "
-                    f"responses {batch_start + 1}-{batch_end}/{total_scoring_responses}, "
-                    f"uids={batch_uids}"
-                )
+            batch_duplicate_url_reasons = {
+                idx - batch_start: reason
+                for idx, reason in duplicate_url_reasons.items()
+                if batch_start <= idx < batch_end
+            }
 
             scoring_result = await self.score_compressions(
                 batch_uids,
