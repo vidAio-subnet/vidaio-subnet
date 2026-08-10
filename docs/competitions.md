@@ -390,6 +390,16 @@ prefix before validation/building proceeds. Partial or publicly accessible
 backups fail closed and remain retryable from
 `FINALIZING_SUBMISSIONS`.
 
+Before upload, the backup service rejects public bucket ACL grants, wildcard
+bucket-policy statements that allow object reads, and—when the provider exposes
+AWS's Public Access Block API—any bucket that does not enable all four controls.
+Uploaded objects are read back and their ACLs, sizes, and checksums are checked.
+On S3-compatible providers that do not expose bucket-policy or Public Access
+Block APIs, the service logs an explicit warning; operators must independently
+verify equivalent provider policy. `database_archive_path` is non-secret member
+metadata inside the archive and inventory, and may appear in validator logs. It
+does not expose the SQLite bytes or create a separately addressable S3 object.
+
 ## Miner route contract
 
 The competition route is local-filesystem-only and runs offline. A request

@@ -157,6 +157,11 @@ or another immutable live-competition input changes.
 
 - [ ] Confirm the bucket is private, supports read-back verification, and no
   presigned URL is published.
+- [ ] For AWS S3, enable all four Public Access Block controls and confirm the
+  bucket policy has no wildcard principal allowed to read objects. For an
+  S3-compatible provider that lacks these APIs, independently verify its
+  bucket policy, anonymous-read, and access-point equivalents and investigate
+  the validator's explicit capability warnings.
 - [ ] Ensure the inference process receives the same
   `COMPETITION_DATABASE_URL`; otherwise competition rewards are excluded from
   its weight calculation.

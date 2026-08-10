@@ -215,6 +215,16 @@ the manifest-configured boss repository (when configured), and an online,
 integrity-checked SQLite snapshot under `database/<sqlite-filename>`. The SQLite
 source path and filename come from `COMPETITION_DATABASE_URL`. Backup logs print
 the complete S3 object names for both the archive and its `inventory.json`.
+The logged `database_archive_path` is the SQLite member name inside the tarball,
+not a standalone S3 key and not a secret. Keep the archive and inventory
+private because both contain sensitive competition material.
+
+The backup privacy gate checks bucket and object ACLs, rejects wildcard public
+read statements in bucket policy, and requires all four AWS Public Access Block
+controls when that API is available. Some S3-compatible providers do not expose
+the policy or Public Access Block APIs; in that case the validator warns and the
+operator must verify the provider's equivalent anonymous-read and access-point
+settings before enabling competition mode.
 
 When `competition_end_time` moves a competition to `COMPLETED`, the validator
 also creates a final online, integrity-checked SQLite snapshot and uploads it

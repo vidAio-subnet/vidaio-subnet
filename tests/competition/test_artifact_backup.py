@@ -73,10 +73,17 @@ class _AcceptingBossValidator:
 
 class FakeS3:
     def __init__(
-        self, *, public_acl: bool = False, public_bucket_acl: bool = False
+        self,
+        *,
+        public_acl: bool = False,
+        public_bucket_acl: bool = False,
+        public_bucket_policy: bool = False,
+        public_access_block: bool = True,
     ) -> None:
         self.public_acl = public_acl
         self.public_bucket_acl = public_bucket_acl
+        self.public_bucket_policy = public_bucket_policy
+        self.public_access_block = public_access_block
         self.objects: dict[tuple[str, str], dict[str, object]] = {}
         self.upload_count = 0
 
@@ -132,6 +139,31 @@ class FakeS3:
                     "Permission": "READ",
                 }
             ]
+        }
+
+    def get_bucket_policy(self, *, Bucket):
+        del Bucket
+        statements = []
+        if self.public_bucket_policy:
+            statements.append(
+                {
+                    "Effect": "Allow",
+                    "Principal": "*",
+                    "Action": "s3:GetObject",
+                    "Resource": "arn:aws:s3:::validator-private-artifacts/*",
+                }
+            )
+        return {"Policy": json.dumps({"Statement": statements})}
+
+    def get_public_access_block(self, *, Bucket):
+        del Bucket
+        return {
+            "PublicAccessBlockConfiguration": {
+                "BlockPublicAcls": self.public_access_block,
+                "IgnorePublicAcls": self.public_access_block,
+                "BlockPublicPolicy": self.public_access_block,
+                "RestrictPublicBuckets": self.public_access_block,
+            }
         }
 
 
@@ -383,6 +415,24 @@ class CompetitionArtifactBackupTests(unittest.TestCase):
         failed = self.repository.get(self.manifest.competition_id)
         self.assertEqual(failed.submission_backup_status, "FAILED")
         self.assertIn("bucket", failed.submission_backup_error)
+
+    def test_public_bucket_policy_fails_before_any_upload(self):
+        s3 = FakeS3(public_bucket_policy=True)
+        with self.assertRaisesRegex(
+            CompetitionArtifactBackupError, "policy permits public object reads"
+        ):
+            self.service(s3).backup(self.manifest.competition_id)
+
+        self.assertEqual(s3.upload_count, 0)
+
+    def test_incomplete_public_access_block_fails_before_any_upload(self):
+        s3 = FakeS3(public_access_block=False)
+        with self.assertRaisesRegex(
+            CompetitionArtifactBackupError, "Public Access Block"
+        ):
+            self.service(s3).backup(self.manifest.competition_id)
+
+        self.assertEqual(s3.upload_count, 0)
 
     def test_completed_competition_uploads_consistent_sqlite_snapshot(self):
         self.complete_competition()
