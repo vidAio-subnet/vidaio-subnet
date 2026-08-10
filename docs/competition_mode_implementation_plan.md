@@ -12,7 +12,7 @@ Add a weekly, validator-operated competition mode alongside the existing inferen
 
 The validator will:
 
-1. Open registration every Thursday.
+1. Open registration at the manifest's configured UTC start time on any day.
 2. Poll opted-in miners for a repository submission for a configurable window (30-minute polling for 24 hours by default).
 3. Pin and validate each submission as it arrives; at the submission deadline,
    privately back up the final pinned snapshots before any build can begin.
@@ -220,14 +220,14 @@ SCORED, and FAILED states so one bad repository does not abort the competition.
 
 Default weekly timeline, expressed in UTC:
 
-- Thursday at `competition_start_time`: move to `ENROLLING` and send invitations.
-- Thursday through Friday: poll interested miners every `contender_ping_interval` until `contender_finalisation_time`.
+- At `competition_start_time`: move to `ENROLLING` and send invitations.
+- During the enrollment window: poll interested miners every `contender_ping_interval` until `contender_finalisation_time`.
 - At finalisation: stop accepting or changing submissions, privately archive
   every final pinned repository snapshot and its inventory to S3, then validate
   and build only after the backup is verified.
 - Remaining competition window: evaluate contenders continuously and score responses asynchronously.
 - If evaluation finishes early: move to `AWAITING_END_TIME`, publish the provisional ranking and review queue, and accept audited human eligibility/tie-break decisions until the review deadline.
-- At `competition_end_time` (normally the following Thursday): reconcile scores and costs, apply tie-breakers, persist and announce the winner.
+- At `competition_end_time`: reconcile scores and costs, apply tie-breakers, persist and announce the winner.
 
 `Validator.run_competition()` will be a fifth task created in `neurons/validator.py::main()`. It should wake at a short configurable scheduler interval, acquire a database-backed competition lease, and advance any due state. It must not contain a single week-long sleep; that would make restarts and configuration changes unsafe.
 
@@ -297,7 +297,7 @@ score_precision: 8
 
 Validation rules:
 
-- All timestamps are timezone-aware UTC, ordered start < finalisation <= human review deadline < end, and the default production start is Thursday.
+- All timestamps are timezone-aware UTC and ordered start < finalisation <= human review deadline < end. There is no weekday restriction.
 - Competition IDs match a conservative slug format and are unique.
 - Initial `competition_type` is exactly `COMPRESSION` and `required_routes` is exactly `[/compress]`.
 - Batch size is 1-5; the initial default is 5.
@@ -838,14 +838,14 @@ Implementation status (2026-07-14): the local gates, scoring/allocation contract
 - Add manifest model/loader and competition configuration.
 - Add protocols and dual-mode miner handlers.
 - Add state machine, SQL models, an explicit schema baseline, and event log.
-- Add Thursday scheduling and restart/resume behavior behind `COMPETITION_MODE_ENABLED=false`.
+- Add manifest-driven scheduling on any weekday and restart/resume behavior behind `COMPETITION_MODE_ENABLED=false`.
 
 Exit: unit tests can advance a fake-clock competition through enrollment and resume every state after process recreation without touching inference.
 
 Implementation status (2026-07-16): complete. Versioned compression manifests,
 invitation/submission protocols, dual-mode miner handlers, restart-safe validator
 invitation and submission polling, competition-only SQLite models, an explicit
-idempotent schema baseline, redacted events, database leases, Thursday
+idempotent schema baseline, redacted events, database leases, manifest-driven
 scheduling, audited non-terminal manifest revisions, and restart/resume behavior
 are implemented behind `COMPETITION_MODE_ENABLED=false`. Enrollment attempts and poll
 cadence are persisted so a validator restart neither loses opted-in miners nor
@@ -1062,7 +1062,7 @@ At minimum, add:
 - Manifest boundary, timestamp, duration, 25 GB threshold, scoring-factor,
   boss-path containment/export-shape, warmup, allowlist, and immutable-digest
   tests.
-- Scheduler tests for Thursday start, missed wake-up, duplicate loop, clock
+- Scheduler tests for arbitrary-weekday start, missed wake-up, duplicate loop, clock
   skew, restart, one-active-competition enforcement, and sequential new-ID boss
   competitions sourced from configured SDK exports.
 - Protocol tests for opt-out, stale IDs, unsupported type, replay, malformed URLs, raw-PAT redaction, missing/expired credentials, and hotkey mismatch.

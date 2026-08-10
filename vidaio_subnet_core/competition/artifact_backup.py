@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import gzip
 import hashlib
 import json
@@ -111,6 +112,10 @@ class CompetitionArtifactBackupService:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.repository_root = (repository_root or Path.cwd()).resolve()
         self.boss_validator = RepositoryStaticValidator()
+        normalized_endpoint = (endpoint_url or "").strip().lower()
+        self.require_public_access_block = not normalized_endpoint or (
+            "amazonaws.com" in normalized_endpoint
+        )
         if not self.bucket:
             raise ValueError("competition artifact backup bucket is required")
         if not self.key_prefix or ".." in self.key_prefix.split("/"):
@@ -312,6 +317,15 @@ class CompetitionArtifactBackupService:
             result.database_archive_path,
         )
         return result
+
+    def preflight_privacy(self) -> None:
+        """Fail fast when the configured backup bucket is not private."""
+
+        self._verify_bucket_private()
+        logger.info(
+            "Competition artifact backup privacy preflight passed: bucket={}",
+            self.bucket,
+        )
 
     def _database_archive_path(self, competition_id: str) -> Path:
         return (
@@ -595,6 +609,149 @@ class CompetitionArtifactBackupService:
     def _verify_bucket_private(self) -> None:
         acl = self.s3.get_bucket_acl(Bucket=self.bucket)
         self._reject_public_acl_grants(acl, f"bucket {self.bucket}")
+        self._verify_bucket_policy_private()
+        self._verify_public_access_block()
+
+    def _verify_bucket_policy_private(self) -> None:
+        get_policy = getattr(self.s3, "get_bucket_policy", None)
+        if not callable(get_policy):
+            logger.warning(
+                "S3 provider does not expose get_bucket_policy; bucket policy "
+                "privacy must be verified by the operator: bucket={}",
+                self.bucket,
+            )
+            return
+        try:
+            response = get_policy(Bucket=self.bucket)
+        except Exception as exc:
+            if self._optional_privacy_api_unavailable(exc, "NoSuchBucketPolicy"):
+                return
+            raise CompetitionArtifactBackupError(
+                f"could not verify S3 bucket policy for {self.bucket}: {exc}"
+            ) from exc
+        try:
+            policy = json.loads(response.get("Policy", "{}"))
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise CompetitionArtifactBackupError(
+                f"S3 bucket {self.bucket} returned an invalid bucket policy"
+            ) from exc
+        statements = policy.get("Statement", [])
+        if isinstance(statements, dict):
+            statements = [statements]
+        if not isinstance(statements, list):
+            raise CompetitionArtifactBackupError(
+                f"S3 bucket {self.bucket} returned an invalid bucket policy"
+            )
+        for statement in statements:
+            if not isinstance(statement, dict) or statement.get("Effect") != "Allow":
+                continue
+            principal = statement.get("Principal")
+            wildcard_principal = principal == "*" or (
+                isinstance(principal, dict)
+                and any(
+                    value == "*" or (isinstance(value, list) and "*" in value)
+                    for value in principal.values()
+                )
+            )
+            actions = statement.get("Action", [])
+            if isinstance(actions, str):
+                actions = [actions]
+            public_read = "NotAction" in statement or any(
+                fnmatch.fnmatchcase("s3:getobject", str(action).lower())
+                or fnmatch.fnmatchcase("s3:getobjectversion", str(action).lower())
+                for action in actions
+            )
+            if wildcard_principal and public_read:
+                raise CompetitionArtifactBackupError(
+                    f"S3 bucket {self.bucket} policy permits public object reads"
+                )
+
+    def _verify_public_access_block(self) -> None:
+        get_block = getattr(self.s3, "get_public_access_block", None)
+        if not callable(get_block):
+            logger.warning(
+                "S3 provider does not expose get_public_access_block; public "
+                "access blocking must be verified by the operator: bucket={}",
+                self.bucket,
+            )
+            return
+        try:
+            response = get_block(Bucket=self.bucket)
+        except Exception as exc:
+            detail = f"{type(exc).__name__}: {exc}".lower()
+            response_detail = getattr(exc, "response", None)
+            code = ""
+            if isinstance(response_detail, dict):
+                code = str(response_detail.get("Error", {}).get("Code", ""))
+            if code == "NoSuchPublicAccessBlockConfiguration" or (
+                "nosuchpublicaccessblockconfiguration" in detail
+            ):
+                if self.require_public_access_block:
+                    raise CompetitionArtifactBackupError(
+                        f"S3 bucket {self.bucket} has no Public Access Block "
+                        "configuration"
+                    ) from exc
+                logger.warning(
+                    "S3-compatible provider has no AWS Public Access Block "
+                    "configuration; relying on provider bucket policy plus "
+                    "bucket/object ACL privacy checks: bucket={}",
+                    self.bucket,
+                )
+                return
+            if code in {"NotImplemented", "UnsupportedOperation"} or any(
+                marker in detail
+                for marker in ("not implemented", "unsupported operation")
+            ):
+                logger.warning(
+                    "S3 provider does not support Public Access Block; privacy "
+                    "depends on ACL, bucket-policy, and operator checks: bucket={}",
+                    self.bucket,
+                )
+                return
+            raise CompetitionArtifactBackupError(
+                f"could not verify S3 Public Access Block for {self.bucket}: {exc}"
+            ) from exc
+        configuration = response.get("PublicAccessBlockConfiguration", {})
+        disabled = [
+            field
+            for field in (
+                "BlockPublicAcls",
+                "IgnorePublicAcls",
+                "BlockPublicPolicy",
+                "RestrictPublicBuckets",
+            )
+            if configuration.get(field) is not True
+        ]
+        if disabled:
+            detail = ", ".join(disabled)
+            if self.require_public_access_block:
+                raise CompetitionArtifactBackupError(
+                    f"S3 bucket {self.bucket} does not enable every Public Access "
+                    f"Block control: {detail}"
+                )
+            logger.warning(
+                "S3-compatible provider does not enable AWS Public Access Block "
+                "controls; relying on provider bucket policy plus bucket/object "
+                "ACL privacy checks: bucket={} disabled={}",
+                self.bucket,
+                detail,
+            )
+
+    @staticmethod
+    def _optional_privacy_api_unavailable(exc: Exception, absent_code: str) -> bool:
+        response = getattr(exc, "response", None)
+        code = ""
+        if isinstance(response, dict):
+            code = str(response.get("Error", {}).get("Code", ""))
+        detail = f"{type(exc).__name__}: {exc}"
+        return code in {
+            absent_code,
+            "NotImplemented",
+            "UnsupportedOperation",
+        } or any(
+            marker.lower() in detail.lower()
+            for marker in (absent_code, "not implemented", "unsupported operation")
+        )
 
     def _verify_object(
         self, key: str, expected_size: int, *, expected_checksum: str

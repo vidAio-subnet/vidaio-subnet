@@ -31,8 +31,11 @@ must not assume that a batch contains repeated versions of one source video.
 - [ ] Confirm that the manifest uses the SDK/API contract supported by this
   checkout.
 - [ ] Read the schedule, allowed GPUs, CPU limits, build timeout, batch size,
-  minimum runtime/scoring timeout floors, output codec, scoring factors, and
-  submission deadline.
+  `minimum_alpha_stake`, minimum runtime/scoring timeout floors, output codec,
+  scoring factors, and submission deadline. The start time may be on any day.
+- [ ] Confirm the miner hotkey's current metagraph alpha stake meets the
+  manifest threshold; eligibility is checked at invitation and again at
+  submission finalisation.
 - [ ] Confirm that the competition uses one query per physical source video.
   A full five-item batch must contain five distinct input videos.
 - [ ] Plan for randomly assigned `CRF` or `VBR` queries. VMAF targets are selected
@@ -63,6 +66,8 @@ must not assume that a batch contains repeated versions of one source video.
   target subnet.
 - [ ] Confirm the miner process is running from the repository root and inference
   mode still works if it remains enabled.
+- [ ] Confirm competition requests are accepted only from the current on-chain
+  subnet-owner hotkey. Do not enable the development bypass in production.
 
 ## 3. Implement the solution
 
@@ -91,6 +96,10 @@ must not assume that a batch contains repeated versions of one source video.
   the observed GPU at runtime because Modal may upgrade the requested SKU.
 
 ## 4. Keep the export safe and reviewable
+
+- [ ] Use a GitHub account and canonical repository that no other miner hotkey
+  has submitted to this competition. Account and repository reuse across
+  hotkeys is rejected even when letter casing differs.
 
 - [ ] Do not put `.env`, wallet data, GitHub tokens, Modal tokens, S3
   credentials, validator credentials, or other secrets in the solution.

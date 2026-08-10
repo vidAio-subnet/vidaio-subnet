@@ -71,6 +71,12 @@ Database leases and optimistic transitions prevent two schedulers from
 advancing the same competition concurrently. The initial policy permits only
 one active competition at a time.
 
+Competition invitation and submission handlers on miners authorize the
+requesting dendrite hotkey against the current on-chain subnet-owner hotkey.
+They reject every other caller by default; the development override is unsafe
+for production. This restriction is competition-only and does not change the
+existing inference blacklist behavior.
+
 ## Manifest
 
 The executable reference is the
@@ -84,7 +90,7 @@ Every new benchmark must use a new `competition_id`.
 | Field | Meaning |
 | --- | --- |
 | `competition_id` | Unique conservative slug, normally including year/week. |
-| `competition_start_time` | UTC enrollment start; production competitions normally start Thursday. |
+| `competition_start_time` | UTC enrollment start. Any day of the week is valid. |
 | `contender_ping_interval` | Poll cadence for participating miners. |
 | `minimum_alpha_stake` | Minimum current metagraph alpha stake required for invitations and submission polling; defaults to `0`. |
 | `contender_finalisation_time` | Submission freeze and private backup boundary. |
@@ -371,10 +377,28 @@ validated in a temporary sibling and atomically replaces the prior artifact only
 after persistence succeeds. No submission changes are accepted after
 finalisation.
 
+Within one competition, each non-boss GitHub account and canonical repository
+may belong to only one miner hotkey. Owner and repository matching is
+case-insensitive and stored as hashes rather than raw identity fields. A second
+hotkey attempting to reuse either identity is rejected with
+`GITHUB_ACCOUNT_ALREADY_SUBMITTED` or `GITHUB_REPOSITORY_ALREADY_SUBMITTED`.
+The same hotkey may refresh its own submission during `ENROLLING`; boss rows are
+excluded from this miner-identity constraint.
+
 The final pinned source snapshots and inventory are uploaded to a private S3
 prefix before validation/building proceeds. Partial or publicly accessible
 backups fail closed and remain retryable from
 `FINALIZING_SUBMISSIONS`.
+
+Before upload, the backup service rejects public bucket ACL grants, wildcard
+bucket-policy statements that allow object reads, and—when the provider exposes
+AWS's Public Access Block API—any bucket that does not enable all four controls.
+Uploaded objects are read back and their ACLs, sizes, and checksums are checked.
+On S3-compatible providers that do not expose bucket-policy or Public Access
+Block APIs, the service logs an explicit warning; operators must independently
+verify equivalent provider policy. `database_archive_path` is non-secret member
+metadata inside the archive and inventory, and may appear in validator logs. It
+does not expose the SQLite bytes or create a separately addressable S3 object.
 
 ## Miner route contract
 
@@ -684,6 +708,16 @@ already precision-rounded final scores:
 5. Otherwise prefer the earlier pinned commit committer timestamp.
 6. If still tied, compare commit SHA and then hotkey lexicographically.
 
+In the production validator, evaluated batch outcomes are retained in memory
+for the complete competition round. Once every expected contender/item result
+is present and no systemic infrastructure failure blocks the round, item
+histories, aggregates, score components, and the transition to
+`AWAITING_END_TIME` are committed in one transaction. This deferred round
+commit prevents auditors from observing a partially persisted,
+population-dependent cost ranking. A process loss before that transaction
+leaves no partial scoring round to treat as authoritative; the round is run
+again from its persisted pre-round state.
+
 ### Human review
 
 `REVIEW_REQUIRED` is deliberately narrow. It currently occurs only when
@@ -910,18 +944,18 @@ each new competition.
 
 ## Production readiness and roadmap
 
-The historical implementation plan includes later production gates that must not
-be assumed complete merely because core competition evaluation works:
+The historical implementation plan also records production and extension
+requirements around the implemented competition engine:
 
 - **Public audit/reproducibility:** publish a credential-free,
   checksum-addressed post-competition bundle containing the manifest, dataset,
   pinned source, outputs, metrics, costs, reviews, events, and final ranking.
   Publication must be atomic through an inventory and final `COMPLETE` marker.
-- **Owner authorization:** competition protocol requests are accepted only from
-  the on-chain subnet-owner hotkey.
-- **Entry guards:** contenders below `minimum_alpha_stake` are not contacted,
-  and GitHub accounts or repositories already used by another contender in the
-  competition are rejected.
+- **Implemented owner authorization:** competition protocol requests are
+  accepted only from the on-chain subnet-owner hotkey by default.
+- **Implemented entry guards:** contenders below `minimum_alpha_stake` are not
+  contacted, and GitHub accounts or repositories already used by another
+  contender in the competition are rejected.
 - **Future competition types:** use a type adapter/registry. Upscaling requires
   separate high-resolution ground truth unavailable to contenders and cannot
   reuse compression's two-media assumption.

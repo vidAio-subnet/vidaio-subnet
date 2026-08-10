@@ -266,6 +266,7 @@ class Validator(base.BaseValidator):
                 database_url=self.competition_config.database_url,
                 actor=self.competition_config.owner_id,
             )
+            self.competition_artifact_backup.preflight_privacy()
             competition_intake = CompetitionSubmissionIntakeService(
                 RepositoryIntake(self.competition_config.artifact_root),
                 self.competition_repository,

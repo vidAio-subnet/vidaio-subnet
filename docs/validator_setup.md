@@ -215,6 +215,20 @@ the manifest-configured boss repository (when configured), and an online,
 integrity-checked SQLite snapshot under `database/<sqlite-filename>`. The SQLite
 source path and filename come from `COMPETITION_DATABASE_URL`. Backup logs print
 the complete S3 object names for both the archive and its `inventory.json`.
+The logged `database_archive_path` is the SQLite member name inside the tarball,
+not a standalone S3 key and not a secret. Keep the archive and inventory
+private because both contain sensitive competition material.
+
+The backup privacy gate checks bucket and object ACLs and rejects wildcard
+public-read statements when the provider exposes bucket policy. Native AWS S3
+must enable all four Public Access Block controls. A custom S3-compatible
+endpoint such as Backblaze B2 may report those AWS-specific controls as absent
+or disabled; the validator warns but does not reject the bucket when its
+supported bucket/object privacy checks pass. Configure the B2 bucket as private
+so objects require the configured application key ID and application key.
+Competition-mode startup runs this bucket privacy preflight before enrollment
+or scheduler work begins and exits on a detected violation. The same check runs
+again at upload time so a policy change during enrollment still fails closed.
 
 When `competition_end_time` moves a competition to `COMPLETED`, the validator
 also creates a final online, integrity-checked SQLite snapshot and uploads it
@@ -564,8 +578,9 @@ Failed and invalid outputs receive zero and cannot define the minimum. Because
 cost is population-dependent, aggregate scoring must use the complete finalized
 evaluated contender set.
 
-The start time must be Thursday UTC. At startup the validator normalizes and
-hashes each manifest and persists it in competition-only SQLite tables. If a
+The start time may fall on any day of the week. At startup the validator
+normalizes and hashes each manifest and persists it in competition-only SQLite
+tables. If a
 manifest with the same ID changes while its competition is non-terminal, the
 validator updates the database fields used by the scheduler, appends a
 `MANIFEST_UPDATED` audit event containing the old/new digests and field-level
