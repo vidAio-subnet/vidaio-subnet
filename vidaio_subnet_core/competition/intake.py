@@ -64,6 +64,7 @@ class PinnedRepository:
     tree_sha: str
     committer_time: str
     repository_url_hash: str
+    github_account_hash: str
     repository_display: str
     cloned_at: str
     validation: ValidationReport
@@ -316,14 +317,21 @@ class RepositoryIntake:
             except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
                 preferences = None
             owner, repository = match.groups()
+            canonical_owner = owner.casefold()
+            canonical_repository = repository.casefold()
             cloned_at = datetime.now(timezone.utc).isoformat()
             safe_submission = {
                 "competition_id": submission.competition_id,
                 "contender_hotkey": submission.contender_hotkey,
                 "nonce": submission.nonce,
-                "repository_display": f"github.com/{owner}/{repository}",
+                "repository_display": (
+                    f"github.com/{canonical_owner}/{canonical_repository}"
+                ),
                 "repository_url_hash": hashlib.sha256(
-                    submission.repository_url.encode()
+                    f"{canonical_owner}/{canonical_repository}".encode()
+                ).hexdigest(),
+                "github_account_hash": hashlib.sha256(
+                    canonical_owner.encode()
                 ).hexdigest(),
                 "pinned_commit_sha": commit,
                 "pinned_tree_sha": tree,
@@ -362,6 +370,7 @@ class RepositoryIntake:
                 tree_sha=tree,
                 committer_time=committer_time,
                 repository_url_hash=safe_submission["repository_url_hash"],
+                github_account_hash=safe_submission["github_account_hash"],
                 repository_display=safe_submission["repository_display"],
                 cloned_at=cloned_at,
                 validation=report,
@@ -421,6 +430,7 @@ class CompetitionSubmissionIntakeService:
                 competition_id=pinned.competition_id,
                 hotkey=pinned.contender_hotkey,
                 repository_url_hash=pinned.repository_url_hash,
+                github_account_hash=pinned.github_account_hash,
                 repository_display=pinned.repository_display,
                 pinned_commit_sha=pinned.commit_sha,
                 pinned_tree_sha=pinned.tree_sha,

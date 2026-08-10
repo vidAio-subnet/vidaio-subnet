@@ -65,8 +65,8 @@ RESUBMITTABLE_PINNED_STATES = frozenset(
 )
 
 # Failures owned by validator infrastructure rather than contender scoring. A
-# competition must not be finalized when every evaluation ended for only these
-# reasons.
+# competition must not be finalized while any current evaluation has one of
+# these reasons.
 INFRASTRUCTURE_FAILURE_REASON_CODES = frozenset(
     {
         "BATCH_EXECUTION_FAILED",
@@ -74,6 +74,8 @@ INFRASTRUCTURE_FAILURE_REASON_CODES = frozenset(
         "EVALUATION_INFRASTRUCTURE_ERROR",
         "OUTPUT_VOLUME_VERSION_MISMATCH",
         "SANDBOX_EXEC_FAILED",
+        "SANDBOX_DISAPPEARED",
+        "SANDBOX_EXEC_TIMEOUT",
         "SANDBOX_RECOVERY_FAILED",
         "SANDBOX_START_FAILED",
         "SCORING_LEASE_EXPIRED",
@@ -84,6 +86,12 @@ INFRASTRUCTURE_FAILURE_REASON_CODES = frozenset(
 READABILITY_REVIEW = "READABILITY_ELIGIBILITY"
 DISQUALIFICATION_REVIEW = "DISQUALIFICATION"
 EXACT_TIE_REVIEW = "EXACT_TIE_ORDER"
+
+
+class CompetitionIdentityConflict(ValueError):
+    def __init__(self, reason_code: str) -> None:
+        self.reason_code = reason_code
+        super().__init__(reason_code)
 
 
 @dataclass(frozen=True)
@@ -109,6 +117,20 @@ class AttemptOutcome:
     metrics: Any = None
     processing_started_at: datetime | None = None
     processing_finished_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class DeferredBatchResult:
+    """One fully measured batch whose database outcome commit is deferred."""
+
+    claimed: ClaimedBatch
+    outcomes: tuple[AttemptOutcome, ...]
+    modal_sandbox_id: str | None
+    wall_runtime_seconds: float
+    batch_estimated_cost_usd: Decimal
+    cost_attribution_method: str
+    finished_at: datetime
+    scoring_timeout_seconds: float | None = None
 
 
 def utc_iso(value: datetime) -> str:
@@ -508,6 +530,8 @@ class CompetitionRepository:
         max_video_length_seconds: float,
         length_weight_exponent: float,
         now: datetime,
+        deferred_evaluation_ids: frozenset[str] = frozenset(),
+        defer_outcomes: bool = False,
     ) -> ClaimedBatch | None:
         from .dataset import parse_evaluation_index_item_json
 
@@ -524,21 +548,25 @@ class CompetitionRepository:
             )
             if contender is None or contender.manual_disqualified:
                 return None
-            expired_batches = list(
-                session.scalars(
-                    select(CompetitionBatch).where(
-                        CompetitionBatch.competition_id == competition_id,
-                        CompetitionBatch.hotkey == hotkey,
-                        or_(
-                            and_(
-                                CompetitionBatch.status == "RUNNING",
-                                CompetitionBatch.lease_expires_at <= now_text,
+            expired_batches = (
+                []
+                if defer_outcomes
+                else list(
+                    session.scalars(
+                        select(CompetitionBatch).where(
+                            CompetitionBatch.competition_id == competition_id,
+                            CompetitionBatch.hotkey == hotkey,
+                            or_(
+                                and_(
+                                    CompetitionBatch.status == "RUNNING",
+                                    CompetitionBatch.lease_expires_at <= now_text,
+                                ),
+                                and_(
+                                    CompetitionBatch.status == "SCORING",
+                                    CompetitionBatch.scoring_expires_at <= now_text,
+                                ),
                             ),
-                            and_(
-                                CompetitionBatch.status == "SCORING",
-                                CompetitionBatch.scoring_expires_at <= now_text,
-                            ),
-                        ),
+                        )
                     )
                 )
             )
@@ -591,6 +619,8 @@ class CompetitionRepository:
                     tuple[CompetitionEvaluationItem, Any, int]
                 ] = []
                 for item_row in batch_items:
+                    if item_row.evaluation_id in deferred_evaluation_ids:
+                        continue
                     attempts = list(
                         session.scalars(
                             select(ContenderPerformanceHistory)
@@ -767,126 +797,161 @@ class CompetitionRepository:
         # Retained in the repository API for manifest compatibility. Automatic
         # evaluation retry scheduling is deliberately disabled.
         del max_attempts
-        now_text = utc_iso(now)
         with self._sessions.begin() as session:
-            batch = session.scalar(
-                select(CompetitionBatch).where(
-                    CompetitionBatch.competition_id == competition_id,
-                    CompetitionBatch.hotkey == hotkey,
-                    CompetitionBatch.batch_id == batch_id,
-                )
-            )
-            if batch is None:
-                raise KeyError(batch_id)
-            # Late or duplicate deliveries must never revive an expired batch
-            # or overwrite a result already accepted for a newer attempt.
-            if batch.status not in {"RUNNING", "SCORING"}:
-                return
-            expected_ids = set(
-                session.scalars(
-                    select(ContenderPerformanceHistory.id).where(
-                        ContenderPerformanceHistory.competition_id == competition_id,
-                        ContenderPerformanceHistory.hotkey == hotkey,
-                        ContenderPerformanceHistory.batch_id == batch_id,
-                        ContenderPerformanceHistory.status == "RUNNING",
-                    )
-                )
-            )
-            outcome_ids = {outcome.history_id for outcome in outcomes}
-            if outcome_ids != expected_ids or len(outcome_ids) != len(outcomes):
-                raise ValueError("batch outcomes do not exactly match the active claim")
-            if batch_estimated_cost_usd is None:
-                batch_estimated_cost_usd = sum(
-                    (
-                        Decimal(str(outcome.metrics.estimated_cost_usd))
-                        for outcome in outcomes
-                        if outcome.metrics is not None
-                    ),
-                    Decimal(0),
-                )
-            item_runtime = wall_runtime_seconds / len(outcomes)
-            item_cost = batch_estimated_cost_usd / len(outcomes)
-            for outcome in outcomes:
-                if outcome.status not in {"SCORED", "FAILED"}:
-                    raise ValueError(f"invalid evaluation outcome {outcome.status!r}")
-                if outcome.retryable:
-                    raise ValueError("automatic evaluation retries are disabled")
-                history = session.get(ContenderPerformanceHistory, outcome.history_id)
-                if history is None or history.batch_id != batch_id:
-                    raise KeyError(outcome.history_id)
-                if history.canonical_batch_index != batch.canonical_batch_index:
-                    raise RuntimeError(
-                        "performance history canonical batch does not match "
-                        f"dispatch batch {batch_id}"
-                    )
-                if history.status in {"SCORED", "FAILED"}:
-                    continue
-                metrics = outcome.metrics
-                if metrics is not None:
-                    history.input_checksum = metrics.input_checksum
-                    history.output_checksum = metrics.output_checksum
-                    history.input_size_bytes = metrics.input_size_bytes
-                    history.output_size_bytes = metrics.output_size_bytes
-                    history.vmaf_score = metrics.vmaf_score
-                    history.compression_rate = metrics.compression_ratio
-                    history.media_score = metrics.media_score
-                    history.compression_score = metrics.media_compression_component
-                    history.media_compression_component = (
-                        metrics.media_compression_component
-                    )
-                    history.media_vmaf_component = metrics.media_vmaf_component
-                    history.media_score_reason = metrics.media_score_reason
-                history.handler_runtime_seconds = item_runtime
-                history.estimated_cost_usd = item_cost
-                history.raw_cost_usd = item_cost
-                history.cost_attribution_method = cost_attribution_method or (
-                    metrics.cost_attribution_method if metrics is not None else None
-                )
-                if outcome.status == "SCORED" and metrics is not None:
-                    history.status = "SCORED"
-                    history.completion_value = 1
-                elif outcome.status == "SCORED":
-                    raise ValueError("scored evaluation outcome requires metrics")
-                else:
-                    history.status = "FAILED"
-                history.reason_code = outcome.reason_code
-                history.processing_started_at = (
-                    utc_iso(outcome.processing_started_at)
-                    if outcome.processing_started_at
-                    else None
-                )
-                history.processing_finished_at = (
-                    utc_iso(outcome.processing_finished_at)
-                    if outcome.processing_finished_at
-                    else None
-                )
-                history.modal_sandbox_id = modal_sandbox_id
-                history.updated_at = now_text
-            batch.status = "COMPLETED"
-            batch.lease_owner = None
-            batch.lease_expires_at = None
-            batch.scoring_expires_at = None
-            batch.modal_sandbox_id = modal_sandbox_id
-            batch.wall_runtime_seconds = wall_runtime_seconds
-            batch.active_runtime_seconds = wall_runtime_seconds
-            batch.estimated_cost_usd = batch_estimated_cost_usd
-            batch.updated_at = now_text
-            self._refresh_contender_counts(session, competition_id, hotkey, now_text)
-            self._append_event(
+            self._record_batch_outcomes_in_session(
                 session,
-                competition_id=competition_id,
-                event_type="EVALUATION_BATCH_RECORDED",
-                from_state=None,
-                to_state=None,
-                actor=actor,
-                payload={
-                    "hotkey": hotkey,
-                    "batch_id": batch_id,
-                    "status": batch.status,
-                    "item_count": len(outcomes),
-                },
+                competition_id,
+                hotkey,
+                batch_id,
+                outcomes,
+                modal_sandbox_id=modal_sandbox_id,
+                wall_runtime_seconds=wall_runtime_seconds,
+                batch_estimated_cost_usd=batch_estimated_cost_usd,
+                cost_attribution_method=cost_attribution_method,
+                scoring_timeout_seconds=None,
                 now=now,
+                actor=actor,
             )
+
+    def _record_batch_outcomes_in_session(
+        self,
+        session: Session,
+        competition_id: str,
+        hotkey: str,
+        batch_id: str,
+        outcomes: tuple[AttemptOutcome, ...],
+        *,
+        modal_sandbox_id: str | None,
+        wall_runtime_seconds: float,
+        batch_estimated_cost_usd: Decimal | None,
+        cost_attribution_method: str | None,
+        scoring_timeout_seconds: float | None,
+        now: datetime,
+        actor: str,
+    ) -> None:
+        now_text = utc_iso(now)
+        batch = session.scalar(
+            select(CompetitionBatch).where(
+                CompetitionBatch.competition_id == competition_id,
+                CompetitionBatch.hotkey == hotkey,
+                CompetitionBatch.batch_id == batch_id,
+            )
+        )
+        if batch is None:
+            raise KeyError(batch_id)
+        # Late or duplicate deliveries must never revive an expired batch or
+        # overwrite a result already accepted for a newer attempt.
+        if batch.status not in {"RUNNING", "SCORING"}:
+            return
+        expected_ids = set(
+            session.scalars(
+                select(ContenderPerformanceHistory.id).where(
+                    ContenderPerformanceHistory.competition_id == competition_id,
+                    ContenderPerformanceHistory.hotkey == hotkey,
+                    ContenderPerformanceHistory.batch_id == batch_id,
+                    ContenderPerformanceHistory.status == "RUNNING",
+                )
+            )
+        )
+        outcome_ids = {outcome.history_id for outcome in outcomes}
+        if outcome_ids != expected_ids or len(outcome_ids) != len(outcomes):
+            raise ValueError("batch outcomes do not exactly match the active claim")
+        if not outcomes:
+            raise ValueError("batch outcomes cannot be empty")
+        if batch_estimated_cost_usd is None:
+            batch_estimated_cost_usd = sum(
+                (
+                    Decimal(str(outcome.metrics.estimated_cost_usd))
+                    for outcome in outcomes
+                    if outcome.metrics is not None
+                ),
+                Decimal(0),
+            )
+        item_runtime = wall_runtime_seconds / len(outcomes)
+        item_cost = batch_estimated_cost_usd / len(outcomes)
+        for outcome in outcomes:
+            if outcome.status not in {"SCORED", "FAILED"}:
+                raise ValueError(f"invalid evaluation outcome {outcome.status!r}")
+            if outcome.retryable:
+                raise ValueError("automatic evaluation retries are disabled")
+            history = session.get(ContenderPerformanceHistory, outcome.history_id)
+            if history is None or history.batch_id != batch_id:
+                raise KeyError(outcome.history_id)
+            if history.canonical_batch_index != batch.canonical_batch_index:
+                raise RuntimeError(
+                    "performance history canonical batch does not match "
+                    f"dispatch batch {batch_id}"
+                )
+            if history.status in {"SCORED", "FAILED"}:
+                continue
+            metrics = outcome.metrics
+            if metrics is not None:
+                history.input_checksum = metrics.input_checksum
+                history.output_checksum = metrics.output_checksum
+                history.input_size_bytes = metrics.input_size_bytes
+                history.output_size_bytes = metrics.output_size_bytes
+                history.vmaf_score = metrics.vmaf_score
+                history.compression_rate = metrics.compression_ratio
+                history.media_score = metrics.media_score
+                history.compression_score = metrics.media_compression_component
+                history.media_compression_component = (
+                    metrics.media_compression_component
+                )
+                history.media_vmaf_component = metrics.media_vmaf_component
+                history.media_score_reason = metrics.media_score_reason
+            history.handler_runtime_seconds = item_runtime
+            history.estimated_cost_usd = item_cost
+            history.raw_cost_usd = item_cost
+            history.cost_attribution_method = cost_attribution_method or (
+                metrics.cost_attribution_method if metrics is not None else None
+            )
+            if outcome.status == "SCORED" and metrics is not None:
+                history.status = "SCORED"
+                history.completion_value = 1
+            elif outcome.status == "SCORED":
+                raise ValueError("scored evaluation outcome requires metrics")
+            else:
+                history.status = "FAILED"
+            history.reason_code = outcome.reason_code
+            history.processing_started_at = (
+                utc_iso(outcome.processing_started_at)
+                if outcome.processing_started_at
+                else None
+            )
+            history.processing_finished_at = (
+                utc_iso(outcome.processing_finished_at)
+                if outcome.processing_finished_at
+                else None
+            )
+            history.modal_sandbox_id = modal_sandbox_id
+            history.updated_at = now_text
+        batch.status = "COMPLETED"
+        batch.lease_owner = None
+        batch.lease_expires_at = None
+        batch.scoring_expires_at = None
+        if scoring_timeout_seconds is not None:
+            batch.scoring_timeout_seconds = scoring_timeout_seconds
+        batch.modal_sandbox_id = modal_sandbox_id
+        batch.wall_runtime_seconds = wall_runtime_seconds
+        batch.active_runtime_seconds = wall_runtime_seconds
+        batch.estimated_cost_usd = batch_estimated_cost_usd
+        batch.updated_at = now_text
+        self._refresh_contender_counts(session, competition_id, hotkey, now_text)
+        self._append_event(
+            session,
+            competition_id=competition_id,
+            event_type="EVALUATION_BATCH_RECORDED",
+            from_state=None,
+            to_state=None,
+            actor=actor,
+            payload={
+                "hotkey": hotkey,
+                "batch_id": batch_id,
+                "status": batch.status,
+                "item_count": len(outcomes),
+            },
+            now=now,
+        )
 
     def _refresh_contender_counts(
         self, session: Session, competition_id: str, hotkey: str, now_text: str
@@ -1003,7 +1068,7 @@ class CompetitionRepository:
     def evaluation_infrastructure_blocker(
         self, competition_id: str, accepted_build_statuses: frozenset[str]
     ) -> dict[str, Any] | None:
-        """Describe an all-infrastructure terminal result, if one exists."""
+        """Describe current infrastructure failures that must be requeued."""
 
         with self._sessions() as session:
             item_count = int(
@@ -1040,16 +1105,18 @@ class CompetitionRepository:
             if len(latest) != item_count * len(hotkeys):
                 return None
             terminal = list(latest.values())
-            if any(row.status == "SCORED" for row in terminal):
-                return None
             reasons: dict[str, int] = {}
             for row in terminal:
                 reason = row.reason_code or "UNKNOWN"
-                if reason not in INFRASTRUCTURE_FAILURE_REASON_CODES:
-                    return None
-                reasons[reason] = reasons.get(reason, 0) + 1
+                if (
+                    row.status == "FAILED"
+                    and reason in INFRASTRUCTURE_FAILURE_REASON_CODES
+                ):
+                    reasons[reason] = reasons.get(reason, 0) + 1
+            if not reasons:
+                return None
             return {
-                "failed_items": len(terminal),
+                "failed_items": sum(reasons.values()),
                 "reasons": dict(sorted(reasons.items())),
             }
 
@@ -1295,6 +1362,60 @@ class CompetitionRepository:
             components=components,
         )
 
+    def persist_deferred_competition_scores(
+        self,
+        competition_id: str,
+        manifest: CompetitionManifest,
+        *,
+        batch_results: tuple[DeferredBatchResult, ...],
+        aggregates,
+        components: dict[int, tuple[float, float, float, float, float]],
+        now: datetime,
+        actor: str,
+    ) -> None:
+        """Commit every deferred batch outcome and final score in one transaction."""
+
+        if not batch_results:
+            raise ValueError("deferred competition scoring requires batch results")
+        history_ids = [
+            outcome.history_id
+            for result in batch_results
+            for outcome in result.outcomes
+        ]
+        if len(history_ids) != len(set(history_ids)):
+            raise ValueError("deferred batch outcomes contain duplicate history IDs")
+        if set(components) != set(history_ids):
+            raise ValueError(
+                "deferred scoring components do not match deferred history IDs"
+            )
+
+        with self._sessions.begin() as session:
+            for result in batch_results:
+                self._record_batch_outcomes_in_session(
+                    session,
+                    competition_id,
+                    result.claimed.hotkey,
+                    result.claimed.batch_id,
+                    result.outcomes,
+                    modal_sandbox_id=result.modal_sandbox_id,
+                    wall_runtime_seconds=result.wall_runtime_seconds,
+                    batch_estimated_cost_usd=result.batch_estimated_cost_usd,
+                    cost_attribution_method=result.cost_attribution_method,
+                    scoring_timeout_seconds=result.scoring_timeout_seconds,
+                    now=result.finished_at,
+                    actor=actor,
+                )
+            session.flush()
+            self._score_competition_in_session(
+                session,
+                competition_id,
+                manifest,
+                now=now,
+                actor=actor,
+                aggregates=aggregates,
+                components=components,
+            )
+
     def score_competition(
         self,
         competition_id: str,
@@ -1309,152 +1430,172 @@ class CompetitionRepository:
         if (aggregates is None) != (components is None):
             raise ValueError("aggregates and components must be supplied together")
 
-        now_text = utc_iso(now)
         with self._sessions.begin() as session:
-            rows = list(
-                session.scalars(
-                    select(ContenderPerformanceHistory)
-                    .join(
-                        ContenderMetadata,
-                        and_(
-                            ContenderMetadata.competition_id
-                            == ContenderPerformanceHistory.competition_id,
-                            ContenderMetadata.hotkey
-                            == ContenderPerformanceHistory.hotkey,
-                        ),
-                    )
-                    .where(
-                        ContenderPerformanceHistory.competition_id == competition_id,
-                        ContenderPerformanceHistory.status.in_(("SCORED", "FAILED")),
-                        ContenderMetadata.manual_disqualified.is_(False),
-                    )
-                    .order_by(
-                        ContenderPerformanceHistory.hotkey,
-                        ContenderPerformanceHistory.evaluation_id,
-                        ContenderPerformanceHistory.attempt,
-                    )
-                )
-            )
-            latest = {}
-            for row in rows:
-                latest[(row.hotkey, row.evaluation_id)] = row
-            if aggregates is None:
-                # Backward-compatible test/admin seam. Production competition
-                # execution supplies results from the remote scoring worker.
-                from .scoring import compute_aggregates
-
-                aggregates, components = compute_aggregates(manifest, latest.values())
-            else:
-                expected_history_ids = {row.id for row in latest.values()}
-                if set(components) != expected_history_ids:
-                    raise ValueError(
-                        "remote scoring components do not match persisted histories"
-                    )
-                expected_hotkeys = {row.hotkey for row in latest.values()}
-                if {value.hotkey for value in aggregates} != expected_hotkeys:
-                    raise ValueError(
-                        "remote scoring aggregates do not match persisted contenders"
-                    )
-            usage_by_hotkey: dict[str, tuple[Decimal, float]] = {}
-            for batch in session.scalars(
-                select(CompetitionBatch).where(
-                    CompetitionBatch.competition_id == competition_id,
-                    CompetitionBatch.estimated_cost_usd.is_not(None),
-                )
-            ):
-                cost, runtime = usage_by_hotkey.get(batch.hotkey, (Decimal(0), 0.0))
-                usage_by_hotkey[batch.hotkey] = (
-                    cost + Decimal(str(batch.estimated_cost_usd or 0)),
-                    runtime + float(batch.active_runtime_seconds or 0),
-                )
-            disqualified = list(
-                session.scalars(
-                    select(ContenderMetadata).where(
-                        ContenderMetadata.competition_id == competition_id,
-                        ContenderMetadata.manual_disqualified.is_(True),
-                    )
-                )
-            )
-            for contender in disqualified:
-                contender.final_score = None
-                contender.media_score_aggregate = None
-                contender.quality_aggregate = None
-                contender.cost_efficiency_aggregate = None
-                contender.length_coverage = None
-                contender.final_rank = None
-                contender.eligible = False
-                contender.updated_at = now_text
-            for row in latest.values():
-                (
-                    media_score,
-                    compression_component,
-                    vmaf_component,
-                    cost,
-                    completion,
-                ) = components[row.id]
-                row.media_score = media_score
-                row.compression_score = compression_component
-                row.media_compression_component = compression_component
-                row.media_vmaf_component = vmaf_component
-                row.quality_component = media_score
-                row.cost_efficiency_component = cost
-                row.completion_value = completion
-                row.updated_at = now_text
-            for aggregate in aggregates:
-                contender = session.scalar(
-                    select(ContenderMetadata).where(
-                        ContenderMetadata.competition_id == competition_id,
-                        ContenderMetadata.hotkey == aggregate.hotkey,
-                    )
-                )
-                if contender is None:
-                    raise KeyError((competition_id, aggregate.hotkey))
-                contender.media_score_aggregate = aggregate.media_score_aggregate
-                contender.quality_aggregate = aggregate.media_score_aggregate
-                contender.cost_efficiency_aggregate = (
-                    aggregate.cost_efficiency_aggregate
-                )
-                contender.length_coverage = aggregate.length_coverage
-                contender.final_score = aggregate.final_score
-                contender.average_vmaf = aggregate.average_vmaf
-                contender.average_compression_rate = aggregate.average_compression_ratio
-                usage_cost, usage_runtime = usage_by_hotkey.get(
-                    aggregate.hotkey, (aggregate.estimated_cost_usd, 0.0)
-                )
-                contender.estimated_cost_usd = usage_cost
-                contender.active_runtime_seconds = usage_runtime
-                contender.successful_items = aggregate.successful_items
-                contender.failed_items = aggregate.failed_items
-                contender.pending_items = 0
-                contender.status = ContenderState.SCORED.value
-                contender.updated_at = now_text
-            for item in session.scalars(
-                select(CompetitionEvaluationItem).where(
-                    CompetitionEvaluationItem.competition_id == competition_id
-                )
-            ):
-                item.status = "SCORED"
-                item.dispatch_status = "COMPLETED"
-                item.score_status = "SCORED"
-                item.updated_at = now_text
-            competition = session.get(Competition, competition_id)
-            if competition is None:
-                raise KeyError(competition_id)
-            competition.scores_need_recalculation = False
-            competition.updated_at = now_text
-            self._append_event(
+            self._score_competition_in_session(
                 session,
-                competition_id=competition_id,
-                event_type=event_type,
-                from_state=CompetitionState(competition.status),
-                to_state=None,
-                actor=actor,
-                payload={
-                    "contender_count": len(aggregates),
-                    "scoring_version": manifest.scoring_version,
-                },
+                competition_id,
+                manifest,
                 now=now,
+                actor=actor,
+                aggregates=aggregates,
+                components=components,
+                event_type=event_type,
             )
+
+    def _score_competition_in_session(
+        self,
+        session: Session,
+        competition_id: str,
+        manifest: CompetitionManifest,
+        *,
+        now: datetime,
+        actor: str,
+        aggregates=None,
+        components: dict[int, tuple[float, float, float, float, float]] | None = None,
+        event_type: str = "COMPETITION_SCORES_COMPUTED",
+    ) -> None:
+        if (aggregates is None) != (components is None):
+            raise ValueError("aggregates and components must be supplied together")
+        now_text = utc_iso(now)
+        rows = list(
+            session.scalars(
+                select(ContenderPerformanceHistory)
+                .join(
+                    ContenderMetadata,
+                    and_(
+                        ContenderMetadata.competition_id
+                        == ContenderPerformanceHistory.competition_id,
+                        ContenderMetadata.hotkey
+                        == ContenderPerformanceHistory.hotkey,
+                    ),
+                )
+                .where(
+                    ContenderPerformanceHistory.competition_id == competition_id,
+                    ContenderPerformanceHistory.status.in_(("SCORED", "FAILED")),
+                    ContenderMetadata.manual_disqualified.is_(False),
+                )
+                .order_by(
+                    ContenderPerformanceHistory.hotkey,
+                    ContenderPerformanceHistory.evaluation_id,
+                    ContenderPerformanceHistory.attempt,
+                )
+            )
+        )
+        latest = {}
+        for row in rows:
+            latest[(row.hotkey, row.evaluation_id)] = row
+        if aggregates is None:
+            # Backward-compatible test/admin seam. Production competition
+            # execution supplies results from the remote scoring worker.
+            from .scoring import compute_aggregates
+
+            aggregates, components = compute_aggregates(manifest, latest.values())
+        else:
+            expected_history_ids = {row.id for row in latest.values()}
+            if set(components) != expected_history_ids:
+                raise ValueError(
+                    "remote scoring components do not match persisted histories"
+                )
+            expected_hotkeys = {row.hotkey for row in latest.values()}
+            if {value.hotkey for value in aggregates} != expected_hotkeys:
+                raise ValueError(
+                    "remote scoring aggregates do not match persisted contenders"
+                )
+        usage_by_hotkey: dict[str, tuple[Decimal, float]] = {}
+        for row in latest.values():
+            cost, runtime = usage_by_hotkey.get(row.hotkey, (Decimal(0), 0.0))
+            usage_by_hotkey[row.hotkey] = (
+                cost + Decimal(str(row.estimated_cost_usd or 0)),
+                runtime + float(row.handler_runtime_seconds or 0),
+            )
+        disqualified = list(
+            session.scalars(
+                select(ContenderMetadata).where(
+                    ContenderMetadata.competition_id == competition_id,
+                    ContenderMetadata.manual_disqualified.is_(True),
+                )
+            )
+        )
+        for contender in disqualified:
+            contender.final_score = None
+            contender.media_score_aggregate = None
+            contender.quality_aggregate = None
+            contender.cost_efficiency_aggregate = None
+            contender.length_coverage = None
+            contender.final_rank = None
+            contender.eligible = False
+            contender.updated_at = now_text
+        for row in latest.values():
+            (
+                media_score,
+                compression_component,
+                vmaf_component,
+                cost,
+                completion,
+            ) = components[row.id]
+            row.media_score = media_score
+            row.compression_score = compression_component
+            row.media_compression_component = compression_component
+            row.media_vmaf_component = vmaf_component
+            row.quality_component = media_score
+            row.cost_efficiency_component = cost
+            row.completion_value = completion
+            row.updated_at = now_text
+        for aggregate in aggregates:
+            contender = session.scalar(
+                select(ContenderMetadata).where(
+                    ContenderMetadata.competition_id == competition_id,
+                    ContenderMetadata.hotkey == aggregate.hotkey,
+                )
+            )
+            if contender is None:
+                raise KeyError((competition_id, aggregate.hotkey))
+            contender.media_score_aggregate = aggregate.media_score_aggregate
+            contender.quality_aggregate = aggregate.media_score_aggregate
+            contender.cost_efficiency_aggregate = (
+                aggregate.cost_efficiency_aggregate
+            )
+            contender.length_coverage = aggregate.length_coverage
+            contender.final_score = aggregate.final_score
+            contender.average_vmaf = aggregate.average_vmaf
+            contender.average_compression_rate = aggregate.average_compression_ratio
+            usage_cost, usage_runtime = usage_by_hotkey.get(
+                aggregate.hotkey, (aggregate.estimated_cost_usd, 0.0)
+            )
+            contender.estimated_cost_usd = usage_cost
+            contender.active_runtime_seconds = usage_runtime
+            contender.successful_items = aggregate.successful_items
+            contender.failed_items = aggregate.failed_items
+            contender.pending_items = 0
+            contender.status = ContenderState.SCORED.value
+            contender.updated_at = now_text
+        for item in session.scalars(
+            select(CompetitionEvaluationItem).where(
+                CompetitionEvaluationItem.competition_id == competition_id
+            )
+        ):
+            item.status = "SCORED"
+            item.dispatch_status = "COMPLETED"
+            item.score_status = "SCORED"
+            item.updated_at = now_text
+        competition = session.get(Competition, competition_id)
+        if competition is None:
+            raise KeyError(competition_id)
+        competition.scores_need_recalculation = False
+        competition.updated_at = now_text
+        self._append_event(
+            session,
+            competition_id=competition_id,
+            event_type=event_type,
+            from_state=CompetitionState(competition.status),
+            to_state=None,
+            actor=actor,
+            payload={
+                "contender_count": len(aggregates),
+                "scoring_version": manifest.scoring_version,
+            },
+            now=now,
+        )
 
     def recalculate_competition_scores(
         self,
@@ -2705,6 +2846,8 @@ class CompetitionRepository:
         *,
         participating: bool,
         refusal_reason: str | None,
+        rejection_reason_code: str | None = None,
+        rejection_reason_detail: str | None = None,
         now: datetime,
         actor: str,
     ) -> ContenderMetadata:
@@ -2731,7 +2874,20 @@ class CompetitionRepository:
                 if participating
                 else ContenderState.REJECTED.value
             )
-            row.reason_code = None if participating else "INVITATION_DECLINED"
+            row.reason_code = (
+                None
+                if participating
+                else (rejection_reason_code or "INVITATION_DECLINED")[:128]
+            )
+            row.reason_detail = (
+                None
+                if participating
+                else _safe_reason_detail(
+                    self._redactor.redact_text(
+                        rejection_reason_detail or refusal_reason or ""
+                    )
+                )
+            )
             row.updated_at = now_text
             self._append_event(
                 session,
@@ -2744,6 +2900,8 @@ class CompetitionRepository:
                     "hotkey": hotkey,
                     "participating": participating,
                     "refusal_reason": refusal_reason,
+                    "rejection_reason_code": rejection_reason_code,
+                    "rejection_reason_detail": row.reason_detail,
                 },
                 now=now,
             )
@@ -2935,6 +3093,7 @@ class CompetitionRepository:
         validation: ValidationReport,
         now: datetime,
         actor: str,
+        github_account_hash: str | None = None,
         uid_snapshot: int | None = None,
         coldkey_snapshot: str | None = None,
         is_boss: bool = False,
@@ -2974,12 +3133,33 @@ class CompetitionRepository:
                     ContenderMetadata.hotkey == hotkey,
                 )
             )
+            if not is_boss and github_account_hash is not None:
+                identities = [
+                    ContenderMetadata.repository_url_hash == repository_url_hash,
+                    ContenderMetadata.github_account_hash == github_account_hash,
+                ]
+                duplicate = session.scalar(
+                    select(ContenderMetadata).where(
+                        ContenderMetadata.competition_id == competition_id,
+                        ContenderMetadata.hotkey != hotkey,
+                        ContenderMetadata.is_boss.is_(False),
+                        or_(*identities),
+                    )
+                )
+                if duplicate is not None:
+                    reason = (
+                        "GITHUB_REPOSITORY_ALREADY_SUBMITTED"
+                        if duplicate.repository_url_hash == repository_url_hash
+                        else "GITHUB_ACCOUNT_ALREADY_SUBMITTED"
+                    )
+                    raise CompetitionIdentityConflict(reason)
             replacing = row is not None and row.pinned_commit_sha is not None
             if replacing:
                 if (
                     row.pinned_commit_sha == pinned_commit_sha
                     and row.pinned_tree_sha == pinned_tree_sha
                     and row.repository_url_hash == repository_url_hash
+                    and row.github_account_hash == github_account_hash
                     and bool(row.is_boss) == is_boss
                 ):
                     return row
@@ -2990,6 +3170,7 @@ class CompetitionRepository:
             previous_submission = (
                 {
                     "repository_url_hash": row.repository_url_hash,
+                    "github_account_hash": row.github_account_hash,
                     "repository_display": row.repository_display,
                     "pinned_commit_sha": row.pinned_commit_sha,
                     "pinned_tree_sha": row.pinned_tree_sha,
@@ -3016,6 +3197,7 @@ class CompetitionRepository:
             row.coldkey_snapshot = coldkey_snapshot
             row.is_boss = is_boss
             row.repository_url_hash = repository_url_hash
+            row.github_account_hash = github_account_hash
             row.repository_display = repository_display
             row.pinned_commit_sha = pinned_commit_sha
             row.pinned_tree_sha = pinned_tree_sha
@@ -3068,6 +3250,7 @@ class CompetitionRepository:
                     "hotkey": hotkey,
                     "is_boss": is_boss,
                     "repository_url_hash": repository_url_hash,
+                    "github_account_hash": github_account_hash,
                     "repository_display": repository_display,
                     "pinned_commit_sha": pinned_commit_sha,
                     "pinned_tree_sha": pinned_tree_sha,

@@ -35,9 +35,21 @@ a deterministic random target of 5, 8, or 10 Mbps. Consequently, 20 source
 videos produce 20 evaluation rows. The format remains evaluation index schema
 version 2; validators continue to read older indexes for sealed competitions.
 
+Every stage fails closed on source-media problems. The CLI reports all flagged
+sources and their evaluation IDs, then asks whether to disqualify those entries
+and continue. Type `yes` to remove every variant referencing the flagged source
+and rewrite the index, or `no` to abort without uploading or sealing it. Use
+`--yes` only for an intentional non-interactive exclusion. The checks cover
+remote/local size and checksum identity, full ffprobe frame traversal, MP4 and
+single-video-stream structure, finite positive media properties, known codec
+and pixel format, a positive rational sample aspect ratio, manifest duration
+bounds, and equality between the index and freshly probed metadata.
+
 Upload to the manifest's `evaluation_input_volume_name` in Modal `main`. The
 command verifies the uploaded index and every source object by reading them back.
-It refuses to replace a different index already present in the Volume.
+It refuses to replace a different index already present in the Volume. After
+operator confirmation it may safely narrow an exact prior copy of the index to
+a strict subset; it cannot replace it with modified or unrelated entries.
 
 ```bash
 python scripts/competition_dataset.py upload \

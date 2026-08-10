@@ -679,6 +679,33 @@ class SandboxLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(second.record.generation, 2)
 
+    def test_invocation_rolls_over_before_upcoming_deadline(self) -> None:
+        first = self.runner().ensure_warm(self.manifest, self.hotkey, now=NOW)
+        request = CompetitionCompressionRequest(
+            competition_id=self.manifest.competition_id,
+            hotkey=self.hotkey,
+            batch_id="batch-deadline-rollover",
+            items=(
+                CompetitionCompressionItem(
+                    evaluation_id="input-1",
+                    input_path="/evaluation-inputs/input-1.mp4",
+                    output_path="/output/input-1.mp4",
+                    codec="AV1",
+                    vmaf_threshold=90.0,
+                ),
+            ),
+        )
+
+        self.runner().invoke_batch(
+            self.manifest,
+            request,
+            timeout_seconds=30 * 60,
+            now=NOW + MAX_SANDBOX_LIFETIME - timedelta(minutes=20),
+        )
+
+        self.assertEqual(len(self.backend.created), 2)
+        self.assertIn(first.handle.sandbox_id, self.backend.terminated)
+
     def test_termination_preserves_contender_output_volume_mapping(self) -> None:
         session = self.runner().ensure_warm(self.manifest, self.hotkey, now=NOW)
         output_volume = session.record.output_volume_name
@@ -1324,6 +1351,53 @@ class ModalAdapterPolicyTests(unittest.TestCase):
                 ("drain", None),
             ],
         )
+
+    def test_actual_modal_adapter_detects_disappeared_sandbox_before_exec_timeout(
+        self,
+    ) -> None:
+        class Writer:
+            def write(self, _data: bytes) -> None:
+                return None
+
+            def write_eof(self) -> None:
+                return None
+
+            def drain(self) -> None:
+                return None
+
+        class Process:
+            returncode = None
+
+            def __init__(self) -> None:
+                self.stdin = Writer()
+
+            @staticmethod
+            def poll():
+                return None
+
+            @staticmethod
+            def wait():
+                raise AssertionError("disappeared Sandbox must not wait to deadline")
+
+        process = Process()
+
+        class RawSandbox:
+            @staticmethod
+            def exec(*_args, **_kwargs):
+                return process
+
+            @staticmethod
+            def poll():
+                return 137
+
+        backend = ModalSandboxBackend(environment_name="dev", modal_api=FakeModalApi)
+        handle = SandboxHandle("ap-1", "sb-1", RawSandbox())
+
+        with self.assertRaises(SandboxRunnerError) as captured:
+            backend.invoke(handle, "{}", timeout_seconds=1800)
+
+        self.assertEqual(captured.exception.reason_code, "SANDBOX_DISAPPEARED")
+        self.assertIn("exit", str(captured.exception))
 
 
 if __name__ == "__main__":

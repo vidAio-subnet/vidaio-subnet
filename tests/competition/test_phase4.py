@@ -17,7 +17,10 @@ from unittest.mock import patch
 
 from sqlalchemy import text
 
-from scripts.competition_dataset import ensure_manifest_registered
+from scripts.competition_dataset import (
+    _prompt_yes_no,
+    ensure_manifest_registered,
+)
 from services.scoring.scoring_function import calculate_compression_score
 from vidaio_subnet_core.competition.config import (
     CompetitionConfig,
@@ -36,7 +39,10 @@ from vidaio_subnet_core.competition.dataset import (
     EvaluationIndex,
     EvaluationIndexItem,
     ModalVolumeStore,
+    exclude_invalid_sources,
+    local_index_validation_issues,
     prepare_index,
+    prepare_index_candidates,
 )
 from vidaio_subnet_core.competition.execution import CompetitionExecutionCoordinator
 from vidaio_subnet_core.competition.intake import boss_contender_id
@@ -52,6 +58,7 @@ from vidaio_subnet_core.competition.modal_runner import SandboxRunnerError
 from vidaio_subnet_core.competition.repository import (
     AttemptOutcome,
     CompetitionRepository,
+    DeferredBatchResult,
 )
 from vidaio_subnet_core.competition.qualification import MediaInfo, QualificationError
 from vidaio_subnet_core.competition.pricing import (
@@ -88,6 +95,19 @@ ALLOCATED_RESOURCES = {
 }
 
 
+def media_metadata(**updates):
+    return {
+        "duration_seconds": 10.0,
+        "width": 1280,
+        "height": 720,
+        "frame_count": 300,
+        "codec": "h264",
+        "pixel_format": "yuv420p",
+        "sample_aspect_ratio": "1:1",
+        **updates,
+    }
+
+
 def index_item(evaluation_id: str, duration: float) -> EvaluationIndexItem:
     return EvaluationIndexItem(
         evaluation_id=evaluation_id,
@@ -109,15 +129,7 @@ class Phase4DatasetTests(unittest.TestCase):
         manifest = load_manifest(
             ROOT / "competitions/manifests/examples/compression-competition.json"
         )
-        metadata = {
-            "duration_seconds": 10,
-            "width": 1280,
-            "height": 720,
-            "frame_count": 300,
-            "codec": "h264",
-            "pixel_format": "yuv420p",
-            "sample_aspect_ratio": "1:1",
-        }
+        metadata = media_metadata()
         with tempfile.TemporaryDirectory() as temp:
             for index in range(12):
                 (Path(temp) / f"video-{index:02d}.mp4").write_bytes(
@@ -153,6 +165,114 @@ class Phase4DatasetTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "schema_version 2"):
             EvaluationIndex.model_validate(
                 {**first.model_dump(mode="json"), "schema_version": 1}
+            )
+
+    def test_prepare_collects_unknown_media_and_keeps_valid_sources(self) -> None:
+        manifest = load_manifest(
+            ROOT / "competitions/manifests/examples/compression-competition.json"
+        )
+        valid_metadata = media_metadata()
+        with tempfile.TemporaryDirectory() as temp:
+            source_root = Path(temp)
+            (source_root / "bad.mp4").write_bytes(b"bad")
+            (source_root / "good.mp4").write_bytes(b"good")
+
+            def probe(path, _executable):
+                if Path(path).name == "bad.mp4":
+                    return {
+                        **valid_metadata,
+                        "sample_aspect_ratio": "unknown",
+                    }
+                return valid_metadata
+
+            with patch(
+                "vidaio_subnet_core.competition.dataset._probe_video",
+                side_effect=probe,
+            ):
+                candidate, issues = prepare_index_candidates(manifest, source_root)
+                with self.assertRaisesRegex(
+                    DatasetError, "sample_aspect_ratio must be a positive rational"
+                ):
+                    prepare_index(manifest, source_root)
+
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertEqual(len(candidate.items), 1)
+        self.assertEqual(candidate.items[0].source_path, "inputs/good.mp4")
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].source_path, "inputs/bad.mp4")
+
+    def test_local_validation_reprobes_and_excludes_all_source_variants(self) -> None:
+        manifest = load_manifest(
+            ROOT / "competitions/manifests/examples/compression-competition.json"
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            source_root = Path(temp)
+            bad_payload = b"bad-video"
+            good_payload = b"good-video"
+            (source_root / "bad.mp4").write_bytes(bad_payload)
+            (source_root / "good.mp4").write_bytes(good_payload)
+            common_bad = {
+                "source_path": "inputs/bad.mp4",
+                "size_bytes": len(bad_payload),
+                "sha256": sha256(bad_payload).hexdigest(),
+                **media_metadata(sample_aspect_ratio="unknown"),
+            }
+            bad_items = (
+                CompressionEvaluationIndexItem(
+                    evaluation_id="bad-crf",
+                    codec_mode="CRF",
+                    vmaf_threshold=85,
+                    **common_bad,
+                ),
+                CompressionEvaluationIndexItem(
+                    evaluation_id="bad-vbr",
+                    codec_mode="VBR",
+                    vmaf_threshold=89,
+                    target_bitrate=5_000_000,
+                    **common_bad,
+                ),
+            )
+            good_item = EvaluationIndexItem(
+                evaluation_id="good",
+                source_path="inputs/good.mp4",
+                size_bytes=len(good_payload),
+                sha256=sha256(good_payload).hexdigest(),
+                **media_metadata(),
+            )
+            evaluation_index = EvaluationIndex(
+                competition_id=manifest.competition_id,
+                items=(*bad_items, good_item),
+            )
+
+            def probe(path, _executable):
+                return media_metadata(
+                    sample_aspect_ratio=(
+                        "unknown" if Path(path).name == "bad.mp4" else "1:1"
+                    )
+                )
+
+            with patch(
+                "vidaio_subnet_core.competition.dataset._probe_video",
+                side_effect=probe,
+            ):
+                issues = local_index_validation_issues(
+                    evaluation_index, manifest, source_root
+                )
+
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(set(issues[0].evaluation_ids), {"bad-crf", "bad-vbr"})
+        filtered = exclude_invalid_sources(evaluation_index, issues)
+        self.assertEqual([item.evaluation_id for item in filtered.items], ["good"])
+
+    def test_disqualification_prompt_requires_yes_or_no(self) -> None:
+        with patch("builtins.input", side_effect=("maybe", "yes")):
+            self.assertTrue(
+                _prompt_yes_no("Continue? ", assume_yes=False)
+            )
+        with patch("builtins.input", return_value="no"):
+            self.assertFalse(
+                _prompt_yes_no("Continue? ", assume_yes=False)
             )
 
     def test_duration_error_lists_every_source_path_and_measured_value(self) -> None:
@@ -310,15 +430,42 @@ class Phase4DatasetTests(unittest.TestCase):
             evaluation_index = EvaluationIndex(
                 competition_id=manifest.competition_id, items=tuple(items)
             )
-            store.upload(manifest, evaluation_index, source_root)
+            metadata = media_metadata()
+            with patch(
+                "vidaio_subnet_core.competition.dataset._probe_video",
+                return_value=metadata,
+            ):
+                store.upload(manifest, evaluation_index, source_root)
             self.assertEqual(Volume.files["inputs/a.mp4"], values["a.mp4"])
             self.assertEqual(Volume.files["inputs/b.mp4"], values["b.mp4"])
+
+            narrowed = EvaluationIndex(
+                competition_id=manifest.competition_id,
+                items=(items[0],),
+            )
+            with patch(
+                "vidaio_subnet_core.competition.dataset._probe_video",
+                return_value=metadata,
+            ):
+                store.upload(
+                    manifest,
+                    narrowed,
+                    source_root,
+                    expected_existing_digest=evaluation_index.digest(),
+                )
+            self.assertEqual(store.load_index(manifest), narrowed)
 
             replaced = EvaluationIndex(
                 competition_id=manifest.competition_id,
                 items=tuple(reversed(items)),
             )
-            with self.assertRaisesRegex(DatasetError, "different index"):
+            with (
+                patch(
+                    "vidaio_subnet_core.competition.dataset._probe_video",
+                    return_value=metadata,
+                ),
+                self.assertRaisesRegex(DatasetError, "different index"),
+            ):
                 store.upload(manifest, replaced, source_root)
 
     def test_upload_creates_missing_modal_environment_and_volume(self) -> None:
@@ -427,7 +574,14 @@ class Phase4DatasetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             source_root = Path(temp)
             (source_root / "one.mp4").write_bytes(payload)
-            with patch("vidaio_subnet_core.competition.dataset.logger") as log:
+            metadata = media_metadata()
+            with (
+                patch("vidaio_subnet_core.competition.dataset.logger") as log,
+                patch(
+                    "vidaio_subnet_core.competition.dataset._probe_video",
+                    return_value=metadata,
+                ),
+            ):
                 store.upload(manifest, evaluation_index, source_root)
 
         self.assertTrue(state["environment_exists"])
@@ -570,10 +724,11 @@ class Phase4RepositoryTests(unittest.TestCase):
         max_items: int = 5,
         lease_seconds: int | None = 60,
         minimum_execution_timeout_seconds: float = 0,
+        hotkey: str | None = None,
     ):
         return self.repository.claim_evaluation_batch(
             self.competition_id,
-            self.hotkey,
+            hotkey or self.hotkey,
             owner="worker-a",
             max_items=max_items,
             max_attempts=self.manifest.max_attempts_per_item,
@@ -1529,7 +1684,8 @@ class Phase4RepositoryTests(unittest.TestCase):
             ),
             max_attempts=2,
             modal_sandbox_id="sb-broken-1",
-            wall_runtime_seconds=1,
+            wall_runtime_seconds=1820,
+            batch_estimated_cost_usd=Decimal("1.82"),
             now=NOW + timedelta(seconds=1),
             actor="test",
         )
@@ -1595,6 +1751,226 @@ class Phase4RepositoryTests(unittest.TestCase):
             self.repository.list_events(self.competition_id)[-1].event_type,
             "EVALUATION_INFRASTRUCTURE_REQUEUED",
         )
+
+        self.repository.record_batch_outcomes(
+            self.competition_id,
+            self.hotkey,
+            second.batch_id,
+            (
+                AttemptOutcome(
+                    second.evaluations[0].history_id,
+                    "SCORED",
+                    metrics=ScoredItem(
+                        input_checksum=second.evaluations[0].item.sha256,
+                        output_checksum="a" * 64,
+                        input_size_bytes=1000,
+                        output_size_bytes=400,
+                        vmaf_score=96,
+                        compression_ratio=2.5,
+                        runtime_seconds=1,
+                        estimated_cost_usd=Decimal("0.01"),
+                    ),
+                ),
+            ),
+            max_attempts=2,
+            modal_sandbox_id="sb-replacement",
+            wall_runtime_seconds=1,
+            batch_estimated_cost_usd=Decimal("0.01"),
+            now=NOW + timedelta(seconds=6),
+            actor="test",
+        )
+        self.repository.score_competition(
+            self.competition_id,
+            self.manifest,
+            now=NOW + timedelta(seconds=7),
+            actor="test",
+        )
+        contender = self.repository.get_contender(self.competition_id, self.hotkey)
+        self.assertEqual(
+            Decimal(str(contender.estimated_cost_usd)), Decimal("0.01")
+        )
+        self.assertEqual(contender.active_runtime_seconds, 1.0)
+
+    def test_one_infrastructure_failure_blocks_scoring_among_scored_items(
+        self,
+    ) -> None:
+        second_hotkey = "contender-b"
+        self.add_contender(second_hotkey)
+        self.seal(index_item("one", 10))
+        scored_batch = self.claim(NOW)
+        self.repository.record_batch_outcomes(
+            self.competition_id,
+            self.hotkey,
+            scored_batch.batch_id,
+            (
+                AttemptOutcome(
+                    scored_batch.evaluations[0].history_id,
+                    "SCORED",
+                    metrics=ScoredItem(
+                        input_checksum=scored_batch.evaluations[0].item.sha256,
+                        output_checksum="a" * 64,
+                        input_size_bytes=1000,
+                        output_size_bytes=400,
+                        vmaf_score=96,
+                        compression_ratio=2.5,
+                        runtime_seconds=1,
+                        estimated_cost_usd=Decimal("0.01"),
+                    ),
+                ),
+            ),
+            max_attempts=2,
+            modal_sandbox_id="sb-scored",
+            wall_runtime_seconds=1,
+            batch_estimated_cost_usd=Decimal("0.01"),
+            now=NOW + timedelta(seconds=1),
+            actor="test",
+        )
+        failed_batch = self.claim(
+            NOW + timedelta(seconds=1), hotkey=second_hotkey
+        )
+        self.repository.record_batch_outcomes(
+            self.competition_id,
+            second_hotkey,
+            failed_batch.batch_id,
+            (
+                AttemptOutcome(
+                    failed_batch.evaluations[0].history_id,
+                    "FAILED",
+                    reason_code="SANDBOX_DISAPPEARED",
+                ),
+            ),
+            max_attempts=2,
+            modal_sandbox_id="sb-disappeared",
+            wall_runtime_seconds=2,
+            batch_estimated_cost_usd=Decimal("0.01"),
+            now=NOW + timedelta(seconds=2),
+            actor="test",
+        )
+
+        self.assertEqual(
+            self.repository.evaluation_infrastructure_blocker(
+                self.competition_id, frozenset({"MODAL_ACCEPTED"})
+            ),
+            {"failed_items": 1, "reasons": {"SANDBOX_DISAPPEARED": 1}},
+        )
+
+    def test_deferred_round_persistence_rolls_back_batch_and_scores_together(
+        self,
+    ) -> None:
+        item = index_item("deferred-one", 10)
+        self.seal(item)
+        claimed = self.claim(NOW)
+        metrics = ScoredItem(
+            input_checksum=item.sha256,
+            output_checksum="f" * 64,
+            input_size_bytes=item.size_bytes,
+            output_size_bytes=400,
+            vmaf_score=96,
+            compression_ratio=2.5,
+            runtime_seconds=1,
+            estimated_cost_usd=Decimal("0.001"),
+        )
+        result = DeferredBatchResult(
+            claimed=claimed,
+            outcomes=(
+                AttemptOutcome(
+                    claimed.evaluations[0].history_id,
+                    "SCORED",
+                    metrics=metrics,
+                ),
+            ),
+            modal_sandbox_id="sb-deferred",
+            wall_runtime_seconds=1,
+            batch_estimated_cost_usd=Decimal("0.001"),
+            cost_attribution_method="test",
+            finished_at=NOW,
+        )
+        components = {
+            claimed.evaluations[0].history_id: (1.0, 1.0, 1.0, 1.0, 1.0)
+        }
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "aggregates do not match persisted contenders",
+        ):
+            self.repository.persist_deferred_competition_scores(
+                self.competition_id,
+                self.manifest,
+                batch_results=(result,),
+                aggregates=(SimpleNamespace(hotkey="wrong-contender"),),
+                components=components,
+                now=NOW,
+                actor="test",
+            )
+
+        with self.repository.engine.connect() as connection:
+            history_status = connection.execute(
+                text(
+                    "SELECT status FROM contender_performance_history "
+                    "WHERE id=:history_id"
+                ),
+                {"history_id": claimed.evaluations[0].history_id},
+            ).scalar_one()
+            batch_status = connection.execute(
+                text(
+                    "SELECT status FROM competition_batches "
+                    "WHERE competition_id=:competition_id AND batch_id=:batch_id"
+                ),
+                {
+                    "competition_id": self.competition_id,
+                    "batch_id": claimed.batch_id,
+                },
+            ).scalar_one()
+        self.assertEqual(history_status, "RUNNING")
+        self.assertEqual(batch_status, "RUNNING")
+
+    def test_deferred_claims_advance_without_committing_prior_outcomes(self) -> None:
+        items = tuple(index_item(f"deferred-{index}", 10) for index in range(6))
+        self.seal(*items)
+        claim_kwargs = {
+            "owner": "worker-a",
+            "max_items": self.manifest.evaluation_batch_size,
+            "max_attempts": self.manifest.max_attempts_per_item,
+            "minimum_execution_timeout_seconds": (
+                self.manifest.evaluation_batched_run_timeout.total_seconds()
+            ),
+            "scoring_version": self.manifest.scoring_version,
+            "vmaf_threshold": self.manifest.vmaf_threshold,
+            "max_video_length_seconds": (
+                self.manifest.max_video_length.total_seconds()
+            ),
+            "length_weight_exponent": self.manifest.length_weight_exponent,
+            "now": NOW,
+            "defer_outcomes": True,
+        }
+        first = self.repository.claim_evaluation_batch(
+            self.competition_id,
+            self.hotkey,
+            **claim_kwargs,
+        )
+        completed_ids = frozenset(
+            evaluation.item.evaluation_id for evaluation in first.evaluations
+        )
+        second = self.repository.claim_evaluation_batch(
+            self.competition_id,
+            self.hotkey,
+            deferred_evaluation_ids=completed_ids,
+            **claim_kwargs,
+        )
+
+        self.assertIsNotNone(second)
+        self.assertNotEqual(first.batch_id, second.batch_id)
+        self.assertEqual(len(first.evaluations), 5)
+        self.assertEqual(len(second.evaluations), 1)
+        with self.repository.engine.connect() as connection:
+            statuses = connection.execute(
+                text(
+                    "SELECT DISTINCT status FROM contender_performance_history "
+                    "WHERE competition_id=:competition_id"
+                ),
+                {"competition_id": self.competition_id},
+            ).scalars().all()
+        self.assertEqual(statuses, ["RUNNING"])
 
 
 class FakeInspector:
@@ -2415,6 +2791,7 @@ class Phase4CoordinatorTests(unittest.TestCase):
                 accepted_build_statuses=frozenset({"MODAL_ACCEPTED"}),
                 dataset_store=store,
                 item_scorer=Scorer(),
+                defer_round_commit=True,
                 clock=lambda: NOW,
             )
 
@@ -2429,12 +2806,22 @@ class Phase4CoordinatorTests(unittest.TestCase):
                 repository,
                 "latest_sandbox",
                 side_effect=latest_sandbox,
-            ):
+            ), patch.object(
+                repository,
+                "record_batch_outcomes",
+                side_effect=AssertionError(
+                    "deferred execution must not persist individual batches"
+                ),
+            ), patch.object(
+                repository,
+                "persist_deferred_competition_scores",
+                wraps=repository.persist_deferred_competition_scores,
+            ) as deferred_commit:
                 asyncio.run(coordinator.run_once())
-                # A restarted coordinator must also clean up compute for a
-                # competition already persisted in AWAITING_END_TIME.
+                # The terminal phase remains idempotent on subsequent ticks.
                 asyncio.run(coordinator.run_once())
 
+            deferred_commit.assert_called_once()
             self.assertEqual(
                 repository.get(competition_id).status,
                 CompetitionState.AWAITING_END_TIME.value,

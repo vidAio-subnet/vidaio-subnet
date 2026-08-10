@@ -173,6 +173,7 @@ class Miner(BaseMiner):
         valid_invitation = synapse.is_open_invitation(now)
         participating = (
             valid_invitation
+            and synapse.eligibility_reason_code is None
             and "competition" in MINER_MODES
             and synapse.competition_type.value in MINER_COMPETITION_TYPES
             and now <= deadline.astimezone(timezone.utc)
@@ -188,16 +189,24 @@ class Miner(BaseMiner):
                 None
                 if participating
                 else (
-                    "invalid or expired competition invitation"
+                    synapse.eligibility_reason_detail
+                    if synapse.eligibility_reason_code
+                    else "invalid or expired competition invitation"
                     if not valid_invitation
                     else "competition mode unavailable"
                 )
             ),
         )
         logger.info(
-            "Competition invitation handled: competition_id={} participating={}",
+            "Competition invitation handled: competition_id={} participating={} "
+            "eligibility_reason_code={} eligibility_reason_detail={} "
+            "observed_alpha_stake={} minimum_alpha_stake={}",
             synapse.competition_id,
             participating,
+            synapse.eligibility_reason_code,
+            synapse.eligibility_reason_detail,
+            synapse.observed_alpha_stake,
+            synapse.minimum_alpha_stake,
         )
         return synapse
 
@@ -255,12 +264,16 @@ class Miner(BaseMiner):
         if not synapse.dendrite or not synapse.dendrite.hotkey:
             return True, "Missing dendrite or hotkey"
         try:
-            uid = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
-        except ValueError:
-            return True, "Unknown hotkey"
-        if self._should_blacklist_non_validator(uid):
-            return True, "Non-validator hotkey"
-        return False, "Hotkey recognized!"
+            owner_hotkey = self.subtensor.query_subtensor(
+                "SubnetOwnerHotkey",
+                params=[self.config.netuid],
+            )
+            owner_hotkey = str(getattr(owner_hotkey, "value", owner_hotkey) or "")
+        except Exception:
+            return True, "Subnet owner hotkey unavailable"
+        if synapse.dendrite.hotkey != owner_hotkey and not DEV_MODE:
+            return True, "Competition requests are restricted to the subnet owner"
+        return False, "Subnet owner hotkey authorized"
 
     async def _competition_priority(self, synapse) -> float:
         if not synapse.dendrite or not synapse.dendrite.hotkey:

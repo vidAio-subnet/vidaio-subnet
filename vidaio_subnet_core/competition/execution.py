@@ -13,7 +13,7 @@ from typing import Callable
 from loguru import logger
 
 from .build import CompetitionBuildService, TrustedBuildError
-from .config import CompetitionManifest
+from .config import CompetitionManifest, calculate_length_weight
 from .contracts import CompetitionCompressionItem, CompetitionCompressionRequest
 from .dataset import DatasetError
 from .intake import pinned_repository_source
@@ -21,7 +21,12 @@ from .manager import CompetitionManager
 from .media_contracts import CompetitionScoringMedia
 from .modal_runner import CompetitionModalRunner, SandboxRunnerError
 from .phase0 import SecretRedactor
-from .repository import AttemptOutcome, CompetitionRepository
+from .repository import (
+    AttemptOutcome,
+    CompetitionRepository,
+    DeferredBatchResult,
+    INFRASTRUCTURE_FAILURE_REASON_CODES,
+)
 from .scoring import (
     COST_ATTRIBUTION_METHOD,
     ItemScoringError,
@@ -76,6 +81,7 @@ class CompetitionExecutionCoordinator:
         accepted_build_statuses: frozenset[str],
         dataset_store=None,
         item_scorer=None,
+        defer_round_commit: bool = False,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         self.manager = manager
@@ -87,6 +93,7 @@ class CompetitionExecutionCoordinator:
         self.accepted_build_statuses = accepted_build_statuses
         self.dataset_store = dataset_store
         self.item_scorer = item_scorer
+        self.defer_round_commit = defer_round_commit
         self.clock = clock
 
     async def run_once(self) -> None:
@@ -285,7 +292,47 @@ class CompetitionExecutionCoordinator:
                     evaluation_index.digest(),
                 )
                 return
-            await self._evaluate_contenders(manifest)
+            deferred_results = await self._evaluate_contenders(manifest)
+            if self.defer_round_commit:
+                expected = {
+                    (contender.hotkey, item.evaluation_id)
+                    for contender in active_built
+                    for item in evaluation_index.items
+                }
+                observed = {
+                    (result.claimed.hotkey, evaluation.item.evaluation_id)
+                    for result in deferred_results
+                    for evaluation in result.claimed.evaluations
+                }
+                if observed != expected:
+                    missing = sorted(expected - observed)
+                    unexpected = sorted(observed - expected)
+                    logger.error(
+                        "Deferred competition evaluation is incomplete: id={} "
+                        "missing={} unexpected={}",
+                        competition_id,
+                        missing,
+                        unexpected,
+                    )
+                    return
+                blocker = self._deferred_infrastructure_blocker(deferred_results)
+                if blocker is not None:
+                    logger.error(
+                        "Competition evaluation halted after systemic infrastructure "
+                        "failure: id={} failed_items={} reasons={}",
+                        competition_id,
+                        blocker["failed_items"],
+                        blocker["reasons"],
+                    )
+                    return
+                state = self.manager.complete_current_stage(competition_id)
+                if state == CompetitionState.SCORING:
+                    await self._score_and_await_end_time(
+                        manifest,
+                        evaluation_items=len(evaluation_index.items),
+                        deferred_results=deferred_results,
+                    )
+                return
             complete = await asyncio.to_thread(
                 self.repository.evaluation_is_complete,
                 competition_id,
@@ -318,15 +365,20 @@ class CompetitionExecutionCoordinator:
         manifest: CompetitionManifest,
         *,
         evaluation_items: int | None = None,
+        deferred_results: tuple[DeferredBatchResult, ...] = (),
     ) -> None:
         """Finish scoring and release compute while preserving every Volume."""
 
         await self._terminate_contender_sandboxes(manifest)
         score_kwargs = {}
         if hasattr(self.item_scorer, "score_aggregates"):
-            scoring_rows = await asyncio.to_thread(
-                self.repository.competition_scoring_rows,
-                manifest.competition_id,
+            scoring_rows = (
+                self._deferred_scoring_rows(manifest, deferred_results)
+                if deferred_results
+                else await asyncio.to_thread(
+                    self.repository.competition_scoring_rows,
+                    manifest.competition_id,
+                )
             )
             remote_scores = await self.item_scorer.score_aggregates(
                 manifest,
@@ -348,11 +400,26 @@ class CompetitionExecutionCoordinator:
                     for value in remote_scores.components
                 },
             }
-        persist_scores = (
-            self.repository.persist_competition_scores
-            if score_kwargs
-            else self.repository.score_competition
-        )
+        if deferred_results:
+            if not score_kwargs:
+                from .scoring import compute_aggregates
+
+                scoring_rows = self._deferred_scoring_rows(
+                    manifest, deferred_results
+                )
+                aggregates, components = compute_aggregates(manifest, scoring_rows)
+                score_kwargs = {
+                    "aggregates": aggregates,
+                    "components": components,
+                }
+            persist_scores = self.repository.persist_deferred_competition_scores
+            score_kwargs["batch_results"] = deferred_results
+        else:
+            persist_scores = (
+                self.repository.persist_competition_scores
+                if score_kwargs
+                else self.repository.score_competition
+            )
         await asyncio.to_thread(
             persist_scores,
             manifest.competition_id,
@@ -367,6 +434,105 @@ class CompetitionExecutionCoordinator:
             manifest.competition_id,
             evaluation_items if evaluation_items is not None else "persisted",
         )
+
+    @staticmethod
+    def _deferred_infrastructure_blocker(
+        results: tuple[DeferredBatchResult, ...],
+    ) -> dict | None:
+        outcomes = [
+            outcome for result in results for outcome in result.outcomes
+        ]
+        if not outcomes:
+            return None
+        reasons: dict[str, int] = {}
+        for outcome in outcomes:
+            reason = outcome.reason_code or "UNKNOWN"
+            if (
+                outcome.status == "FAILED"
+                and reason in INFRASTRUCTURE_FAILURE_REASON_CODES
+            ):
+                reasons[reason] = reasons.get(reason, 0) + 1
+        if not reasons:
+            return None
+        return {
+            "failed_items": sum(reasons.values()),
+            "reasons": dict(sorted(reasons.items())),
+        }
+
+    @staticmethod
+    def _deferred_scoring_rows(
+        manifest: CompetitionManifest,
+        results: tuple[DeferredBatchResult, ...],
+    ) -> tuple[CompetitionAggregateHistory, ...]:
+        rows = []
+        seen_history_ids: set[int] = set()
+        for result in results:
+            evaluations = {
+                evaluation.history_id: evaluation
+                for evaluation in result.claimed.evaluations
+            }
+            outcomes = {
+                outcome.history_id: outcome for outcome in result.outcomes
+            }
+            if set(evaluations) != set(outcomes) or len(outcomes) != len(
+                result.outcomes
+            ):
+                raise ValueError(
+                    "deferred outcomes do not exactly match their claimed batch"
+                )
+            item_cost = result.batch_estimated_cost_usd / len(result.outcomes)
+            for history_id, evaluation in evaluations.items():
+                if history_id in seen_history_ids:
+                    raise ValueError(
+                        f"duplicate deferred history ID {history_id}"
+                    )
+                seen_history_ids.add(history_id)
+                outcome = outcomes[history_id]
+                metrics = outcome.metrics
+                rows.append(
+                    CompetitionAggregateHistory(
+                        id=history_id,
+                        hotkey=result.claimed.hotkey,
+                        evaluation_id=evaluation.item.evaluation_id,
+                        status=outcome.status,
+                        length_weight=calculate_length_weight(
+                            evaluation.item.duration_seconds,
+                            manifest.max_video_length.total_seconds(),
+                            manifest.length_weight_exponent,
+                        ),
+                        vmaf_threshold=float(
+                            getattr(
+                                evaluation.item,
+                                "vmaf_threshold",
+                                manifest.vmaf_threshold,
+                            )
+                        ),
+                        vmaf_score=(
+                            metrics.vmaf_score if metrics is not None else None
+                        ),
+                        compression_rate=(
+                            metrics.compression_ratio
+                            if metrics is not None
+                            else None
+                        ),
+                        media_score=(
+                            metrics.media_score if metrics is not None else None
+                        ),
+                        media_compression_component=(
+                            metrics.media_compression_component
+                            if metrics is not None
+                            else None
+                        ),
+                        media_vmaf_component=(
+                            metrics.media_vmaf_component
+                            if metrics is not None
+                            else None
+                        ),
+                        estimated_cost_usd=item_cost,
+                        reconciled_cost_usd=None,
+                    )
+                )
+        return tuple(rows)
 
     async def _terminate_contender_sandboxes(
         self, manifest: CompetitionManifest
@@ -585,7 +751,9 @@ class CompetitionExecutionCoordinator:
                 )
                 return False
 
-    async def _evaluate_contenders(self, manifest: CompetitionManifest) -> None:
+    async def _evaluate_contenders(
+        self, manifest: CompetitionManifest
+    ) -> tuple[DeferredBatchResult, ...]:
         contenders = await asyncio.to_thread(
             self.repository.list_contenders, manifest.competition_id
         )
@@ -597,11 +765,16 @@ class CompetitionExecutionCoordinator:
         ]
         pending = await self._contenders_requiring_evaluation(manifest, built)
         semaphore = asyncio.Semaphore(manifest.max_parallel_contenders)
-        await asyncio.gather(
+        contender_results = await asyncio.gather(
             *(
                 self._evaluate_contender(manifest, contender.hotkey, semaphore)
                 for contender in pending
             )
+        )
+        return tuple(
+            result
+            for results in contender_results
+            for result in results
         )
 
     async def _evaluate_contender(
@@ -609,8 +782,10 @@ class CompetitionExecutionCoordinator:
         manifest: CompetitionManifest,
         hotkey: str,
         semaphore: asyncio.Semaphore,
-    ) -> None:
+    ) -> tuple[DeferredBatchResult, ...]:
         async with semaphore:
+            deferred_results: list[DeferredBatchResult] = []
+            deferred_evaluation_ids: set[str] = set()
             while True:
                 claimed = await asyncio.to_thread(
                     self.repository.claim_evaluation_batch,
@@ -629,13 +804,21 @@ class CompetitionExecutionCoordinator:
                     ),
                     length_weight_exponent=manifest.length_weight_exponent,
                     now=self.clock(),
+                    deferred_evaluation_ids=frozenset(
+                        deferred_evaluation_ids
+                    ),
+                    defer_outcomes=self.defer_round_commit,
                 )
                 if claimed is None:
-                    complete = await asyncio.to_thread(
-                        self.repository.contender_evaluation_is_complete,
-                        manifest.competition_id,
-                        hotkey,
+                    complete = self.defer_round_commit and bool(
+                        deferred_evaluation_ids
                     )
+                    if not self.defer_round_commit:
+                        complete = await asyncio.to_thread(
+                            self.repository.contender_evaluation_is_complete,
+                            manifest.competition_id,
+                            hotkey,
+                        )
                     if complete:
                         contender = await asyncio.to_thread(
                             self.repository.get_contender,
@@ -648,10 +831,22 @@ class CompetitionExecutionCoordinator:
                                 contender,
                                 trigger="contender_dataset_complete",
                             )
-                    return
-                await self._execute_batch(manifest, claimed)
+                    return tuple(deferred_results)
+                result = await self._execute_batch(manifest, claimed)
+                if self.defer_round_commit:
+                    if not isinstance(result, DeferredBatchResult):
+                        raise RuntimeError(
+                            "deferred competition batch returned no result"
+                        )
+                    deferred_results.append(result)
+                    deferred_evaluation_ids.update(
+                        evaluation.item.evaluation_id
+                        for evaluation in claimed.evaluations
+                    )
 
-    async def _execute_batch(self, manifest: CompetitionManifest, claimed) -> None:
+    async def _execute_batch(
+        self, manifest: CompetitionManifest, claimed
+    ) -> DeferredBatchResult:
         output_paths = {
             evaluation.item.evaluation_id: (
                 f"/output/evaluations/{claimed.batch_id}/"
@@ -692,6 +887,7 @@ class CompetitionExecutionCoordinator:
         batch_wall_runtime: float | None = None
         outcomes: list[AttemptOutcome] = []
         modal_sandbox_id = None
+        recorded_scoring_timeout: float | None = None
         try:
             logger.info(
                 "Dispatching competition batch: competition_id={} hotkey={} "
@@ -781,26 +977,27 @@ class CompetitionExecutionCoordinator:
                 legacy_scoring_items.append((evaluation, relative_output_path))
 
             if scoring_items and hasattr(self.item_scorer, "score_batch"):
-                scoring_started = self.clock()
-                scoring_timeout = competition_scoring_timeout_seconds(
+                recorded_scoring_timeout = competition_scoring_timeout_seconds(
                     (value.item for value in scoring_items),
                     minimum_timeout_seconds=(
                         manifest.scoring_batched_run_timeout.total_seconds()
                     ),
                 )
-                scoring_claimed = await asyncio.to_thread(
-                    self.repository.begin_batch_scoring,
-                    manifest.competition_id,
-                    claimed.hotkey,
-                    claimed.batch_id,
-                    owner=self.actor,
-                    scoring_timeout_seconds=scoring_timeout,
-                    now=scoring_started,
-                )
-                if not scoring_claimed:
-                    raise RuntimeError(
-                        "batch execution lease was lost before scoring started"
+                if not self.defer_round_commit:
+                    scoring_started = self.clock()
+                    scoring_claimed = await asyncio.to_thread(
+                        self.repository.begin_batch_scoring,
+                        manifest.competition_id,
+                        claimed.hotkey,
+                        claimed.batch_id,
+                        owner=self.actor,
+                        scoring_timeout_seconds=recorded_scoring_timeout,
+                        now=scoring_started,
                     )
+                    if not scoring_claimed:
+                        raise RuntimeError(
+                            "batch execution lease was lost before scoring started"
+                        )
                 remote_results = await self.item_scorer.score_batch(
                     manifest,
                     output_volume_name=contender.output_volume_name,
@@ -972,32 +1169,53 @@ class CompetitionExecutionCoordinator:
             if has_allocation
             else f"{COST_ATTRIBUTION_METHOD}_NO_RUNNING_SANDBOX_ALLOCATION"
         )
-        await asyncio.to_thread(
-            self.repository.record_batch_outcomes,
-            manifest.competition_id,
-            claimed.hotkey,
-            claimed.batch_id,
-            tuple(outcomes),
-            max_attempts=manifest.max_attempts_per_item,
+        deferred_result = DeferredBatchResult(
+            claimed=claimed,
+            outcomes=tuple(outcomes),
             modal_sandbox_id=modal_sandbox_id,
             wall_runtime_seconds=recorded_wall_runtime,
             batch_estimated_cost_usd=batch_cost,
             cost_attribution_method=attribution_method,
-            now=finished,
-            actor=self.actor,
+            finished_at=finished,
+            scoring_timeout_seconds=recorded_scoring_timeout,
         )
-        summary = _persisted_outcome_summary(outcomes)
-        logger.info(
-            "Competition batch persisted: competition_id={} hotkey={} batch_id={} "
-            "scored={} failed={} retry={} reasons={}",
-            manifest.competition_id,
-            claimed.hotkey,
-            claimed.batch_id,
-            summary["scored"],
-            summary["failed"],
-            summary["retry"],
-            summary["reasons"],
-        )
+        if not self.defer_round_commit:
+            await asyncio.to_thread(
+                self.repository.record_batch_outcomes,
+                manifest.competition_id,
+                claimed.hotkey,
+                claimed.batch_id,
+                deferred_result.outcomes,
+                max_attempts=manifest.max_attempts_per_item,
+                modal_sandbox_id=modal_sandbox_id,
+                wall_runtime_seconds=recorded_wall_runtime,
+                batch_estimated_cost_usd=batch_cost,
+                cost_attribution_method=attribution_method,
+                now=finished,
+                actor=self.actor,
+            )
+            summary = _persisted_outcome_summary(outcomes)
+            logger.info(
+                "Competition batch persisted: competition_id={} hotkey={} "
+                "batch_id={} scored={} failed={} retry={} reasons={}",
+                manifest.competition_id,
+                claimed.hotkey,
+                claimed.batch_id,
+                summary["scored"],
+                summary["failed"],
+                summary["retry"],
+                summary["reasons"],
+            )
+        else:
+            logger.info(
+                "Competition batch retained for deferred round commit: "
+                "competition_id={} hotkey={} batch_id={} items={}",
+                manifest.competition_id,
+                claimed.hotkey,
+                claimed.batch_id,
+                len(outcomes),
+            )
+        return deferred_result
 
 
 __all__ = ["CompetitionExecutionCoordinator"]

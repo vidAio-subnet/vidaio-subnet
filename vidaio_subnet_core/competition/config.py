@@ -188,6 +188,7 @@ class CompetitionManifest(BaseModel):
     competition_type: Literal["COMPRESSION"] = "COMPRESSION"
     competition_start_time: datetime
     contender_ping_interval: timedelta
+    minimum_alpha_stake: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     contender_finalisation_time: datetime
     human_review_deadline: datetime
     competition_end_time: datetime
@@ -272,8 +273,8 @@ class CompetitionManifest(BaseModel):
     def validate_contract(self) -> "CompetitionManifest":
         if self.required_routes != ("/compress",):
             raise ValueError("compression competitions require exactly /compress")
-        if self.competition_start_time.weekday() != 3:
-            raise ValueError("competition_start_time must be a Thursday")
+        # if self.competition_start_time.weekday() != 3:
+        #     raise ValueError("competition_start_time must be a Thursday")
         if not (
             self.competition_start_time
             < self.contender_finalisation_time

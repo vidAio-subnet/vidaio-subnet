@@ -241,6 +241,36 @@ class CompetitionScoringClientTests(unittest.TestCase):
             "evaluations/batch-1/evaluation-1.mp4",
         )
 
+        deferred_repository = Repository()
+        deferred_coordinator = CompetitionExecutionCoordinator(
+            manager=None,
+            repository=deferred_repository,
+            build_service=None,
+            sandbox_runner=Runner(),
+            artifact_root=ROOT,
+            actor="validator:test",
+            accepted_build_statuses=frozenset({"MODAL_ACCEPTED"}),
+            dataset_store=Store(),
+            item_scorer=scorer,
+            defer_round_commit=True,
+        )
+        deferred_result = asyncio.run(
+            deferred_coordinator._execute_batch(self.manifest, claimed)
+        )
+
+        self.assertIsNone(deferred_repository.outcomes)
+        self.assertFalse(hasattr(deferred_repository, "scoring_phase"))
+        self.assertEqual(deferred_result.outcomes[0].status, "SCORED")
+        self.assertEqual(
+            deferred_result.scoring_timeout_seconds,
+            competition_scoring_timeout_seconds(
+                (self.item,),
+                minimum_timeout_seconds=(
+                    self.manifest.scoring_batched_run_timeout.total_seconds()
+                ),
+            ),
+        )
+
     def test_posts_aggregate_scoring_request(self) -> None:
         async def run():
             async def handler(request: httpx.Request) -> httpx.Response:

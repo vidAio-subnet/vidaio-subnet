@@ -86,6 +86,7 @@ Every new benchmark must use a new `competition_id`.
 | `competition_id` | Unique conservative slug, normally including year/week. |
 | `competition_start_time` | UTC enrollment start; production competitions normally start Thursday. |
 | `contender_ping_interval` | Poll cadence for participating miners. |
+| `minimum_alpha_stake` | Minimum current metagraph alpha stake required for invitations and submission polling; defaults to `0`. |
 | `contender_finalisation_time` | Submission freeze and private backup boundary. |
 | `human_review_deadline` | Last time an eligibility or exact-tie review may be recorded. |
 | `competition_end_time` | Final ranking and winner publication boundary. |
@@ -482,7 +483,15 @@ python scripts/competition_dataset.py seal \
 dimensions, frame count, codec, pixel format, and aspect ratio. Each physical
 video becomes one compression query. CRF/VBR mode, VMAF target, and any VBR
 bitrate are selected deterministically from the manifest seed. A full batch
-contains distinct source paths. Sealing orders evaluation IDs deterministically,
+contains distinct source paths. Missing or unknown media metadata, invalid
+aspect ratios, ffprobe-reported media errors, non-MP4 containers, multiple
+video streams,
+manifest duration violations, and index-to-media metadata mismatches are flagged.
+The CLI asks the operator to type `yes` or `no` before removing every evaluation
+variant that references a flagged source and continuing. `--yes` performs this
+exclusion non-interactively. Validation is repeated against local media during
+`validate` and `upload`, and against read-back remote bytes during `seal`.
+Sealing orders evaluation IDs deterministically,
 persists their canonical batch index and position, and records the batch count
 in the dataset-sealed event. Every contender therefore receives the same
 first-attempt batch membership. `evaluation_batch_size` cannot change after
@@ -631,6 +640,9 @@ history.
 The validator measures the complete sandbox invocation with a monotonic clock.
 Batch `active_runtime_seconds` equals measured wall time because the sandbox is
 provisioned for the entire call. Cold start is recorded separately.
+The supervisor polls both the active command and parent Sandbox. If the Sandbox
+finishes first, the batch stops with `SANDBOX_DISAPPEARED` and records only the
+time observed before disappearance instead of waiting for the command deadline.
 
 Exact per-input cloud cost is not observable when inputs share one concurrently
 billed sandbox. The assigned per-item runtime is
@@ -905,12 +917,11 @@ be assumed complete merely because core competition evaluation works:
   checksum-addressed post-competition bundle containing the manifest, dataset,
   pinned source, outputs, metrics, costs, reviews, events, and final ranking.
   Publication must be atomic through an inventory and final `COMPLETE` marker.
-- **UID-0 authorization:** production competition protocol requests should be
-  accepted only from the hotkey currently occupying subnet UID 0, resolved from
-  the locally synced metagraph.
-- **Alpha-stake eligibility:** check the manifest threshold at opt-in and again
-  at submission finalisation, persist block-pinned evidence, and lock eligibility
-  afterward. Human review must not override this objective threshold.
+- **Owner authorization:** competition protocol requests are accepted only from
+  the on-chain subnet-owner hotkey.
+- **Entry guards:** contenders below `minimum_alpha_stake` are not contacted,
+  and GitHub accounts or repositories already used by another contender in the
+  competition are rejected.
 - **Future competition types:** use a type adapter/registry. Upscaling requires
   separate high-resolution ground truth unavailable to contenders and cannot
   reuse compression's two-media assumption.

@@ -1000,7 +1000,7 @@ Exit: dev/shadow sign-off, budget alarms enabled, rollback exercised, and the va
 
 ### Phase 7: public audit and reproducibility publishing
 
-- In competition mode, make `neurons/miner.py` accept invitation and submission requests only from the hotkey currently occupying subnet UID 0 by default. Resolve UID 0 from the locally synced metagraph and compare its hotkey with `synapse.dendrite.hotkey`; never trust a UID claimed in the payload. Keep inference-mode blacklist behavior unchanged. A development override may exist but must be explicit and unsafe for production.
+- In competition mode, make `neurons/miner.py` accept invitation and submission requests only from the on-chain subnet-owner hotkey. Compare it with `synapse.dendrite.hotkey`; never trust identity claimed in the payload. Keep inference-mode blacklist behavior unchanged.
 - Add a validator-owned `CompetitionArtifactPublisher`; untrusted contender code never receives S3 credentials and never performs the audit upload.
 - Make post-competition publication of the pinned source and generated outputs explicit in the invitation/manifest terms. A miner that opts in consents to this audit publication; no source bundle is published before the competition ends.
 - Publish a credential-free, checksum-addressed reproduction bundle to a configured S3 bucket. Use this stable layout:
@@ -1035,7 +1035,7 @@ competitions/<competition_id>/
 - Add an independent `competition_audit verify` command that downloads a bundle, validates inventory/checksums, recomputes item and aggregate scores, and confirms the final ordering without reading the live validator database.
 - Define bucket encryption, lifecycle/retention, access policy, retry, multipart-upload cleanup, and redaction rules. A failed audit upload keeps the competition result provisional and cannot silently publish an incomplete bundle.
 
-Exit: tests prove non-UID-0 validators cannot call competition handlers, UID-0 hotkey rotation follows the synced metagraph, inference handlers are unchanged, PAT canaries never reach S3, interrupted uploads never create `COMPLETE`, and a clean machine reproduces all contender scores and the final ranking solely from the published bundle.
+Exit: tests prove non-owner validators cannot call competition handlers, subnet-owner hotkey rotation follows chain state, inference handlers are unchanged, PAT canaries never reach S3, interrupted uploads never create `COMPLETE`, and a clean machine reproduces all contender scores and the final ranking solely from the published bundle.
 
 ### Phase 8: alpha-stake competition entry criteria
 
@@ -1050,7 +1050,7 @@ Exit: tests prove non-UID-0 validators cannot call competition handlers, UID-0 h
 - Apply the same threshold to the hotkey associated with a configured boss by
   default. Any future boss exemption must be an explicit versioned manifest
   policy rather than an implicit special case.
-- Expose clear refusal/rejection reason codes such as `NOT_REGISTERED`, `HOTKEY_MISMATCH`, `ALPHA_STAKE_UNAVAILABLE`, and `ALPHA_STAKE_BELOW_MINIMUM` without exposing other wallet-sensitive data.
+- Expose clear refusal/rejection reason codes such as `NOT_REGISTERED`, `HOTKEY_MISMATCH`, `ALPHA_STAKE_UNAVAILABLE`, and `ALPHA_STAKE_BELOW_MINIMUM`. Alpha stake and the competition threshold are public chain data and may be included in the feedback; do not expose unrelated wallet data.
 - Enable the first production competition only after the audit bundle and alpha-stake gates both pass in a shadow run.
 
 Exit: fake-metagraph and dev-subnet tests cover exact-threshold acceptance, below-threshold rejection, UID/hotkey movement, missing/malformed stake values, block-pinned evidence, restart determinism, finalisation recheck, boss handling, and proof that inference scoring and weights remain unchanged before final podium integration.
@@ -1080,7 +1080,7 @@ At minimum, add:
   deterministic ties.
 - Human-review tests for recorded operator identity, mandatory reason, eligibility resolution, exact-tie scope, deadline enforcement, superseding decisions, and deterministic no-input fallback.
 - Weight tests for zero burn, 60/20/20 allocation, 80/20 pre-winner/ineligible-winner fallback, total normalization, duplicate winner/inference UID merging, boss continuity, and atomic replacement.
-- Audit tests for the UID-0-only competition blacklist, metagraph hotkey rotation, inference-handler isolation, deterministic S3 paths, multipart retry/cleanup, required artifacts, checksum inventory, PAT/secret canaries, `COMPLETE` atomicity, and score/ranking reproduction from a clean machine.
+- Audit tests for the subnet-owner-only competition blacklist, owner-hotkey rotation, inference-handler isolation, deterministic S3 paths, multipart retry/cleanup, required artifacts, checksum inventory, PAT/secret canaries, `COMPLETE` atomicity, and score/ranking reproduction from a clean machine.
 - Entry-criteria tests for exact/below minimum alpha stake, unavailable or non-finite stake, registration and hotkey mismatch, block-pinned snapshots, finalisation recheck, post-lock stake changes, boss eligibility, restart behavior, and stable reason codes.
 
 ## 20. Deferred extension points
@@ -1108,5 +1108,5 @@ At minimum, add:
    `competition_sdk.py` export directory in the validator checkout as the boss;
    the validator snapshots it and evaluates it against new contenders on the
    new dataset without importing source from a prior competition.
-8. Competition protocol requests are accepted by miners only from the hotkey currently at subnet UID 0 by default. The validator publishes a credential-free S3 reproduction bundle containing the manifest, original dataset inputs, pinned contender sources, miner outputs, metrics, costs, reviews, events, and final ranking under stable competition/hotkey/input paths.
+8. Competition protocol requests are accepted by miners only from the on-chain subnet-owner hotkey. The validator publishes a credential-free S3 reproduction bundle containing the manifest, original dataset inputs, pinned contender sources, miner outputs, metrics, costs, reviews, events, and final ranking under stable competition/hotkey/input paths.
 9. A miner must meet the manifest's minimum alpha-stake threshold at opt-in and submission finalisation. The block-pinned decision is persisted; human review cannot override a failed stake threshold, and eligibility is locked for that competition after finalisation.

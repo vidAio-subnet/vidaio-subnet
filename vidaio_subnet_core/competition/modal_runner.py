@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
@@ -25,6 +26,7 @@ from .repository import CompetitionRepository, parse_utc
 MAX_SANDBOX_LIFETIME = timedelta(hours=23, minutes=30)
 ROLLOVER_MARGIN = timedelta(minutes=5)
 SUPERVISOR_TIMEOUT_GRACE_SECONDS = 30
+SANDBOX_LIFECYCLE_POLL_SECONDS = 5.0
 
 
 ISOLATION_PROBE = r"""
@@ -284,6 +286,84 @@ def _completed_process_output(process: Any, label: str) -> str:
     return stdout.strip()
 
 
+def _sandbox_disappeared(exc: Exception) -> bool:
+    detail = str(exc).lower()
+    return "sandbox disappeared" in detail or "sandbox has disappeared" in detail
+
+
+def _completed_invocation_output(process: Any, label: str) -> str:
+    try:
+        return _completed_process_output(process, label)
+    except Exception as exc:
+        if _sandbox_disappeared(exc):
+            raise SandboxRunnerError(
+                "SANDBOX_DISAPPEARED",
+                f"{label} lost its Sandbox while collecting output: {exc}",
+            ) from exc
+        raise
+
+
+def _monitored_process_output(
+    process: Any,
+    sandbox: Any,
+    label: str,
+    *,
+    timeout_seconds: int,
+) -> str:
+    """Wait for an exec while independently observing its parent Sandbox."""
+
+    process_poll = getattr(process, "poll", None)
+    sandbox_poll = getattr(sandbox, "poll", None)
+    if not callable(process_poll) or not callable(sandbox_poll):
+        # Compatibility with test doubles and older Modal clients. The
+        # supported production SDK exposes both polling methods.
+        return _completed_invocation_output(process, label)
+
+    deadline = (
+        time.monotonic()
+        + timeout_seconds
+        + SUPERVISOR_TIMEOUT_GRACE_SECONDS
+        + SANDBOX_LIFECYCLE_POLL_SECONDS
+    )
+    while True:
+        try:
+            process_exit_code = process_poll()
+        except Exception as exc:
+            if _sandbox_disappeared(exc):
+                raise SandboxRunnerError(
+                    "SANDBOX_DISAPPEARED",
+                    f"{label} lost its Sandbox: {exc}",
+                ) from exc
+            # Treat lifecycle polling as observational. The exec timeout still
+            # bounds this loop if a transient control-plane query fails.
+            process_exit_code = None
+        if process_exit_code is not None:
+            return _completed_invocation_output(process, label)
+
+        try:
+            sandbox_exit_code = sandbox_poll()
+        except Exception as exc:
+            if _sandbox_disappeared(exc):
+                raise SandboxRunnerError(
+                    "SANDBOX_DISAPPEARED",
+                    f"{label} lost its Sandbox: {exc}",
+                ) from exc
+            # Lifecycle polling is an additional safeguard. A transient poll
+            # failure must not replace the exec session's own bounded wait.
+            sandbox_exit_code = None
+        if sandbox_exit_code is not None:
+            raise SandboxRunnerError(
+                "SANDBOX_DISAPPEARED",
+                f"{label} parent Sandbox exited with code {sandbox_exit_code}",
+            )
+        if time.monotonic() >= deadline:
+            raise SandboxRunnerError(
+                "SANDBOX_EXEC_TIMEOUT",
+                f"{label} exceeded its supervised execution deadline",
+            )
+        time.sleep(SANDBOX_LIFECYCLE_POLL_SECONDS)
+
+
 class ModalSandboxBackend:
     """Thin adapter around Modal; it accepts only validator-owned launch specs."""
 
@@ -487,7 +567,12 @@ class ModalSandboxBackend:
         # in-Sandbox client can finish sys.stdin.buffer.read() and issue the POST.
         process.stdin.write_eof()
         process.stdin.drain()
-        return _completed_process_output(process, "localhost /compress request")
+        return _monitored_process_output(
+            process,
+            handle.raw,
+            "localhost /compress request",
+            timeout_seconds=timeout_seconds,
+        )
 
     def commit_outputs(self, handle: SandboxHandle) -> None:
         process = handle.raw.exec("sync", "/output", timeout=30)
@@ -519,6 +604,7 @@ class CompetitionModalRunner:
         hotkey: str,
         *,
         now: datetime | None = None,
+        minimum_remaining_lifetime: timedelta | None = None,
     ) -> SandboxSession:
         now = now or self.clock()
         contender = self.repository.get_contender(manifest.competition_id, hotkey)
@@ -536,7 +622,12 @@ class CompetitionModalRunner:
 
         latest = self.repository.latest_sandbox(manifest.competition_id, hotkey)
         if latest is not None and latest.status in {"STARTING", "RUNNING"}:
-            recovered = self._try_recover(manifest, latest, now)
+            recovered = self._try_recover(
+                manifest,
+                latest,
+                now,
+                minimum_remaining_lifetime=minimum_remaining_lifetime,
+            )
             if recovered is not None:
                 return recovered
 
@@ -558,7 +649,20 @@ class CompetitionModalRunner:
         timeout = timeout_seconds or int(
             manifest.evaluation_batched_run_timeout.total_seconds()
         )
-        session = self.ensure_warm(manifest, request.hotkey, now=now)
+        required_lifetime = timedelta(
+            seconds=timeout + SUPERVISOR_TIMEOUT_GRACE_SECONDS
+        )
+        if required_lifetime >= MAX_SANDBOX_LIFETIME:
+            raise SandboxRunnerError(
+                "BATCH_TIMEOUT_EXCEEDS_SANDBOX_LIFETIME",
+                "batch deadline leaves no safe lifetime for a competition Sandbox",
+            )
+        session = self.ensure_warm(
+            manifest,
+            request.hotkey,
+            now=now,
+            minimum_remaining_lifetime=required_lifetime,
+        )
         self.repository.update_sandbox_batch_timeout(
             session.record.id,
             batch_timeout_seconds=timeout,
@@ -581,11 +685,16 @@ class CompetitionModalRunner:
             self.repository.touch_sandbox(session.record.id, now=now)
             return response
         except Exception as exc:
+            failure_reason = (
+                exc.reason_code
+                if isinstance(exc, SandboxRunnerError)
+                else "BATCH_EXECUTION_FAILED"
+            )
             self._terminate(
                 session.record,
                 session.handle,
                 status="FAILED",
-                reason_code="BATCH_EXECUTION_FAILED",
+                reason_code=failure_reason,
                 now=now,
                 detail=str(exc),
             )
@@ -619,6 +728,8 @@ class CompetitionModalRunner:
         manifest: CompetitionManifest,
         row: CompetitionSandbox,
         now: datetime,
+        *,
+        minimum_remaining_lifetime: timedelta | None = None,
     ) -> SandboxSession | None:
         contender = self.repository.get_contender(row.competition_id, row.hotkey)
         if (
@@ -634,7 +745,11 @@ class CompetitionModalRunner:
                 now=now,
             )
             return None
-        if parse_utc(row.expires_at) - now <= ROLLOVER_MARGIN:
+        rollover_margin = max(
+            ROLLOVER_MARGIN,
+            minimum_remaining_lifetime or timedelta(0),
+        )
+        if parse_utc(row.expires_at) - now <= rollover_margin:
             handle = None
             if row.modal_sandbox_id:
                 try:

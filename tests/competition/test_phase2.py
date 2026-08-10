@@ -2,6 +2,7 @@ from __future__ import annotations
 
 # ruff: noqa: E402 -- package stubs keep focused tests independent of Bittensor.
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -528,7 +529,7 @@ class IntakeTests(unittest.TestCase):
             submission = RepositorySubmission(
                 "competition-1",
                 "hot/key",
-                "https://github.com/acme/private.git",
+                "https://github.com/Acme/Private.git",
                 token,
                 "nonce-1",
             )
@@ -536,6 +537,10 @@ class IntakeTests(unittest.TestCase):
                 submission
             )
             self.assertEqual(pinned.commit_sha, "a" * 40)
+            self.assertEqual(
+                pinned.github_account_hash,
+                hashlib.sha256(b"acme").hexdigest(),
+            )
             self.assertEqual(pinned.validation.status, ValidationStatus.ACCEPTED)
             self.assertEqual(submission.github_pat, "")
             artifacts = "".join(
@@ -641,6 +646,41 @@ class IntakeTests(unittest.TestCase):
         self.assertEqual(row.status, "ACCEPTED")
         self.assertEqual(events[-1].event_type, "CONTENDER_REPOSITORY_PINNED")
         self.assertNotIn("github_pat", events[-1].payload_json)
+
+    def test_github_account_and_repository_are_unique_per_competition(self) -> None:
+        now = datetime(2026, 7, 14, tzinfo=timezone.utc)
+        manifest = load_manifest(
+            ROOT / "competitions/manifests/examples/compression-competition.json"
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            write_template(source)
+            validation = RepositoryStaticValidator().validate(source)
+            repository = CompetitionRepository(f"sqlite:///{root / 'competition.db'}")
+            repository.insert_manifest(manifest, now=now, actor="validator:test")
+            values = dict(
+                competition_id=manifest.competition_id,
+                repository_url_hash="c" * 64,
+                github_account_hash="d" * 64,
+                repository_display="github.com/acme/private",
+                pinned_commit_sha="a" * 40,
+                pinned_tree_sha="b" * 40,
+                latest_commit_time=now.isoformat(),
+                validation=validation,
+                now=now,
+                actor="validator:test",
+            )
+            repository.record_pinned_contender(hotkey="first", **values)
+            with self.assertRaisesRegex(
+                ValueError, "GITHUB_REPOSITORY_ALREADY_SUBMITTED"
+            ):
+                repository.record_pinned_contender(hotkey="second", **values)
+            values["repository_url_hash"] = "e" * 64
+            with self.assertRaisesRegex(
+                ValueError, "GITHUB_ACCOUNT_ALREADY_SUBMITTED"
+            ):
+                repository.record_pinned_contender(hotkey="third", **values)
 
     def test_cloned_sandbox_preferences_are_persisted_with_the_contender(self) -> None:
         now = datetime(2026, 7, 14, tzinfo=timezone.utc)

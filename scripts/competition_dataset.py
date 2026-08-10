@@ -32,9 +32,13 @@ from vidaio_subnet_core.competition.config import (  # noqa: E402
 )
 from vidaio_subnet_core.competition.dataset import (  # noqa: E402
     DatasetError,
+    DatasetValidationIssue,
     EvaluationIndex,
     ModalVolumeStore,
-    prepare_index,
+    exclude_invalid_sources,
+    format_validation_issues,
+    local_index_validation_issues,
+    prepare_index_candidates,
     validate_local_index,
 )
 from vidaio_subnet_core.competition.repository import (  # noqa: E402
@@ -44,6 +48,69 @@ from vidaio_subnet_core.competition.repository import (  # noqa: E402
 
 def _index(path: str) -> EvaluationIndex:
     return EvaluationIndex.model_validate_json(Path(path).read_text(encoding="utf-8"))
+
+
+def _write_index(path: str, index: EvaluationIndex) -> None:
+    Path(path).write_text(index.normalized_json() + "\n", encoding="utf-8")
+
+
+def _add_yes_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="disqualify flagged entries without interactive confirmation",
+    )
+
+
+def _prompt_yes_no(question: str, *, assume_yes: bool) -> bool:
+    if assume_yes:
+        print(question + "yes", file=sys.stderr)
+        return True
+    while True:
+        try:
+            response = input(question).strip().lower()
+        except EOFError:
+            print("no", file=sys.stderr)
+            return False
+        if response == "yes":
+            return True
+        if response == "no":
+            return False
+        print("Please type yes or no.", file=sys.stderr)
+
+
+def _review_issues(
+    index: EvaluationIndex | None,
+    issues: tuple[DatasetValidationIssue, ...],
+    *,
+    command: str,
+    assume_yes: bool,
+    index_path: str,
+) -> EvaluationIndex:
+    if issues:
+        print(format_validation_issues(issues), file=sys.stderr)
+        count = sum(len(issue.evaluation_ids) for issue in issues)
+        question = (
+            f"Disqualify {count} evaluation entry/entries from {len(issues)} "
+            f"source(s) and continue {command}? Type yes or no: "
+        )
+        if not _prompt_yes_no(question, assume_yes=assume_yes):
+            raise DatasetError(
+                f"operator declined to continue {command} with flagged entries"
+            )
+    if index is None:
+        raise DatasetError("all evaluation sources are invalid")
+    if issues and command != "prepare":
+        index = exclude_invalid_sources(index, issues)
+    if issues:
+        print(
+            f"Disqualified {count} evaluation entry/entries; "
+            f"{len(index.items)} remain.",
+            file=sys.stderr,
+        )
+    if issues or command == "prepare":
+        _write_index(index_path, index)
+    return index
 
 
 def ensure_manifest_registered(
@@ -71,20 +138,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    prepare = subparsers.add_parser("prepare")
-    prepare.add_argument("--manifest", required=True)
-    prepare.add_argument("--source-dir", required=True)
-    prepare.add_argument("--index", required=True)
+    commands = {}
+    for name in ("prepare", "validate", "upload"):
+        command = commands[name] = subparsers.add_parser(name)
+        command.add_argument("--manifest", required=True)
+        command.add_argument("--source-dir", required=True)
+        command.add_argument("--index", required=True)
+        _add_yes_argument(command)
 
-    validate = subparsers.add_parser("validate")
-    validate.add_argument("--manifest", required=True)
-    validate.add_argument("--source-dir", required=True)
-    validate.add_argument("--index", required=True)
-
-    upload = subparsers.add_parser("upload")
-    upload.add_argument("--manifest", required=True)
-    upload.add_argument("--source-dir", required=True)
-    upload.add_argument("--index", required=True)
+    upload = commands["upload"]
     upload.add_argument("--environment", default="main")
 
     seal = subparsers.add_parser("seal")
@@ -93,14 +155,21 @@ def main() -> int:
     seal.add_argument("--environment", default="main")
     seal.add_argument("--database-url", default="sqlite:///video_subnet_validator.db")
     seal.add_argument("--actor", default="competition-dataset-cli")
+    _add_yes_argument(seal)
 
     args = parser.parse_args()
     manifest = load_manifest(args.manifest)
 
     if args.command == "prepare":
-        evaluation_index = prepare_index(manifest, Path(args.source_dir))
-        Path(args.index).write_text(
-            evaluation_index.normalized_json() + "\n", encoding="utf-8"
+        evaluation_index, issues = prepare_index_candidates(
+            manifest, Path(args.source_dir)
+        )
+        evaluation_index = _review_issues(
+            evaluation_index,
+            issues,
+            command="prepare",
+            assume_yes=args.yes,
+            index_path=args.index,
         )
         print(
             f"Prepared {len(evaluation_index.items)} item(s); "
@@ -109,7 +178,18 @@ def main() -> int:
         return 0
 
     evaluation_index = _index(args.index)
-    evaluation_index.validate_for_manifest(manifest)
+    if args.command in {"validate", "upload"}:
+        original_digest = evaluation_index.digest()
+        issues = local_index_validation_issues(
+            evaluation_index, manifest, Path(args.source_dir)
+        )
+        evaluation_index = _review_issues(
+            evaluation_index,
+            issues,
+            command=args.command,
+            assume_yes=args.yes,
+            index_path=args.index,
+        )
     if args.command == "validate":
         validate_local_index(evaluation_index, manifest, Path(args.source_dir))
         print(
@@ -124,6 +204,11 @@ def main() -> int:
             manifest,
             evaluation_index,
             Path(args.source_dir),
+            expected_existing_digest=(
+                original_digest
+                if original_digest != evaluation_index.digest()
+                else None
+            ),
         )
         print(
             f"Uploaded and read-back verified {len(evaluation_index.items)} item(s) "
@@ -131,10 +216,36 @@ def main() -> int:
         )
         return 0
 
-    remote_index = store.load_index(manifest)
+    remote_index = store.load_index(manifest, validate_for_manifest=False)
     if remote_index.digest() != evaluation_index.digest():
         raise RuntimeError("remote and local evaluation indexes differ")
     repository = CompetitionRepository(args.database_url)
+    issues = store.validation_issues(manifest, remote_index)
+    if issues:
+        registered_competition = repository.get(manifest.competition_id)
+        if (
+            registered_competition is not None
+            and registered_competition.dataset_index_checksum
+        ):
+            raise DatasetError(
+                "evaluation dataset is already sealed; flagged entries cannot be "
+                "disqualified"
+            )
+        evaluation_index = _review_issues(
+            evaluation_index,
+            issues,
+            command="seal",
+            assume_yes=args.yes,
+            index_path=args.index,
+        )
+        store.replace_index(
+            manifest,
+            evaluation_index,
+            expected_existing_digest=remote_index.digest(),
+        )
+        remaining_issues = store.validation_issues(manifest, evaluation_index)
+        if remaining_issues:
+            raise DatasetError(format_validation_issues(remaining_issues))
     now = datetime.now(timezone.utc)
     registered = ensure_manifest_registered(
         repository,

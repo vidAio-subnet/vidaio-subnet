@@ -215,6 +215,86 @@ class EnrollmentDispatcherTests(unittest.TestCase):
             len([call for call in forwarder.calls if call[0] == "invitation"]), 2
         )
 
+    def test_ineligible_alpha_stake_is_reported_and_persisted(self) -> None:
+        self.competition.manifest_json = self.manifest.model_copy(
+            update={"minimum_alpha_stake": 10}
+        ).normalized_json()
+        endpoints = [
+            CompetitionMinerEndpoint(
+                1, "participating-hotkey", "coldkey-1", object(), alpha_stake=10
+            ),
+            CompetitionMinerEndpoint(
+                2, "declining-hotkey", "coldkey-2", object(), alpha_stake=9
+            ),
+        ]
+        forwarder = FakeForwarder()
+        dispatcher = CompetitionEnrollmentDispatcher(
+            self.repository,
+            FakeIntake(),
+            forwarder,
+            owner_id="test-validator",
+            clock=self.clock,
+        )
+
+        asyncio.run(dispatcher.run_once(self.competition, endpoints))
+
+        self.assertEqual(
+            forwarder.calls,
+            [
+                ("invitation", "participating-hotkey"),
+                ("invitation", "declining-hotkey"),
+                ("submission", "participating-hotkey"),
+            ],
+        )
+        rejected = self.repository.get_contender(
+            self.manifest.competition_id, "declining-hotkey"
+        )
+        self.assertEqual(rejected.status, ContenderState.REJECTED.value)
+        self.assertEqual(rejected.reason_code, "ALPHA_STAKE_BELOW_MINIMUM")
+        self.assertIn("Observed alpha stake 9", rejected.reason_detail)
+        rejection = next(
+            response
+            for response in forwarder.responses
+            if isinstance(response, protocol.CompetitionInvitationProtocol)
+            and response.axon.hotkey == "declining-hotkey"
+        )
+        self.assertEqual(
+            rejection.eligibility_reason_code, "ALPHA_STAKE_BELOW_MINIMUM"
+        )
+        self.assertEqual(rejection.observed_alpha_stake, 9)
+        self.assertEqual(rejection.minimum_alpha_stake, 10)
+
+    def test_unavailable_alpha_stake_is_reported_and_persisted(self) -> None:
+        self.competition.manifest_json = self.manifest.model_copy(
+            update={"minimum_alpha_stake": 10}
+        ).normalized_json()
+        endpoint = CompetitionMinerEndpoint(
+            1, "participating-hotkey", "coldkey-1", object(), alpha_stake=None
+        )
+        forwarder = FakeForwarder()
+        dispatcher = CompetitionEnrollmentDispatcher(
+            self.repository,
+            FakeIntake(),
+            forwarder,
+            owner_id="test-validator",
+            clock=self.clock,
+        )
+
+        asyncio.run(dispatcher.run_once(self.competition, [endpoint]))
+
+        rejected = self.repository.get_contender(
+            self.manifest.competition_id, "participating-hotkey"
+        )
+        self.assertEqual(rejected.status, ContenderState.REJECTED.value)
+        self.assertEqual(rejected.reason_code, "ALPHA_STAKE_UNAVAILABLE")
+        invitation = forwarder.responses[0]
+        self.assertEqual(
+            invitation.eligibility_reason_code, "ALPHA_STAKE_UNAVAILABLE"
+        )
+        self.assertIsNone(invitation.observed_alpha_stake)
+        self.assertEqual(invitation.minimum_alpha_stake, 10)
+        self.assertNotIn(("submission", "participating-hotkey"), forwarder.calls)
+
     def test_rejects_response_from_a_different_hotkey(self) -> None:
         forwarder = FakeForwarder(wrong_hotkey=True)
         dispatcher = CompetitionEnrollmentDispatcher(

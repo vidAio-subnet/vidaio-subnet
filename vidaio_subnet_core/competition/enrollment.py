@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -37,6 +38,7 @@ class CompetitionMinerEndpoint:
     hotkey: str
     coldkey: str | None
     transport: Any = field(repr=False)
+    alpha_stake: float | None = None
 
 
 class CompetitionForwarder(Protocol):
@@ -114,7 +116,12 @@ class CompetitionEnrollmentDispatcher:
             retry_before=retry_before,
         )
         invitation_tasks = [
-            self._invite(competition, manifest, endpoints_by_hotkey[row.hotkey], row.hotkey)
+            self._invite(
+                competition,
+                manifest,
+                endpoints_by_hotkey[row.hotkey],
+                row.hotkey,
+            )
             for row in due_invitations
             if row.hotkey in endpoints_by_hotkey
         ]
@@ -195,12 +202,25 @@ class CompetitionEnrollmentDispatcher:
             return
 
         nonce = secrets.token_urlsafe(24)
+        eligibility_reason_code, eligibility_reason_detail = (
+            self._alpha_stake_eligibility(manifest, endpoint)
+        )
         synapse = CompetitionInvitationProtocol(
             competition_id=competition.competition_id,
             competition_type=CompetitionType.COMPRESSION,
             manifest_digest=competition.manifest_digest,
             registration_deadline=manifest.contender_finalisation_time,
             invitation_nonce=nonce,
+            eligibility_reason_code=eligibility_reason_code,
+            eligibility_reason_detail=eligibility_reason_detail,
+            observed_alpha_stake=(
+                endpoint.alpha_stake
+                if endpoint.alpha_stake is not None
+                and math.isfinite(endpoint.alpha_stake)
+                and endpoint.alpha_stake >= 0
+                else None
+            ),
+            minimum_alpha_stake=manifest.minimum_alpha_stake,
         )
         try:
             async with self._semaphore:
@@ -233,12 +253,15 @@ class CompetitionEnrollmentDispatcher:
                     "ENROLLMENT_WINDOW_CLOSED",
                     "invitation response arrived after contender finalisation",
                 )
+            participating = invitation.participating and eligibility_reason_code is None
             await asyncio.to_thread(
                 self.repository.record_invitation_response,
                 competition.competition_id,
                 hotkey,
-                participating=invitation.participating,
+                participating=participating,
                 refusal_reason=invitation.refusal_reason,
+                rejection_reason_code=eligibility_reason_code,
+                rejection_reason_detail=eligibility_reason_detail,
                 now=response_time,
                 actor=self.owner_id,
             )
@@ -247,7 +270,7 @@ class CompetitionEnrollmentDispatcher:
                 competition.competition_id,
                 endpoint.uid,
                 hotkey,
-                invitation.participating,
+                participating,
             )
         except Exception as exc:
             await self._record_error(
@@ -256,6 +279,27 @@ class CompetitionEnrollmentDispatcher:
                 stage="INVITATION",
                 exc=exc,
             )
+
+    @staticmethod
+    def _alpha_stake_eligibility(
+        manifest: CompetitionManifest,
+        endpoint: CompetitionMinerEndpoint,
+    ) -> tuple[str | None, str | None]:
+        minimum = manifest.minimum_alpha_stake
+        if minimum == 0:
+            return None, None
+        observed = endpoint.alpha_stake
+        if observed is None or not math.isfinite(observed) or observed < 0:
+            return (
+                "ALPHA_STAKE_UNAVAILABLE",
+                f"Alpha stake is unavailable; this competition requires at least {minimum:g}.",
+            )
+        if observed < minimum:
+            return (
+                "ALPHA_STAKE_BELOW_MINIMUM",
+                f"Observed alpha stake {observed:g} is below the required minimum {minimum:g}.",
+            )
+        return None, None
 
     async def _poll_submission(
         self,

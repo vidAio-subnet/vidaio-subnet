@@ -11,6 +11,7 @@ import bittensor as bt
 import tempfile
 import aiohttp
 import ipaddress
+import math
 from loguru import logger
 from dotenv import load_dotenv
 from datetime import datetime, timezone
@@ -329,6 +330,7 @@ class Validator(base.BaseValidator):
                             )
                         ),
                         item_scorer=self.competition_score_client,
+                        defer_round_commit=True,
                     )
                 )
                 logger.warning(
@@ -464,9 +466,12 @@ class Validator(base.BaseValidator):
                 )
             else:
                 logger.info(
-                    "Competition private submission backup path: id={} path={}",
+                    "Competition private submission backup files: id={} "
+                    "archive={} inventory={} database_archive_path={}",
                     competition.competition_id,
-                    result.s3_uri,
+                    result.archive_s3_uri,
+                    result.inventory_s3_uri,
+                    result.database_archive_path,
                 )
         return ready
 
@@ -563,6 +568,7 @@ class Validator(base.BaseValidator):
                     hotkey=str(hotkey),
                     coldkey=self._uid_coldkey(uid) or None,
                     transport=axon,
+                    alpha_stake=self._competition_alpha_stake(uid),
                 )
             )
         logger.debug(
@@ -570,6 +576,27 @@ class Validator(base.BaseValidator):
             len(endpoints),
         )
         return endpoints
+
+    def _competition_alpha_stake(self, uid: int) -> float | None:
+        for attribute in ("alpha_stake", "AS"):
+            values = getattr(self.metagraph, attribute, None)
+            if values is None:
+                continue
+            try:
+                value = values[uid]
+                tao = getattr(value, "tao", None)
+                value = (
+                    tao()
+                    if callable(tao)
+                    else (tao if tao is not None else value)
+                )
+                item = getattr(value, "item", None)
+                value = item() if callable(item) else value
+                stake = float(value)
+            except (IndexError, KeyError, TypeError, ValueError):
+                continue
+            return stake if math.isfinite(stake) and stake >= 0 else None
+        return None
 
     async def check_scheduler_ready(self) -> bool:
         """

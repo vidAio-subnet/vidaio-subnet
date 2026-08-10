@@ -262,6 +262,20 @@ class CompetitionArtifactBackupTests(unittest.TestCase):
         )
         self.assertIn(self.manifest.competition_id, result.prefix)
         self.assertIn(self.manifest.competition_id, result.archive_key)
+        self.assertEqual(
+            result.archive_s3_uri,
+            f"s3://{PRIVATE_BUCKET}/{result.archive_key}",
+        )
+        self.assertEqual(
+            result.inventory_s3_uri,
+            f"s3://{PRIVATE_BUCKET}/{result.inventory_key}",
+        )
+        self.assertEqual(result.database_filename, "competition.db")
+        self.assertEqual(
+            result.database_archive_path,
+            f"competition_artifacts/{self.manifest.competition_id}/"
+            "database/competition.db",
+        )
         self.assertNotIn("?", result.s3_uri)
         self.assertNotIn("http", result.s3_uri)
         self.assertEqual(s3.upload_count, 2)
@@ -276,7 +290,10 @@ class CompetitionArtifactBackupTests(unittest.TestCase):
         )
         self.assertEqual(inventory["competition_id"], self.manifest.competition_id)
         self.assertEqual(inventory["visibility"], "PRIVATE")
+        self.assertEqual(inventory["schema_version"], 3)
         self.assertEqual(inventory["archive"]["key"], result.archive_key)
+        self.assertEqual(inventory["database"]["filename"], "competition.db")
+        self.assertRegex(inventory["database"]["sha256"], r"^[0-9a-f]{64}$")
         inventory_by_id = {
             contender["hotkey"]: contender for contender in inventory["contenders"]
         }
@@ -289,6 +306,9 @@ class CompetitionArtifactBackupTests(unittest.TestCase):
         archive_bytes = s3.objects[(PRIVATE_BUCKET, result.archive_key)]["body"]
         with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as archive:
             names = set(archive.getnames())
+            database_bytes = archive.extractfile(
+                inventory["database"]["archive_path"]
+            ).read()
         archive_root = f"competition_artifacts/{self.manifest.competition_id}"
         self.assertIn(f"{archive_root}/manifest.normalized.json", names)
         self.assertIn(
@@ -298,6 +318,22 @@ class CompetitionArtifactBackupTests(unittest.TestCase):
         self.assertIn(
             f"{archive_root}/contenders/{boss_id}/source/main.py",
             names,
+        )
+        self.assertIn(inventory["database"]["archive_path"], names)
+        self.assertTrue(database_bytes.startswith(b"SQLite format 3\x00"))
+        with tempfile.TemporaryDirectory() as temp:
+            restored = Path(temp) / "submission-backup.sqlite3"
+            restored.write_bytes(database_bytes)
+            with sqlite3.connect(restored) as connection:
+                integrity = connection.execute("PRAGMA integrity_check").fetchone()
+                status = connection.execute(
+                    "SELECT status FROM competitions WHERE competition_id=?",
+                    (self.manifest.competition_id,),
+                ).fetchone()
+        self.assertEqual(integrity, ("ok",))
+        self.assertEqual(
+            status,
+            (CompetitionState.FINALIZING_SUBMISSIONS.value,),
         )
 
         boss = self.repository.get_contender(self.manifest.competition_id, boss_id)

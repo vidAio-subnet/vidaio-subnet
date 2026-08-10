@@ -115,6 +115,7 @@ class ContenderMetadata(CompetitionBase):
     is_boss = Column(Boolean, nullable=False, default=False)
     source_competition_id = Column(String(64))
     repository_url_hash = Column(String(64))
+    github_account_hash = Column(String(64))
     repository_display = Column(String(256))
     pinned_commit_sha = Column(String(64))
     pinned_tree_sha = Column(String(64))
@@ -178,6 +179,23 @@ class ContenderMetadata(CompetitionBase):
             "competition_id",
             "manual_disqualified",
             "status",
+        ),
+        Index(
+            "uq_contender_github_account",
+            "competition_id",
+            "github_account_hash",
+            unique=True,
+            sqlite_where=text("github_account_hash IS NOT NULL AND is_boss = 0"),
+        ),
+        Index(
+            "uq_contender_github_repository",
+            "competition_id",
+            "repository_url_hash",
+            unique=True,
+            sqlite_where=text(
+                "github_account_hash IS NOT NULL "
+                "AND repository_url_hash IS NOT NULL AND is_boss = 0"
+            ),
         ),
     )
 

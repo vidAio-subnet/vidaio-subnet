@@ -117,6 +117,15 @@ class FakeClock:
 
 
 class ManifestTests(unittest.TestCase):
+    def test_minimum_alpha_stake_defaults_to_zero_and_rejects_negative_values(
+        self,
+    ) -> None:
+        self.assertEqual(make_manifest().minimum_alpha_stake, 0)
+        configured = manifest_data()
+        configured["minimum_alpha_stake"] = -1
+        with self.assertRaises(ValueError):
+            CompetitionManifest.model_validate(configured)
+
     def test_modal_build_timeout_defaults_to_ten_minutes_and_is_configurable(
         self,
     ) -> None:
@@ -995,6 +1004,31 @@ class ProtocolContractTests(unittest.TestCase):
         self.assertEqual(restored.last_pinned_commit_sha, "b" * 40)
         self.assertEqual(restored.submission_revision, 2)
 
+    def test_invitation_eligibility_feedback_round_trips_to_the_miner(self) -> None:
+        p = self.protocol
+        synapse = p.CompetitionInvitationProtocol(
+            competition_id="compression-2026-w29",
+            manifest_digest="a" * 64,
+            registration_deadline=START,
+            invitation_nonce="invitation-nonce-001",
+            eligibility_reason_code="ALPHA_STAKE_BELOW_MINIMUM",
+            eligibility_reason_detail=(
+                "Observed alpha stake 9 is below the required minimum 10."
+            ),
+            observed_alpha_stake=9,
+            minimum_alpha_stake=10,
+        )
+
+        restored = p.CompetitionInvitationProtocol.model_validate_json(
+            synapse.model_dump_json()
+        )
+
+        self.assertEqual(
+            restored.eligibility_reason_code, "ALPHA_STAKE_BELOW_MINIMUM"
+        )
+        self.assertEqual(restored.observed_alpha_stake, 9)
+        self.assertEqual(restored.minimum_alpha_stake, 10)
+
     def test_protocol_timestamps_dump_as_bittensor_safe_iso_strings(self) -> None:
         p = self.protocol
         invitation = p.CompetitionInvitationProtocol(
@@ -1129,6 +1163,10 @@ class MinerWiringTests(unittest.TestCase):
                 "blacklist_competition_submission",
             }
             <= concrete_names
+        )
+        self.assertIn(
+            "SubnetOwnerHotkey",
+            (ROOT / "neurons" / "miner.py").read_text(encoding="utf-8"),
         )
 
 

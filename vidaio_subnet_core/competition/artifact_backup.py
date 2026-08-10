@@ -1,4 +1,4 @@
-"""Private S3 backup of final contender repository snapshots."""
+"""Private S3 backup of contender repositories and competition SQLite state."""
 
 from __future__ import annotations
 
@@ -55,10 +55,20 @@ class CompetitionArtifactBackupResult:
     archive_sha256: str
     archive_size_bytes: int
     contender_count: int
+    database_filename: str
+    database_archive_path: str
 
     @property
     def s3_uri(self) -> str:
         return f"s3://{self.bucket}/{self.prefix}/"
+
+    @property
+    def archive_s3_uri(self) -> str:
+        return f"s3://{self.bucket}/{self.archive_key}"
+
+    @property
+    def inventory_s3_uri(self) -> str:
+        return f"s3://{self.bucket}/{self.inventory_key}"
 
 
 @dataclass(frozen=True)
@@ -167,6 +177,10 @@ class CompetitionArtifactBackupService:
                 archive_sha256=competition.submission_backup_checksum,
                 archive_size_bytes=competition.submission_backup_size_bytes,
                 contender_count=competition.submission_backup_contender_count,
+                database_filename=self.database_path.name,
+                database_archive_path=self._database_archive_path(
+                    competition_id
+                ).as_posix(),
             )
 
         digest_label = competition.manifest_digest[:16]
@@ -178,18 +192,36 @@ class CompetitionArtifactBackupService:
         inventory_key = f"{prefix}/inventory.json"
 
         try:
-            self._ensure_boss_snapshot(competition)
+            required_boss_id = self._ensure_boss_snapshot(competition)
             contenders = [
                 contender
                 for contender in self.repository.list_contenders(competition_id)
                 if contender.pinned_commit_sha
             ]
+            if required_boss_id is not None and not any(
+                contender.hotkey == required_boss_id for contender in contenders
+            ):
+                raise CompetitionArtifactBackupError(
+                    "configured boss repository snapshot is missing from the "
+                    f"backup contender set: {required_boss_id}"
+                )
             self._verify_bucket_private()
             with tempfile.TemporaryDirectory(
                 prefix=f"competition-backup-{competition_id}-"
             ) as temp:
+                database_snapshot = Path(temp) / self.database_path.name
+                self._create_database_snapshot(database_snapshot)
+                database_size = database_snapshot.stat().st_size
+                database_checksum = _sha256_file(database_snapshot)
+                database_archive_path = self._database_archive_path(competition_id)
                 archive = Path(temp) / archive_name
-                self._create_archive(competition_id, contenders, archive)
+                self._create_archive(
+                    competition_id,
+                    contenders,
+                    archive,
+                    database_snapshot=database_snapshot,
+                    database_archive_path=database_archive_path,
+                )
                 archive_size = archive.stat().st_size
                 archive_checksum = _sha256_file(archive)
                 inventory = self._inventory(
@@ -198,6 +230,10 @@ class CompetitionArtifactBackupService:
                     archive_key=archive_key,
                     archive_size=archive_size,
                     archive_checksum=archive_checksum,
+                    database_filename=self.database_path.name,
+                    database_archive_path=database_archive_path.as_posix(),
+                    database_size=database_size,
+                    database_checksum=database_checksum,
                     created_at=self.clock(),
                 )
                 self.s3.upload_file(
@@ -250,6 +286,8 @@ class CompetitionArtifactBackupService:
             archive_sha256=archive_checksum,
             archive_size_bytes=archive_size,
             contender_count=len(contenders),
+            database_filename=self.database_path.name,
+            database_archive_path=database_archive_path.as_posix(),
         )
         self.repository.record_submission_backup_success(
             competition_id,
@@ -265,17 +303,28 @@ class CompetitionArtifactBackupService:
         )
         logger.info(
             "Competition submission snapshots backed up privately: "
-            "competition_id={} contenders={} path={}",
+            "competition_id={} contenders={} archive={} inventory={} "
+            "database_archive_path={}",
             competition_id,
             result.contender_count,
-            result.s3_uri,
+            result.archive_s3_uri,
+            result.inventory_s3_uri,
+            result.database_archive_path,
         )
         return result
 
-    def _ensure_boss_snapshot(self, competition: Any) -> None:
+    def _database_archive_path(self, competition_id: str) -> Path:
+        return (
+            Path("competition_artifacts")
+            / competition_id
+            / "database"
+            / self.database_path.name
+        )
+
+    def _ensure_boss_snapshot(self, competition: Any) -> str | None:
         manifest = CompetitionManifest.model_validate_json(competition.manifest_json)
         if manifest.boss.repository_path is None:
-            return
+            return None
 
         payout_hotkey = manifest.boss.boss_hotkey
         assert payout_hotkey is not None
@@ -293,7 +342,7 @@ class CompetitionArtifactBackupService:
                 raise CompetitionArtifactBackupError(
                     f"boss contender snapshot is missing: {contender_id}"
                 )
-            return
+            return contender_id
 
         source = (self.repository_root / manifest.boss.repository_path).resolve(
             strict=True
@@ -400,6 +449,7 @@ class CompetitionArtifactBackupService:
         except Exception:
             shutil.rmtree(staged, ignore_errors=True)
             raise
+        return contender_id
 
     def backup_database(
         self, competition_id: str
@@ -493,7 +543,13 @@ class CompetitionArtifactBackupService:
                     )
 
     def _create_archive(
-        self, competition_id: str, contenders: list[Any], destination: Path
+        self,
+        competition_id: str,
+        contenders: list[Any],
+        destination: Path,
+        *,
+        database_snapshot: Path,
+        database_archive_path: Path,
     ) -> None:
         manifest_root = self.artifact_root / competition_id
         if not manifest_root.is_dir():
@@ -507,6 +563,11 @@ class CompetitionArtifactBackupService:
                     fileobj=zipped, mode="w", dereference=False
                 ) as archive:
                     archive.add(manifest_root, arcname=archive_root, recursive=True)
+                    archive.add(
+                        database_snapshot,
+                        arcname=database_archive_path,
+                        recursive=False,
+                    )
                     for contender in contenders:
                         if (
                             not contender.hotkey
@@ -574,10 +635,14 @@ class CompetitionArtifactBackupService:
         archive_key: str,
         archive_size: int,
         archive_checksum: str,
+        database_filename: str,
+        database_archive_path: str,
+        database_size: int,
+        database_checksum: str,
         created_at: datetime,
     ) -> dict[str, Any]:
         return {
-            "schema_version": 2,
+            "schema_version": 3,
             "competition_id": competition.competition_id,
             "manifest_digest": competition.manifest_digest,
             "created_at": created_at.astimezone(timezone.utc).isoformat(),
@@ -587,9 +652,21 @@ class CompetitionArtifactBackupService:
                 "size_bytes": archive_size,
                 "sha256": archive_checksum,
             },
+            "database": {
+                "filename": database_filename,
+                "archive_path": database_archive_path,
+                "size_bytes": database_size,
+                "sha256": database_checksum,
+            },
             "contenders": [
                 {
                     "hotkey": contender.hotkey,
+                    "archive_path": (
+                        Path("competition_artifacts")
+                        / competition.competition_id
+                        / "contenders"
+                        / contender.hotkey
+                    ).as_posix(),
                     "payout_hotkey": (
                         competition.boss_hotkey
                         if contender.is_boss

@@ -210,8 +210,15 @@ repository directly on Modal, records its immutable image ID as
 and Sandbox startup run concurrently, bounded by the manifest's
 `max_parallel_contenders` value.
 
+The pre-evaluation submission archive contains every pinned GitHub repository,
+the manifest-configured boss repository (when configured), and an online,
+integrity-checked SQLite snapshot under `database/<sqlite-filename>`. The SQLite
+source path and filename come from `COMPETITION_DATABASE_URL`. Backup logs print
+the complete S3 object names for both the archive and its `inventory.json`.
+
 When `competition_end_time` moves a competition to `COMPLETED`, the validator
-creates an online, integrity-checked SQLite snapshot and uploads it privately to
+also creates a final online, integrity-checked SQLite snapshot and uploads it
+privately to
 `s3://<bucket>/<artifact-prefix>/<competition-id>/final/<manifest-digest>/<sqlite-filename>`.
 The source path and filename come from `COMPETITION_DATABASE_URL`. The object
 size and SHA-256 are verified after upload, and a successful upload is recorded
@@ -362,14 +369,6 @@ INDEX=/tmp/compression-2026-w30-index.json
 DATABASE_URL=sqlite:////absolute/path/to/video_subnet_validator.db
 ```
 
-
-```bash
-MANIFEST=/root/old_root/root/vidaio-subnet-optim/competitions/manifests/compression-competition.json
-SOURCE_DIR=/root/old_root/root/vidaio-subnet-optim/sample_data
-INDEX=/tmp/compression-2026-w32-index.json
-DATABASE_URL=sqlite:////root/old_root/root/vidaio-subnet-optim/competition_test.db
-```
-
 Run all four operations from the same deployed repository and virtual
 environment as the validator:
 
@@ -388,12 +387,12 @@ python scripts/competition_dataset.py upload \
   --manifest "$MANIFEST" \
   --source-dir "$SOURCE_DIR" \
   --index "$INDEX" \
-  --environment dev
+  --environment main
 
 python scripts/competition_dataset.py seal \
   --manifest "$MANIFEST" \
   --index "$INDEX" \
-  --environment dev \
+  --environment main \
   --database-url "$DATABASE_URL"
 ```
 
@@ -472,9 +471,12 @@ persistence semantics, and worked examples.
 The validator creates every `/output/evaluations/<batch-id>` directory before
 calling the contender's `/compress` route. A Sandbox request failure is logged
 with its reason code and redacted detail; the persisted summary reports the
-actual post-attempt status and a per-reason count. If every terminal item failed
-for validator-infrastructure reasons, evaluation stays fail-closed in
-`EVALUATING` instead of scoring all contenders as zero.
+actual post-attempt status and a per-reason count. If any current terminal item
+failed for a validator-infrastructure reason, evaluation stays fail-closed in
+`EVALUATING` instead of applying that failure to a contender's score. A vanished
+Sandbox is detected by polling its lifecycle independently from the request
+process, so control-plane delay does not inflate recorded runtime to the full
+invocation deadline.
 Sandbox creation, isolation, and readiness are a pre-dispatch gate: failure to
 warm any eligible contender pauses dispatch before claims are created, so a
 startup outage does not consume evaluation attempts. Startup and recovery
@@ -493,6 +495,11 @@ python scripts/competition_repair.py requeue-infrastructure \
 
 pm2 restart "$PM2_APP" --update-env
 ```
+
+For a Sandbox that exits during an active batch, use
+`--reason-code SANDBOX_DISAPPEARED`. Inspect the Modal lifecycle event and exit
+code first; the repair is for validator/platform loss, not a reproducible
+contender-controlled crash.
 
 The repair accepts only allowlisted infrastructure reason codes, records an
 `EVALUATION_INFRASTRUCTURE_REQUEUED` audit event, retains old attempts as

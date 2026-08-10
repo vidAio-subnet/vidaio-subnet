@@ -5,6 +5,7 @@
   "competition_type": "COMPRESSION",
   "competition_start_time": "2026-07-16T00:00:00Z",
   "contender_ping_interval": "30m",
+  "minimum_alpha_stake": 0.0,
   "contender_finalisation_time": "2026-07-17T00:00:00Z",
   "human_review_deadline": "2026-07-22T23:30:00Z",
   "competition_end_time": "2026-07-23T00:00:00Z",

@@ -19,6 +19,42 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _ensure_github_identity_guards(connection) -> None:
+    columns = {
+        column["name"]
+        for column in inspect(connection).get_columns("contender_metadata")
+    }
+    if "github_account_hash" not in columns:
+        connection.execute(
+            text(
+                "ALTER TABLE contender_metadata "
+                "ADD COLUMN github_account_hash VARCHAR(64)"
+            )
+        )
+        columns.add("github_account_hash")
+    if {
+        "competition_id",
+        "is_boss",
+        "repository_url_hash",
+        "github_account_hash",
+    } <= columns:
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_contender_github_account "
+                "ON contender_metadata (competition_id, github_account_hash) "
+                "WHERE github_account_hash IS NOT NULL AND is_boss = 0"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_contender_github_repository "
+                "ON contender_metadata (competition_id, repository_url_hash) "
+                "WHERE github_account_hash IS NOT NULL "
+                "AND repository_url_hash IS NOT NULL AND is_boss = 0"
+            )
+        )
+
+
 def apply_competition_migrations(engine: Engine) -> None:
     """Create or upgrade the competition-only schema."""
 
@@ -80,6 +116,7 @@ def apply_competition_migrations(engine: Engine) -> None:
                             "ADD COLUMN sandbox_cpus INTEGER"
                         )
                     )
+                _ensure_github_identity_guards(connection)
                 connection.execute(
                     text(
                         "INSERT INTO competition_schema_migrations"
@@ -106,6 +143,7 @@ def apply_competition_migrations(engine: Engine) -> None:
                 raise RuntimeError(
                     "competition schema migration history is ahead of its columns"
                 )
+            _ensure_github_identity_guards(connection)
             return
 
         for table in CompetitionBase.metadata.sorted_tables:

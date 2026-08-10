@@ -538,6 +538,10 @@ class CompetitionInvitationProtocol(Synapse):
     manifest_digest: str = Field(default="", pattern=r"^[a-f0-9]{64}$")
     registration_deadline: datetime = _COMPETITION_TRANSPORT_EPOCH
     invitation_nonce: str = Field(default="", min_length=16, max_length=128)
+    eligibility_reason_code: str | None = Field(default=None, max_length=128)
+    eligibility_reason_detail: str | None = Field(default=None, max_length=500)
+    observed_alpha_stake: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    minimum_alpha_stake: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     invitation_response: CompetitionInvitationResponse = Field(
         default_factory=CompetitionInvitationResponse
     )
