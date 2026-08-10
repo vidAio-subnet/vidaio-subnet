@@ -43,7 +43,8 @@ or another immutable live-competition input changes.
   `COMPETITION_ACCEPT_MODAL_BUILD_WITHOUT_SIZE_ATTESTATION=true`. This
   acknowledges that direct Modal builds do not attest the manifest's 25 GB
   final-image limit.
-- [ ] Confirm the production UID-0 authorization, PAT-redaction canary,
+- [ ] Confirm the production subnet-owner-hotkey authorization,
+  PAT-redaction canary,
   alpha-stake eligibility, and post-competition public-audit gates required by
   local policy. The implementation plan lists these as later rollout phases;
   do not assume they exist merely because evaluation works.
@@ -64,7 +65,11 @@ or another immutable live-competition input changes.
 - [ ] Set `schema_version` to the version supported by the deployed validator.
 - [ ] Assign a stable `scoring_version` identifier for the scoring contract used
   by this manifest; changing it does not itself change the scoring algorithm.
-- [ ] Set `competition_start_time` to a Thursday UTC.
+- [ ] Set `competition_start_time` to the intended UTC instant; any weekday is
+  valid.
+- [ ] Set and record `minimum_alpha_stake`. Confirm it is finite and
+  non-negative and that miners must meet it both when invited and when their
+  submission is finalized.
 - [ ] Verify this ordering:
   `competition_start_time < contender_finalisation_time <= human_review_deadline < competition_end_time`.
 - [ ] Leave enough enrollment time for polling, correction, and republishing.
@@ -79,6 +84,10 @@ or another immutable live-competition input changes.
   contender-relative per-item cost normalization.
 - [ ] Confirm final aggregate scoring includes the complete finalized evaluated
   contender set; cost components cannot be finalized incrementally.
+- [ ] Confirm production uses the deferred round commit: batch outcomes remain
+  uncommitted until every expected contender/item outcome is available, then
+  item history, aggregates, and the `AWAITING_END_TIME` transition persist
+  atomically for audit compatibility.
 - [ ] Select only supported GPUs: `L4`, `L40S`, and/or `RTX-PRO-6000`.
 - [ ] Set requested and maximum CPU cores, container-size policy,
   `modal_build_timeout`, and `max_parallel_contenders`. Treat
@@ -320,11 +329,18 @@ or another immutable live-competition input changes.
   `FINALIZING_SUBMISSIONS` and accepted revisions stop changing.
 - [ ] Confirm the private contender archive and `inventory.json` are complete,
   read-back verified, and contain no credentials before build/evaluation.
+- [ ] Capture the phase-transition log fields for the full submission archive
+  S3 URI, inventory S3 URI, and embedded SQLite `database_archive_path`; do not
+  accept a prefix-only log as sufficient backup evidence.
 
 ## 8. Monitor build and isolated execution
 
 - [ ] In `VALIDATING`, confirm every finalized repository is checked against the
   static policy and warmup contract.
+- [ ] Confirm no two non-boss miner hotkeys use the same case-insensitive GitHub
+  account or canonical repository in this competition. Treat
+  `GITHUB_ACCOUNT_ALREADY_SUBMITTED` and
+  `GITHUB_REPOSITORY_ALREADY_SUBMITTED` as objective intake rejections.
 - [ ] In `BUILDING`, confirm builds use the pinned revision, contender-specific
   Apps, manifest build timeout, validator-selected resources, and bounded
   concurrency.
@@ -366,6 +382,9 @@ or another immutable live-competition input changes.
   result matches its assigned path and position exactly.
 - [ ] Confirm completed contenders terminate promptly with
   `volume_retained=true`; do not delete their Volumes automatically.
+- [ ] Confirm the supervisor polls the active command and its parent Sandbox;
+  an early Modal Sandbox exit must be recorded as `SANDBOX_DISAPPEARED`, not as
+  an inflated request timeout or a generic contender failure.
 
 ## 9. Validate scoring, ranking, and completion
 
@@ -407,6 +426,8 @@ or another immutable live-competition input changes.
   truly `COMPLETED`.
 - [ ] At `competition_end_time`, confirm the integrity-checked SQLite snapshot
   uploads privately and its size/SHA-256 read-back verification is recorded.
+- [ ] Capture the complete final SQLite snapshot S3 object URI from the
+  completion transition logs so the result backup is directly auditable.
 - [ ] Record the final state, ranking, score digest, database snapshot path, and
   audit event IDs.
 

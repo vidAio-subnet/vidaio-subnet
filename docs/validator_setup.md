@@ -564,8 +564,9 @@ Failed and invalid outputs receive zero and cannot define the minimum. Because
 cost is population-dependent, aggregate scoring must use the complete finalized
 evaluated contender set.
 
-The start time must be Thursday UTC. At startup the validator normalizes and
-hashes each manifest and persists it in competition-only SQLite tables. If a
+The start time may fall on any day of the week. At startup the validator
+normalizes and hashes each manifest and persists it in competition-only SQLite
+tables. If a
 manifest with the same ID changes while its competition is non-terminal, the
 validator updates the database fields used by the scheduler, appends a
 `MANIFEST_UPDATED` audit event containing the old/new digests and field-level
