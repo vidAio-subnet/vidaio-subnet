@@ -159,9 +159,14 @@ or another immutable live-competition input changes.
   presigned URL is published.
 - [ ] For AWS S3, enable all four Public Access Block controls and confirm the
   bucket policy has no wildcard principal allowed to read objects. For an
-  S3-compatible provider that lacks these APIs, independently verify its
-  bucket policy, anonymous-read, and access-point equivalents and investigate
-  the validator's explicit capability warnings.
+  S3-compatible provider such as Backblaze B2, configure a private bucket whose
+  objects require the application key ID and application key. AWS-specific
+  Public Access Block warnings are expected for a custom endpoint, but public
+  bucket/object ACL or public-read policy findings remain launch blockers.
+- [ ] Start the competition validator once before enrollment and confirm it logs
+  `Competition artifact backup privacy preflight passed`. Treat any privacy
+  preflight exception as a launch blocker. The validator repeats this check at
+  backup time to detect configuration drift.
 - [ ] Ensure the inference process receives the same
   `COMPETITION_DATABASE_URL`; otherwise competition rewards are excluded from
   its weight calculation.

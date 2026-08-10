@@ -250,11 +250,14 @@ class CompetitionArtifactBackupTests(unittest.TestCase):
         self.repository.engine.dispose()
         self.temp.cleanup()
 
-    def service(self, s3: FakeS3) -> CompetitionArtifactBackupService:
+    def service(
+        self, s3: FakeS3, *, endpoint_url: str | None = None
+    ) -> CompetitionArtifactBackupService:
         service = CompetitionArtifactBackupService(
             self.repository,
             artifact_root=self.artifact_root,
             bucket=PRIVATE_BUCKET,
+            endpoint_url=endpoint_url,
             s3_client=s3,
             database_url=self.database_url,
             repository_root=self.repository_root,
@@ -425,6 +428,18 @@ class CompetitionArtifactBackupTests(unittest.TestCase):
 
         self.assertEqual(s3.upload_count, 0)
 
+    def test_privacy_preflight_rejects_bucket_before_competition_transition(self):
+        service = self.service(FakeS3(public_access_block=False))
+
+        with self.assertRaisesRegex(
+            CompetitionArtifactBackupError, "Public Access Block"
+        ):
+            service.preflight_privacy()
+
+        competition = self.repository.get(self.manifest.competition_id)
+        self.assertEqual(competition.status, CompetitionState.FINALIZING_SUBMISSIONS.value)
+        self.assertEqual(competition.submission_backup_status, "PENDING")
+
     def test_incomplete_public_access_block_fails_before_any_upload(self):
         s3 = FakeS3(public_access_block=False)
         with self.assertRaisesRegex(
@@ -433,6 +448,19 @@ class CompetitionArtifactBackupTests(unittest.TestCase):
             self.service(s3).backup(self.manifest.competition_id)
 
         self.assertEqual(s3.upload_count, 0)
+
+    def test_backblaze_endpoint_allows_missing_aws_public_access_block(self):
+        s3 = FakeS3(public_access_block=False)
+        service = self.service(
+            s3,
+            endpoint_url="https://s3.us-west-004.backblazeb2.com",
+        )
+
+        service.preflight_privacy()
+        result = service.backup(self.manifest.competition_id)
+
+        self.assertEqual(s3.upload_count, 2)
+        self.assertEqual(result.bucket, PRIVATE_BUCKET)
 
     def test_completed_competition_uploads_consistent_sqlite_snapshot(self):
         self.complete_competition()

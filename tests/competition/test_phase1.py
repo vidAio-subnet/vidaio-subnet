@@ -213,14 +213,8 @@ class ManifestTests(unittest.TestCase):
             Decimal("0.333333333333334"),
         )
 
-    def test_rejects_non_thursday_wrong_routes_and_invalid_weights(self) -> None:
+    def test_rejects_wrong_routes_and_invalid_weights(self) -> None:
         cases = []
-        wrong_day = manifest_data()
-        wrong_day["competition_start_time"] = (START + timedelta(days=1)).isoformat()
-        wrong_day["contender_finalisation_time"] = (
-            START + timedelta(days=2)
-        ).isoformat()
-        cases.append(wrong_day)
         wrong_route = manifest_data()
         wrong_route["required_routes"] = ["/upscale"]
         cases.append(wrong_route)
@@ -255,6 +249,25 @@ class ManifestTests(unittest.TestCase):
             cases.append(invalid_length_weight)
         for payload in cases:
             with self.subTest(payload=payload), self.assertRaises(ValidationError):
+                CompetitionManifest.model_validate(payload)
+
+    def test_accepts_competition_start_on_any_weekday(self) -> None:
+        for day_offset in range(7):
+            payload = manifest_data()
+            payload["competition_start_time"] = (
+                START + timedelta(days=day_offset)
+            ).isoformat()
+            payload["contender_finalisation_time"] = (
+                START + timedelta(days=day_offset, hours=1)
+            ).isoformat()
+            payload["human_review_deadline"] = (
+                START + timedelta(days=day_offset, hours=2)
+            ).isoformat()
+            payload["competition_end_time"] = (
+                START + timedelta(days=day_offset, hours=3)
+            ).isoformat()
+
+            with self.subTest(day_offset=day_offset):
                 CompetitionManifest.model_validate(payload)
 
     def test_runtime_warmup_path_fails_closed(self) -> None:

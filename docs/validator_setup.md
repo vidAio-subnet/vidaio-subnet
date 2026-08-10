@@ -219,12 +219,16 @@ The logged `database_archive_path` is the SQLite member name inside the tarball,
 not a standalone S3 key and not a secret. Keep the archive and inventory
 private because both contain sensitive competition material.
 
-The backup privacy gate checks bucket and object ACLs, rejects wildcard public
-read statements in bucket policy, and requires all four AWS Public Access Block
-controls when that API is available. Some S3-compatible providers do not expose
-the policy or Public Access Block APIs; in that case the validator warns and the
-operator must verify the provider's equivalent anonymous-read and access-point
-settings before enabling competition mode.
+The backup privacy gate checks bucket and object ACLs and rejects wildcard
+public-read statements when the provider exposes bucket policy. Native AWS S3
+must enable all four Public Access Block controls. A custom S3-compatible
+endpoint such as Backblaze B2 may report those AWS-specific controls as absent
+or disabled; the validator warns but does not reject the bucket when its
+supported bucket/object privacy checks pass. Configure the B2 bucket as private
+so objects require the configured application key ID and application key.
+Competition-mode startup runs this bucket privacy preflight before enrollment
+or scheduler work begins and exits on a detected violation. The same check runs
+again at upload time so a policy change during enrollment still fails closed.
 
 When `competition_end_time` moves a competition to `COMPLETED`, the validator
 also creates a final online, integrity-checked SQLite snapshot and uploads it

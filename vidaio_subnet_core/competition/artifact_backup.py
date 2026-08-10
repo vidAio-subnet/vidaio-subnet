@@ -112,6 +112,10 @@ class CompetitionArtifactBackupService:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.repository_root = (repository_root or Path.cwd()).resolve()
         self.boss_validator = RepositoryStaticValidator()
+        normalized_endpoint = (endpoint_url or "").strip().lower()
+        self.require_public_access_block = not normalized_endpoint or (
+            "amazonaws.com" in normalized_endpoint
+        )
         if not self.bucket:
             raise ValueError("competition artifact backup bucket is required")
         if not self.key_prefix or ".." in self.key_prefix.split("/"):
@@ -313,6 +317,15 @@ class CompetitionArtifactBackupService:
             result.database_archive_path,
         )
         return result
+
+    def preflight_privacy(self) -> None:
+        """Fail fast when the configured backup bucket is not private."""
+
+        self._verify_bucket_private()
+        logger.info(
+            "Competition artifact backup privacy preflight passed: bucket={}",
+            self.bucket,
+        )
 
     def _database_archive_path(self, competition_id: str) -> Path:
         return (
@@ -673,10 +686,18 @@ class CompetitionArtifactBackupService:
             if code == "NoSuchPublicAccessBlockConfiguration" or (
                 "nosuchpublicaccessblockconfiguration" in detail
             ):
-                raise CompetitionArtifactBackupError(
-                    f"S3 bucket {self.bucket} has no Public Access Block "
-                    "configuration"
-                ) from exc
+                if self.require_public_access_block:
+                    raise CompetitionArtifactBackupError(
+                        f"S3 bucket {self.bucket} has no Public Access Block "
+                        "configuration"
+                    ) from exc
+                logger.warning(
+                    "S3-compatible provider has no AWS Public Access Block "
+                    "configuration; relying on provider bucket policy plus "
+                    "bucket/object ACL privacy checks: bucket={}",
+                    self.bucket,
+                )
+                return
             if code in {"NotImplemented", "UnsupportedOperation"} or any(
                 marker in detail
                 for marker in ("not implemented", "unsupported operation")
@@ -702,9 +723,18 @@ class CompetitionArtifactBackupService:
             if configuration.get(field) is not True
         ]
         if disabled:
-            raise CompetitionArtifactBackupError(
-                f"S3 bucket {self.bucket} does not enable every Public Access "
-                f"Block control: {', '.join(disabled)}"
+            detail = ", ".join(disabled)
+            if self.require_public_access_block:
+                raise CompetitionArtifactBackupError(
+                    f"S3 bucket {self.bucket} does not enable every Public Access "
+                    f"Block control: {detail}"
+                )
+            logger.warning(
+                "S3-compatible provider does not enable AWS Public Access Block "
+                "controls; relying on provider bucket policy plus bucket/object "
+                "ACL privacy checks: bucket={} disabled={}",
+                self.bucket,
+                detail,
             )
 
     @staticmethod
