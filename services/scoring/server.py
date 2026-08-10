@@ -25,12 +25,29 @@ from pieapp_metric import calculate_pieapp_score
 from vidaio_subnet_core.utilities.storage_client import storage_client
 from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video, trim_video_select, vmaf_metric_ffmpeg, is_vmaf_ffmpeg_available
 from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
-from scoring_function import calculate_compression_score
+from services.scoring.scoring_function import calculate_compression_score
 from upscaling_scoring import (
     calculate_final_score,
     calculate_length_score,
     calculate_preliminary_score,
     calculate_quality_score,
+)
+from vidaio_subnet_core.competition.dataset import DatasetError, ModalVolumeStore
+from vidaio_subnet_core.competition.media_contracts import CompetitionScoringMedia
+from vidaio_subnet_core.competition.scoring import (
+    CompetitionItemScorer,
+    ItemScoringError,
+    compute_aggregates,
+)
+from vidaio_subnet_core.competition.scoring_api import (
+    CompetitionAggregatePayload,
+    CompetitionAggregateRequest,
+    CompetitionAggregateResponse,
+    CompetitionHistoryComponent,
+    CompetitionScoredItemPayload,
+    CompetitionScoringBatchRequest,
+    CompetitionScoringBatchResponse,
+    CompetitionScoringBatchResult,
 )
 
 # Compression scoring constants
@@ -328,6 +345,143 @@ class OrganicsCompressionScoringResponse(BaseModel):
     compression_rates: List[float]
     final_scores: List[float]
     reasons: List[str]
+
+
+@app.post(
+    "/score_compression_competition",
+    response_model=CompetitionScoringBatchResponse,
+)
+async def score_compression_competition(
+    request: CompetitionScoringBatchRequest,
+) -> CompetitionScoringBatchResponse:
+    """Read and score one trusted competition batch outside the validator."""
+
+    logger.info(
+        "Starting competition compression scoring batch: competition_id={} "
+        "items={} output_volume={}",
+        request.manifest.competition_id,
+        [value.item.evaluation_id for value in request.items],
+        request.output_volume_name,
+    )
+    store = ModalVolumeStore(environment_name=request.modal_environment)
+    scorer = CompetitionItemScorer()
+    results = []
+    for batch_item in request.items:
+        evaluation_id = batch_item.item.evaluation_id
+        try:
+            source_bytes, output_bytes = await asyncio.gather(
+                asyncio.to_thread(
+                    store.read_bytes,
+                    request.input_volume_name,
+                    batch_item.item.source_path,
+                ),
+                asyncio.to_thread(
+                    store.read_bytes,
+                    request.output_volume_name,
+                    batch_item.output_path,
+                ),
+            )
+            metrics = await asyncio.to_thread(
+                scorer.score_media,
+                request.manifest,
+                batch_item.item,
+                CompetitionScoringMedia.compression(source_bytes, output_bytes),
+                runtime_seconds=batch_item.runtime_seconds,
+                allocated_gpu_type=batch_item.allocated_gpu_type,
+                allocated_gpu_count=batch_item.allocated_gpu_count,
+                allocated_cpu_cores=batch_item.allocated_cpu_cores,
+            )
+            results.append(
+                CompetitionScoringBatchResult(
+                    evaluation_id=evaluation_id,
+                    status="SCORED",
+                    metrics=CompetitionScoredItemPayload.from_scored_item(metrics),
+                )
+            )
+        except DatasetError as exc:
+            logger.error(
+                "Competition scoring Volume read failed: competition_id={} "
+                "evaluation_id={} reason={}",
+                request.manifest.competition_id,
+                evaluation_id,
+                str(exc),
+            )
+            results.append(
+                CompetitionScoringBatchResult(
+                    evaluation_id=evaluation_id,
+                    status="FAILED",
+                    reason_code="VOLUME_READ_FAILED",
+                )
+            )
+        except ItemScoringError as exc:
+            results.append(
+                CompetitionScoringBatchResult(
+                    evaluation_id=evaluation_id,
+                    status="FAILED",
+                    reason_code=exc.reason_code,
+                    metrics=(
+                        CompetitionScoredItemPayload.from_scored_item(exc.metrics)
+                        if exc.metrics is not None
+                        else None
+                    ),
+                )
+            )
+        except Exception as exc:
+            logger.exception(
+                "Competition scoring infrastructure failure: competition_id={} "
+                "evaluation_id={} reason={}",
+                request.manifest.competition_id,
+                evaluation_id,
+                str(exc),
+            )
+            results.append(
+                CompetitionScoringBatchResult(
+                    evaluation_id=evaluation_id,
+                    status="FAILED",
+                    reason_code="EVALUATION_INFRASTRUCTURE_ERROR",
+                )
+            )
+
+    logger.info(
+        "Completed competition compression scoring batch: competition_id={} "
+        "statuses={}",
+        request.manifest.competition_id,
+        [value.status for value in results],
+    )
+    return CompetitionScoringBatchResponse(results=tuple(results))
+
+
+@app.post(
+    "/score_compression_competition_aggregates",
+    response_model=CompetitionAggregateResponse,
+)
+async def score_compression_competition_aggregates(
+    request: CompetitionAggregateRequest,
+) -> CompetitionAggregateResponse:
+    """Compute final contender and per-history components as one batch."""
+
+    aggregates, components = await asyncio.to_thread(
+        compute_aggregates,
+        request.manifest,
+        request.histories,
+    )
+    return CompetitionAggregateResponse(
+        aggregates=tuple(
+            CompetitionAggregatePayload.from_aggregate(value)
+            for value in aggregates
+        ),
+        components=tuple(
+            CompetitionHistoryComponent(
+                history_id=history_id,
+                media_score=values[0],
+                compression=values[1],
+                vmaf_quality=values[2],
+                cost_efficiency=values[3],
+                completion=values[4],
+            )
+            for history_id, values in sorted(components.items())
+        ),
+    )
 
 # Load pre-trained model for feature extraction
 def load_quality_model():

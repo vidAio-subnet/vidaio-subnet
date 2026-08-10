@@ -9,6 +9,7 @@ class ScoreConfig(BaseModel):
     compression_score_port: int = Field(default=8202)
     upscaling_organics_score_port: int = Field(default=8203)
     compression_organics_score_port: int = Field(default=8204)
+    compression_competition_score_port: int = Field(default=8205)
     vmaf_threshold: float = Field(default=0.5)
     vmaf_sample_count: int = Field(default=10)
     pieapp_threshold: float = Field(default=1.0)

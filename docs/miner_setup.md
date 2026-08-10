@@ -257,6 +257,9 @@ pm2 stop video-miner
 
 ## Additional Notes
 
+- For a new compression competition, complete
+  [`miner_competition_checklist.md`](miner_competition_checklist.md). The full
+  competition contract is in [`competitions.md`](competitions.md).
 - Run either `upscaling-video2x` or `upscaling-ffmpeg` for an upscaling miner. They expose different host ports but both implement `/upscale`.
 - Run `compression` for a compression miner. It implements `/compress`.
 - Processing containers publish localhost-only service ports and have `DISABLE_REMOTE_IO=true`; they only process local files from the shared work directory by default.

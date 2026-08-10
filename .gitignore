@@ -1,8 +1,13 @@
 __pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+competition_artifacts/
+miner/.competition-sdk/
 note.txt
 *.log
 *.db
-*.mp4
 *.lock
 *.hevc
 *.y4m
@@ -12,8 +17,7 @@ note.txt
 *.js
 *.xml 
 .DS_Store
-*.json
-.env
+*.env
 venv/
 video2x/
 logs/

@@ -27,19 +27,32 @@ import time
 import ipaddress
 
 class MinerManager:
-    def __init__(self, uid, config, wallet, metagraph):
+    def __init__(
+        self,
+        uid,
+        config,
+        wallet,
+        metagraph,
+        subtensor=None,
+        competition_repository=None,
+    ):
         logger.info(f"Initializing MinerManager with uid: {uid}")
         self.uid = uid
         self.wallet = wallet
         self.dendrite = bt.Dendrite(wallet=self.wallet)
 
         self.config = config
-        self.subtensor = bt.Subtensor(config=self.config)
+        self.subtensor = (
+            subtensor
+            if subtensor is not None
+            else bt.Subtensor(config=self.config)
+        )
         self.burn_proportion = 0.0   # No miner emissions burned by default
 
         # Task allocations and rank-based distribution within each task pool.
         self.compression_emission_allocation = 0.80
         self.upscaling_emission_allocation = 0.20
+        self.competition_emission_allocation = 0.20
         self.emission_rank_shares = [0.20, 0.20, 0.20, 0.20, 0.20]
         self.alpha_stake_weigh_factor = CONFIG.score.alpha_stake_weigh_factor
         self.emission_liquidation_weigh_factor = (
@@ -50,6 +63,7 @@ class MinerManager:
         )
 
         self.metagraph = metagraph
+        self.competition_repository = competition_repository
         self.config_url = CONFIG.sql.url
         self.local_db_path = "video_subnet_validator.db"
         logger.info(f"Connecting to Redis at {CONFIG.redis.host}:{CONFIG.redis.port}")
@@ -2107,15 +2121,61 @@ class MinerManager:
             emission_liquidation_stats,
         )
 
+    def _competition_rewards_by_uid(
+        self,
+    ) -> tuple[str | None, List[tuple[int, int, float]]]:
+        repository = getattr(self, "competition_repository", None)
+        if repository is None:
+            logger.warning(
+                "Competition rewards unavailable: competition ranking database "
+                "is not configured in the inference process"
+            )
+            return None, []
+
+        rewards = []
+        hotkeys = list(getattr(self.metagraph, "hotkeys", []))
+        competition_id, recipients = repository.latest_competition_reward_context()
+        if not recipients:
+            logger.warning(
+                "Competition rewards unavailable: competition_id={} has no "
+                "eligible completed podium",
+                competition_id,
+            )
+            return competition_id, []
+        for hotkey, rank, reward_share in recipients:
+            try:
+                uid = hotkeys.index(hotkey)
+            except ValueError:
+                logger.warning(
+                    "Competition reward skipped: competition_id={} podium "
+                    "hotkey={} rank={} is not present in the current metagraph",
+                    competition_id,
+                    hotkey,
+                    rank,
+                )
+                continue
+            rewards.append(
+                (uid, rank, self.competition_emission_allocation * reward_share)
+            )
+        if not rewards or rewards[0][1] != 1:
+            logger.warning(
+                "Competition rewards disabled for competition_id={} because the "
+                "eligible current-metagraph recipients do not include rank 1",
+                competition_id,
+            )
+            return competition_id, []
+        return competition_id, rewards
+
     @property
     def weights(self):
         """
-        Calculate weights with fixed task allocations and top-five shares.
-        Compression receives 80% and upscaling receives 20% of the pre-burn
-        miner pool. Within each task pool, the top five miners start from 20%
-        each, then optional alpha stake weighing reallocates those non-zero
-        shares and optional emission liquidation weighing reallocates them
-        again within the same task pool. All lower ranks receive zero.
+        Calculate inference and competition weights.
+
+        Before a competition podium exists, compression inference receives 80%
+        and upscaling inference receives 20%. A finalized podium moves 20% into
+        the competition pool, split 70%/20%/10% across ranks 1-3, while the
+        remaining 60% stays with compression inference. If there are no eligible
+        inference miners, the available competition podium receives the full pie.
         """
         # Collect eligible miners by task type, then rank each task pool separately.
         compression_miners = []
@@ -2142,26 +2202,83 @@ class MinerManager:
             [uid for uid, _, _ in compression_miners + upscaling_miners]
         )
         
-        # Initialize result arrays
-        uids = []
-        scores = []
+        competition_id, competition_rewards = self._competition_rewards_by_uid()
+        has_inference_miners = bool(compression_miners or upscaling_miners)
+        if not has_inference_miners and competition_rewards:
+            allocated_total = sum(
+                score for _, _, score in competition_rewards
+            )
+            competition_rewards = [
+                (uid, rank, score / allocated_total)
+                for uid, rank, score in competition_rewards
+            ]
+            logger.info(
+                "No eligible inference miners found; competition_id={} podium "
+                "receives the full distributable weight",
+                competition_id,
+            )
+        competition_reward_total = sum(score for _, _, score in competition_rewards)
+        compression_allocation = max(
+            0.0,
+            self.compression_emission_allocation - competition_reward_total,
+        )
+
+        inference_scores_by_uid: dict[int, float] = {}
+
+        def add_inference_score(uid: int, score: float) -> None:
+            inference_scores_by_uid[uid] = (
+                inference_scores_by_uid.get(uid, 0.0) + score
+            )
 
         for uid, score in self._apply_rank_curve(
             compression_miners,
-            self.compression_emission_allocation,
+            compression_allocation,
             "compression",
             emission_liquidation_stats,
         ):
-            uids.append(uid)
-            scores.append(score)
+            add_inference_score(uid, score)
         for uid, score in self._apply_rank_curve(
             upscaling_miners,
             self.upscaling_emission_allocation,
             "upscaling",
             emission_liquidation_stats,
         ):
-            uids.append(uid)
-            scores.append(score)
+            add_inference_score(uid, score)
+
+        scores_by_uid = dict(inference_scores_by_uid)
+        inference_tasks = {
+            **{uid: "compression" for uid, _, _ in compression_miners},
+            **{uid: "upscaling" for uid, _, _ in upscaling_miners},
+        }
+        hotkeys = list(getattr(self.metagraph, "hotkeys", []))
+        for uid, competition_rank, competition_score in competition_rewards:
+            inference_score = inference_scores_by_uid.get(uid)
+            combined_score = scores_by_uid.get(uid, 0.0) + competition_score
+            scores_by_uid[uid] = combined_score
+            if inference_score is not None:
+                hotkey = hotkeys[uid] if uid < len(hotkeys) else "unknown"
+                final_score = combined_score * (1 - self.burn_proportion)
+                logger.info(
+                    "Inference/competition reward overlap: competition_id={} "
+                    "hotkey={} uid={} "
+                    "inference_task={} competition_rank={} "
+                    "inference_weight={:.10f} competition_weight={:.10f} "
+                    "combined_pre_burn_weight={:.10f} final_weight={:.10f} "
+                    "non_zero_emission={}",
+                    competition_id,
+                    hotkey,
+                    uid,
+                    inference_tasks[uid],
+                    competition_rank,
+                    inference_score,
+                    competition_score,
+                    combined_score,
+                    final_score,
+                    final_score > 0.0,
+                )
+
+        uids = list(scores_by_uid)
+        scores = list(scores_by_uid.values())
         
         # Apply the configured burn only when it assigns a positive weight.
         total_scores = sum(scores)
@@ -2186,17 +2303,24 @@ class MinerManager:
         compression_uids = {uid for uid, _, _ in compression_miners}
         upscaling_uids = {uid for uid, _, _ in upscaling_miners}
         compression_total_weight = sum(
-            scores[i] for i, uid in enumerate(uids) if uid in compression_uids
+            inference_scores_by_uid.get(uid, 0.0) * (1 - self.burn_proportion)
+            for uid in compression_uids
         )
         upscaling_total_weight = sum(
-            scores[i] for i, uid in enumerate(uids) if uid in upscaling_uids
+            inference_scores_by_uid.get(uid, 0.0) * (1 - self.burn_proportion)
+            for uid in upscaling_uids
+        )
+        competition_total_weight = competition_reward_total * (
+            1 - self.burn_proportion
         )
         
         logger.info(
-            f"Reward distribution: {compression_count} compression miners "
+            f"Reward distribution: competition_id={competition_id or 'none'}, "
+            f"{compression_count} compression miners "
             f"({compression_total_weight:.3f} weight), {upscaling_count} "
-            f"upscaling miners ({upscaling_total_weight:.3f} weight), alpha "
-            f"stake weigh factor: {self.alpha_stake_weigh_factor:.3f}, "
+            f"upscaling miners ({upscaling_total_weight:.3f} weight), "
+            f"competition podium ({competition_total_weight:.3f} weight), "
+            f"alpha stake weigh factor: {self.alpha_stake_weigh_factor:.3f}, "
             f"emission liquidation weigh factor: "
             f"{self.emission_liquidation_weigh_factor:.3f}, "
             f"emission liquidation window epochs: "

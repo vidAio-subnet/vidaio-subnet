@@ -9,19 +9,21 @@ uploaded S3 URL.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
 import uuid
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from pathlib import Path
+from typing import Literal, Optional
 
 import boto3
 import httpx
 from botocore.config import Config
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,16 +47,22 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Video Upscaling Service", lifespan=lifespan)
 
 VIDEO2X_BIN = os.getenv("VIDEO2X_BIN", "video2x")
-VIDEO2X_DEVICE = (os.getenv("VIDEO2X_DEVICE") or os.getenv("VIDEO2X_GPU") or "0").strip()
+VIDEO2X_DEVICE = (
+    os.getenv("VIDEO2X_DEVICE") or os.getenv("VIDEO2X_GPU") or "0"
+).strip()
 VIDEO2X_CODEC = os.getenv("VIDEO2X_CODEC", "av1_nvenc").strip()
-VIDEO2X_ALLOW_REQUEST_CODEC = os.getenv("VIDEO2X_ALLOW_REQUEST_CODEC", "false").lower() in (
+VIDEO2X_ALLOW_REQUEST_CODEC = os.getenv(
+    "VIDEO2X_ALLOW_REQUEST_CODEC", "false"
+).lower() in (
     "1",
     "true",
     "yes",
 )
 VIDEO2X_COMMON_ENCODER_ARGS = [
     arg.strip()
-    for arg in os.getenv("VIDEO2X_COMMON_ENCODER_ARGS", "--pix-fmt=yuv420p,--max-b-frames=0").split(",")
+    for arg in os.getenv(
+        "VIDEO2X_COMMON_ENCODER_ARGS", "--pix-fmt=yuv420p,--max-b-frames=0"
+    ).split(",")
     if arg.strip()
 ]
 VIDEO2X_ENCODER_OPTIONS = [
@@ -66,9 +74,19 @@ VIDEO2X_ENCODER_OPTIONS = [
     if opt.strip()
 ]
 SHARED_VOLUME_PATH = os.getenv("SHARED_VOLUME_PATH", "/tmp/organic-proxy")
-DISABLE_REMOTE_IO = os.getenv("DISABLE_REMOTE_IO", "false").lower() in ("1", "true", "yes")
+DISABLE_REMOTE_IO = os.getenv("DISABLE_REMOTE_IO", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+COMPETITION_INPUT_ROOT = os.getenv("COMPETITION_INPUT_ROOT", "/evaluation-inputs")
+COMPETITION_OUTPUT_ROOT = os.getenv("COMPETITION_OUTPUT_ROOT", "/output")
+FFPROBE_BIN = os.getenv("FFPROBE_BIN", "ffprobe")
+MAX_COMPETITION_FRAME_COUNT_DELTA = 2
 MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_UPSCALING", "2"))
-MAX_QUEUE_SIZE = int(os.getenv("MAX_QUEUE_SIZE_UPSCALING") or os.getenv("MAX_QUEUE_SIZE", "5"))
+MAX_QUEUE_SIZE = int(
+    os.getenv("MAX_QUEUE_SIZE_UPSCALING") or os.getenv("MAX_QUEUE_SIZE", "5")
+)
 
 # Storage provider label only. Uploads use one S3-compatible code path.
 STORAGE_PROVIDER = os.getenv("MINER_STORAGE_PROVIDER", "s3").lower()
@@ -86,22 +104,32 @@ S3_PRESIGNED_EXPIRY = int(
     or os.getenv("S3_PRESIGNED_EXPIRY")
     or "3600"
 )
-PRESIGNED_URL_CLEANUP_GRACE_SECONDS = int(os.getenv("PRESIGNED_URL_CLEANUP_GRACE_SECONDS", "600"))
+PRESIGNED_URL_CLEANUP_GRACE_SECONDS = int(
+    os.getenv("PRESIGNED_URL_CLEANUP_GRACE_SECONDS", "600")
+)
 TEMP_FILE_TTL_SECONDS = int(
     os.getenv("MINER_TEMP_FILE_TTL_SECONDS")
     or os.getenv("TEMP_FILE_TTL_SECONDS")
     or str(min(S3_PRESIGNED_EXPIRY, 604800) + PRESIGNED_URL_CLEANUP_GRACE_SECONDS)
 )
 CLEANUP_INTERVAL_SECONDS = int(
-    os.getenv("MINER_CLEANUP_INTERVAL_SECONDS") or os.getenv("CLEANUP_INTERVAL_SECONDS") or "300"
+    os.getenv("MINER_CLEANUP_INTERVAL_SECONDS")
+    or os.getenv("CLEANUP_INTERVAL_SECONDS")
+    or "300"
 )
 CLEANUP_MAX_VOLUME_BYTES = int(
-    os.getenv("MINER_CLEANUP_MAX_VOLUME_BYTES") or os.getenv("CLEANUP_MAX_VOLUME_BYTES") or "9000000000"
+    os.getenv("MINER_CLEANUP_MAX_VOLUME_BYTES")
+    or os.getenv("CLEANUP_MAX_VOLUME_BYTES")
+    or "9000000000"
 )
 CLEANUP_MIN_FILE_AGE_SECONDS = int(
-    os.getenv("MINER_CLEANUP_MIN_FILE_AGE_SECONDS") or os.getenv("CLEANUP_MIN_FILE_AGE_SECONDS") or "60"
+    os.getenv("MINER_CLEANUP_MIN_FILE_AGE_SECONDS")
+    or os.getenv("CLEANUP_MIN_FILE_AGE_SECONDS")
+    or "60"
 )
-CLEANUP_ENABLED = os.getenv("MINER_CLEANUP_ENABLED", os.getenv("CLEANUP_ENABLED", "true")).lower() in (
+CLEANUP_ENABLED = os.getenv(
+    "MINER_CLEANUP_ENABLED", os.getenv("CLEANUP_ENABLED", "true")
+).lower() in (
     "1",
     "true",
     "yes",
@@ -111,7 +139,9 @@ STORAGE_CLEANUP_ENABLED = os.getenv(
 ).lower() in ("1", "true", "yes")
 STORAGE_CLEANUP_PREFIXES = [
     prefix.strip()
-    for prefix in os.getenv("MINER_STORAGE_CLEANUP_PREFIXES", "processing/,upscaling/").split(",")
+    for prefix in os.getenv(
+        "MINER_STORAGE_CLEANUP_PREFIXES", "processing/,upscaling/"
+    ).split(",")
     if prefix.strip()
 ]
 STORAGE_OBJECT_TTL_SECONDS = int(
@@ -187,7 +217,7 @@ async def _download_url(url: str, dest: str):
             with open(dest, "wb") as f:
                 async for chunk in resp.aiter_bytes(chunk_size=8192):
                     f.write(chunk)
-    log.info(f"Downloaded {os.path.getsize(dest) / (1024*1024):.1f} MB → {dest}")
+    log.info(f"Downloaded {os.path.getsize(dest) / (1024 * 1024):.1f} MB → {dest}")
 
 
 def _upload_to_s3(local_path: str, key: str) -> str:
@@ -238,7 +268,10 @@ def _normalize_path(path: str) -> str:
 
 def _is_shared_path(path: str) -> bool:
     try:
-        return os.path.commonpath([_shared_root(), _normalize_path(path)]) == _shared_root()
+        return (
+            os.path.commonpath([_shared_root(), _normalize_path(path)])
+            == _shared_root()
+        )
     except ValueError:
         return False
 
@@ -456,21 +489,98 @@ class UpscaleRequest(BaseModel):
         max_length=5,
         description="Input video path or URL list, up to 5 items",
     )
+    output_paths: list[str] = Field(
+        default_factory=list,
+        max_length=5,
+        description="Optional caller-owned local output paths",
+    )
     scale: int = Field(..., description="Upscaling factor: 2 or 4")
     task_id: str = Field("", description="Task ID for logging")
     model: str = Field("realesr-animevideov3", description="RealESRGAN model name")
     codec: str = Field(VIDEO2X_CODEC, description="Output video codec")
     cq: int = Field(35, description="Constant quality value")
 
+    @model_validator(mode="after")
+    def validate_output_paths(self):
+        if self.output_paths and len(self.output_paths) != len(self.video_paths):
+            raise ValueError("output_paths must have the same length as video_paths")
+        if len(self.output_paths) != len(set(self.output_paths)):
+            raise ValueError("output_paths values must be unique")
+        return self
+
 
 class UpscaleResponse(BaseModel):
-    output_paths: list[str] = Field(default_factory=list, description="Per-input local output paths")
-    output_urls: list[str] = Field(default_factory=list, description="Per-input S3 presigned URLs")
-    errors: list[Optional[str]] = Field(default_factory=list, description="Per-input errors")
+    output_paths: list[str] = Field(
+        default_factory=list, description="Per-input local output paths"
+    )
+    output_urls: list[str] = Field(
+        default_factory=list, description="Per-input S3 presigned URLs"
+    )
+    errors: list[Optional[str]] = Field(
+        default_factory=list, description="Per-input errors"
+    )
     success: bool
     queue_position: Optional[int] = None
     active_tasks: Optional[int] = None
     queued_tasks: Optional[int] = None
+
+
+class CompetitionUpscaleItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    evaluation_id: str = Field(
+        min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._-]+$"
+    )
+    input_path: str
+    output_path: str
+    task_type: Literal["HD24K", "SD2HD", "SD24K", "4K28K"]
+    scale: Literal[2, 4]
+    codec: Literal["AV1"] = "AV1"
+
+
+class CompetitionUpscaleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    competition_id: str = Field(min_length=1, max_length=64)
+    hotkey: str = Field(min_length=1, max_length=128)
+    batch_id: str = Field(min_length=1, max_length=128)
+    items: list[CompetitionUpscaleItem] = Field(min_length=1, max_length=5)
+
+    @model_validator(mode="after")
+    def validate_unique_values(self):
+        if len({item.evaluation_id for item in self.items}) != len(self.items):
+            raise ValueError("evaluation_id values must be unique")
+        if len({item.output_path for item in self.items}) != len(self.items):
+            raise ValueError("output_path values must be unique")
+        return self
+
+
+class CompetitionUpscaleResult(BaseModel):
+    evaluation_id: str
+    success: bool
+    output_path: str | None = None
+    reason_code: str | None = None
+    error: str | None = None
+    processing_started_at: datetime
+    processing_finished_at: datetime
+    runtime_seconds: float
+
+    @model_validator(mode="after")
+    def validate_result(self):
+        if self.processing_finished_at < self.processing_started_at:
+            raise ValueError("processing timestamps are out of order")
+        if self.success != bool(self.output_path):
+            raise ValueError("successful results require exactly one output_path")
+        if not self.success and not self.reason_code:
+            raise ValueError("failed results require a reason_code")
+        return self
+
+
+class CompetitionUpscaleResponse(BaseModel):
+    competition_id: str
+    hotkey: str
+    batch_id: str
+    results: list[CompetitionUpscaleResult]
 
 
 @app.get("/health")
@@ -484,6 +594,11 @@ async def health():
         "video2x_allow_request_codec": VIDEO2X_ALLOW_REQUEST_CODEC,
         "video2x_common_encoder_args": VIDEO2X_COMMON_ENCODER_ARGS,
         "video2x_encoder_options": VIDEO2X_ENCODER_OPTIONS,
+        "competition_local_io": {
+            "remote_io_disabled": DISABLE_REMOTE_IO,
+            "input_root": COMPETITION_INPUT_ROOT,
+            "output_root": COMPETITION_OUTPUT_ROOT,
+        },
         **snapshot,
         "storage": _storage_config_status(),
         "cleanup": _cleanup_config_status(),
@@ -495,11 +610,20 @@ async def queue_status():
     return await _queue_snapshot()
 
 
-async def _upscale_one(req: UpscaleRequest, input_video: str, task_label: str) -> UpscaleResponse:
+async def _upscale_one(
+    req: UpscaleRequest,
+    input_video: str,
+    task_label: str,
+    *,
+    requested_output_path: str | None = None,
+) -> UpscaleResponse:
     remote_mode = _is_url(input_video)
 
     if remote_mode and DISABLE_REMOTE_IO:
-        return UpscaleResponse(success=False, errors=["Remote URL input is disabled for this local-only service"])
+        return UpscaleResponse(
+            success=False,
+            errors=["Remote URL input is disabled for this local-only service"],
+        )
 
     local_input = ""
     output_path = ""
@@ -518,39 +642,55 @@ async def _upscale_one(req: UpscaleRequest, input_video: str, task_label: str) -
 
             # --- Resolve input to local path ---
             if remote_mode:
-                local_input = os.path.join(SHARED_VOLUME_PATH, f"{task_label}_input.mp4")
+                local_input = os.path.join(
+                    SHARED_VOLUME_PATH, f"{task_label}_input.mp4"
+                )
                 await _track_temp_files(local_input)
                 try:
                     await _download_url(input_video, local_input)
                 except Exception as e:
                     _cleanup(local_input)
-                    return UpscaleResponse(success=False, errors=[f"Failed to download input: {e}"])
+                    return UpscaleResponse(
+                        success=False, errors=[f"Failed to download input: {e}"]
+                    )
             else:
                 local_input = input_video
                 if not os.path.exists(local_input):
-                    raise HTTPException(status_code=400, detail=f"Input file not found: {local_input}")
+                    raise HTTPException(
+                        status_code=400, detail=f"Input file not found: {local_input}"
+                    )
                 await _track_temp_files(local_input)
 
             basename = os.path.splitext(os.path.basename(local_input))[0]
             output_filename = f"{basename}_upscaled_{req.scale}x.mp4"
-            output_path = os.path.join(SHARED_VOLUME_PATH, output_filename)
+            output_path = requested_output_path or os.path.join(
+                SHARED_VOLUME_PATH, output_filename
+            )
             await _track_temp_files(output_path)
 
             cmd = [
                 VIDEO2X_BIN,
-                "-i", local_input,
-                "-o", output_path,
-                "-p", "realesrgan",
-                "-s", str(req.scale),
+                "-i",
+                local_input,
+                "-o",
+                output_path,
+                "-p",
+                "realesrgan",
+                "-s",
+                str(req.scale),
             ]
             if VIDEO2X_DEVICE:
                 cmd.extend(["-d", VIDEO2X_DEVICE])
             cmd.extend(VIDEO2X_COMMON_ENCODER_ARGS)
             codec = req.codec if VIDEO2X_ALLOW_REQUEST_CODEC else VIDEO2X_CODEC
-            cmd.extend([
-                "--realesrgan-model", req.model,
-                "-c", codec,
-            ])
+            cmd.extend(
+                [
+                    "--realesrgan-model",
+                    req.model,
+                    "-c",
+                    codec,
+                ]
+            )
             for option in VIDEO2X_ENCODER_OPTIONS:
                 cmd.extend(["-e", option.format(cq=req.cq)])
 
@@ -577,27 +717,40 @@ async def _upscale_one(req: UpscaleRequest, input_video: str, task_label: str) -
                     log.error(f"[{task_label}] {run_error}")
 
         snapshot = await _queue_snapshot()
-        stats = dict(active_tasks=snapshot["active_tasks"], queued_tasks=snapshot["queued_tasks"])
+        stats = dict(
+            active_tasks=snapshot["active_tasks"], queued_tasks=snapshot["queued_tasks"]
+        )
 
         if proc is None:
             _cleanup(output_path)
             if remote_mode:
                 _cleanup(local_input)
-            return UpscaleResponse(success=False, errors=[run_error or "Video2X did not start"], **stats)
+            return UpscaleResponse(
+                success=False, errors=[run_error or "Video2X did not start"], **stats
+            )
 
         if proc.returncode != 0:
-            err_msg = _format_process_output(stdout, stderr) or "Video2X failed without output"
-            log.error(f"[{task_label}] video2x failed (rc={proc.returncode}): {err_msg}")
+            err_msg = (
+                _format_process_output(stdout, stderr)
+                or "Video2X failed without output"
+            )
+            log.error(
+                f"[{task_label}] video2x failed (rc={proc.returncode}): {err_msg}"
+            )
             _cleanup(output_path)
             if remote_mode:
                 _cleanup(local_input)
             return UpscaleResponse(success=False, errors=[err_msg], **stats)
 
         if not os.path.exists(output_path):
-            log.error(f"[{task_label}] Output file not found after video2x: {output_path}")
+            log.error(
+                f"[{task_label}] Output file not found after video2x: {output_path}"
+            )
             if remote_mode:
                 _cleanup(local_input)
-            return UpscaleResponse(success=False, errors=["Output file not created"], **stats)
+            return UpscaleResponse(
+                success=False, errors=["Output file not created"], **stats
+            )
 
         # --- Remote mode: upload result to S3, return URL ---
         if remote_mode:
@@ -605,22 +758,34 @@ async def _upscale_one(req: UpscaleRequest, input_video: str, task_label: str) -
                 s3_key = f"processing/{task_label}/{output_filename}"
                 output_url = _upload_to_s3(output_path, s3_key)
                 log.info(f"[{task_label}] Upscaling complete (remote): {output_url}")
-                return UpscaleResponse(output_urls=[output_url], errors=[None], success=True, **stats)
+                return UpscaleResponse(
+                    output_urls=[output_url], errors=[None], success=True, **stats
+                )
             except Exception as e:
                 log.error(f"[{task_label}] S3 upload failed: {e}")
-                return UpscaleResponse(success=False, errors=[f"S3 upload failed: {e}"], **stats)
+                return UpscaleResponse(
+                    success=False, errors=[f"S3 upload failed: {e}"], **stats
+                )
             finally:
                 _cleanup(local_input, output_path)
 
         log.info(f"[{task_label}] Upscaling complete (local): {output_path}")
-        return UpscaleResponse(output_paths=[output_path], errors=[None], success=True, **stats)
+        return UpscaleResponse(
+            output_paths=[output_path], errors=[None], success=True, **stats
+        )
     finally:
         await _untrack_temp_files(local_input, output_path)
 
 
 def _combine_upscale_responses(responses: list[UpscaleResponse]) -> UpscaleResponse:
-    output_paths = [response.output_paths[0] if response.output_paths else "" for response in responses]
-    output_urls = [response.output_urls[0] if response.output_urls else "" for response in responses]
+    output_paths = [
+        response.output_paths[0] if response.output_paths else ""
+        for response in responses
+    ]
+    output_urls = [
+        response.output_urls[0] if response.output_urls else ""
+        for response in responses
+    ]
     errors = [response.errors[0] if response.errors else None for response in responses]
     success = all(response.success for response in responses)
     latest = responses[-1] if responses else None
@@ -636,8 +801,218 @@ def _combine_upscale_responses(responses: list[UpscaleResponse]) -> UpscaleRespo
     )
 
 
-@app.post("/upscale", response_model=UpscaleResponse)
-async def upscale(req: UpscaleRequest):
+def _competition_input_path(raw_path: str) -> Path:
+    if _is_url(raw_path) or not os.path.isabs(raw_path):
+        raise ValueError("competition input must be an absolute local path")
+    root = Path(COMPETITION_INPUT_ROOT).resolve(strict=True)
+    path = Path(raw_path).resolve(strict=True)
+    if path == root or not path.is_relative_to(root) or not path.is_file():
+        raise ValueError("competition input must be a file below /evaluation-inputs")
+    return path
+
+
+def _competition_output_path(raw_path: str) -> Path:
+    if (
+        _is_url(raw_path)
+        or not os.path.isabs(raw_path)
+        or not raw_path.lower().endswith(".mp4")
+    ):
+        raise ValueError("competition output must be an absolute local MP4 path")
+    root = Path(COMPETITION_OUTPUT_ROOT).resolve(strict=True)
+    path = Path(raw_path)
+    if ".." in path.parts:
+        raise ValueError("competition output cannot contain traversal")
+    lexical_root = Path(COMPETITION_OUTPUT_ROOT).absolute()
+    if path == lexical_root or not path.is_relative_to(lexical_root):
+        raise ValueError("competition output must be below /output")
+    parent = path.parent
+    if not parent.is_dir():
+        raise ValueError("competition output parent must already exist")
+    resolved = path.resolve(strict=False)
+    if resolved == root or not resolved.is_relative_to(root):
+        raise ValueError("competition output must be below /output")
+    current = root
+    for part in resolved.relative_to(root).parts[:-1]:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError("competition output cannot traverse symlinks")
+    if path.exists() or path.is_symlink():
+        raise ValueError("competition output must not overwrite an existing path")
+    return resolved
+
+
+async def _probe_media(path: Path) -> dict:
+    process = await asyncio.create_subprocess_exec(
+        FFPROBE_BIN,
+        "-v",
+        "error",
+        "-show_entries",
+        "stream=codec_type,codec_name,width,height,pix_fmt,sample_aspect_ratio,duration,nb_read_frames:format=format_name,duration",
+        "-count_frames",
+        "-of",
+        "json",
+        str(path),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    if process.returncode != 0:
+        raise ValueError(f"ffprobe failed: {stderr.decode(errors='replace')[:200]}")
+    return json.loads(stdout)
+
+
+async def _validate_competition_media(
+    input_path: Path, output_path: Path, scale: int
+) -> None:
+    input_probe, output_probe = await asyncio.gather(
+        _probe_media(input_path), _probe_media(output_path)
+    )
+    input_video = next(
+        (
+            stream
+            for stream in input_probe.get("streams", [])
+            if stream.get("codec_type") == "video"
+        ),
+        None,
+    )
+    output_video = next(
+        (
+            stream
+            for stream in output_probe.get("streams", [])
+            if stream.get("codec_type") == "video"
+        ),
+        None,
+    )
+    if not input_video or not output_video:
+        raise ValueError("input and output must contain a video stream")
+    if output_video.get("codec_name") != "av1":
+        raise ValueError("competition output codec must be AV1")
+    if (
+        int(output_video.get("width", 0)) != int(input_video.get("width", 0)) * scale
+        or int(output_video.get("height", 0))
+        != int(input_video.get("height", 0)) * scale
+    ):
+        raise ValueError("competition output dimensions do not match scale factor")
+    if output_video.get("sample_aspect_ratio") not in (None, "1:1"):
+        raise ValueError("competition output must use square pixels")
+    if not str(output_video.get("pix_fmt", "")).startswith("yuv"):
+        raise ValueError("competition output must use a YUV pixel format")
+    if "mp4" not in output_probe.get("format", {}).get("format_name", ""):
+        raise ValueError("competition output must use an MP4 container")
+    input_duration = float(
+        input_video.get("duration")
+        or input_probe.get("format", {}).get("duration")
+        or 0
+    )
+    output_duration = float(
+        output_video.get("duration")
+        or output_probe.get("format", {}).get("duration")
+        or 0
+    )
+    duration_tolerance = max(0.2, input_duration * 0.02)
+    if (
+        input_duration <= 0
+        or output_duration <= 0
+        or abs(input_duration - output_duration) > duration_tolerance
+    ):
+        raise ValueError("competition output duration does not match the input")
+    input_frames = int(input_video.get("nb_read_frames") or 0)
+    output_frames = int(output_video.get("nb_read_frames") or 0)
+    if (
+        input_frames
+        and output_frames
+        and abs(input_frames - output_frames) > MAX_COMPETITION_FRAME_COUNT_DELTA
+    ):
+        raise ValueError(
+            "competition output frame count does not match the input "
+            f"(input={input_frames}, output={output_frames})"
+        )
+
+
+async def _upscale_competition(
+    req: CompetitionUpscaleRequest,
+) -> CompetitionUpscaleResponse:
+    if not DISABLE_REMOTE_IO:
+        raise HTTPException(
+            status_code=503, detail="competition route requires DISABLE_REMOTE_IO=true"
+        )
+    prepared: list[tuple[CompetitionUpscaleItem, Path, Path]] = []
+    try:
+        for item in req.items:
+            prepared.append(
+                (
+                    item,
+                    _competition_input_path(item.input_path),
+                    _competition_output_path(item.output_path),
+                )
+            )
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    async def run(
+        item: CompetitionUpscaleItem, input_path: Path, output_path: Path
+    ) -> CompetitionUpscaleResult:
+        started = time.monotonic()
+        processing_started_at = datetime.now(timezone.utc)
+        legacy = UpscaleRequest(
+            video_paths=[str(input_path)],
+            scale=item.scale,
+            task_id=item.evaluation_id,
+        )
+        response = await _upscale_one(
+            legacy,
+            str(input_path),
+            item.evaluation_id,
+            requested_output_path=str(output_path),
+        )
+        if not response.success:
+            processing_finished_at = datetime.now(timezone.utc)
+            return CompetitionUpscaleResult(
+                evaluation_id=item.evaluation_id,
+                success=False,
+                reason_code="UPSCALE_FAILED",
+                error=response.errors[0] if response.errors else "upscale failed",
+                processing_started_at=processing_started_at,
+                processing_finished_at=processing_finished_at,
+                runtime_seconds=time.monotonic() - started,
+            )
+        try:
+            await _validate_competition_media(input_path, output_path, item.scale)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            _cleanup(str(output_path))
+            processing_finished_at = datetime.now(timezone.utc)
+            return CompetitionUpscaleResult(
+                evaluation_id=item.evaluation_id,
+                success=False,
+                reason_code="OUTPUT_MEDIA_INVALID",
+                error=str(exc),
+                processing_started_at=processing_started_at,
+                processing_finished_at=processing_finished_at,
+                runtime_seconds=time.monotonic() - started,
+            )
+        processing_finished_at = datetime.now(timezone.utc)
+        return CompetitionUpscaleResult(
+            evaluation_id=item.evaluation_id,
+            success=True,
+            output_path=item.output_path,
+            processing_started_at=processing_started_at,
+            processing_finished_at=processing_finished_at,
+            runtime_seconds=time.monotonic() - started,
+        )
+
+    results = await asyncio.gather(*(run(*item) for item in prepared))
+    return CompetitionUpscaleResponse(
+        competition_id=req.competition_id,
+        hotkey=req.hotkey,
+        batch_id=req.batch_id,
+        results=list(results),
+    )
+
+
+@app.post("/upscale", response_model=UpscaleResponse | CompetitionUpscaleResponse)
+async def upscale(req: UpscaleRequest | CompetitionUpscaleRequest):
+    if isinstance(req, CompetitionUpscaleRequest):
+        return await _upscale_competition(req)
     if req.scale not in (2, 4):
         raise HTTPException(status_code=400, detail="scale must be 2 or 4")
 
@@ -645,16 +1020,53 @@ async def upscale(req: UpscaleRequest):
     if any(not video_path for video_path in input_videos):
         raise HTTPException(status_code=400, detail="video_paths entries are required")
 
+    requested_outputs: list[str | None] = [None] * len(input_videos)
+    if req.output_paths:
+        if not DISABLE_REMOTE_IO:
+            raise HTTPException(
+                status_code=503,
+                detail="caller-owned output_paths require DISABLE_REMOTE_IO=true",
+            )
+        try:
+            input_videos = [str(_competition_input_path(path)) for path in input_videos]
+            requested_outputs = [
+                str(_competition_output_path(path.strip())) for path in req.output_paths
+            ]
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     base_task_id = req.task_id or uuid.uuid4().hex[:8]
     responses = await asyncio.gather(
         *[
             _upscale_one(
                 req,
                 input_video,
-                base_task_id if len(input_videos) == 1 else f"{base_task_id}-{index + 1}",
+                base_task_id
+                if len(input_videos) == 1
+                else f"{base_task_id}-{index + 1}",
+                requested_output_path=requested_outputs[index],
             )
             for index, input_video in enumerate(input_videos)
         ]
     )
 
-    return responses[0] if len(responses) == 1 else _combine_upscale_responses(responses)
+    if req.output_paths:
+        for index, response in enumerate(responses):
+            if not response.success:
+                continue
+            try:
+                await _validate_competition_media(
+                    Path(input_videos[index]),
+                    Path(requested_outputs[index] or ""),
+                    req.scale,
+                )
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                _cleanup(requested_outputs[index] or "")
+                responses[index] = UpscaleResponse(
+                    success=False,
+                    errors=[f"OUTPUT_MEDIA_INVALID: {exc}"],
+                )
+
+    return (
+        responses[0] if len(responses) == 1 else _combine_upscale_responses(responses)
+    )
