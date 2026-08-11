@@ -83,6 +83,7 @@ def _review_issues(
     index: EvaluationIndex | None,
     issues: tuple[DatasetValidationIssue, ...],
     *,
+    manifest: CompetitionManifest,
     command: str,
     assume_yes: bool,
     index_path: str,
@@ -101,7 +102,7 @@ def _review_issues(
     if index is None:
         raise DatasetError("all evaluation sources are invalid")
     if issues and command != "prepare":
-        index = exclude_invalid_sources(index, issues)
+        index = exclude_invalid_sources(index, issues, manifest)
     if issues:
         print(
             f"Disqualified {count} evaluation entry/entries; "
@@ -155,7 +156,6 @@ def main() -> int:
     seal.add_argument("--environment", default="main")
     seal.add_argument("--database-url", default="sqlite:///video_subnet_validator.db")
     seal.add_argument("--actor", default="competition-dataset-cli")
-    _add_yes_argument(seal)
 
     args = parser.parse_args()
     manifest = load_manifest(args.manifest)
@@ -167,6 +167,7 @@ def main() -> int:
         evaluation_index = _review_issues(
             evaluation_index,
             issues,
+            manifest=manifest,
             command="prepare",
             assume_yes=args.yes,
             index_path=args.index,
@@ -179,13 +180,13 @@ def main() -> int:
 
     evaluation_index = _index(args.index)
     if args.command in {"validate", "upload"}:
-        original_digest = evaluation_index.digest()
         issues = local_index_validation_issues(
             evaluation_index, manifest, Path(args.source_dir)
         )
         evaluation_index = _review_issues(
             evaluation_index,
             issues,
+            manifest=manifest,
             command=args.command,
             assume_yes=args.yes,
             index_path=args.index,
@@ -204,11 +205,6 @@ def main() -> int:
             manifest,
             evaluation_index,
             Path(args.source_dir),
-            expected_existing_digest=(
-                original_digest
-                if original_digest != evaluation_index.digest()
-                else None
-            ),
         )
         print(
             f"Uploaded and read-back verified {len(evaluation_index.items)} item(s) "
@@ -222,30 +218,11 @@ def main() -> int:
     repository = CompetitionRepository(args.database_url)
     issues = store.validation_issues(manifest, remote_index)
     if issues:
-        registered_competition = repository.get(manifest.competition_id)
-        if (
-            registered_competition is not None
-            and registered_competition.dataset_index_checksum
-        ):
-            raise DatasetError(
-                "evaluation dataset is already sealed; flagged entries cannot be "
-                "disqualified"
-            )
-        evaluation_index = _review_issues(
-            evaluation_index,
-            issues,
-            command="seal",
-            assume_yes=args.yes,
-            index_path=args.index,
+        raise DatasetError(
+            format_validation_issues(issues)
+            + "\nThe uploaded dataset is immutable; prepare and upload a new "
+            "competition ID and Volume."
         )
-        store.replace_index(
-            manifest,
-            evaluation_index,
-            expected_existing_digest=remote_index.digest(),
-        )
-        remaining_issues = store.validation_issues(manifest, evaluation_index)
-        if remaining_issues:
-            raise DatasetError(format_validation_issues(remaining_issues))
     now = datetime.now(timezone.utc)
     registered = ensure_manifest_registered(
         repository,

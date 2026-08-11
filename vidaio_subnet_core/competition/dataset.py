@@ -23,6 +23,7 @@ from pydantic import (
     model_validator,
 )
 
+from .batching import canonical_batch_assignments
 from .config import CompetitionManifest
 
 
@@ -90,8 +91,17 @@ class EvaluationIndexItem(BaseModel):
         return str(path)
 
     @property
+    def logical_source_path(self) -> str:
+        """Return the path visible inside a batch-scoped input mount."""
+
+        path = PurePosixPath(self.source_path)
+        if len(path.parts) >= 3 and path.parts[0] == "batches":
+            return str(PurePosixPath(*path.parts[2:]))
+        return str(path)
+
+    @property
     def sandbox_path(self) -> str:
-        return f"/evaluation-inputs/{self.source_path}"
+        return f"/evaluation-inputs/{self.logical_source_path}"
 
 
 COMPRESSION_VMAF_THRESHOLDS = (85.0, 89.0, 93.0)
@@ -143,7 +153,8 @@ class EvaluationIndex(BaseModel):
         sources: dict[str, EvaluationIndexItem] = {}
         variants: set[tuple[str, str, float, int | None]] = set()
         for item in self.items:
-            previous = sources.setdefault(item.source_path, item)
+            logical_source_path = item.logical_source_path
+            previous = sources.setdefault(logical_source_path, item)
             if (previous.size_bytes, previous.sha256) != (
                 item.size_bytes,
                 item.sha256,
@@ -162,7 +173,7 @@ class EvaluationIndex(BaseModel):
                 )
             if isinstance(item, CompressionEvaluationIndexItem):
                 query = (
-                    item.source_path,
+                    logical_source_path,
                     item.codec_mode,
                     item.vmaf_threshold,
                     item.target_bitrate,
@@ -192,7 +203,29 @@ class EvaluationIndex(BaseModel):
         minimum = manifest.min_video_length.total_seconds()
         maximum = manifest.max_video_length.total_seconds()
         duration_violations = []
-        unique_sources = {item.source_path: item for item in self.items}
+        assignments = self.canonical_batch_assignments(manifest)
+        invalid_paths = []
+        for item in self.items:
+            batch_index, _position = assignments[item.evaluation_id]
+            logical_path = PurePosixPath(item.logical_source_path)
+            expected = f"batches/{batch_index:06d}/{logical_path}"
+            if not logical_path.parts or logical_path.parts[0] != "inputs":
+                invalid_paths.append(
+                    f"  - evaluation_id={item.evaluation_id} "
+                    f"source must be below inputs/: {item.source_path}"
+                )
+                continue
+            if item.source_path != expected:
+                invalid_paths.append(
+                    f"  - evaluation_id={item.evaluation_id} "
+                    f"expected={expected} observed={item.source_path}"
+                )
+        if invalid_paths:
+            raise DatasetError(
+                "evaluation source paths do not match their canonical batch:\n"
+                + "\n".join(invalid_paths)
+            )
+        unique_sources = {item.logical_source_path: item for item in self.items}
         for item in unique_sources.values():
             if not minimum <= item.duration_seconds <= maximum:
                 duration_violations.append(
@@ -206,6 +239,35 @@ class EvaluationIndex(BaseModel):
                 f"duration range [{minimum:.3f}s, {maximum:.3f}s]:\n"
                 + "\n".join(duration_violations)
             )
+
+    def canonical_batch_assignments(
+        self, manifest: CompetitionManifest
+    ) -> dict[str, tuple[int, int]]:
+        return canonical_batch_assignments(
+            (
+                (item.evaluation_id, item.logical_source_path)
+                for item in self.items
+            ),
+            manifest.evaluation_batch_size,
+        )
+
+    def with_batch_scoped_source_paths(
+        self, manifest: CompetitionManifest
+    ) -> "EvaluationIndex":
+        assignments = self.canonical_batch_assignments(manifest)
+        items = tuple(
+            type(item).model_validate(
+                {
+                    **item.model_dump(mode="python"),
+                    "source_path": (
+                        f"batches/{assignments[item.evaluation_id][0]:06d}/"
+                        f"{item.logical_source_path}"
+                    ),
+                }
+            )
+            for item in self.items
+        )
+        return self.model_copy(update={"items": items})
 
 
 def _probe_video(path: Path, executable: str = "ffprobe") -> dict[str, Any]:
@@ -407,12 +469,12 @@ def _issue(
     )
 
 
-def _items_by_source(
+def _items_by_logical_source(
     index: EvaluationIndex,
 ) -> dict[str, tuple[EvaluationIndexItem, ...]]:
     grouped: dict[str, list[EvaluationIndexItem]] = {}
     for item in index.items:
-        grouped.setdefault(item.source_path, []).append(item)
+        grouped.setdefault(item.logical_source_path, []).append(item)
     return {path: tuple(items) for path, items in grouped.items()}
 
 
@@ -487,7 +549,7 @@ def prepare_index_candidates(
         EvaluationIndex(
             competition_id=manifest.competition_id,
             items=tuple(items),
-        )
+        ).with_batch_scoped_source_paths(manifest)
         if items
         else None
     )
@@ -521,11 +583,10 @@ def local_index_validation_issues(
 ) -> tuple[DatasetValidationIssue, ...]:
     """Reprobe local bytes and compare every scoring-relevant index field."""
 
-    if index.competition_id != manifest.competition_id:
-        raise DatasetError("dataset index competition_id does not match manifest")
+    index.validate_for_manifest(manifest)
     issues = []
     source_root = source_root.resolve()
-    for source_path, items in _items_by_source(index).items():
+    for source_path, items in _items_by_logical_source(index).items():
         reasons = []
         relative = PurePosixPath(source_path)
         if not relative.parts or relative.parts[0] != "inputs":
@@ -562,12 +623,20 @@ def local_index_validation_issues(
 def exclude_invalid_sources(
     index: EvaluationIndex,
     issues: tuple[DatasetValidationIssue, ...] | list[DatasetValidationIssue],
+    manifest: CompetitionManifest,
 ) -> EvaluationIndex:
     excluded = {issue.source_path for issue in issues}
-    remaining = tuple(item for item in index.items if item.source_path not in excluded)
+    remaining = tuple(
+        item
+        for item in index.items
+        if item.source_path not in excluded
+        and item.logical_source_path not in excluded
+    )
     if not remaining:
         raise DatasetError("all evaluation entries would be disqualified")
-    return index.model_copy(update={"items": remaining})
+    return index.model_copy(update={"items": remaining}).with_batch_scoped_source_paths(
+        manifest
+    )
 
 
 def validate_local_index(
@@ -677,78 +746,41 @@ class ModalVolumeStore:
         if index.competition_id != manifest.competition_id:
             raise DatasetError("dataset index competition_id does not match manifest")
         issues = []
-        for source_path, items in _items_by_source(index).items():
+        index.validate_for_manifest(manifest)
+        for source_path, items in _items_by_logical_source(index).items():
             reasons = []
-            try:
-                payload = self.read_bytes(
-                    manifest.evaluation_input_volume_name,
-                    source_path,
-                )
-            except DatasetError as exc:
-                issues.append(_issue(source_path, items, [str(exc)]))
-                continue
-            with tempfile.NamedTemporaryFile(suffix=".mp4") as source_file:
-                source_file.write(payload)
-                source_file.flush()
-                reasons.extend(
-                    _source_validation_reasons(
-                        items,
-                        manifest,
-                        Path(source_file.name),
-                        len(payload),
-                        sha256_bytes(payload),
-                        ffprobe_executable=ffprobe_executable,
-                        location="remote ",
+            for remote_path in dict.fromkeys(item.source_path for item in items):
+                try:
+                    payload = self.read_bytes(
+                        manifest.evaluation_input_volume_name,
+                        remote_path,
                     )
-                )
+                except DatasetError as exc:
+                    reasons.append(str(exc))
+                    continue
+                with tempfile.NamedTemporaryFile(suffix=".mp4") as source_file:
+                    source_file.write(payload)
+                    source_file.flush()
+                    reasons.extend(
+                        _source_validation_reasons(
+                            items,
+                            manifest,
+                            Path(source_file.name),
+                            len(payload),
+                            sha256_bytes(payload),
+                            ffprobe_executable=ffprobe_executable,
+                            location=f"remote {remote_path} ",
+                        )
+                    )
             if reasons:
                 issues.append(_issue(source_path, items, reasons))
         return tuple(issues)
-
-    def replace_index(
-        self,
-        manifest: CompetitionManifest,
-        index: EvaluationIndex,
-        *,
-        expected_existing_digest: str,
-    ) -> None:
-        """Atomically narrow an unsealed remote index after operator review."""
-
-        existing = self.load_index(manifest, validate_for_manifest=False)
-        if existing.digest() != expected_existing_digest:
-            raise DatasetError("remote evaluation index changed during validation")
-        existing_items = {
-            item.evaluation_id: item.model_dump(mode="json") for item in existing.items
-        }
-        if len(index.items) >= len(existing.items) or any(
-            existing_items.get(item.evaluation_id) != item.model_dump(mode="json")
-            for item in index.items
-        ):
-            raise DatasetError(
-                "replacement evaluation index must be a strict subset of the "
-                "existing index"
-            )
-        self._ensure_environment()
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", suffix=".json"
-        ) as index_file:
-            index_file.write(index.normalized_json())
-            index_file.flush()
-            with self._volume(manifest.evaluation_input_volume_name).batch_upload(
-                force=True
-            ) as batch:
-                batch.put_file(index_file.name, manifest.evaluation_index_path)
-        replaced = self.load_index(manifest)
-        if replaced.digest() != index.digest():
-            raise DatasetError("replacement evaluation index failed verification")
 
     def upload(
         self,
         manifest: CompetitionManifest,
         index: EvaluationIndex,
         source_root: Path,
-        *,
-        expected_existing_digest: str | None = None,
     ) -> None:
         validate_local_index(index, manifest, source_root)
         self._ensure_environment()
@@ -778,12 +810,10 @@ class ModalVolumeStore:
                 )
         if existing is not None:
             if existing.digest() != index.digest():
-                if existing.digest() != expected_existing_digest:
-                    raise DatasetError("the Volume already contains a different index")
-                self.replace_index(
-                    manifest,
-                    index,
-                    expected_existing_digest=expected_existing_digest,
+                raise DatasetError(
+                    "the Volume already contains a different index; the uploaded "
+                    "dataset is immutable, so "
+                    "use a new competition ID and Volume"
                 )
         else:
             volume = self._volume(volume_name, create_if_missing=True)
@@ -795,7 +825,7 @@ class ModalVolumeStore:
                 with volume.batch_upload(force=True) as batch:
                     unique_sources = {item.source_path: item for item in index.items}
                     for item in unique_sources.values():
-                        relative = PurePosixPath(item.source_path)
+                        relative = PurePosixPath(item.logical_source_path)
                         local_path = source_root.joinpath(*relative.parts[1:])
                         batch.put_file(local_path, f"/{item.source_path}")
                     batch.put_file(index_file.name, manifest.evaluation_index_path)

@@ -145,6 +145,17 @@ class Phase4DatasetTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(len(first.items), 12)
         self.assertEqual(len({item.source_path for item in first.items}), 12)
+        assignments = first.canonical_batch_assignments(manifest)
+        for item in first.items:
+            batch_index, _position = assignments[item.evaluation_id]
+            self.assertEqual(
+                item.source_path,
+                f"batches/{batch_index:06d}/{item.logical_source_path}",
+            )
+            self.assertEqual(
+                item.sandbox_path,
+                f"/evaluation-inputs/{item.logical_source_path}",
+            )
         self.assertTrue(
             all(
                 isinstance(item, CompressionEvaluationIndexItem) for item in first.items
@@ -198,9 +209,24 @@ class Phase4DatasetTests(unittest.TestCase):
         self.assertIsNotNone(candidate)
         assert candidate is not None
         self.assertEqual(len(candidate.items), 1)
-        self.assertEqual(candidate.items[0].source_path, "inputs/good.mp4")
+        self.assertEqual(
+            candidate.items[0].source_path,
+            "batches/000000/inputs/good.mp4",
+        )
         self.assertEqual(len(issues), 1)
         self.assertEqual(issues[0].source_path, "inputs/bad.mp4")
+
+    def test_manifest_validation_rejects_unscoped_source_path(self) -> None:
+        manifest = load_manifest(
+            ROOT / "competitions/manifests/examples/compression-competition.json"
+        )
+        evaluation_index = EvaluationIndex(
+            competition_id=manifest.competition_id,
+            items=(index_item("unscoped", 10),),
+        )
+
+        with self.assertRaisesRegex(DatasetError, "canonical batch"):
+            evaluation_index.validate_for_manifest(manifest)
 
     def test_local_validation_reprobes_and_excludes_all_source_variants(self) -> None:
         manifest = load_manifest(
@@ -243,7 +269,7 @@ class Phase4DatasetTests(unittest.TestCase):
             evaluation_index = EvaluationIndex(
                 competition_id=manifest.competition_id,
                 items=(*bad_items, good_item),
-            )
+            ).with_batch_scoped_source_paths(manifest)
 
             def probe(path, _executable):
                 return media_metadata(
@@ -262,7 +288,7 @@ class Phase4DatasetTests(unittest.TestCase):
 
         self.assertEqual(len(issues), 1)
         self.assertEqual(set(issues[0].evaluation_ids), {"bad-crf", "bad-vbr"})
-        filtered = exclude_invalid_sources(evaluation_index, issues)
+        filtered = exclude_invalid_sources(evaluation_index, issues, manifest)
         self.assertEqual([item.evaluation_id for item in filtered.items], ["good"])
 
     def test_disqualification_prompt_requires_yes_or_no(self) -> None:
@@ -291,7 +317,7 @@ class Phase4DatasetTests(unittest.TestCase):
                     update={"source_path": "inputs/long-clip.mp4"}
                 ),
             ),
-        )
+        ).with_batch_scoped_source_paths(manifest)
         with self.assertRaises(DatasetError) as captured:
             evaluation_index.validate_for_manifest(manifest)
         message = str(captured.exception)
@@ -429,36 +455,41 @@ class Phase4DatasetTests(unittest.TestCase):
                 )
             evaluation_index = EvaluationIndex(
                 competition_id=manifest.competition_id, items=tuple(items)
-            )
+            ).with_batch_scoped_source_paths(manifest)
             metadata = media_metadata()
             with patch(
                 "vidaio_subnet_core.competition.dataset._probe_video",
                 return_value=metadata,
             ):
                 store.upload(manifest, evaluation_index, source_root)
-            self.assertEqual(Volume.files["inputs/a.mp4"], values["a.mp4"])
-            self.assertEqual(Volume.files["inputs/b.mp4"], values["b.mp4"])
+            self.assertEqual(
+                Volume.files["batches/000000/inputs/a.mp4"], values["a.mp4"]
+            )
+            self.assertEqual(
+                Volume.files["batches/000000/inputs/b.mp4"], values["b.mp4"]
+            )
+            self.assertFalse(
+                any(path.startswith("inputs/") for path in Volume.files)
+            )
 
             narrowed = EvaluationIndex(
                 competition_id=manifest.competition_id,
                 items=(items[0],),
-            )
-            with patch(
-                "vidaio_subnet_core.competition.dataset._probe_video",
-                return_value=metadata,
+            ).with_batch_scoped_source_paths(manifest)
+            with (
+                patch(
+                    "vidaio_subnet_core.competition.dataset._probe_video",
+                    return_value=metadata,
+                ),
+                self.assertRaisesRegex(DatasetError, "dataset is immutable"),
             ):
-                store.upload(
-                    manifest,
-                    narrowed,
-                    source_root,
-                    expected_existing_digest=evaluation_index.digest(),
-                )
-            self.assertEqual(store.load_index(manifest), narrowed)
+                store.upload(manifest, narrowed, source_root)
+            self.assertEqual(store.load_index(manifest), evaluation_index)
 
             replaced = EvaluationIndex(
                 competition_id=manifest.competition_id,
                 items=tuple(reversed(items)),
-            )
+            ).with_batch_scoped_source_paths(manifest)
             with (
                 patch(
                     "vidaio_subnet_core.competition.dataset._probe_video",
@@ -569,7 +600,7 @@ class Phase4DatasetTests(unittest.TestCase):
         evaluation_index = EvaluationIndex(
             competition_id=manifest.competition_id,
             items=(item,),
-        )
+        ).with_batch_scoped_source_paths(manifest)
 
         with tempfile.TemporaryDirectory() as temp:
             source_root = Path(temp)
@@ -602,6 +633,10 @@ class Phase4DatasetTests(unittest.TestCase):
             "'{}' (created automatically if it was missing)",
             manifest.evaluation_input_volume_name,
             "main",
+        )
+        self.assertEqual(state["files"]["batches/000000/inputs/one.mp4"], payload)
+        self.assertNotIn(
+            "batches/000000/validator-evaluation/index.json", state["files"]
         )
 
 
@@ -709,7 +744,7 @@ class Phase4RepositoryTests(unittest.TestCase):
     def seal(self, *items: EvaluationIndexItem) -> EvaluationIndex:
         evaluation_index = EvaluationIndex(
             competition_id=self.competition_id, items=items
-        )
+        ).with_batch_scoped_source_paths(self.manifest)
         self.repository.seal_evaluation_dataset(
             self.competition_id,
             evaluation_index,
@@ -2357,6 +2392,7 @@ class Phase4CoordinatorTests(unittest.TestCase):
         )
         claimed = SimpleNamespace(
             batch_id="batch-forward-failed",
+            canonical_batch_index=0,
             hotkey="contender",
             evaluations=(
                 SimpleNamespace(
@@ -2433,6 +2469,7 @@ class Phase4CoordinatorTests(unittest.TestCase):
         )
         claimed = SimpleNamespace(
             batch_id="batch-failed-output",
+            canonical_batch_index=0,
             hotkey="contender",
             evaluations=(SimpleNamespace(history_id=7, attempt=1, item=item),),
         )
@@ -2464,7 +2501,10 @@ class Phase4CoordinatorTests(unittest.TestCase):
 
         class Runner:
             @staticmethod
-            def invoke_batch(_manifest, request, *, timeout_seconds, now):
+            def invoke_batch(
+                _manifest, request, *, input_sub_path, timeout_seconds, now
+            ):
+                del input_sub_path
                 del timeout_seconds
                 requested = request.items[0]
                 return CompetitionCompressionResponse(
@@ -2701,7 +2741,7 @@ class Phase4CoordinatorTests(unittest.TestCase):
             )
             evaluation_index = EvaluationIndex(
                 competition_id=competition_id, items=(item,)
-            )
+            ).with_batch_scoped_source_paths(manifest)
             repository.seal_evaluation_dataset(
                 competition_id, evaluation_index, now=NOW, actor="test"
             )
@@ -2723,15 +2763,22 @@ class Phase4CoordinatorTests(unittest.TestCase):
                     self.terminated = []
                     self.requests = []
 
-                def ensure_warm(self, _manifest, _hotkey):
-                    return SimpleNamespace(
-                        handle=SimpleNamespace(sandbox_id="sb-phase4"),
-                        record=SimpleNamespace(generation=1),
-                    )
+                @staticmethod
+                def probe_random_input_subpath(
+                    _manifest, _hotkey, _candidate_input_sub_paths
+                ):
+                    return {"global_index_absent": True}
 
                 def invoke_batch(
-                    self, _manifest, request, *, timeout_seconds, now
+                    self,
+                    _manifest,
+                    request,
+                    *,
+                    input_sub_path,
+                    timeout_seconds,
+                    now,
                 ):
+                    del input_sub_path
                     del timeout_seconds
                     self.requests.append(request)
                     return CompetitionCompressionResponse(
@@ -2826,7 +2873,8 @@ class Phase4CoordinatorTests(unittest.TestCase):
                 repository.get(competition_id).status,
                 CompetitionState.AWAITING_END_TIME.value,
             )
-            self.assertTrue(store.output_path.startswith("evaluations/batch-"))
+            self.assertTrue(store.output_path.startswith("batches/batch-"))
+            self.assertIn("/evaluations/one-vbr-vmaf89-8mbps.mp4", store.output_path)
             self.assertFalse(store.output_path.startswith("/output/"))
             media_score = calculate_compression_score(
                 vmaf_score=96,

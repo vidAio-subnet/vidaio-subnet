@@ -32,10 +32,12 @@ For compression competitions, `prepare` creates one evaluation query per
 physical source MP4. It deterministically selects CRF or VBR and a VMAF floor
 of 85, 89, or 93 using the manifest's `scoring_seed`; VBR queries also receive
 a deterministic random target of 5, 8, or 10 Mbps. Consequently, 20 source
-videos produce 20 evaluation rows. The format remains evaluation index schema
-version 2; validators continue to read older indexes for sealed competitions.
+videos produce 20 evaluation rows. Each indexed `source_path` includes its
+canonical `batches/<zero-padded-index>/` prefix; the miner sees only the
+remaining `inputs/...` path after that batch directory is mounted.
 
-Every stage fails closed on source-media problems. The CLI reports all flagged
+The local `prepare`, `validate`, and `upload` stages fail closed on source-media
+problems. The CLI reports all flagged
 sources and their evaluation IDs, then asks whether to disqualify those entries
 and continue. Type `yes` to remove every variant referencing the flagged source
 and rewrite the index, or `no` to abort without uploading or sealing it. Use
@@ -46,10 +48,11 @@ and pixel format, a positive rational sample aspect ratio, manifest duration
 bounds, and equality between the index and freshly probed metadata.
 
 Upload to the manifest's `evaluation_input_volume_name` in Modal `main`. The
-command verifies the uploaded index and every source object by reading them back.
+command verifies the uploaded index plus every indexed batch-scoped source
+object by reading it back. No duplicate root `inputs/` tree is uploaded.
 It refuses to replace a different index already present in the Volume. After
-operator confirmation it may safely narrow an exact prior copy of the index to
-a strict subset; it cannot replace it with modified or unrelated entries.
+upload, the index and canonical-batch trees are immutable. If remote validation
+fails during `seal`, create a new competition ID and Volume.
 
 ```bash
 python scripts/competition_dataset.py upload \

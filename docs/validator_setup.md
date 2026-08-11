@@ -417,10 +417,15 @@ and VMAF target (85, 89, or 93) are selected by deterministic pseudorandom choic
 seeded from the manifest; VBR queries also receive a 5, 8, or 10 Mbps target.
 Rebuilding an unchanged index therefore produces the same query set. A full
 five-item batch always contains five distinct physical videos.
-`validate` verifies the local files. `upload` uploads the index and sources to
-the manifest's input Volume and reads back every object to verify its checksum.
+`validate` verifies the local files. `prepare` places the canonical batch prefix
+in each indexed source path. `upload` writes the trusted index and only the
+immutable canonical-batch source trees to the manifest's input Volume, then
+reads back every indexed source to verify its checksum. It does not create a
+duplicate root `inputs/` tree.
 It refuses to replace a different index. `seal` verifies that the remote and
-local index digests match before writing immutable evaluation rows to SQLite.
+local index digests and media match before writing immutable evaluation rows to
+SQLite. A remote validation failure requires a new competition ID and Volume;
+the uploaded index and batch trees are never narrowed or replaced.
 If the database does not exist yet, `seal` creates it, applies the competition
 migrations, and registers the manifest in `SCHEDULED` state. If the competition
 already exists, it requires the database manifest digest to match and therefore

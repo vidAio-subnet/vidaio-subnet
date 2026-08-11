@@ -22,7 +22,6 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Session, sessionmaker
 
-from .batching import canonical_batch_assignments
 from .config import CompetitionManifest, calculate_length_weight
 from .migrations import SCHEMA_VERSION, apply_competition_migrations
 from .models import (
@@ -105,6 +104,7 @@ class ClaimedEvaluation:
 class ClaimedBatch:
     batch_id: str
     hotkey: str
+    canonical_batch_index: int
     evaluations: tuple[ClaimedEvaluation, ...]
 
 
@@ -447,13 +447,8 @@ class CompetitionRepository:
             manifest = CompetitionManifest.model_validate_json(
                 competition.manifest_json
             )
-            assignments = canonical_batch_assignments(
-                (
-                    (item.evaluation_id, item.source_path)
-                    for item in evaluation_index.items
-                ),
-                manifest.evaluation_batch_size,
-            )
+            evaluation_index.validate_for_manifest(manifest)
+            assignments = evaluation_index.canonical_batch_assignments(manifest)
             canonical_batch_count = (
                 max(
                     batch_index
@@ -741,7 +736,9 @@ class CompetitionRepository:
                 item_row.current_attempt = max(item_row.current_attempt, attempt)
                 item_row.dispatch_status = "RUNNING"
                 item_row.updated_at = now_text
-            return ClaimedBatch(batch_id, hotkey, tuple(claimed))
+            return ClaimedBatch(
+                batch_id, hotkey, selected_batch_index, tuple(claimed)
+            )
 
     def begin_batch_scoring(
         self,

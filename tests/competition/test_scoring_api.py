@@ -43,7 +43,7 @@ class CompetitionScoringClientTests(unittest.TestCase):
         )
         self.item = EvaluationIndexItem(
             evaluation_id="evaluation-1",
-            source_path="inputs/evaluation-1.mp4",
+            source_path="batches/000000/inputs/evaluation-1.mp4",
             size_bytes=1000,
             sha256="b" * 64,
             duration_seconds=10,
@@ -109,7 +109,9 @@ class CompetitionScoringClientTests(unittest.TestCase):
                     items=(
                         CompetitionScoringBatchItem(
                             item=self.item,
-                            output_path="evaluations/batch-1/evaluation-1.mp4",
+                            output_path=(
+                                "batches/batch-1/evaluations/evaluation-1.mp4"
+                            ),
                             runtime_seconds=1.25,
                             allocated_gpu_type="H200",
                             allocated_gpu_count=1,
@@ -131,6 +133,7 @@ class CompetitionScoringClientTests(unittest.TestCase):
         claimed = SimpleNamespace(
             hotkey="hotkey-1",
             batch_id="batch-1",
+            canonical_batch_index=0,
             evaluations=(
                 SimpleNamespace(history_id=7, attempt=1, item=self.item),
             ),
@@ -163,7 +166,10 @@ class CompetitionScoringClientTests(unittest.TestCase):
 
         class Runner:
             @staticmethod
-            def invoke_batch(_manifest, request, *, timeout_seconds, now):
+            def invoke_batch(
+                _manifest, request, *, input_sub_path, timeout_seconds, now
+            ):
+                runner_state["input_sub_path"] = input_sub_path
                 del now
                 runner_state["timeout_seconds"] = timeout_seconds
                 return CompetitionCompressionResponse(
@@ -236,9 +242,10 @@ class CompetitionScoringClientTests(unittest.TestCase):
             ),
         )
         self.assertEqual(scorer.request[1], "contender-output")
+        self.assertEqual(runner_state["input_sub_path"], "/batches/000000")
         self.assertEqual(
             scorer.request[2][0].output_path,
-            "evaluations/batch-1/evaluation-1.mp4",
+            "batches/batch-1/evaluations/evaluation-1.mp4",
         )
 
         deferred_repository = Repository()

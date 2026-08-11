@@ -55,8 +55,8 @@ Any pre-completion state may enter FAILED or CANCELLED.
 - `VALIDATING`: pinned source is checked for the required layout, readable
   source, route contract, unsafe constructs, and credential leakage.
 - `BUILDING`: the validator builds or resolves an immutable contender image.
-- `EVALUATING`: accepted contenders receive sequential batches in warm,
-  contender-specific sandboxes. Different contenders run concurrently.
+- `EVALUATING`: accepted contenders receive sequential batches in fresh,
+  batch-scoped sandboxes. Different contenders run concurrently.
 - `SCORING`: raw item histories are converted into reproducible aggregates.
 - `AWAITING_END_TIME`: scored aggregates are available in SQLite until the
   configured end time. Review operators may disqualify a contender or order an
@@ -292,14 +292,14 @@ parallelism.
 
 | Location | Current relevance |
 | --- | --- |
-| `competition_sandboxes.batch_timeout_seconds` | Most recently applied miner invocation deadline for that warm sandbox generation. It is audit/diagnostic metadata; enforcement occurs through the backend invocation argument. |
+| `competition_sandboxes.batch_timeout_seconds` | Miner invocation deadline for that batch-scoped sandbox generation. It is audit/diagnostic metadata; enforcement occurs through the backend invocation argument. |
 | `competition_batches.timeout_seconds` | Execution lease duration for that batch attempt, including recovery grace. |
 | `competition_batches.lease_expires_at` | Authoritative absolute execution lease expiry used for recovery. |
 | `competition_batches.scoring_timeout_seconds` | Effective scoring deadline for the batch. |
 | `competition_batches.scoring_expires_at` | Authoritative absolute scoring expiry used for recovery. |
 
-A warm sandbox may process several batches, so batch history belongs primarily
-in `competition_batches`. Any future removal or rename of the sandbox timeout
+A contender has a fresh sandbox generation for every batch, while batch history
+belongs primarily in `competition_batches`. Any future removal or rename of the sandbox timeout
 column requires an explicit schema migration.
 
 ### Media and scoring fields
@@ -414,7 +414,7 @@ contains one to five items:
     {
       "evaluation_id": "input-00001-vbr-vmaf89-8mbps",
       "input_path": "/evaluation-inputs/inputs/example.mp4",
-      "output_path": "/output/evaluations/batch-example/input-00001.mp4",
+      "output_path": "/output/evaluations/input-00001.mp4",
       "codec": "AV1",
       "codec_mode": "VBR",
       "target_bitrate": 8000000,
@@ -430,7 +430,7 @@ The response preserves item order and returns the produced local path:
 {
   "results": [
     {
-      "output_path": "/output/evaluations/batch-example/input-00001.mp4"
+      "output_path": "/output/evaluations/input-00001.mp4"
     }
   ]
 }
@@ -453,19 +453,21 @@ controls Modal declarations. The validator-owned launcher:
 - applies the validated, pinned miner GPU/CPU preferences or manifest fallbacks;
 - starts with blocked networking, no secrets or identity token, and no public
   ports;
-- mounts only the immutable source Volume read-only and that contender's output
-  Volume read-write;
+- mounts only the active canonical batch subdirectory of the immutable source
+  Volume read-only and a fresh batch-specific subdirectory of that contender's
+  output Volume read-write;
 - invokes the service over localhost through `sandbox.exec`;
 - records the actual GPU model/count and CPU allocation from a trusted probe;
 - terminates a sandbox after a failed invocation or supervisor timeout;
-- reattaches after validator restart and replaces generations before Modal's
-  24-hour lifetime ceiling.
+- records restart-safe identities and never reuses a generation for another
+  batch.
 
 Every new or recovered generation must prove:
 
 - outbound DNS, direct-IP, and HTTPS access fail;
 - the input mount rejects writes;
 - the output mount accepts writes;
+- the sealed global `index.json` is absent from the batch-scoped input mount;
 - no reference-only path or another contender Volume is visible;
 - GitHub, cloud, Modal, and validator credentials are absent.
 
@@ -525,12 +527,37 @@ and processing time of the other videos in its batch. Comparing contenders that
 received different video compositions would therefore compare different
 workloads for the same per-item cost component.
 
-`validate` checks local bytes and duration bounds. `upload` writes sources and
-the index to the manifest Volume and verifies them by read-back. `seal` requires
+`validate` checks local bytes and duration bounds. `prepare` records each
+physical source path as
+`batches/<zero-padded-index>/inputs/<relative-source-path>` in the global index.
+`upload` writes exactly those batch-scoped sources; it does not create duplicate
+root `inputs/` objects. Each batch directory contains only its assigned source
+paths and never contains the global index. The upload is verified by read-back.
+The uploaded layout cannot be narrowed or replaced;
+remote validation failure requires a new competition ID and Volume. `seal` requires
 the remote digest to match before inserting immutable evaluation rows in
 SQLite. A sealed index cannot be replaced; use a new competition ID and Volume.
 
 ## Dispatch, terminal failures, and restart safety
+
+Each claimed batch starts a fresh Sandbox whose `/evaluation-inputs` mount is a
+Modal Volume `sub_path` for exactly that canonical batch. Its `/output` mount is
+also scoped to that dispatch ID. The Sandbox is terminated after the invocation,
+including successful invocations; contender processes, local files, inputs, and
+derived outputs therefore cannot persist into a later batch. The trusted scorer
+continues to read the full input and contender output Volumes outside the
+untrusted Sandbox.
+
+Before claiming work, a disposable Sandbox mounts one randomly selected,
+already-existing canonical batch read-only and proves that the root index is
+absent. Using an existing batch is required because Modal cannot create a missing
+`sub_path` through a read-only mount. The disposable output mount uses a fresh
+writable subdirectory and is isolated from real batch outputs.
+
+Contender code must not process an evaluation before the validator begins that
+batch's measured invocation, retain an input or derived encode across batches,
+or return an output generated outside the measured invocation. The filesystem
+and lifecycle controls enforce this rule rather than relying only on policy.
 
 SQLite is the authoritative queue and lease store. Redis is not required for
 correctness; if added as a dispatch accelerator, every key must remain
@@ -662,8 +689,10 @@ history.
 ## Runtime and cost accounting
 
 The validator measures the complete sandbox invocation with a monotonic clock.
-Batch `active_runtime_seconds` equals measured wall time because the sandbox is
-provisioned for the entire call. Cold start is recorded separately.
+Batch `active_runtime_seconds` equals measured wall time from fresh Sandbox
+creation through isolation/resource/readiness probes, contender execution,
+output sync, and termination. This matches the billed Sandbox lifecycle; cold
+start is included rather than attributed outside the batch.
 The supervisor polls both the active command and parent Sandbox. If the Sandbox
 finishes first, the batch stops with `SANDBOX_DISAPPEARED` and records only the
 time observed before disappearance instead of waiting for the command deadline.
@@ -774,7 +803,7 @@ The supported review actions are:
 - Resolve a pending readability decision during `VALIDATING`.
 - Manually disqualify a pinned contender during `VALIDATING`, `BUILDING`,
   `EVALUATING`, or `AWAITING_END_TIME`. New work stops for that contender and
-  its warm sandbox is terminated by the scheduler. Disqualification can narrow
+  its active batch sandbox is terminated by the scheduler. Disqualification can narrow
   eligibility but cannot reinstate an objectively invalid contender.
 - Order every contender in one exact rounded-score tie group during
   `AWAITING_END_TIME`. Non-tied contenders cannot be reordered. A newer order

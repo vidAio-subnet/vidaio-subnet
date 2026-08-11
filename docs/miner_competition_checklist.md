@@ -89,6 +89,9 @@ must not assume that a batch contains repeated versions of one source video.
   overwrites.
 - [ ] Handle every video independently. Do not cache or reuse an encode merely
   because another item has similar criteria.
+- [ ] Process only the active request. Do not scan for future inputs, retain an
+  input or derived encode across batches, pre-encode outside the measured batch
+  invocation, or return an output produced before that invocation.
 - [ ] Optionally set `SANDBOX_GPU` to one entry from the manifest's
   `allowed_gpus` and/or set integer `SANDBOX_CPUS` no higher than
   `max_cpu_cores` in `miner/.env`. Leave either blank for its manifest fallback.
