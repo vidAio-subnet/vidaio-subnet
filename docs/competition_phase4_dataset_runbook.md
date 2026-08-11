@@ -2,7 +2,8 @@
 
 Phase 4 does not dispatch until the evaluation input Volume contains a verified
 index and that exact index digest is sealed in the competition SQLite database.
-Creating an empty Modal Volume is therefore only the first step.
+Creating an empty Modal Volume is therefore only the first step. The dataset CLI
+enforces the mandatory `prepare` -> `validate` -> `upload` -> `seal` sequence.
 
 Set these shell variables to the manifest the validator will load, the directory
 containing the private source MP4 files, and a local generated index path:
@@ -14,7 +15,7 @@ INDEX=/tmp/compression-2026-w30-index.json
 DATABASE_URL=sqlite:////absolute/path/to/video_subnet_validator.db
 ```
 
-Prepare and locally verify the immutable index:
+Prepare and validate the immutable index in order:
 
 ```bash
 python scripts/competition_dataset.py prepare \
@@ -36,23 +37,31 @@ videos produce 20 evaluation rows. Each indexed `source_path` includes its
 canonical `batches/<zero-padded-index>/` prefix; the miner sees only the
 remaining `inputs/...` path after that batch directory is mounted.
 
-The local `prepare`, `validate`, and `upload` stages fail closed on source-media
-problems. The CLI reports all flagged
-sources and their evaluation IDs, then asks whether to disqualify those entries
-and continue. Type `yes` to remove every variant referencing the flagged source
-and rewrite the index, or `no` to abort without uploading or sealing it. Use
-`--yes` only for an intentional non-interactive exclusion. The checks cover
-remote/local size and checksum identity, full ffprobe frame traversal, MP4 and
-single-video-stream structure, finite positive media properties, known codec
-and pixel format, a positive rational sample aspect ratio, manifest duration
-bounds, and equality between the index and freshly probed metadata.
+`prepare` performs the expensive local work once: SHA-256 hashing, full ffprobe
+frame traversal, MP4 and single-video-stream checks, finite positive media
+properties, known codec and pixel format, a positive rational sample aspect
+ratio, manifest duration bounds, and index metadata generation. It reports all
+flagged sources and asks whether to disqualify them. Type `yes` to continue with
+those sources excluded or `no` to abort. Use `--yes` only for an intentional
+non-interactive exclusion.
+
+Alongside the index, `prepare` writes `<index>.pipeline.json`. This receipt binds
+the manifest digest, index digest, resolved source directory, and source file
+identities. `validate` requires the prepared receipt, verifies the index contract
+and confirms that the prepared files have not changed, then advances the receipt.
+It does not repeat the hashing and full-media probing already completed by
+`prepare`. Keep the index and its pipeline receipt together until sealing.
+An index created by an older CLI has no receipt and cannot skip into this
+pipeline; rerun `prepare` to create both files.
 
 Upload to the manifest's `evaluation_input_volume_name` in Modal `main`. The
 command verifies the uploaded index plus every indexed batch-scoped source
 object by reading it back. No duplicate root `inputs/` tree is uploaded.
-It refuses to replace a different index already present in the Volume. After
-upload, the index and canonical-batch trees are immutable. If remote validation
-fails during `seal`, create a new competition ID and Volume.
+It refuses to run without a matching validated receipt or to replace a different
+index already present in the Volume. The read-back verifies remote size and
+SHA-256 identity once and advances the receipt to `uploaded`. After upload, the
+index and canonical-batch trees are immutable. A failed upload verification
+requires a new competition ID and Volume.
 
 ```bash
 python scripts/competition_dataset.py upload \
@@ -72,6 +81,11 @@ python scripts/competition_dataset.py seal \
   --database-url "$DATABASE_URL"
 ```
 
+`seal` requires the matching upload receipt and environment, reloads the small
+remote index, and confirms its digest. It does not download, hash, or ffprobe all
+videos again because successful upload read-back already proved that those bytes
+match the prepared and validated index.
+
 The validator does not need to be running. For a new database, `seal` applies
 the competition schema baseline, registers the manifest as `SCHEDULED`, and
 seals the evaluation rows. On first boot, configure `COMPETITION_DATABASE_URL`
@@ -80,9 +94,9 @@ with this same URL and ensure the manifest remains matched by
 start time is due.
 
 The late-loading workflow remains supported. If the validator was started with
-an empty input Volume, run `upload` and `seal` against its existing database.
-The manifest digest must match, and an `EVALUATING` competition resumes on its
-next execution cycle.
+an empty input Volume, complete the same mandatory four commands and run `seal`
+against its existing database. The manifest digest must match, and an
+`EVALUATING` competition resumes on its next execution cycle.
 
 A sealed index is immutable. Do not try to apply the one-query-per-video format
 to an already sealed competition; prepare a fresh index and competition ID.

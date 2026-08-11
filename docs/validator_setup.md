@@ -370,7 +370,7 @@ answer `/health`. Phase 4 dispatch starts only after the Volume contains a
 read-back-verified index and source files and that exact index digest is sealed
 in the competition database.
 
-### Prepare, upload, and seal the Phase 4 dataset
+### Prepare, validate, upload, and seal the Phase 4 dataset
 
 Choose the manifest that the validator will load, a private directory containing
 the source MP4 files, a temporary local index path, and the validator's actual
@@ -383,8 +383,8 @@ INDEX=/tmp/compression-2026-w30-index.json
 DATABASE_URL=sqlite:////absolute/path/to/video_subnet_validator.db
 ```
 
-Run all four operations from the same deployed repository and virtual
-environment as the validator:
+Run all four operations, in this exact order, from the same deployed repository
+and virtual environment as the validator. The CLI enforces the sequence:
 
 ```bash
 python scripts/competition_dataset.py prepare \
@@ -417,14 +417,21 @@ and VMAF target (85, 89, or 93) are selected by deterministic pseudorandom choic
 seeded from the manifest; VBR queries also receive a 5, 8, or 10 Mbps target.
 Rebuilding an unchanged index therefore produces the same query set. A full
 five-item batch always contains five distinct physical videos.
-`validate` verifies the local files. `prepare` places the canonical batch prefix
-in each indexed source path. `upload` writes the trusted index and only the
+`prepare` also writes `<index>.pipeline.json`, binding the manifest and index
+digests to the source directory and file identities. `validate` checks that
+receipt, the index contract, and that the prepared files remain unchanged; it
+does not repeat the full hashing and probing already performed by `prepare`.
+Keep the receipt beside the index through sealing. `prepare` places the canonical
+batch prefix in each indexed source path. `upload` requires the validated receipt
+and writes the trusted index and only the
 immutable canonical-batch source trees to the manifest's input Volume, then
 reads back every indexed source to verify its checksum. It does not create a
 duplicate root `inputs/` tree.
-It refuses to replace a different index. `seal` verifies that the remote and
-local index digests and media match before writing immutable evaluation rows to
-SQLite. A remote validation failure requires a new competition ID and Volume;
+It refuses to replace a different index. Successful read-back advances the
+receipt to `uploaded`. `seal` requires that receipt and verifies the remote/local
+index digest before writing immutable evaluation rows to SQLite; it does not
+download and probe every verified video again. An upload verification failure
+requires a new competition ID and Volume;
 the uploaded index and batch trees are never narrowed or replaced.
 If the database does not exist yet, `seal` creates it, applies the competition
 migrations, and registers the manifest in `SCHEDULED` state. If the competition
@@ -446,9 +453,9 @@ Use an absolute SQLite URL as shown above, or prove that the CLI and PM2 use the
 same working directory. Sealing a different relative database file will leave
 the running validator waiting for a dataset even though the CLI reported
 success. Preloading is recommended, but not mandatory: the validator may also
-start with an empty Volume and wait in `EVALUATING`; running `upload` and `seal`
-later unblocks it on the next execution cycle. After late sealing, restart or
-wait for that cycle:
+start with an empty Volume and wait in `EVALUATING`; completing the mandatory
+four-stage pipeline later unblocks it on the next execution cycle. After late
+sealing, restart or wait for that cycle:
 
 ```bash
 PM2_APP=video-validator-testnet

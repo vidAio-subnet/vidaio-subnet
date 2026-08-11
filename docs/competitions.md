@@ -481,6 +481,9 @@ acknowledgement and persists `MODAL_UNATTESTED` evidence.
 
 The dataset CLI is `scripts/competition_dataset.py`:
 
+The four commands are mandatory and must run in the shown order. Each command
+requires the receipt produced by its predecessor.
+
 ```bash
 python scripts/competition_dataset.py prepare \
   --manifest competitions/manifests/examples/compression-competition.json \
@@ -515,8 +518,13 @@ video streams,
 manifest duration violations, and index-to-media metadata mismatches are flagged.
 The CLI asks the operator to type `yes` or `no` before removing every evaluation
 variant that references a flagged source and continuing. `--yes` performs this
-exclusion non-interactively. Validation is repeated against local media during
-`validate` and `upload`, and against read-back remote bytes during `seal`.
+exclusion non-interactively. `prepare` writes `<index>.pipeline.json`, which binds
+the manifest and index digests to the source directory and file identities.
+`validate` checks that receipt and advances it only if the index contract and
+source identities still match. `upload` requires the validated receipt and
+performs one remote size/checksum read-back. `seal` requires the upload receipt
+and checks the remote index digest without downloading and probing every video a
+second time.
 Sealing orders evaluation IDs deterministically,
 persists their canonical batch index and position, and records the batch count
 in the dataset-sealed event. Every contender therefore receives the same
@@ -527,15 +535,16 @@ and processing time of the other videos in its batch. Comparing contenders that
 received different video compositions would therefore compare different
 workloads for the same per-item cost component.
 
-`validate` checks local bytes and duration bounds. `prepare` records each
-physical source path as
+`prepare` performs the local full-media probe, hashing, metadata, and duration
+checks once. `validate` confirms that the prepared index and source file
+identities have not changed. `prepare` records each physical source path as
 `batches/<zero-padded-index>/inputs/<relative-source-path>` in the global index.
 `upload` writes exactly those batch-scoped sources; it does not create duplicate
 root `inputs/` objects. Each batch directory contains only its assigned source
 paths and never contains the global index. The upload is verified by read-back.
-The uploaded layout cannot be narrowed or replaced;
-remote validation failure requires a new competition ID and Volume. `seal` requires
-the remote digest to match before inserting immutable evaluation rows in
+The uploaded layout cannot be narrowed or replaced; upload read-back failure
+requires a new competition ID and Volume. `seal` requires the remote digest and
+pipeline receipt to match before inserting immutable evaluation rows in
 SQLite. A sealed index cannot be replaced; use a new competition ID and Volume.
 
 ## Dispatch, terminal failures, and restart safety
