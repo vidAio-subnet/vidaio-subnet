@@ -49,9 +49,11 @@ class CompetitionSdkTests(unittest.TestCase):
             and node.targets[0].id
             in {"ISOLATION_PROBE", "RESOURCE_PROBE", "READINESS_PROBE"}
         }
-        for name in ("ISOLATION_PROBE", "RESOURCE_PROBE", "READINESS_PROBE"):
+        for name in ("RESOURCE_PROBE", "READINESS_PROBE"):
             with self.subTest(name=name):
                 self.assertEqual(getattr(SDK, name), runner_probes[name])
+        self.assertNotIn("global_index_absent", SDK.ISOLATION_PROBE)
+        self.assertIn("global_index_absent", runner_probes["ISOLATION_PROBE"])
 
     def make_source(self, root: Path) -> Path:
         source = root / "source"

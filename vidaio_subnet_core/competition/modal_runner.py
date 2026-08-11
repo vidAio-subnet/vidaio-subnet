@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import secrets
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -75,6 +76,14 @@ checks["reference_mount_absent"] = not any(
     pathlib.Path(path).exists()
     for path in ("/evaluation-references", "/references", "/validator-references")
 )
+input_root = pathlib.Path("/evaluation-inputs")
+checks["global_index_absent"] = not any(
+    path.is_file()
+    for path in (
+        input_root / "index.json",
+        input_root / "validator-evaluation" / "index.json",
+    )
+) and not any(input_root.rglob("index.json"))
 checks["credentials_absent"] = not any(
     os.getenv(name)
     for name in (
@@ -92,7 +101,7 @@ checks["passed"] = all(
     checks[name]
     for name in (
         "network_blocked", "input_read_only", "output_writable",
-        "reference_mount_absent", "credentials_absent",
+        "reference_mount_absent", "global_index_absent", "credentials_absent",
     )
 )
 print(json.dumps(checks, sort_keys=True), flush=True)
@@ -217,7 +226,9 @@ class SandboxLaunchSpec:
     sandbox_name: str
     image_id: str
     input_volume_name: str
+    input_sub_path: str
     output_volume_name: str
+    output_sub_path: str
     gpu_type: str
     cpu_request: float
     cpu_limit: float
@@ -441,8 +452,14 @@ class ModalSandboxBackend:
             cpu=(spec.cpu_request, spec.cpu_limit),
             block_network=True,
             volumes={
-                "/evaluation-inputs": input_volume.with_mount_options(read_only=True),
-                "/output": output_volume.with_mount_options(read_only=False),
+                "/evaluation-inputs": input_volume.with_mount_options(
+                    read_only=True,
+                    sub_path=spec.input_sub_path,
+                ),
+                "/output": output_volume.with_mount_options(
+                    read_only=False,
+                    sub_path=spec.output_sub_path,
+                ),
             },
             include_oidc_identity_token=False,
             encrypted_ports=[],
@@ -477,7 +494,9 @@ class ModalSandboxBackend:
         )
 
     def verify_isolation(self, handle: SandboxHandle) -> dict[str, Any]:
-        process = handle.raw.exec("python3", "-c", ISOLATION_PROBE, timeout=30)
+        process = handle.raw.exec(
+            "python3", "-I", "-S", "-c", ISOLATION_PROBE, timeout=30
+        )
         output = _completed_process_output(process, "active isolation probe")
         try:
             report = json.loads(output)
@@ -605,6 +624,8 @@ class CompetitionModalRunner:
         *,
         now: datetime | None = None,
         minimum_remaining_lifetime: timedelta | None = None,
+        input_sub_path: str | None = None,
+        output_sub_path: str | None = None,
     ) -> SandboxSession:
         now = now or self.clock()
         contender = self.repository.get_contender(manifest.competition_id, hotkey)
@@ -620,6 +641,12 @@ class CompetitionModalRunner:
                 "contender has no build evidence accepted by this validator",
             )
 
+        input_sub_path = input_sub_path or (
+            f"/isolation-probes/{secrets.token_hex(16)}"
+        )
+        output_sub_path = output_sub_path or (
+            f"/isolation-probes/{secrets.token_hex(16)}"
+        )
         latest = self.repository.latest_sandbox(manifest.competition_id, hotkey)
         if latest is not None and latest.status in {"STARTING", "RUNNING"}:
             recovered = self._try_recover(
@@ -631,13 +658,21 @@ class CompetitionModalRunner:
             if recovered is not None:
                 return recovered
 
-        return self._start_generation(manifest, contender, hotkey, now)
+        return self._start_generation(
+            manifest,
+            contender,
+            hotkey,
+            now,
+            input_sub_path=input_sub_path,
+            output_sub_path=output_sub_path,
+        )
 
     def invoke_batch(
         self,
         manifest: CompetitionManifest,
         request: CompetitionCompressionRequest,
         *,
+        input_sub_path: str,
         timeout_seconds: int | None = None,
         now: datetime | None = None,
     ) -> CompetitionCompressionResponse:
@@ -657,11 +692,16 @@ class CompetitionModalRunner:
                 "BATCH_TIMEOUT_EXCEEDS_SANDBOX_LIFETIME",
                 "batch deadline leaves no safe lifetime for a competition Sandbox",
             )
+        # A mount cannot be rebound on a running Sandbox. Close any probe or
+        # previous batch generation before mounting this batch's directory.
+        self.terminate(manifest, request.hotkey, now=now)
         session = self.ensure_warm(
             manifest,
             request.hotkey,
             now=now,
             minimum_remaining_lifetime=required_lifetime,
+            input_sub_path=input_sub_path,
+            output_sub_path=f"/batches/{request.batch_id}",
         )
         self.repository.update_sandbox_batch_timeout(
             session.record.id,
@@ -682,7 +722,13 @@ class CompetitionModalRunner:
                     "sandbox response count does not exactly match the request",
                 )
             self.backend.commit_outputs(session.handle)
-            self.repository.touch_sandbox(session.record.id, now=now)
+            self._terminate(
+                session.record,
+                session.handle,
+                status="TERMINATED",
+                reason_code="BATCH_COMPLETE",
+                now=now,
+            )
             return response
         except Exception as exc:
             failure_reason = (
@@ -701,6 +747,62 @@ class CompetitionModalRunner:
             if isinstance(exc, SandboxRunnerError):
                 raise
             raise SandboxRunnerError("BATCH_EXECUTION_FAILED", str(exc)) from exc
+
+    def probe_random_input_subpath(
+        self,
+        manifest: CompetitionManifest,
+        hotkey: str,
+        candidate_input_sub_paths: tuple[str, ...],
+        *,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Prove that a randomly selected batch mount cannot expose the root index."""
+
+        now = now or self.clock()
+        if not candidate_input_sub_paths:
+            raise SandboxRunnerError(
+                "ISOLATION_PROBE_PATH_MISSING",
+                "no canonical batch input subpaths are available",
+            )
+        input_sub_path = secrets.choice(candidate_input_sub_paths)
+        path = PurePosixPath(input_sub_path)
+        if (
+            not path.is_absolute()
+            or len(path.parts) != 3
+            or path.parts[1] != "batches"
+            or not re.fullmatch(r"\d{6}", path.parts[2])
+        ):
+            raise SandboxRunnerError(
+                "ISOLATION_PROBE_PATH_INVALID",
+                f"invalid canonical batch input subpath: {input_sub_path!r}",
+            )
+        random_token = secrets.token_hex(16)
+        # A recovered Sandbox may have a different mount. The probe must always
+        # create a generation with the randomly selected canonical batch path.
+        self.terminate(manifest, hotkey, now=now)
+        session = self.ensure_warm(
+            manifest,
+            hotkey,
+            now=now,
+            input_sub_path=input_sub_path,
+            output_sub_path=f"/isolation-probes/{random_token}",
+        )
+        try:
+            report = json.loads(session.record.isolation_report_json or "{}")
+            if not report.get("global_index_absent"):
+                raise SandboxRunnerError(
+                    "GLOBAL_INDEX_VISIBLE",
+                    "sealed index.json was visible through a random sub_path mount",
+                )
+            return report
+        finally:
+            self._terminate(
+                session.record,
+                session.handle,
+                status="TERMINATED",
+                reason_code="RANDOM_SUBPATH_PROBE_COMPLETE",
+                now=now,
+            )
 
     def terminate(
         self,
@@ -848,6 +950,9 @@ class CompetitionModalRunner:
         contender: Any,
         hotkey: str,
         now: datetime,
+        *,
+        input_sub_path: str,
+        output_sub_path: str,
     ) -> SandboxSession:
         output_volume = _output_volume_name(
             manifest.output_volume_prefix, manifest.competition_id, hotkey
@@ -893,7 +998,9 @@ class CompetitionModalRunner:
             sandbox_name=f"cmp-{token}"[:63].rstrip("-"),
             image_id=contender.image_id,
             input_volume_name=manifest.evaluation_input_volume_name,
+            input_sub_path=input_sub_path,
             output_volume_name=output_volume,
+            output_sub_path=output_sub_path,
             gpu_type=gpu,
             cpu_request=cpu,
             cpu_limit=cpu,

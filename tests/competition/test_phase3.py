@@ -353,6 +353,7 @@ class FakeSandboxBackend:
             "input_read_only": True,
             "output_writable": True,
             "reference_mount_absent": True,
+            "global_index_absent": True,
             "credentials_absent": True,
         }
         self.invoke_error: Exception | None = None
@@ -520,6 +521,9 @@ class SandboxLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(
             spec.input_volume_name, self.manifest.evaluation_input_volume_name
+        )
+        self.assertRegex(
+            spec.input_sub_path, r"^/isolation-probes/[0-9a-f]{32}$"
         )
         self.assertIsNone(self.manifest.evaluation_reference_volume_name)
         self.assertNotEqual(
@@ -699,6 +703,7 @@ class SandboxLifecycleTests(unittest.TestCase):
         self.runner().invoke_batch(
             self.manifest,
             request,
+            input_sub_path="/batches/000000",
             timeout_seconds=30 * 60,
             now=NOW + MAX_SANDBOX_LIFETIME - timedelta(minutes=20),
         )
@@ -742,6 +747,63 @@ class SandboxLifecycleTests(unittest.TestCase):
             "FAILED",
         )
 
+    def test_random_subpath_probe_cannot_read_global_index(self) -> None:
+        report = self.runner().probe_random_input_subpath(
+            self.manifest,
+            self.hotkey,
+            ("/batches/000000", "/batches/000001"),
+            now=NOW,
+        )
+
+        self.assertTrue(report["global_index_absent"])
+        spec = self.backend.created[0]
+        self.assertIn(
+            spec.input_sub_path,
+            {"/batches/000000", "/batches/000001"},
+        )
+        self.assertRegex(spec.output_sub_path, r"^/isolation-probes/[0-9a-f]{32}$")
+        self.assertIn("sb-1", self.backend.terminated)
+        latest = self.repository.latest_sandbox(
+            self.manifest.competition_id, self.hotkey
+        )
+        self.assertEqual(latest.status, "TERMINATED")
+        self.assertEqual(latest.reason_code, "RANDOM_SUBPATH_PROBE_COMPLETE")
+
+    def test_random_subpath_probe_fails_if_global_index_is_visible(self) -> None:
+        self.backend.isolation["global_index_absent"] = False
+        with self.assertRaises(SandboxRunnerError) as captured:
+            self.runner().probe_random_input_subpath(
+                self.manifest,
+                self.hotkey,
+                ("/batches/000000",),
+                now=NOW,
+            )
+        self.assertEqual(captured.exception.reason_code, "GLOBAL_INDEX_VISIBLE")
+        self.assertIn("sb-1", self.backend.terminated)
+
+    def test_random_subpath_probe_replaces_any_existing_generation(self) -> None:
+        existing = self.runner().ensure_warm(
+            self.manifest,
+            self.hotkey,
+            now=NOW,
+            input_sub_path="/batches/000000",
+            output_sub_path="/batches/existing",
+        )
+
+        self.runner().probe_random_input_subpath(
+            self.manifest,
+            self.hotkey,
+            ("/batches/000001",),
+            now=NOW + timedelta(seconds=1),
+        )
+
+        self.assertIn(existing.handle.sandbox_id, self.backend.terminated)
+        self.assertEqual(len(self.backend.created), 2)
+        self.assertEqual(
+            self.backend.created[1].input_sub_path,
+            "/batches/000001",
+        )
+
     def test_raw_startup_failure_persists_redacted_diagnostic_detail(self) -> None:
         with patch.object(
             self.backend, "create", side_effect=RuntimeError("GPU capacity unavailable")
@@ -777,6 +839,7 @@ class SandboxLifecycleTests(unittest.TestCase):
         response = self.runner().invoke_batch(
             self.manifest,
             request,
+            input_sub_path="/batches/000000",
             timeout_seconds=321,
             now=NOW,
         )
@@ -796,6 +859,7 @@ class SandboxLifecycleTests(unittest.TestCase):
             self.runner().invoke_batch(
                 self.manifest,
                 request.model_copy(update={"batch_id": "batch-2"}),
+                input_sub_path="/batches/000000",
                 now=NOW,
             )
         self.assertIn("sb-1", self.backend.terminated)
@@ -955,12 +1019,13 @@ class LiveExecutionCoordinatorTests(unittest.TestCase):
 
             competition = repository.get(manifest.competition_id)
             contender = repository.get_contender(manifest.competition_id, hotkey)
-            sandbox = repository.latest_sandbox(manifest.competition_id, hotkey)
             self.assertEqual(competition.status, CompetitionState.EVALUATING.value)
             self.assertEqual(contender.build_status, "ACCEPTED")
             self.assertEqual(contender.image_id, IMAGE_ID)
-            self.assertEqual(sandbox.status, "RUNNING")
-            self.assertEqual(len(sandbox_backend.created), 1)
+            self.assertIsNone(
+                repository.latest_sandbox(manifest.competition_id, hotkey)
+            )
+            self.assertEqual(len(sandbox_backend.created), 0)
 
     def test_builds_and_sandbox_startup_share_the_manifest_parallel_limit(
         self,
@@ -1027,13 +1092,13 @@ class LiveExecutionCoordinatorTests(unittest.TestCase):
                 )
 
         class ParallelSandboxRunner:
-            def ensure_warm(self, competition_manifest, hotkey):
+            def probe_random_input_subpath(
+                self, competition_manifest, hotkey, candidate_input_sub_paths
+            ):
                 del competition_manifest
+                self.candidate_input_sub_paths = candidate_input_sub_paths
                 sandbox_probe.pause_while_counted()
-                return types.SimpleNamespace(
-                    handle=types.SimpleNamespace(sandbox_id=f"sb-{hotkey}"),
-                    record=types.SimpleNamespace(generation=1),
-                )
+                return {"global_index_absent": True, "hotkey": hotkey}
 
         repository = ParallelRepository()
         coordinator = CompetitionExecutionCoordinator(
@@ -1049,11 +1114,20 @@ class LiveExecutionCoordinatorTests(unittest.TestCase):
 
         asyncio.run(coordinator._build_accepted_contenders(manifest))
         repository.sandbox_mode = True
-        self.assertTrue(asyncio.run(coordinator._ensure_sandboxes(manifest)))
+        self.assertTrue(
+            asyncio.run(
+                coordinator._ensure_sandboxes(
+                    manifest,
+                    probe_input_sub_paths=("/batches/000000",),
+                )
+            )
+        )
 
         self.assertEqual(build_probe.peak, 2)
         self.assertEqual(ParallelBuildService.timeouts, [420.0] * len(hotkeys))
-        self.assertEqual(sandbox_probe.peak, 2)
+        # The random batch-subpath check proves a competition-wide Volume mount
+        # property once; real contender batches enforce their own probe later.
+        self.assertEqual(sandbox_probe.peak, 1)
 
     def test_evaluation_does_not_claim_work_when_sandbox_startup_fails(self) -> None:
         manifest = load_manifest(
@@ -1073,7 +1147,9 @@ class LiveExecutionCoordinatorTests(unittest.TestCase):
 
         class FailingRunner:
             @staticmethod
-            def ensure_warm(_manifest, _hotkey):
+            def probe_random_input_subpath(
+                _manifest, _hotkey, _candidate_input_sub_paths
+            ):
                 raise SandboxRunnerError(
                     "SANDBOX_START_FAILED", "GPU capacity unavailable"
                 )
@@ -1102,9 +1178,11 @@ class FakeMount:
     def __init__(self, name):
         self.name = name
         self.read_only = None
+        self.sub_path = None
 
-    def with_mount_options(self, *, read_only):
+    def with_mount_options(self, *, read_only, sub_path=None):
         self.read_only = read_only
+        self.sub_path = sub_path
         return self
 
 
@@ -1186,7 +1264,9 @@ class ModalAdapterPolicyTests(unittest.TestCase):
             sandbox_name="sandbox",
             image_id=IMAGE_ID,
             input_volume_name="inputs",
+            input_sub_path="/isolation-probes/random-4f39f2",
             output_volume_name="outputs-hotkey",
+            output_sub_path="/isolation-probes/output-random-4f39f2",
             gpu_type="L4",
             cpu_request=16.0,
             cpu_limit=16.0,
@@ -1202,7 +1282,15 @@ class ModalAdapterPolicyTests(unittest.TestCase):
         self.assertEqual(kwargs["unencrypted_ports"], [])
         self.assertEqual(set(kwargs["volumes"]), {"/evaluation-inputs", "/output"})
         self.assertTrue(kwargs["volumes"]["/evaluation-inputs"].read_only)
+        self.assertEqual(
+            kwargs["volumes"]["/evaluation-inputs"].sub_path,
+            "/isolation-probes/random-4f39f2",
+        )
         self.assertFalse(kwargs["volumes"]["/output"].read_only)
+        self.assertEqual(
+            kwargs["volumes"]["/output"].sub_path,
+            "/isolation-probes/output-random-4f39f2",
+        )
         self.assertEqual(kwargs["cpu"], (16.0, 16.0))
         self.assertEqual(kwargs["gpu"], "L4")
 

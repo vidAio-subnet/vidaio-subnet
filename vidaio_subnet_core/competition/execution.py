@@ -245,14 +245,6 @@ class CompetitionExecutionCoordinator:
                     "all built contenders were manually disqualified",
                 )
                 return
-            sandboxes_ready = await self._ensure_sandboxes(manifest)
-            if not sandboxes_ready:
-                logger.warning(
-                    "Competition evaluation dispatch paused until every contender "
-                    "Sandbox is ready: id={}",
-                    competition_id,
-                )
-                return
             if self.dataset_store is None or self.item_scorer is None:
                 logger.warning(
                     "Competition evaluation dispatcher is unavailable: id={} "
@@ -290,6 +282,23 @@ class CompetitionExecutionCoordinator:
                     competition_id,
                     competition.dataset_index_checksum,
                     evaluation_index.digest(),
+                )
+                return
+            assignments = evaluation_index.canonical_batch_assignments(manifest)
+            probe_input_sub_paths = tuple(
+                f"/batches/{batch_index:06d}"
+                for batch_index in sorted(
+                    {batch_index for batch_index, _position in assignments.values()}
+                )
+            )
+            sandboxes_ready = await self._ensure_sandboxes(
+                manifest,
+                probe_input_sub_paths=probe_input_sub_paths,
+            )
+            if not sandboxes_ready:
+                logger.warning(
+                    "Competition random batch-subpath isolation probe failed: id={}",
+                    competition_id,
                 )
                 return
             deferred_results = await self._evaluate_contenders(manifest)
@@ -697,7 +706,12 @@ class CompetitionExecutionCoordinator:
                     LOG_REDACTOR.redact_text(str(exc)),
                 )
 
-    async def _ensure_sandboxes(self, manifest: CompetitionManifest) -> bool:
+    async def _ensure_sandboxes(
+        self,
+        manifest: CompetitionManifest,
+        *,
+        probe_input_sub_paths: tuple[str, ...],
+    ) -> bool:
         contenders = await asyncio.to_thread(
             self.repository.list_contenders, manifest.competition_id
         )
@@ -710,35 +724,42 @@ class CompetitionExecutionCoordinator:
         pending = await self._contenders_requiring_evaluation(manifest, built)
         if not pending:
             return bool(built)
+        # Volume sub_path isolation is a competition-wide platform property;
+        # one disposable Sandbox mounts a randomly selected existing batch to
+        # prove it before dispatch. Every real batch still runs the same active
+        # isolation probe after mounting its own path.
+        probe_contender = pending[0]
         semaphore = asyncio.Semaphore(manifest.max_parallel_contenders)
-        results = await asyncio.gather(
-            *(
-                self._ensure_sandbox(manifest, contender.hotkey, semaphore)
-                for contender in pending
-            )
+        result = await self._ensure_sandbox(
+            manifest,
+            probe_contender.hotkey,
+            semaphore,
+            probe_input_sub_paths=probe_input_sub_paths,
         )
-        return bool(results) and all(results)
+        return result
 
     async def _ensure_sandbox(
         self,
         manifest: CompetitionManifest,
         hotkey: str,
         semaphore: asyncio.Semaphore,
+        *,
+        probe_input_sub_paths: tuple[str, ...],
     ) -> bool:
         async with semaphore:
             try:
-                session = await asyncio.to_thread(
-                    self.sandbox_runner.ensure_warm,
+                report = await asyncio.to_thread(
+                    self.sandbox_runner.probe_random_input_subpath,
                     manifest,
                     hotkey,
+                    probe_input_sub_paths,
                 )
                 logger.info(
-                    "Contender sandbox ready: competition_id={} hotkey={} "
-                    "sandbox_id={} generation={}",
+                    "Random batch-subpath isolation probe passed: competition_id={} "
+                    "hotkey={} global_index_absent={}",
                     manifest.competition_id,
                     hotkey,
-                    session.handle.sandbox_id,
-                    session.record.generation,
+                    report.get("global_index_absent"),
                 )
                 return True
             except SandboxRunnerError as exc:
@@ -849,8 +870,7 @@ class CompetitionExecutionCoordinator:
     ) -> DeferredBatchResult:
         output_paths = {
             evaluation.item.evaluation_id: (
-                f"/output/evaluations/{claimed.batch_id}/"
-                f"{evaluation.item.evaluation_id}.mp4"
+                f"/output/evaluations/{evaluation.item.evaluation_id}.mp4"
             )
             for evaluation in claimed.evaluations
         }
@@ -903,6 +923,7 @@ class CompetitionExecutionCoordinator:
                 self.sandbox_runner.invoke_batch,
                 manifest,
                 request,
+                input_sub_path=f"/batches/{claimed.canonical_batch_index:06d}",
                 timeout_seconds=execution_timeout,
                 now=self.clock(),
             )
@@ -961,7 +982,10 @@ class CompetitionExecutionCoordinator:
                         )
                     )
                     continue
-                relative_output_path = result.output_path.removeprefix("/output/")
+                relative_output_path = (
+                    f"batches/{claimed.batch_id}/"
+                    f"{result.output_path.removeprefix('/output/')}"
+                )
                 scoring_items.append(
                     CompetitionScoringBatchItem(
                         item=evaluation.item,

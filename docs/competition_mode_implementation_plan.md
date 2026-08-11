@@ -131,8 +131,8 @@ Phase 3 moves that security contract to the validator side:
 - A competition-only `competition_sandboxes` table records each lifecycle
   generation, image and resource policy, external IDs, isolation report,
   health, expiry, and termination reason. The supervisor reattaches after a
-  process restart, reuses one warm sandbox sequentially, and replaces it before
-  Modal's 24-hour ceiling using the same image and output Volume.
+  process restart and uses a fresh batch-scoped sandbox with the same immutable
+  image for every invocation.
 - Batch calls run only over localhost through `sandbox.exec`. A call failure or
   supervisor timeout terminates the sandbox so a subsequent attempt gets a
   clean generation. Calls for different contenders are designed to run in
@@ -483,14 +483,19 @@ For every contender it will:
 3. Create a uniquely named app/sandbox such as `vidaio-cmp-<competition>-<hotkey-prefix>` with full IDs in tags and structured logs.
 4. Apply the contender's pinned `sandbox_resources.gpu` when it is in the manifest allowlist; otherwise use `allowed_gpus[0]`.
 5. Apply the contender's pinned positive `sandbox_resources.cpus` up to `max_cpu_cores`; otherwise use `requested_cpu_cores`. Use the selected value as both the CPU request and hard limit.
-6. Mount only the immutable source-video Volume at `/evaluation-inputs` read-only. The scorer later mounts this same Volume as its reference; no separate reference Volume exists for compression.
-7. Mount exactly one contender-specific Volume at `/output` read-write. Never mount another contender's volume or the parent namespace.
+6. Mount only the active canonical-batch subdirectory of the immutable source-video Volume at `/evaluation-inputs` read-only. The scorer reads the full trusted Volume separately; no separate reference Volume exists for compression.
+7. Mount exactly one fresh dispatch-specific subdirectory of the contender Volume at `/output` read-write. Never mount another batch, another contender's volume, or the parent namespace.
 8. Start with `block_network=True`, no secrets, no identity token, and a trusted readiness probe.
 9. Enforce both the batch call timeout and a slightly larger supervisor timeout; explicitly terminate a failed or expired sandbox.
 
 The route can be hosted on localhost inside the sandbox and invoked through `sandbox.exec`, avoiding a public endpoint. If a Modal connect token/tunnel is used, it must be validator-only, rotated with the sandbox, and tested while outbound traffic remains blocked.
 
-To reduce cold starts, maintain one warm sandbox per actively evaluated contender and submit the next batch immediately after the prior batch returns. Modal Sandboxes have a maximum lifetime of 24 hours, so the supervisor must checkpoint progress and replace a sandbox before expiry. The replacement uses the same pinned image and volumes; cold-start time is measured separately and excluded from item runtime.
+Start one fresh Sandbox per contender batch and terminate it after that
+invocation. Cross-batch warm reuse is prohibited because untrusted code could
+retain future inputs or derived encodes outside measured time. The immutable
+image is reused. Batch runtime includes fresh Sandbox creation, probes,
+execution, output sync, and termination so pre-request work cannot occur outside
+the measured and billed lifecycle.
 
 Build each pinned contender revision once and persist its immutable Modal Image
 ID; batch dispatch must never invoke an image build. For the reference FFmpeg
@@ -513,12 +518,13 @@ The builder may have network access but receives no secrets beyond a narrowly sc
 
 Add a validator CLI, proposed as `scripts/competition_dataset.py`, with `prepare`, `validate`, `upload`, and `seal` commands.
 
-The evaluation index contains an immutable evaluation ID, source relative path, byte size and checksum, duration/frame metadata, codec metadata, and scoring parameters for every video. Each original source is both the contender input and the trusted VMAF reference. It lives once in the read-only input Modal Volume; contenders can read it but cannot replace it. Preflight will:
+The evaluation index contains an immutable evaluation ID, batch-scoped source path, byte size and checksum, duration/frame metadata, codec metadata, and scoring parameters for every video. Each original source is both the contender input and the trusted VMAF reference. The trusted global index and canonical-batch source trees live in the input Modal Volume, while contenders receive only their read-only canonical-batch subdirectory containing no index. Preflight will:
 
 - reject videos outside `min_video_length` and `max_video_length`;
 - reject missing, duplicate, unreadable, or checksum-mismatched source files;
 - record source dimensions, frame count, duration, pixel format, and display aspect ratio for later output validation;
-- upload sources to the manifest-named read-only input Volume;
+- upload sources only to immutable canonical-batch subdirectories used as
+  per-Sandbox `sub_path` mounts;
 - write the normalized index and checksum;
 - remount/read back a sample and verify input read-only enforcement;
 - mark the dataset sealed in SQLite before enrollment begins.
@@ -662,7 +668,7 @@ Composite unique key: `(competition_id, hotkey)`.
 - validation/build status and reason codes
 - image digest/size, Modal app/sandbox/volume identifiers
 - item totals (pending/success/failure), aggregate final score, VMAF, compression ratio/effectiveness, quality aggregate, cost-efficiency aggregate, and length-weighted coverage
-- estimated/reconciled cost, active runtime, cold-start runtime
+- estimated/reconciled cost and full batch-lifecycle active runtime
 - final rank and eligibility
 
 The boss owner's submitted contender remains `<boss_hotkey>`, so both solutions
@@ -679,7 +685,7 @@ One row per evaluation data point and attempt, not merely per batch:
 - competition ID, hotkey, evaluation ID, batch ID, attempt, idempotency key
 - input/output checksums and sizes
 - requested codec, duration/length weight, source/output sizes, compression ratio, VMAF threshold/score, compression-effectiveness component, raw cost, cost-efficiency component, completion value, and item status
-- handler runtime excluding cold start, queue time, cold-start attribution
+- full batch-lifecycle runtime and queue time
 - estimated cost, reconciled cost, currency, and cost attribution method
 - Modal app/sandbox/input identifiers
 - status, reason-coded error, timestamps, and scoring version
@@ -871,7 +877,7 @@ Implementation status (revised 2026-07-20): implemented. The miner template now 
 
 - Implement the validated build path and size enforcement selected in Phase 0.
 - Implement validator-owned Modal sandbox creation, naming/tags, GPU/CPU caps, offline runtime, read-only input and isolated output volumes.
-- Add timeout, teardown, warm reuse, 24-hour rollover, and restart recovery.
+- Add timeout, per-batch teardown, and restart recovery.
 
 Exit: integration tests prove no outbound DNS/IP access, no write to evaluation data, no access to another contender's output, hard CPU/GPU selection, build-size rejection, and forced termination at timeout.
 
@@ -888,7 +894,7 @@ persisted as terminal `BUILD_TIMEOUT`, allowing other parallel builds and the
 scheduler to continue. The Modal supervisor owns all resources and mounts,
 performs an active DNS/IP/HTTPS, credential, reference-visibility, and read/write
 isolation probe, persists external IDs before qualification, reattaches after restart,
-reuses warm sandboxes, rolls them before 24 hours, and force-terminates failures.
+uses fresh batch-scoped sandboxes and force-terminates failures.
 The live validator now connects these components: accepted pinned repositories
 are built on Modal in parallel, persisted with immutable image bindings,
 advanced to `EVALUATING`, and launched through the sandbox supervisor in
@@ -1069,7 +1075,9 @@ At minimum, add:
 - Git tests for token redaction, hooks, submodules, LFS, symlinks, path traversal, branch mutation after finalisation, and commit timestamp capture.
 - Static validation fixtures for readable template, known obfuscator runtimes/extensions, obfuscated-only code, archives, secrets, dynamic execution, and oversized repositories/images; intake tests cover rejection feedback, corrected/new-repository resubmission, atomic artifact cleanup/rollback, and the finalisation cutoff.
 - Route tests for warmup qualification, missing `/compress`, batches 1-5, input/output length mismatch, traversal, symlink escape, URL rejection offline, partial result, duplicate output, and inference backward compatibility.
-- Modal integration tests for network block, read-only source input, per-contender output isolation, GPU allowlist, CPU hard cap, timeout, unique tags/logs, warm reuse, and 24-hour replacement.
+- Modal integration tests for network block, read-only batch-scoped source input,
+  hidden global index, per-batch/per-contender output isolation, GPU allowlist,
+  CPU hard cap, timeout, unique tags/logs, and teardown after every batch.
 - Redis/SQLite tests for lease expiry, duplicate delivery, retry exhaustion, crash between output and enqueue, Redis loss, and exact resume.
 - Scoring regression tests against existing compression fixtures,
   unchanged-resolution and encoding checks, output-size reduction, the VMAF

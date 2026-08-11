@@ -31,8 +31,16 @@ class CompetitionScoringBatchItem(BaseModel):
         path = PurePosixPath(value)
         if path.is_absolute() or ".." in path.parts or not path.parts:
             raise ValueError("output_path must be relative and cannot traverse")
-        if path.parts[0] != "evaluations":
-            raise ValueError("competition output_path must be below evaluations/")
+        is_batch_scoped = (
+            len(path.parts) >= 4
+            and path.parts[0] == "batches"
+            and path.parts[2] == "evaluations"
+        )
+        if not is_batch_scoped:
+            raise ValueError(
+                "competition output_path must be below a batch-scoped "
+                "batches/<batch-id>/evaluations/ directory"
+            )
         return str(path)
 
 
