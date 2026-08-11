@@ -18,8 +18,15 @@ from unittest.mock import patch
 from sqlalchemy import text
 
 from scripts.competition_dataset import (
+    DatasetPipelineReceipt,
+    _load_receipt,
     _prompt_yes_no,
+    _require_receipt,
+    _require_unchanged_sources,
+    _source_snapshots,
+    _write_receipt,
     ensure_manifest_registered,
+    main as dataset_main,
 )
 from services.scoring.scoring_function import calculate_compression_score
 from vidaio_subnet_core.competition.config import (
@@ -344,7 +351,218 @@ class Phase4DatasetTests(unittest.TestCase):
                 timeout=30,
             )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Prepare, verify, upload", result.stdout)
+        self.assertIn("Prepare, validate, upload", result.stdout)
+
+    def test_pipeline_receipt_enforces_order_and_source_identity(self) -> None:
+        manifest = SimpleNamespace(
+            competition_id="pipeline-receipt-test",
+            evaluation_batch_size=5,
+            digest=lambda: "a" * 64,
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source_root = root / "sources"
+            source_root.mkdir()
+            payload = b"video-source"
+            (source_root / "one.mp4").write_bytes(payload)
+            item = EvaluationIndexItem(
+                evaluation_id="one",
+                source_path="inputs/one.mp4",
+                size_bytes=len(payload),
+                sha256=sha256(payload).hexdigest(),
+                **media_metadata(),
+            )
+            evaluation_index = EvaluationIndex(
+                competition_id=manifest.competition_id,
+                items=(item,),
+            ).with_batch_scoped_source_paths(manifest)
+            index_path = root / "index.json"
+            index_path.write_text(
+                evaluation_index.normalized_json(),
+                encoding="utf-8",
+            )
+            receipt = DatasetPipelineReceipt(
+                stage="prepared",
+                manifest_digest=manifest.digest(),
+                index_digest=evaluation_index.digest(),
+                source_root=str(source_root.resolve()),
+                sources=_source_snapshots(evaluation_index, source_root),
+                updated_at=NOW,
+            )
+            _write_receipt(str(index_path), receipt)
+
+            loaded = _require_receipt(
+                str(index_path),
+                manifest=manifest,
+                index=evaluation_index,
+                allowed_stages=("prepared",),
+                required_stage="prepared",
+            )
+            _require_unchanged_sources(loaded, evaluation_index, source_root)
+            with self.assertRaisesRegex(DatasetError, "required prior stage"):
+                _require_receipt(
+                    str(index_path),
+                    manifest=manifest,
+                    index=evaluation_index,
+                    allowed_stages=("validated",),
+                    required_stage="validated",
+                )
+
+            (source_root / "one.mp4").write_bytes(b"changed-source")
+            with self.assertRaisesRegex(DatasetError, "changed after preparation"):
+                _require_unchanged_sources(loaded, evaluation_index, source_root)
+
+    def test_dataset_cli_enforces_pipeline_without_repeating_media_probe(self) -> None:
+        manifest = SimpleNamespace(
+            competition_id="pipeline-cli-test",
+            scoring_seed=123,
+            min_video_length=timedelta(seconds=1),
+            max_video_length=timedelta(minutes=1),
+            evaluation_batch_size=5,
+            evaluation_input_volume_name="pipeline-cli-inputs",
+            evaluation_index_path="/validator-evaluation/index.json",
+            digest=lambda: "c" * 64,
+        )
+        state = {"uploaded": False, "sealed": False}
+
+        class Store:
+            def __init__(self, *, environment_name):
+                self.environment_name = environment_name
+
+            def upload(
+                self,
+                _manifest,
+                _index,
+                _source_root,
+                *,
+                validate_local,
+            ):
+                assert validate_local is False
+                state["uploaded"] = True
+
+            def load_index(self, _manifest, *, validate_for_manifest):
+                assert validate_for_manifest is False
+                return EvaluationIndex.model_validate_json(
+                    Path(state["index_path"]).read_text(encoding="utf-8")
+                )
+
+            def validation_issues(self, *_args, **_kwargs):
+                raise AssertionError("seal repeated remote media validation")
+
+        class Repository:
+            def __init__(self, _database_url):
+                pass
+
+            def get(self, _competition_id):
+                return SimpleNamespace(manifest_digest=manifest.digest())
+
+            def seal_evaluation_dataset(
+                self,
+                _competition_id,
+                evaluation_index,
+                *,
+                now,
+                actor,
+            ):
+                assert now is not None
+                assert actor == "competition-dataset-cli"
+                state["sealed"] = True
+                return evaluation_index.digest()
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source_root = root / "sources"
+            source_root.mkdir()
+            (source_root / "one.mp4").write_bytes(b"source-video")
+            index_path = root / "index.json"
+            state["index_path"] = str(index_path)
+            common = [
+                "--manifest",
+                str(root / "manifest.json"),
+                "--source-dir",
+                str(source_root),
+                "--index",
+                str(index_path),
+            ]
+
+            with (
+                patch("scripts.competition_dataset.load_manifest", return_value=manifest),
+                patch(
+                    "vidaio_subnet_core.competition.dataset._probe_video",
+                    return_value=media_metadata(),
+                ) as probe,
+                patch("scripts.competition_dataset.ModalVolumeStore", Store),
+                patch("scripts.competition_dataset.CompetitionRepository", Repository),
+            ):
+                with patch.object(
+                    sys,
+                    "argv",
+                    ["competition_dataset.py", "prepare", *common],
+                ):
+                    self.assertEqual(dataset_main(), 0)
+                self.assertEqual(probe.call_count, 1)
+                self.assertEqual(_load_receipt(str(index_path)).stage, "prepared")
+
+                with (
+                    patch.object(
+                        sys,
+                        "argv",
+                        [
+                            "competition_dataset.py",
+                            "upload",
+                            *common,
+                            "--environment",
+                            "main",
+                        ],
+                    ),
+                    self.assertRaisesRegex(DatasetError, "required prior stage"),
+                ):
+                    dataset_main()
+
+                with patch.object(
+                    sys,
+                    "argv",
+                    ["competition_dataset.py", "validate", *common],
+                ):
+                    self.assertEqual(dataset_main(), 0)
+                self.assertEqual(probe.call_count, 1)
+                self.assertEqual(_load_receipt(str(index_path)).stage, "validated")
+
+                with patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "competition_dataset.py",
+                        "upload",
+                        *common,
+                        "--environment",
+                        "main",
+                    ],
+                ):
+                    self.assertEqual(dataset_main(), 0)
+                self.assertTrue(state["uploaded"])
+                self.assertEqual(_load_receipt(str(index_path)).stage, "uploaded")
+
+                with patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "competition_dataset.py",
+                        "seal",
+                        "--manifest",
+                        str(root / "manifest.json"),
+                        "--index",
+                        str(index_path),
+                        "--environment",
+                        "main",
+                        "--database-url",
+                        f"sqlite:///{root / 'competition.db'}",
+                    ],
+                ):
+                    self.assertEqual(dataset_main(), 0)
+                self.assertTrue(state["sealed"])
+                self.assertEqual(_load_receipt(str(index_path)).stage, "sealed")
+                self.assertEqual(probe.call_count, 1)
 
     def test_seal_preflight_can_register_manifest_before_validator_boot(self) -> None:
         manifest = load_manifest(
@@ -462,6 +680,16 @@ class Phase4DatasetTests(unittest.TestCase):
                 return_value=metadata,
             ):
                 store.upload(manifest, evaluation_index, source_root)
+            with patch(
+                "vidaio_subnet_core.competition.dataset.validate_local_index",
+                side_effect=AssertionError("local validation was repeated"),
+            ):
+                store.upload(
+                    manifest,
+                    evaluation_index,
+                    source_root,
+                    validate_local=False,
+                )
             self.assertEqual(
                 Volume.files["batches/000000/inputs/a.mp4"], values["a.mp4"]
             )

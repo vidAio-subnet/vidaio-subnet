@@ -230,6 +230,10 @@ or another immutable live-competition input changes.
   DATABASE_URL=sqlite:////absolute/path/to/competition_database.db
   ```
 
+- [ ] Run the following four dataset commands in order. The CLI enforces the
+  sequence with `<index>.pipeline.json`; retain that receipt beside the index
+  until sealing completes.
+
 - [ ] Prepare the deterministic index:
 
   ```bash
@@ -247,7 +251,9 @@ or another immutable live-competition input changes.
   - [ ] dimensions, duration, frame count, codec, pixel format, aspect ratio,
     file size, and SHA-256 metadata are present.
 
-- [ ] Validate all local source files:
+- [ ] Validate the prepared receipt, index contract, and unchanged source file
+  identities. The expensive hashing and full-media probe already ran during
+  `prepare` and are not repeated:
 
   ```bash
   python scripts/competition_dataset.py validate \
@@ -256,7 +262,8 @@ or another immutable live-competition input changes.
     --index "$INDEX"
   ```
 
-- [ ] Upload and read-back verify the index and every source:
+- [ ] Upload and read-back verify the index and every source. This requires the
+  validated receipt and performs the single remote checksum pass:
 
   ```bash
   python scripts/competition_dataset.py upload \
@@ -266,7 +273,9 @@ or another immutable live-competition input changes.
     --environment main
   ```
 
-- [ ] Seal the exact digest into the competition database:
+- [ ] Seal the exact digest into the competition database. This requires the
+  upload receipt and rechecks the remote index digest without downloading and
+  probing every video again:
 
   ```bash
   python scripts/competition_dataset.py seal \

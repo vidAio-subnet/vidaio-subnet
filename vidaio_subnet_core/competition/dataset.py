@@ -781,8 +781,11 @@ class ModalVolumeStore:
         manifest: CompetitionManifest,
         index: EvaluationIndex,
         source_root: Path,
+        *,
+        validate_local: bool = True,
     ) -> None:
-        validate_local_index(index, manifest, source_root)
+        if validate_local:
+            validate_local_index(index, manifest, source_root)
         self._ensure_environment()
         volume_name = manifest.evaluation_input_volume_name
         try:
