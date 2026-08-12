@@ -24,6 +24,9 @@ from .pricing import (
 from .qualification import FfprobeMediaInspector, QualificationError
 
 
+OUTPUT_AUDIO_NOT_PRESERVED = "OUTPUT_AUDIO_NOT_PRESERVED"
+
+
 class ItemScoringError(RuntimeError):
     def __init__(
         self,
@@ -252,6 +255,30 @@ class CompetitionItemScorer:
                 reject("INPUT_PIXEL_FORMAT_MISMATCH", item.evaluation_id)
             if source_media.sample_aspect_ratio != item.sample_aspect_ratio:
                 reject("INPUT_ASPECT_RATIO_MISMATCH", item.evaluation_id)
+
+            audio_preserved = (
+                output_media.audio_stream_count == source_media.audio_stream_count
+                and (
+                    source_media.audio_stream_count == 0
+                    or (
+                        source_media.audio_fingerprint is not None
+                        and output_media.audio_fingerprint
+                        == source_media.audio_fingerprint
+                    )
+                )
+            )
+            if not audio_preserved:
+                reject(
+                    OUTPUT_AUDIO_NOT_PRESERVED,
+                    "source has "
+                    f"{source_media.audio_stream_count} audio stream(s), but output "
+                    f"has {output_media.audio_stream_count}; audio stream fingerprints "
+                    "must match",
+                    media_score=0.0,
+                    media_compression_component=0.0,
+                    media_vmaf_component=0.0,
+                    media_score_reason=OUTPUT_AUDIO_NOT_PRESERVED,
+                )
 
             violations: list[tuple[str, str]] = []
             if len(output_bytes) >= len(source_bytes):
@@ -518,6 +545,7 @@ __all__ = [
     "COST_ATTRIBUTION_METHOD",
     "GPU_PRICE_PER_SECOND_USD",
     "ItemScoringError",
+    "OUTPUT_AUDIO_NOT_PRESERVED",
     "SANDBOX_CPU_PRICE_PER_CORE_SECOND_USD",
     "ScoredItem",
     "compute_aggregates",

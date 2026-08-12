@@ -40,11 +40,61 @@ class MediaInfo:
     sample_aspect_ratio: str
     size_bytes: int
     frame_count: int | None = None
+    audio_stream_count: int = 0
+    audio_fingerprint: str | None = None
 
 
 class FfprobeMediaInspector:
-    def __init__(self, executable: str = "ffprobe") -> None:
+    def __init__(
+        self,
+        executable: str = "ffprobe",
+        audio_fingerprint_executable: str = "ffmpeg",
+    ) -> None:
         self.executable = executable
+        self.audio_fingerprint_executable = audio_fingerprint_executable
+
+    def _audio_fingerprint(self, path: Path) -> str:
+        """Hash encoded audio packets without decoding or re-encoding them."""
+
+        try:
+            result = subprocess.run(
+                [
+                    self.audio_fingerprint_executable,
+                    "-v",
+                    "error",
+                    "-i",
+                    str(path),
+                    "-map",
+                    "0:a",
+                    "-c",
+                    "copy",
+                    "-f",
+                    "hash",
+                    "-hash",
+                    "sha256",
+                    "-",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise QualificationError(
+                "MEDIA_AUDIO_FINGERPRINT_FAILED", str(exc)[:300]
+            ) from exc
+        fingerprint = result.stdout.strip()
+        algorithm, separator, digest = fingerprint.partition("=")
+        fingerprint_valid = (
+            algorithm == "SHA256"
+            and separator == "="
+            and len(digest) == 64
+            and all(character in "0123456789abcdefABCDEF" for character in digest)
+        )
+        if result.returncode != 0 or not fingerprint_valid:
+            detail = result.stderr.strip() or "ffmpeg returned no audio fingerprint"
+            raise QualificationError("MEDIA_AUDIO_FINGERPRINT_FAILED", detail[:300])
+        return fingerprint
 
     def inspect(self, path: Path) -> MediaInfo:
         result = subprocess.run(
@@ -73,6 +123,9 @@ class FfprobeMediaInspector:
             stream = next(
                 item for item in payload["streams"] if item.get("codec_type") == "video"
             )
+            audio_stream_count = sum(
+                item.get("codec_type") == "audio" for item in payload["streams"]
+            )
             duration = stream.get("duration") or payload["format"].get("duration")
             return MediaInfo(
                 width=int(stream["width"]),
@@ -85,6 +138,10 @@ class FfprobeMediaInspector:
                 size_bytes=path.stat().st_size,
                 frame_count=int(
                     stream.get("nb_read_frames") or stream.get("nb_frames")
+                ),
+                audio_stream_count=audio_stream_count,
+                audio_fingerprint=(
+                    self._audio_fingerprint(path) if audio_stream_count else None
                 ),
             )
         except (

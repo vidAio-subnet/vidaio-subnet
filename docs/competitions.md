@@ -77,6 +77,12 @@ They reject every other caller by default; the development override is unsafe
 for production. This restriction is competition-only and does not change the
 existing inference blacklist behavior.
 
+If a serving miner does not expose a competition invitation or submission
+route, the validator records `CONTENDER_NOT_FOUND` with the missing route in
+the detail. This applies whether transport reports an explicit HTTP 404 or
+returns an HTTP 200 synapse with untouched protocol response defaults; neither
+case is treated as a response for a different competition.
+
 ## Manifest
 
 The executable reference is the
@@ -602,8 +608,8 @@ A result must:
 
 - exist at the exact assigned output path;
 - be an AV1 MP4 smaller than its source;
-- preserve dimensions, duration, frame count, pixel format constraints, and
-  sample aspect ratio within allowed tolerances;
+- preserve the source audio streams, dimensions, duration, frame count, pixel
+  format constraints, and sample aspect ratio within allowed tolerances;
 - match the immutable source checksum and evaluation metadata;
 - receive a positive absolute media score and meet the manifest's minimum
   compression ratio.
@@ -650,7 +656,10 @@ At or above the target, VMAF contributes from 0.7 at the target to 1 at VMAF
 component.
 
 Invalid items receive zero components and are excluded from the minimum-cost
-reference so a cheap invalid output cannot reduce valid contenders' scores. For
+reference so a cheap invalid output cannot reduce valid contenders' scores. An
+output whose audio-stream count or encoded-audio fingerprint differs from the
+source records a zero media score and
+`media_score_reason=OUTPUT_AUDIO_NOT_PRESERVED` before failing the item. For
 each item, every cheapest valid contender receives cost efficiency `1.0`; a
 valid contender costing twice that minimum receives `0.5`. Media score remains
 on the absolute curve implemented by the deployed scoring code.

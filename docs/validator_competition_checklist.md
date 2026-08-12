@@ -407,9 +407,9 @@ or another immutable live-competition input changes.
 
 ## 9. Validate scoring, ranking, and completion
 
-- [ ] Confirm outputs are independently checked for AV1/MP4, unchanged
-  dimensions/timing, YUV pixel format, square pixels, expected path, size, and
-  checksum before scoring.
+- [ ] Confirm outputs are independently checked for AV1/MP4, preserved source
+  audio streams, unchanged dimensions/timing, YUV pixel format, square pixels,
+  expected path, size, and checksum before scoring.
 - [ ] Confirm invalid/missing outputs fail closed and retain measurable metrics
   where safe.
 - [ ] Confirm VMAF is computed against the matching original source and the

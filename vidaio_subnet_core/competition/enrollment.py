@@ -227,6 +227,7 @@ class CompetitionEnrollmentDispatcher:
                 response = await self.forward(
                     endpoint, synapse, self.timeout_seconds
                 )
+            self._validate_competition_endpoint(response, "invitation")
             self._validate_endpoint_hotkey(response, endpoint)
             self._validate_manifest_binding(response, competition)
             invitation = response.invitation_response
@@ -353,6 +354,7 @@ class CompetitionEnrollmentDispatcher:
                 response = await self.forward(
                     endpoint, synapse, self.timeout_seconds
                 )
+            self._validate_competition_endpoint(response, "submission")
             self._validate_endpoint_hotkey(response, endpoint)
             self._validate_manifest_binding(response, competition)
             submission_response = response.submission_response
@@ -433,6 +435,34 @@ class CompetitionEnrollmentDispatcher:
                 submission_response = getattr(response, "submission_response", None)
                 if submission_response is not None:
                     submission_response.github_pat = ""
+
+    @staticmethod
+    def _validate_competition_endpoint(
+        response: Any | None, endpoint_name: str
+    ) -> None:
+        if response is None:
+            return
+        response_dendrite = getattr(response, "dendrite", None)
+        response_axon = getattr(response, "axon", None)
+        status_code = getattr(response_dendrite, "status_code", None)
+        if status_code is None:
+            status_code = getattr(response_axon, "status_code", None)
+        try:
+            status_code = int(status_code) if status_code is not None else None
+        except (TypeError, ValueError):
+            status_code = None
+        endpoint_response = getattr(
+            response, f"{endpoint_name}_response", None
+        )
+        response_is_untouched = endpoint_response is None or (
+            not getattr(endpoint_response, "competition_id", "")
+            and not getattr(endpoint_response, "echo_nonce", "")
+        )
+        if status_code == 404 or response_is_untouched:
+            raise EnrollmentResponseError(
+                "CONTENDER_NOT_FOUND",
+                f"miner does not expose the competition {endpoint_name} endpoint",
+            )
 
     @staticmethod
     def _validate_endpoint_hotkey(

@@ -562,7 +562,7 @@ Scheduling policy:
   incident requires the explicit allowlisted operator repair workflow.
 - Every contender is attempted on every indexed evaluation input. After retries are exhausted, a failed item receives zero for media score, cost efficiency, and completion; failures are not excluded and do not trigger whole-contender disqualification.
 
-Reuse the current synthetic compression validation pipeline: the AV1/MP4 and output-size checks, unchanged-resolution validation, frame-count and duration tolerances, and VMAF quality gate. Wrap it in a competition-specific adapter so inference history is not mutated. Persist deterministic VMAF sample selections, source/output checksums, and the pinned scoring algorithm version and configuration in the normalized manifest.
+Reuse the current synthetic compression validation pipeline: the AV1/MP4 and output-size checks, source-audio-stream preservation, unchanged-resolution validation, frame-count and duration tolerances, and VMAF quality gate. An output whose audio-stream count or encoded-audio fingerprint differs from its source receives media score zero with `media_score_reason=OUTPUT_AUDIO_NOT_PRESERVED`. Wrap the pipeline in a competition-specific adapter so inference history is not mutated. Persist deterministic VMAF sample selections, source/output checksums, and the pinned scoring algorithm version and configuration in the normalized manifest.
 
 ### Competition score formula
 
