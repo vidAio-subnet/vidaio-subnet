@@ -2237,9 +2237,22 @@ class Phase4RepositoryTests(unittest.TestCase):
 
 
 class FakeInspector:
-    def __init__(self, *, output_frames: int = 300, output_sar: str = "1:1"):
+    def __init__(
+        self,
+        *,
+        output_frames: int = 300,
+        output_sar: str = "1:1",
+        source_audio_streams: int = 0,
+        output_audio_streams: int = 0,
+        source_audio_fingerprint: str | None = None,
+        output_audio_fingerprint: str | None = None,
+    ):
         self.output_frames = output_frames
         self.output_sar = output_sar
+        self.source_audio_streams = source_audio_streams
+        self.output_audio_streams = output_audio_streams
+        self.source_audio_fingerprint = source_audio_fingerprint
+        self.output_audio_fingerprint = output_audio_fingerprint
 
     def inspect(self, path: Path) -> MediaInfo:
         output = path.name == "output.mp4"
@@ -2253,6 +2266,14 @@ class FakeInspector:
             sample_aspect_ratio=self.output_sar if output else "1:1",
             size_bytes=path.stat().st_size,
             frame_count=self.output_frames if output else 300,
+            audio_stream_count=(
+                self.output_audio_streams if output else self.source_audio_streams
+            ),
+            audio_fingerprint=(
+                self.output_audio_fingerprint
+                if output
+                else self.source_audio_fingerprint
+            ),
         )
 
 
@@ -2456,6 +2477,85 @@ class Phase4ScoringTests(unittest.TestCase):
             self.assertEqual(captured.exception.reason_code, reason)
             self.assertEqual(captured.exception.metrics.compression_ratio, 2.5)
             self.assertEqual(captured.exception.metrics.vmaf_score, 96.5)
+
+    def test_stripped_audio_gets_zero_media_score_and_preservation_reason(self) -> None:
+        scorer = CompetitionItemScorer(
+            inspector=FakeInspector(
+                source_audio_streams=1,
+                output_audio_streams=0,
+                source_audio_fingerprint="SHA256=source-audio",
+            ),
+            vmaf=lambda *_args: 96.5,
+        )
+
+        with self.assertRaises(ItemScoringError) as captured:
+            scorer.score(
+                self.manifest,
+                self.item,
+                self.source,
+                self.output,
+                runtime_seconds=2.5,
+                **ALLOCATED_RESOURCES,
+            )
+
+        self.assertEqual(
+            captured.exception.reason_code,
+            "OUTPUT_AUDIO_NOT_PRESERVED",
+        )
+        self.assertEqual(captured.exception.metrics.media_score, 0)
+        self.assertEqual(captured.exception.metrics.media_compression_component, 0)
+        self.assertEqual(captured.exception.metrics.media_vmaf_component, 0)
+        self.assertEqual(
+            captured.exception.metrics.media_score_reason,
+            "OUTPUT_AUDIO_NOT_PRESERVED",
+        )
+
+    def test_preserved_audio_can_be_scored(self) -> None:
+        result = CompetitionItemScorer(
+            inspector=FakeInspector(
+                source_audio_streams=1,
+                output_audio_streams=1,
+                source_audio_fingerprint="SHA256=preserved-audio",
+                output_audio_fingerprint="SHA256=preserved-audio",
+            ),
+            vmaf=lambda *_args: 96.5,
+        ).score(
+            self.manifest,
+            self.item,
+            self.source,
+            self.output,
+            runtime_seconds=2.5,
+            **ALLOCATED_RESOURCES,
+        )
+
+        self.assertGreater(result.media_score, 0)
+
+    def test_replaced_audio_gets_zero_media_score(self) -> None:
+        scorer = CompetitionItemScorer(
+            inspector=FakeInspector(
+                source_audio_streams=1,
+                output_audio_streams=1,
+                source_audio_fingerprint="SHA256=source-audio",
+                output_audio_fingerprint="SHA256=replacement-audio",
+            ),
+            vmaf=lambda *_args: 96.5,
+        )
+
+        with self.assertRaises(ItemScoringError) as captured:
+            scorer.score(
+                self.manifest,
+                self.item,
+                self.source,
+                self.output,
+                runtime_seconds=2.5,
+                **ALLOCATED_RESOURCES,
+            )
+
+        self.assertEqual(captured.exception.metrics.media_score, 0)
+        self.assertEqual(
+            captured.exception.metrics.media_score_reason,
+            "OUTPUT_AUDIO_NOT_PRESERVED",
+        )
 
     def test_vmaf_failure_retains_measured_metrics_and_cost(self) -> None:
         scorer = CompetitionItemScorer(

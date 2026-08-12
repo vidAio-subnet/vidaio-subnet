@@ -81,8 +81,8 @@ must not assume that a batch contains repeated versions of one source video.
   its assigned output path.
 - [ ] Support both `codec_mode=CRF` and `codec_mode=VBR`, including the supplied
   VMAF and target-bitrate criteria.
-- [ ] Produce a smaller AV1 MP4 while preserving source dimensions, timing,
-  YUV pixel format, and square pixels.
+- [ ] Produce a smaller AV1 MP4 while preserving all source audio streams,
+  dimensions, timing, YUV pixel format, and square pixels.
 - [ ] Run with `DISABLE_REMOTE_IO=true`. Do not fetch URLs, call external
   services, expose ports, or depend on runtime credentials.
 - [ ] Reject path traversal, symlink escapes, duplicate output paths, and

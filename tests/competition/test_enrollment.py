@@ -118,6 +118,57 @@ class FakeForwarder:
         return synapse
 
 
+class MissingCompetitionEndpointForwarder:
+    def __init__(self, endpoint_name: str, *, status_code: int = 404) -> None:
+        self.endpoint_name = endpoint_name
+        self.status_code = status_code
+
+    async def __call__(self, endpoint, synapse, _timeout_seconds):
+        is_invitation = isinstance(
+            synapse, protocol.CompetitionInvitationProtocol
+        )
+        current_endpoint = "invitation" if is_invitation else "submission"
+        missing = current_endpoint == self.endpoint_name
+        if is_invitation and not missing:
+            synapse.invitation_response = protocol.CompetitionInvitationResponse(
+                competition_id=synapse.competition_id,
+                echo_nonce=synapse.invitation_nonce,
+                participating=True,
+                supported_competition_type=protocol.CompetitionType.COMPRESSION,
+            )
+        status_code = self.status_code if missing else 200
+        status_message = "Not Found" if missing else "Success"
+        synapse.dendrite = SimpleNamespace(
+            status_code=status_code,
+            status_message=status_message,
+        )
+        synapse.axon = SimpleNamespace(
+            hotkey=endpoint.hotkey,
+            status_code=status_code,
+            status_message=status_message,
+        )
+        return synapse
+
+
+class WrongCompetitionForwarder:
+    async def __call__(self, endpoint, synapse, _timeout_seconds):
+        synapse.invitation_response = protocol.CompetitionInvitationResponse(
+            competition_id="different-competition",
+            echo_nonce=synapse.invitation_nonce,
+            participating=False,
+        )
+        synapse.dendrite = SimpleNamespace(
+            status_code=200,
+            status_message="Success",
+        )
+        synapse.axon = SimpleNamespace(
+            hotkey=endpoint.hotkey,
+            status_code=200,
+            status_message="Success",
+        )
+        return synapse
+
+
 class EnrollmentDispatcherTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -178,13 +229,15 @@ class EnrollmentDispatcherTests(unittest.TestCase):
         self.assertEqual(participating.invitation_attempts, 1)
         self.assertEqual(participating.submission_poll_attempts, 1)
         self.assertEqual(declining.status, ContenderState.REJECTED.value)
-        self.assertEqual(
-            forwarder.calls,
+        self.assertCountEqual(
+            forwarder.calls[:2],
             [
                 ("invitation", "participating-hotkey"),
                 ("invitation", "declining-hotkey"),
-                ("submission", "participating-hotkey"),
             ],
+        )
+        self.assertEqual(
+            forwarder.calls[2], ("submission", "participating-hotkey")
         )
         self.assertEqual(len(intake.calls), 1)
         self.assertTrue(intake.credentials[0].startswith("github_pat_"))
@@ -238,13 +291,15 @@ class EnrollmentDispatcherTests(unittest.TestCase):
 
         asyncio.run(dispatcher.run_once(self.competition, endpoints))
 
-        self.assertEqual(
-            forwarder.calls,
+        self.assertCountEqual(
+            forwarder.calls[:2],
             [
                 ("invitation", "participating-hotkey"),
                 ("invitation", "declining-hotkey"),
-                ("submission", "participating-hotkey"),
             ],
+        )
+        self.assertEqual(
+            forwarder.calls[2], ("submission", "participating-hotkey")
         )
         rejected = self.repository.get_contender(
             self.manifest.competition_id, "declining-hotkey"
@@ -314,6 +369,90 @@ class EnrollmentDispatcherTests(unittest.TestCase):
         self.assertEqual(contender.reason_code, "HOTKEY_MISMATCH")
         self.assertEqual(
             [call for call in forwarder.calls if call[0] == "submission"], []
+        )
+
+    def test_missing_invitation_endpoint_with_404_is_contender_not_found(self) -> None:
+        dispatcher = CompetitionEnrollmentDispatcher(
+            self.repository,
+            FakeIntake(),
+            MissingCompetitionEndpointForwarder("invitation"),
+            owner_id="test-validator",
+            clock=self.clock,
+        )
+
+        asyncio.run(dispatcher.run_once(self.competition, self.endpoints()[:1]))
+
+        contender = self.repository.get_contender(
+            self.manifest.competition_id, "participating-hotkey"
+        )
+        self.assertEqual(contender.status, ContenderState.INVITED.value)
+        self.assertEqual(contender.reason_code, "CONTENDER_NOT_FOUND")
+        self.assertEqual(
+            contender.reason_detail,
+            "miner does not expose the competition invitation endpoint",
+        )
+
+    def test_untouched_invitation_response_is_contender_not_found(self) -> None:
+        dispatcher = CompetitionEnrollmentDispatcher(
+            self.repository,
+            FakeIntake(),
+            MissingCompetitionEndpointForwarder("invitation", status_code=200),
+            owner_id="test-validator",
+            clock=self.clock,
+        )
+
+        asyncio.run(dispatcher.run_once(self.competition, self.endpoints()[:1]))
+
+        contender = self.repository.get_contender(
+            self.manifest.competition_id, "participating-hotkey"
+        )
+        self.assertEqual(contender.status, ContenderState.INVITED.value)
+        self.assertEqual(contender.reason_code, "CONTENDER_NOT_FOUND")
+        self.assertEqual(
+            contender.reason_detail,
+            "miner does not expose the competition invitation endpoint",
+        )
+
+    def test_nonempty_wrong_competition_remains_id_mismatch(self) -> None:
+        dispatcher = CompetitionEnrollmentDispatcher(
+            self.repository,
+            FakeIntake(),
+            WrongCompetitionForwarder(),
+            owner_id="test-validator",
+            clock=self.clock,
+        )
+
+        asyncio.run(dispatcher.run_once(self.competition, self.endpoints()[:1]))
+
+        contender = self.repository.get_contender(
+            self.manifest.competition_id, "participating-hotkey"
+        )
+        self.assertEqual(contender.status, ContenderState.INVITED.value)
+        self.assertEqual(contender.reason_code, "COMPETITION_ID_MISMATCH")
+        self.assertEqual(
+            contender.reason_detail,
+            "invitation response belongs to another competition",
+        )
+
+    def test_missing_submission_endpoint_is_contender_not_found(self) -> None:
+        dispatcher = CompetitionEnrollmentDispatcher(
+            self.repository,
+            FakeIntake(),
+            MissingCompetitionEndpointForwarder("submission", status_code=200),
+            owner_id="test-validator",
+            clock=self.clock,
+        )
+
+        asyncio.run(dispatcher.run_once(self.competition, self.endpoints()[:1]))
+
+        contender = self.repository.get_contender(
+            self.manifest.competition_id, "participating-hotkey"
+        )
+        self.assertEqual(contender.status, ContenderState.PARTICIPATING.value)
+        self.assertEqual(contender.reason_code, "CONTENDER_NOT_FOUND")
+        self.assertEqual(
+            contender.reason_detail,
+            "miner does not expose the competition submission endpoint",
         )
 
     def test_next_poll_returns_rejection_feedback_and_accepts_resubmission(self) -> None:
