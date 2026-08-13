@@ -11,7 +11,7 @@ from typing import Protocol
 REFERENCE_4K_PIXELS = 3840 * 2160
 ENCODING_CHUNK_SECONDS = 10 * 60
 ENCODING_4K_CHUNK_RUNTIME_SECONDS = 2 * 60
-ENCODING_PARALLEL_VIDEOS = 4
+ENCODING_PARALLEL_VIDEOS = 5
 VMAF_4K_FRAMES_PER_SECOND = 200
 PROCESSING_TIMEOUT_GRACE_SECONDS = 2 * 60
 BATCH_LEASE_GRACE_SECONDS = 2 * 60
@@ -38,7 +38,7 @@ def _resolution_scale(item: VideoWorkload) -> float:
 def estimated_encoding_runtime_seconds(
     values: Iterable[VideoWorkload],
 ) -> float:
-    """Estimate a four-lane NVENC chunk schedule from duration and resolution."""
+    """Estimate a five-lane NVENC chunk schedule from duration and resolution."""
 
     video_runtimes = []
     for item in _items(values):
