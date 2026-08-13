@@ -84,14 +84,12 @@ def _default_vmaf(
 ) -> float:
     from services.scoring.vmaf_metric import vmaf_metric_ffmpeg
 
-    n_subsample = max(1, frame_count // max(1, sample_count))
-    deterministic_offset = scoring_seed % n_subsample
     return float(
         vmaf_metric_ffmpeg(
             str(output),
             str(source),
-            skip_frames=deterministic_offset,
-            n_subsample=n_subsample,
+            skip_frames=0,
+            n_subsample=1,
             neg_model=True,
         )
     )
