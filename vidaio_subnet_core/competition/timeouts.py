@@ -13,7 +13,8 @@ ENCODING_CHUNK_SECONDS = 10 * 60
 ENCODING_4K_CHUNK_RUNTIME_SECONDS = 2 * 60
 ENCODING_PARALLEL_VIDEOS = 5
 VMAF_4K_FRAMES_PER_SECOND = 200
-PROCESSING_TIMEOUT_GRACE_SECONDS = 2 * 60
+EXECUTION_TIMEOUT_GRACE_SECONDS = 60
+SCORING_TIMEOUT_GRACE_SECONDS = 2 * 60
 BATCH_LEASE_GRACE_SECONDS = 2 * 60
 
 
@@ -73,7 +74,7 @@ def competition_execution_timeout_seconds(
     estimate = estimated_encoding_runtime_seconds(values)
     return math.ceil(
         max(
-            estimate + PROCESSING_TIMEOUT_GRACE_SECONDS,
+            estimate + EXECUTION_TIMEOUT_GRACE_SECONDS,
             minimum_timeout_seconds,
         )
     )
@@ -114,7 +115,7 @@ def competition_scoring_timeout_seconds(
     estimate = estimated_vmaf_runtime_seconds(values)
     return math.ceil(
         max(
-            estimate + PROCESSING_TIMEOUT_GRACE_SECONDS,
+            estimate + SCORING_TIMEOUT_GRACE_SECONDS,
             minimum_timeout_seconds,
         )
     )
@@ -125,8 +126,9 @@ __all__ = [
     "ENCODING_4K_CHUNK_RUNTIME_SECONDS",
     "ENCODING_CHUNK_SECONDS",
     "ENCODING_PARALLEL_VIDEOS",
-    "PROCESSING_TIMEOUT_GRACE_SECONDS",
+    "EXECUTION_TIMEOUT_GRACE_SECONDS",
     "REFERENCE_4K_PIXELS",
+    "SCORING_TIMEOUT_GRACE_SECONDS",
     "VMAF_4K_FRAMES_PER_SECOND",
     "competition_execution_lease_seconds",
     "competition_execution_timeout_seconds",

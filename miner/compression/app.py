@@ -47,7 +47,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Video Compression Service", lifespan=lifespan)
 
 SHARED_VOLUME_PATH = os.getenv("SHARED_VOLUME_PATH", "/tmp/organic-proxy")
-MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_COMPRESSION", "2"))
+MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_COMPRESSION", "5"))
 MAX_QUEUE_SIZE = int(
     os.getenv("MAX_QUEUE_SIZE_COMPRESSION") or os.getenv("MAX_QUEUE_SIZE", "5")
 )

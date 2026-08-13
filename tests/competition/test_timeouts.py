@@ -33,12 +33,22 @@ class CompetitionTimeoutTests(unittest.TestCase):
         five_chunks = tuple(video() for _ in range(5))
 
         self.assertEqual(estimated_encoding_runtime_seconds(four_chunks), 120)
-        self.assertEqual(competition_execution_timeout_seconds(four_chunks), 240)
-        self.assertEqual(competition_execution_lease_seconds(four_chunks), 360)
+        self.assertEqual(competition_execution_timeout_seconds(four_chunks), 180)
+        self.assertEqual(competition_execution_lease_seconds(four_chunks), 300)
 
         self.assertEqual(estimated_encoding_runtime_seconds(five_chunks), 120)
-        self.assertEqual(competition_execution_timeout_seconds(five_chunks), 240)
-        self.assertEqual(competition_execution_lease_seconds(five_chunks), 360)
+        self.assertEqual(
+            competition_execution_timeout_seconds(
+                five_chunks, minimum_timeout_seconds=180
+            ),
+            180,
+        )
+        self.assertEqual(
+            competition_execution_lease_seconds(
+                five_chunks, minimum_timeout_seconds=180
+            ),
+            300,
+        )
 
     def test_execution_scales_work_by_resolution_and_splits_long_inputs(self) -> None:
         full_hd = video(width=1920, height=1080)
