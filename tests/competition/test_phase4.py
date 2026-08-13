@@ -78,6 +78,7 @@ from vidaio_subnet_core.competition.scoring import (
     CompetitionItemScorer,
     ItemScoringError,
     ScoredItem,
+    _default_vmaf,
     compute_aggregates,
     length_weight,
 )
@@ -2278,6 +2279,25 @@ class FakeInspector:
 
 
 class Phase4ScoringTests(unittest.TestCase):
+    @patch("services.scoring.vmaf_metric.vmaf_metric_ffmpeg", return_value=97.25)
+    def test_default_vmaf_scores_every_frame(self, vmaf_metric) -> None:
+        score = _default_vmaf(
+            Path("source.mp4"),
+            Path("output.mp4"),
+            sample_count=10,
+            frame_count=300,
+            scoring_seed=123,
+        )
+
+        self.assertEqual(score, 97.25)
+        vmaf_metric.assert_called_once_with(
+            "output.mp4",
+            "source.mp4",
+            skip_frames=0,
+            n_subsample=1,
+            neg_model=True,
+        )
+
     def test_current_modal_sandbox_rates_and_gpu_name_mapping(self) -> None:
         self.assertEqual(
             set(GPU_PRICE_PER_SECOND_USD),
