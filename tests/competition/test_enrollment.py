@@ -55,7 +55,10 @@ from vidaio_subnet_core.competition.manager import CompetitionManager  # noqa: E
 from vidaio_subnet_core.competition.repository import (  # noqa: E402
     CompetitionRepository,
 )
-from vidaio_subnet_core.competition.state import ContenderState  # noqa: E402
+from vidaio_subnet_core.competition.state import (  # noqa: E402
+    CompetitionState,
+    ContenderState,
+)
 from vidaio_subnet_core.competition.validation import (  # noqa: E402
     ValidationFinding,
     ValidationReason,
@@ -349,6 +352,86 @@ class EnrollmentDispatcherTests(unittest.TestCase):
         self.assertIsNone(invitation.observed_alpha_stake)
         self.assertEqual(invitation.minimum_alpha_stake, 10)
         self.assertNotIn(("submission", "participating-hotkey"), forwarder.calls)
+
+    def test_final_alpha_stake_uses_pre_transition_snapshot(self) -> None:
+        self.competition.manifest_json = self.manifest.model_copy(
+            update={"minimum_alpha_stake": 10}
+        ).normalized_json()
+        dispatcher = CompetitionEnrollmentDispatcher(
+            self.repository,
+            FakeIntake(),
+            FakeForwarder(),
+            owner_id="test-validator",
+            clock=self.clock,
+        )
+        asyncio.run(
+            dispatcher.run_once(
+                self.competition,
+                [
+                    CompetitionMinerEndpoint(
+                        1,
+                        "participating-hotkey",
+                        "coldkey-1",
+                        object(),
+                        alpha_stake=10,
+                    )
+                ],
+            )
+        )
+        accepted_report = ValidationReport(
+            status=ValidationStatus.ACCEPTED,
+            reason_code=ValidationReason.ACCEPTED,
+            repository_tree_sha256="c" * 64,
+            file_count=1,
+            total_bytes=100,
+            findings=(),
+        )
+        self.repository.record_pinned_contender(
+            competition_id=self.manifest.competition_id,
+            hotkey="participating-hotkey",
+            repository_url_hash="d" * 64,
+            repository_display="github.com/example/private",
+            pinned_commit_sha="a" * 40,
+            pinned_tree_sha="b" * 40,
+            latest_commit_time=self.clock.now.isoformat(),
+            validation=accepted_report,
+            now=self.clock.now,
+            actor="test-validator",
+        )
+
+        self.clock.now = self.manifest.contender_finalisation_time
+
+        def finalize_alpha_stake(competition, now) -> None:
+            self.assertEqual(competition.status, CompetitionState.ENROLLING.value)
+            rejected = self.repository.reject_ineligible_contenders(
+                competition.competition_id,
+                {"participating-hotkey": (1, 9)},
+                10,
+                now=now,
+            )
+            self.assertEqual(rejected, 1)
+
+        self.manager.tick(before_finalization=finalize_alpha_stake)
+        contender = self.repository.get_contender(
+            self.manifest.competition_id, "participating-hotkey"
+        )
+        self.assertEqual(contender.status, ContenderState.REJECTED.value)
+        self.assertEqual(contender.validation_status, ValidationStatus.REJECTED.value)
+        self.assertEqual(contender.reason_code, "ALPHA_STAKE_BELOW_MINIMUM")
+
+        # Once the scheduler transitions, later stake observations cannot
+        # rewrite the finalized contender set.
+        second_result = self.repository.reject_ineligible_contenders(
+            self.manifest.competition_id,
+            {"participating-hotkey": (1, 11)},
+            10,
+            now=self.clock.now,
+        )
+        self.assertEqual(second_result, 0)
+        contender = self.repository.get_contender(
+            self.manifest.competition_id, "participating-hotkey"
+        )
+        self.assertEqual(contender.status, ContenderState.REJECTED.value)
 
     def test_rejects_response_from_a_different_hotkey(self) -> None:
         forwarder = FakeForwarder(wrong_hotkey=True)

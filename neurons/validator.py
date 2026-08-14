@@ -35,7 +35,10 @@ from vidaio_subnet_core.protocol import (
     CompetitionInvitationProtocol,
     CompetitionSubmissionProtocol,
 )
-from vidaio_subnet_core.competition.config import CompetitionConfig
+from vidaio_subnet_core.competition.config import (
+    CompetitionConfig,
+    CompetitionManifest,
+)
 from vidaio_subnet_core.competition.artifact_backup import (
     CompetitionArtifactBackupError,
     CompetitionArtifactBackupService,
@@ -85,6 +88,11 @@ from enum import Enum, IntEnum
 
 
 load_dotenv()
+
+
+METAGRAPH_REFRESH_INTERVAL_SECONDS = float(
+    os.getenv("METAGRAPH_REFRESH_INTERVAL_SECONDS", 30 * 60)
+)
 
 
 class VMAF_QUALITY_THRESHOLD(IntEnum):
@@ -170,6 +178,7 @@ class Validator(base.BaseValidator):
         super().setup_axon()
 
     def __init__(self):
+        self._last_metagraph_refresh_monotonic: float | None = None
         super().__init__()
         self.validator_mode = ValidatorMode(self.config.validator_mode)
         logger.info("Starting validator in {} mode", self.validator_mode.value)
@@ -407,7 +416,8 @@ class Validator(base.BaseValidator):
             return
         logger.info("Starting competition scheduler task")
         await self.competition_manager.run(
-            after_tick=self._run_competition_tick_work
+            before_finalization=self._finalize_competition_alpha_stake_eligibility,
+            after_tick=self._run_competition_tick_work,
         )
 
     async def close(self) -> None:
@@ -428,11 +438,54 @@ class Validator(base.BaseValidator):
 
     async def _run_competition_tick_work(self) -> None:
         await self._backup_completed_competition_databases()
+        await asyncio.to_thread(self.resync_metagraph)
         await self._dispatch_competition_enrollment()
         backup_ready = await self._backup_finalized_submission_artifacts()
         if self.competition_execution_coordinator is not None:
             if backup_ready:
                 await self.competition_execution_coordinator.run_once()
+
+    def resync_metagraph(self) -> bool:
+        """Refresh all metagraph vectors, including alpha stake, on one cadence."""
+
+        now = time.monotonic()
+        last_refresh = self._last_metagraph_refresh_monotonic
+        if (
+            last_refresh is not None
+            and now - last_refresh < METAGRAPH_REFRESH_INTERVAL_SECONDS
+        ):
+            return False
+        logger.info(
+            "Refreshing validator metagraph (interval={}s); this "
+            "refreshes alpha-stake values used for competition eligibility",
+            METAGRAPH_REFRESH_INTERVAL_SECONDS,
+        )
+        super().resync_metagraph()
+        self._last_metagraph_refresh_monotonic = time.monotonic()
+        return True
+
+    def _finalize_competition_alpha_stake_eligibility(
+        self, competition, now: datetime
+    ) -> None:
+        """Reject ineligible submissions immediately before finalisation."""
+
+        self.resync_metagraph()
+        manifest = CompetitionManifest.model_validate_json(competition.manifest_json)
+        alpha_stakes = {
+            str(hotkey): (uid, self._competition_alpha_stake(uid))
+            for uid, hotkey in enumerate(self.metagraph.hotkeys)
+        }
+        rejected = self.competition_repository.reject_ineligible_contenders(
+            competition.competition_id,
+            alpha_stakes,
+            manifest.minimum_alpha_stake,
+            now=now,
+        )
+        logger.info(
+            "Competition alpha-stake eligibility finalized: id={} rejected={}",
+            competition.competition_id,
+            rejected,
+        )
 
     async def _backup_finalized_submission_artifacts(self) -> bool:
         if (

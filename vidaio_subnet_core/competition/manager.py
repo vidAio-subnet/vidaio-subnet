@@ -24,6 +24,7 @@ from .state import CompetitionState, PIPELINE_SUCCESSOR
 
 Clock = Callable[[], datetime]
 TickHook = Callable[[], Awaitable[None]]
+FinalizationHook = Callable[[Competition, datetime], None]
 LOG_REDACTOR = SecretRedactor()
 
 
@@ -269,7 +270,9 @@ class CompetitionManager:
             )
         return registered
 
-    def tick(self) -> list[tuple[str, CompetitionState]]:
+    def tick(
+        self, *, before_finalization: FinalizationHook | None = None
+    ) -> list[tuple[str, CompetitionState]]:
         if not self.enabled:
             return []
         repository = self._require_repository()
@@ -373,6 +376,8 @@ class CompetitionManager:
                 if state == CompetitionState.ENROLLING and now >= parse_utc(
                     current.contender_finalisation_time
                 ):
+                    if before_finalization is not None:
+                        before_finalization(current, now)
                     previous_state = state
                     current = repository.transition(
                         competition_id,
@@ -486,7 +491,12 @@ class CompetitionManager:
             LOG_REDACTOR.redact_text(reason),
         )
 
-    async def run(self, *, after_tick: TickHook | None = None) -> None:
+    async def run(
+        self,
+        *,
+        before_finalization: FinalizationHook | None = None,
+        after_tick: TickHook | None = None,
+    ) -> None:
         if not self.enabled:
             return
         logger.info(
@@ -506,7 +516,9 @@ class CompetitionManager:
             )
             while True:
                 try:
-                    await asyncio.to_thread(self.tick)
+                    await asyncio.to_thread(
+                        self.tick, before_finalization=before_finalization
+                    )
                     if after_tick is not None:
                         await after_tick()
                 except asyncio.CancelledError:

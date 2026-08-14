@@ -68,8 +68,9 @@ or another immutable live-competition input changes.
 - [ ] Set `competition_start_time` to the intended UTC instant; any weekday is
   valid.
 - [ ] Set and record `minimum_alpha_stake`. Confirm it is finite and
-  non-negative and that miners must meet it both when invited and when their
-  submission is finalized.
+  non-negative and tell miners they must remain at or above it through the end
+  of enrollment. The validator checks it both when invited and against the
+  latest metagraph snapshot recorded before their submission is finalized.
 - [ ] Verify this ordering:
   `competition_start_time < contender_finalisation_time <= human_review_deadline < competition_end_time`.
 - [ ] Leave enough enrollment time for polling, correction, and republishing.
@@ -137,6 +138,7 @@ or another immutable live-competition input changes.
   COMPETITION_LEASE_TTL_SECONDS=120
   COMPETITION_NETWORK_TIMEOUT_SECONDS=30
   COMPETITION_MAX_CONCURRENT_REQUESTS=32
+  METAGRAPH_REFRESH_INTERVAL_SECONDS=1800
   COMPETITION_EXECUTION_ENABLED=true
   COMPETITION_BUILD_BACKEND=modal
   COMPETITION_ACCEPT_MODAL_BUILD_WITHOUT_SIZE_ATTESTATION=true
@@ -327,6 +329,9 @@ or another immutable live-competition input changes.
 ## 7. Monitor enrollment and submission finalisation
 
 - [ ] Confirm the transition to `ENROLLING` occurs at the intended time.
+- [ ] Confirm the metagraph refresh interval is set as intended (the default is
+  1,800 seconds / 30 minutes) and the periodic refresh log is emitted so
+  enrollment uses current alpha-stake values.
 - [ ] Confirm invitations and immediate submission polls are sent to the
   snapshotted serving miners.
 - [ ] Confirm `NOT_READY` miners are repolled at `contender_ping_interval`.
@@ -345,7 +350,10 @@ or another immutable live-competition input changes.
 - [ ] Resolve every `REVIEW_REQUIRED` row with a signed human decision before
   the review deadline.
 - [ ] At `contender_finalisation_time`, confirm the state advances through
-  `FINALIZING_SUBMISSIONS` and accepted revisions stop changing.
+  `FINALIZING_SUBMISSIONS`, every submitted miner meets `minimum_alpha_stake`
+  in the latest metagraph snapshot recorded before the transition, and accepted
+  revisions stop changing. A miner below the threshold at this boundary must
+  be rejected.
 - [ ] Confirm the private contender archive and `inventory.json` are complete,
   read-back verified, and contain no credentials before build/evaluation.
 - [ ] Capture the phase-transition log fields for the full submission archive

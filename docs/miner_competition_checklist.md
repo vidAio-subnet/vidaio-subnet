@@ -34,8 +34,10 @@ must not assume that a batch contains repeated versions of one source video.
   `minimum_alpha_stake`, minimum runtime/scoring timeout floors, output codec,
   scoring factors, and submission deadline. The start time may be on any day.
 - [ ] Confirm the miner hotkey's current metagraph alpha stake meets the
-  manifest threshold; eligibility is checked at invitation and again at
-  submission finalisation.
+  manifest threshold. Keep it at or above that threshold for the whole
+  enrollment window: eligibility is checked at invitation and checked again
+  using the validator's latest metagraph snapshot when submissions are
+  finalised.
 - [ ] Confirm that the competition uses one query per physical source video.
   A full five-item batch must contain five distinct input videos.
 - [ ] Plan for randomly assigned `CRF` or `VBR` queries. VMAF targets are selected
@@ -222,6 +224,10 @@ must not assume that a batch contains repeated versions of one source video.
 ## 9. Enrollment and finalisation
 
 - [ ] Keep the miner online throughout `ENROLLING`.
+- [ ] Keep the miner hotkey's alpha stake at or above `minimum_alpha_stake`
+  through `contender_finalisation_time`. Falling below the threshold when
+  enrollment ends disqualifies the submission even if the miner passed its
+  original invitation check.
 - [ ] Watch each validator poll result for `ACCEPTED`, `REJECTED`,
   `REVIEW_REQUIRED`, or `NOT_RECEIVED`, including its reason code and pinned
   revision.
