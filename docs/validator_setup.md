@@ -188,11 +188,19 @@ COMPETITION_SCHEDULER_INTERVAL_SECONDS=30
 COMPETITION_LEASE_TTL_SECONDS=120
 COMPETITION_NETWORK_TIMEOUT_SECONDS=30
 COMPETITION_MAX_CONCURRENT_REQUESTS=32
+METAGRAPH_REFRESH_INTERVAL_SECONDS=1800
 COMPETITION_EXECUTION_ENABLED=true
 COMPETITION_BUILD_BACKEND=modal
 COMPETITION_ACCEPT_MODAL_BUILD_WITHOUT_SIZE_ATTESTATION=true
 COMPETITION_MODAL_ENVIRONMENT=main
 ```
+
+The validator refreshes its in-memory metagraph every 1,800 seconds (30
+minutes) by default. `METAGRAPH_REFRESH_INTERVAL_SECONDS` controls that cadence
+and refreshes all metagraph vectors, including the alpha-stake values used for
+competition enrollment. Submission finalisation uses the most recent snapshot
+recorded before the state transition when locking each submitted miner's
+alpha-stake eligibility; it does not trigger an additional refresh.
 
 `COMPETITION_DATABASE_URL` must be visible to both PM2 validator processes.
 The competition-mode process writes scores and final rankings to that database;

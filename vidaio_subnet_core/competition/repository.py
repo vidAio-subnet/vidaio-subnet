@@ -2778,6 +2778,58 @@ class CompetitionRepository:
                     row.updated_at = now_text
         return created
 
+    def reject_ineligible_contenders(
+        self,
+        competition_id: str,
+        alpha_stakes: dict[str, tuple[int, float | None]],
+        minimum_alpha_stake: float,
+        *,
+        now: datetime,
+    ) -> int:
+        """Reject submitted miners below the cached final alpha-stake threshold."""
+
+        now_text = utc_iso(now)
+        rejected = 0
+        with self._sessions.begin() as session:
+            competition = session.get(Competition, competition_id)
+            if competition is None:
+                raise KeyError(competition_id)
+            if competition.status != CompetitionState.ENROLLING.value:
+                return 0
+            contenders = session.scalars(
+                select(ContenderMetadata).where(
+                    ContenderMetadata.competition_id == competition_id,
+                    ContenderMetadata.is_boss.is_(False),
+                    ContenderMetadata.pinned_commit_sha.is_not(None),
+                )
+            )
+            for row in contenders:
+                observation = alpha_stakes.get(row.hotkey)
+                uid, observed = observation if observation is not None else (None, None)
+                reason_code = None
+                if uid is None:
+                    reason_code = "NOT_REGISTERED"
+                elif minimum_alpha_stake > 0 and observed is None:
+                    reason_code = "ALPHA_STAKE_UNAVAILABLE"
+                elif observed is not None and observed < minimum_alpha_stake:
+                    reason_code = "ALPHA_STAKE_BELOW_MINIMUM"
+                if reason_code is not None:
+                    row.status = ContenderState.REJECTED.value
+                    row.validation_status = ValidationStatus.REJECTED.value
+                    row.eligible = False
+                    row.reason_code = reason_code
+                    row.reason_detail = (
+                        f"Observed alpha stake {observed} is below the required "
+                        f"minimum {minimum_alpha_stake:g}."
+                        if reason_code == "ALPHA_STAKE_BELOW_MINIMUM"
+                        else "Alpha stake was unavailable at submission finalisation."
+                        if reason_code == "ALPHA_STAKE_UNAVAILABLE"
+                        else "Miner hotkey was not registered at submission finalisation."
+                    )
+                    rejected += 1
+                    row.updated_at = now_text
+        return rejected
+
     def list_due_invitation_candidates(
         self,
         competition_id: str,

@@ -98,7 +98,7 @@ Every new benchmark must use a new `competition_id`.
 | `competition_id` | Unique conservative slug, normally including year/week. |
 | `competition_start_time` | UTC enrollment start. Any day of the week is valid. |
 | `contender_ping_interval` | Poll cadence for participating miners. |
-| `minimum_alpha_stake` | Minimum current metagraph alpha stake required for invitations and submission polling; defaults to `0`. |
+| `minimum_alpha_stake` | Minimum current metagraph alpha stake required at invitation and again when submissions are finalised; defaults to `0`. A miner must remain at or above it through the end of enrollment. |
 | `contender_finalisation_time` | Submission freeze and private backup boundary. |
 | `human_review_deadline` | Last time an eligibility or exact-tie review may be recorded. |
 | `competition_end_time` | Final ranking and winner publication boundary. |
@@ -364,6 +364,12 @@ Only the higher-scoring solution for the payout hotkey remains rank-eligible.
 Competition invitation and submission protocols are separate from inference
 protocols. Durable contender identity is `(competition_id, hotkey)`; UID and
 coldkey are point-in-time chain snapshots.
+
+The validator synchronizes its metagraph, including `alpha_stake` / `AS`, every
+`METAGRAPH_REFRESH_INTERVAL_SECONDS` (1,800 seconds / 30 minutes by default).
+When the competition enters `FINALIZING_SUBMISSIONS`, the validator checks
+every submitted miner using the latest metagraph snapshot recorded before the
+transition, rejects ineligible submissions, and then locks the contender set.
 
 The initial repository credential contract uses a raw, fine-grained,
 repository-scoped, contents-read-only GitHub PAT:
@@ -1000,8 +1006,10 @@ requirements around the implemented competition engine:
   Publication must be atomic through an inventory and final `COMPLETE` marker.
 - **Implemented owner authorization:** competition protocol requests are
   accepted only from the on-chain subnet-owner hotkey by default.
-- **Implemented entry guards:** contenders below `minimum_alpha_stake` are not
-  contacted, and GitHub accounts or repositories already used by another
+- **Implemented entry guards:** invitations report the observed and required
+  alpha stake; an ineligible miner cannot opt in. Every submitted miner is
+  checked again using the latest metagraph snapshot recorded before
+  finalisation. GitHub accounts or repositories already used by another
   contender in the competition are rejected.
 - **Future competition types:** use a type adapter/registry. Upscaling requires
   separate high-resolution ground truth unavailable to contenders and cannot
