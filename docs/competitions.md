@@ -112,6 +112,11 @@ competition_start_time
   < competition_end_time
 ```
 
+A miner below `minimum_alpha_stake` remains in the invitation queue and is
+retried at `contender_ping_interval` until enrollment ends. If its stake reaches
+the threshold in time, it can opt in and submit normally. The finalisation check
+still rejects any pinned submission that is below the threshold at the freeze.
+
 ### Execution resources and safety
 
 | Field | Meaning |

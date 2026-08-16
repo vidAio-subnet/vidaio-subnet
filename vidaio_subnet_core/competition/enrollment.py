@@ -254,6 +254,13 @@ class CompetitionEnrollmentDispatcher:
                     "ENROLLMENT_WINDOW_CLOSED",
                     "invitation response arrived after contender finalisation",
                 )
+            if eligibility_reason_code == "ALPHA_STAKE_BELOW_MINIMUM":
+                # Match retryable transport failures such as CONTENDER_NOT_FOUND:
+                # record the reason without moving the row out of INVITED.
+                raise EnrollmentResponseError(
+                    eligibility_reason_code,
+                    eligibility_reason_detail or eligibility_reason_code,
+                )
             participating = invitation.participating and eligibility_reason_code is None
             await asyncio.to_thread(
                 self.repository.record_invitation_response,
