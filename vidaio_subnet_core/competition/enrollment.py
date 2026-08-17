@@ -266,9 +266,7 @@ class CompetitionEnrollmentDispatcher:
             consent_override = bool(
                 not invitation.participating
                 and eligibility_reason_code is None
-                and (invitation.refusal_reason or "").startswith(
-                    "competition mode unavailable"
-                )
+                and invitation.refusal_reason == "competition mode unavailable"
                 and hotkey in self.invitation_consent_override_hotkeys
             )
             if consent_override:
