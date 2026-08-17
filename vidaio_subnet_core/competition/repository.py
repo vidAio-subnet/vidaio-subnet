@@ -2778,10 +2778,11 @@ class CompetitionRepository:
                     row.updated_at = now_text
                 elif (
                     row.status == ContenderState.REJECTED.value
-                    and row.reason_code == "ALPHA_STAKE_BELOW_MINIMUM"
+                    and row.reason_code
+                    in {"ALPHA_STAKE_BELOW_MINIMUM", "INVITATION_DECLINED"}
                     and row.pinned_commit_sha is None
                 ):
-                    # Requeue invitation-time rejections from older validators.
+                    # Retry invitation-time rejections while enrollment is open.
                     # Pinned finalisation rejections must remain closed.
                     row.status = ContenderState.INVITED.value
                     row.uid_snapshot = uid_snapshot
