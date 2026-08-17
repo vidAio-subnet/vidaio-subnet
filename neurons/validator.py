@@ -289,13 +289,6 @@ class Validator(base.BaseValidator):
                 max_concurrent_requests=(
                     self.competition_config.max_concurrent_requests
                 ),
-                invitation_consent_override_hotkeys=frozenset(
-                    hotkey.strip()
-                    for hotkey in self.competition_config.invitation_consent_override_hotkey.split(
-                        ","
-                    )
-                    if hotkey.strip()
-                ),
             )
             logger.info(
                 "Competition enrollment dispatcher initialized: timeout={}s "
@@ -303,12 +296,6 @@ class Validator(base.BaseValidator):
                 self.competition_config.network_timeout_seconds,
                 self.competition_config.max_concurrent_requests,
             )
-            if self.competition_config.invitation_consent_override_hotkey:
-                logger.warning(
-                    "Temporary competition invitation consent override enabled: "
-                    "hotkeys={}",
-                    self.competition_config.invitation_consent_override_hotkey,
-                )
             if self.competition_config.execution_enabled:
                 accepted_build_statuses = frozenset(
                     {"MODAL_ACCEPTED", "DEVELOPMENT_ACCEPTED"}

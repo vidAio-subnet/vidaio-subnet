@@ -75,7 +75,6 @@ class CompetitionEnrollmentDispatcher:
         owner_id: str,
         timeout_seconds: float = 30,
         max_concurrent_requests: int = 32,
-        invitation_consent_override_hotkeys: frozenset[str] = frozenset(),
         clock: Clock = utc_now,
     ) -> None:
         self.repository = repository
@@ -84,7 +83,6 @@ class CompetitionEnrollmentDispatcher:
         self.owner_id = owner_id
         self.timeout_seconds = timeout_seconds
         self._semaphore = asyncio.Semaphore(max_concurrent_requests)
-        self.invitation_consent_override_hotkeys = invitation_consent_override_hotkeys
         self._clock = clock
 
     async def run_once(
@@ -263,24 +261,7 @@ class CompetitionEnrollmentDispatcher:
                     eligibility_reason_code,
                     eligibility_reason_detail or eligibility_reason_code,
                 )
-            consent_override = bool(
-                not invitation.participating
-                and eligibility_reason_code is None
-                and invitation.refusal_reason == "competition mode unavailable"
-                and hotkey in self.invitation_consent_override_hotkeys
-            )
-            if consent_override:
-                logger.warning(
-                    "Applying temporary competition invitation consent override: "
-                    "id={} uid={} hotkey={}",
-                    competition.competition_id,
-                    endpoint.uid,
-                    hotkey,
-                )
-            participating = bool(
-                (invitation.participating or consent_override)
-                and eligibility_reason_code is None
-            )
+            participating = invitation.participating and eligibility_reason_code is None
             await asyncio.to_thread(
                 self.repository.record_invitation_response,
                 competition.competition_id,
