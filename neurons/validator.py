@@ -1,4 +1,5 @@
 import os
+import argparse
 import time
 import uuid
 import httpx
@@ -9,11 +10,16 @@ import pandas as pd
 import bittensor as bt
 import tempfile
 import aiohttp
+import ipaddress
+import math
 from loguru import logger
+from dotenv import load_dotenv
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from vidaio_subnet_core.utilities.version import get_version
+from vidaio_subnet_core.utilities.storage_client import storage_client
 from vidaio_subnet_core import validating, CONFIG, base, protocol
+from vidaio_subnet_core.base.config import add_common_config
 from vidaio_subnet_core.utilities.wandb_manager import WandbManager
 from services.video_scheduler.video_utils import get_trim_video_path, get_perumted_video_path
 from vidaio_subnet_core.utilities.uids import get_organic_forward_uids
@@ -26,12 +32,51 @@ from vidaio_subnet_core.protocol import (
     VideoUpscalingJobProtocol,
     VideoUpscalingPollProtocol,
     MinerResponse,
+    CompetitionInvitationProtocol,
+    CompetitionSubmissionProtocol,
 )
+from vidaio_subnet_core.competition.config import (
+    CompetitionConfig,
+    CompetitionManifest,
+)
+from vidaio_subnet_core.competition.artifact_backup import (
+    CompetitionArtifactBackupError,
+    CompetitionArtifactBackupService,
+    CompetitionDatabaseBackupError,
+)
+from vidaio_subnet_core.competition.build import (
+    CompetitionBuildService,
+    ModalImageBuildBackend,
+    ModalImageBuilder,
+)
+from vidaio_subnet_core.competition.enrollment import (
+    CompetitionEnrollmentDispatcher,
+    CompetitionMinerEndpoint,
+)
+from vidaio_subnet_core.competition.intake import (
+    CompetitionSubmissionIntakeService,
+    RepositoryIntake,
+)
+from vidaio_subnet_core.competition.manager import CompetitionManager
+from vidaio_subnet_core.competition.execution import CompetitionExecutionCoordinator
+from vidaio_subnet_core.competition.dataset import ModalVolumeStore
+from vidaio_subnet_core.competition.scoring_api import CompetitionScoringClient
+from vidaio_subnet_core.competition.modal_runner import (
+    CompetitionModalRunner,
+    ModalSandboxBackend,
+)
+from vidaio_subnet_core.competition.repository import CompetitionRepository
+from vidaio_subnet_core.competition.state import CompetitionState
 from vidaio_subnet_core.validating.managing.sql_schemas import MinerMetadata, MinerPerformanceHistory, Base
 from sqlalchemy import desc, asc, func, select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta
 from services.dashboard.server import send_upscaling_data_to_dashboard, send_compression_data_to_dashboard
+from services.scoring.compression_score_cache import (
+    CompressionScoreCache,
+    find_duplicate_compression_scores,
+)
+from services.scoring.artifact_cleanup import cleanup_compression_artifacts
 from services.video_scheduler.redis_utils import (
     get_redis_connection, 
     get_organic_upscaling_queue_size, 
@@ -39,7 +84,15 @@ from services.video_scheduler.redis_utils import (
     set_scheduler_ready
 )
 from typing import List, Tuple, Any
-from enum import IntEnum
+from enum import Enum, IntEnum
+
+
+load_dotenv()
+
+
+METAGRAPH_REFRESH_INTERVAL_SECONDS = float(
+    os.getenv("METAGRAPH_REFRESH_INTERVAL_SECONDS", 30 * 60)
+)
 
 
 class VMAF_QUALITY_THRESHOLD(IntEnum):
@@ -72,20 +125,245 @@ TARGET_BITRATES = [
 SLEEP_TIME_LOW = 60 * 5 # 5 minutes
 SLEEP_TIME_HIGH = 60 * 6 # 6 minutes
 
+try:
+    SYNTHETIC_QUERIES_PER_MINER = max(1, int(os.getenv("SYNTHETIC_QUERIES_PER_MINER", "5")))
+except ValueError:
+    logger.warning("Invalid SYNTHETIC_QUERIES_PER_MINER value, defaulting to 5")
+    SYNTHETIC_QUERIES_PER_MINER = 5
+
+UPSCALING_SCORING_BATCH_SIZE = 5
+COMPRESSION_SCORING_BATCH_SIZE = 5
+
+try:
+    ORGANIC_QUERIES_PER_MINER = max(
+        1, int(os.getenv("ORGANIC_QUERIES_PER_MINER", str(SYNTHETIC_QUERIES_PER_MINER)))
+    )
+except ValueError:
+    logger.warning("Invalid ORGANIC_QUERIES_PER_MINER value, defaulting to SYNTHETIC_QUERIES_PER_MINER")
+    ORGANIC_QUERIES_PER_MINER = SYNTHETIC_QUERIES_PER_MINER
+
+class ValidatorMode(str, Enum):
+    INFERENCE = "inference"
+    COMPETITION = "competition"
+
+
 class Validator(base.BaseValidator):
+    def get_config(self):
+        parser = add_common_config(argparse.ArgumentParser())
+        parser.add_argument(
+            "--validator-mode",
+            choices=[mode.value for mode in ValidatorMode],
+            default=ValidatorMode.INFERENCE.value,
+            help="Run only inference loops or only the competition scheduler.",
+        )
+        config = bt.Config(parser)
+        config.full_path = os.path.expanduser(
+            os.path.join(
+                config.logging.logging_dir,
+                config.wallet.name,
+                config.wallet.hotkey,
+                f"netuid{config.netuid}",
+                "validator",
+                config.validator_mode,
+            )
+        )
+        os.makedirs(config.full_path, exist_ok=True)
+        return config
+
+    def setup_axon(self):
+        if self.config.validator_mode == ValidatorMode.COMPETITION.value:
+            self.axon = None
+            logger.info("Competition process does not start a validator Axon")
+            return
+        super().setup_axon()
+
     def __init__(self):
+        self._last_metagraph_refresh_monotonic: float | None = None
         super().__init__()
+        self.validator_mode = ValidatorMode(self.config.validator_mode)
+        logger.info("Starting validator in {} mode", self.validator_mode.value)
+
+        self.miner_manager = None
+        self.challenge_synthesizer = None
+        self.score_client_upscaling = None
+        self.score_client_compression = None
+        self.score_client_upscaling_organics = None
+        self.score_client_compression_organics = None
+        self.set_weights_executor = None
+        self.redis_conn = None
+        self.wandb_manager = None
+        self.competition_score_client: CompetitionScoringClient | None = None
+        self.competition_config = (
+            CompetitionConfig()
+            if self.validator_mode is ValidatorMode.COMPETITION
+            else CompetitionConfig(
+                mode_enabled=False,
+                execution_enabled=False,
+                build_backend="disabled",
+            )
+        )
+        self.competition_rewards_repository: CompetitionRepository | None = None
+
+        if self.validator_mode is ValidatorMode.INFERENCE:
+            competition_database_url = os.getenv(
+                "COMPETITION_DATABASE_URL", ""
+            ).strip()
+            if competition_database_url:
+                self.competition_rewards_repository = CompetitionRepository(
+                    competition_database_url
+                )
+                logger.info(
+                    "Inference weights will read competition rankings from {}",
+                    competition_database_url,
+                )
+            else:
+                logger.info(
+                    "Competition rewards disabled in inference mode: "
+                    "COMPETITION_DATABASE_URL is not set"
+                )
+            self._initialize_inference_services()
+        else:
+            self.wandb_manager = WandbManager(
+                validator=self,
+                run_suffix="-competition",
+            )
+            logger.info("🔑 Initialized competition Wandb Manager 🔑")
+
+        self.competition_repository: CompetitionRepository | None = None
+        self.competition_dispatcher: CompetitionEnrollmentDispatcher | None = None
+        self.competition_execution_coordinator: (
+            CompetitionExecutionCoordinator | None
+        ) = None
+        self.competition_artifact_backup: (
+            CompetitionArtifactBackupService | None
+        ) = None
+        if self.competition_config.mode_enabled:
+            competition_repository = CompetitionRepository(
+                self.competition_config.database_url
+            )
+            self.competition_repository = competition_repository
+            self.competition_manager = CompetitionManager(
+                self.competition_config,
+                competition_repository,
+            )
+            logger.info(
+                "Competition mode enabled: scheduler_interval={}s manifest_glob={!r} "
+                "artifact_root={} network_timeout={}s max_concurrent_requests={}",
+                self.competition_config.scheduler_interval_seconds,
+                self.competition_config.manifest_glob,
+                self.competition_config.artifact_root,
+                self.competition_config.network_timeout_seconds,
+                self.competition_config.max_concurrent_requests,
+            )
+        else:
+            self.competition_manager = CompetitionManager(self.competition_config)
+            logger.info("Competition scheduler disabled (COMPETITION_MODE_ENABLED=false)")
+        if self.competition_repository is not None:
+            self.competition_artifact_backup = CompetitionArtifactBackupService(
+                self.competition_repository,
+                artifact_root=self.competition_config.artifact_root,
+                bucket=self.competition_config.artifact_backup_bucket,
+                key_prefix=self.competition_config.artifact_backup_prefix,
+                region_name=self.competition_config.artifact_backup_region,
+                endpoint_url=self.competition_config.artifact_backup_endpoint_url,
+                access_key_id=(
+                    self.competition_config.artifact_backup_access_key_id
+                ),
+                secret_access_key=(
+                    self.competition_config.artifact_backup_secret_access_key
+                ),
+                database_url=self.competition_config.database_url,
+                actor=self.competition_config.owner_id,
+            )
+            self.competition_artifact_backup.preflight_privacy()
+            competition_intake = CompetitionSubmissionIntakeService(
+                RepositoryIntake(self.competition_config.artifact_root),
+                self.competition_repository,
+            )
+            self.competition_dispatcher = CompetitionEnrollmentDispatcher(
+                self.competition_repository,
+                competition_intake,
+                self._forward_competition_request,
+                owner_id=self.competition_config.owner_id,
+                timeout_seconds=self.competition_config.network_timeout_seconds,
+                max_concurrent_requests=(
+                    self.competition_config.max_concurrent_requests
+                ),
+            )
+            logger.info(
+                "Competition enrollment dispatcher initialized: timeout={}s "
+                "max_concurrent_requests={}",
+                self.competition_config.network_timeout_seconds,
+                self.competition_config.max_concurrent_requests,
+            )
+            if self.competition_config.execution_enabled:
+                accepted_build_statuses = frozenset(
+                    {"MODAL_ACCEPTED", "DEVELOPMENT_ACCEPTED"}
+                )
+                modal_build_backend = ModalImageBuildBackend(
+                    environment_name=self.competition_config.modal_environment
+                )
+                build_service = CompetitionBuildService(
+                    self.competition_repository,
+                    ModalImageBuilder(modal_build_backend),
+                    actor=self.competition_config.owner_id,
+                    accepted_build_status="MODAL_ACCEPTED",
+                )
+                sandbox_runner = CompetitionModalRunner(
+                    self.competition_repository,
+                    ModalSandboxBackend(
+                        environment_name=self.competition_config.modal_environment
+                    ),
+                    actor=self.competition_config.owner_id,
+                    accepted_build_statuses=accepted_build_statuses,
+                )
+                competition_score_url = (
+                    f"http://{CONFIG.score.host}:"
+                    f"{CONFIG.score.compression_competition_score_port}"
+                )
+                self.competition_score_client = CompetitionScoringClient(
+                    competition_score_url,
+                    modal_environment=self.competition_config.modal_environment,
+                )
+                self.competition_execution_coordinator = (
+                    CompetitionExecutionCoordinator(
+                        self.competition_manager,
+                        self.competition_repository,
+                        build_service,
+                        sandbox_runner,
+                        artifact_root=self.competition_config.artifact_root,
+                        actor=self.competition_config.owner_id,
+                        accepted_build_statuses=accepted_build_statuses,
+                        dataset_store=ModalVolumeStore(
+                            environment_name=(
+                                self.competition_config.modal_environment
+                            )
+                        ),
+                        item_scorer=self.competition_score_client,
+                        defer_round_commit=True,
+                    )
+                )
+                logger.warning(
+                    "Competition execution enabled with direct Modal builds: "
+                    "environment={} operator acknowledged that Modal does not "
+                    "attest the 25 GB final-image size limit; scoring_endpoint={}",
+                    self.competition_config.modal_environment,
+                    competition_score_url,
+                )
+
+    def _initialize_inference_services(self) -> None:
         self.miner_manager = validating.managing.MinerManager(
-            uid=self.uid, config=self.config, wallet=self.wallet, metagraph=self.metagraph
+            uid=self.uid,
+            config=self.config,
+            wallet=self.wallet,
+            metagraph=self.metagraph,
+            subtensor=self.subtensor,
+            competition_repository=self.competition_rewards_repository,
         )
         logger.info("💧 Initialized miner manager 💧")
-        
         self.challenge_synthesizer = validating.synthesizing.Synthesizer()
         logger.info("💧 Initialized challenge synthesizer 💧")
-        
-        self.dendrite = bt.Dendrite(wallet=self.wallet)
-        logger.info("💧 Initialized dendrite 💧")
-        
+
         self.score_client_upscaling = httpx.AsyncClient(
             base_url=f"http://{CONFIG.score.host}:{CONFIG.score.upscaling_score_port}"
         )
@@ -128,6 +406,251 @@ class Validator(base.BaseValidator):
         self.push_result_endpoint = f"http://{CONFIG.video_scheduler.host}:{CONFIG.video_scheduler.port}/api/push_result"
         
         self.scheduler_ready_endpoint = f"http://{CONFIG.video_scheduler.host}:{CONFIG.video_scheduler.port}/api/scheduler_ready"
+        self.synthetic_deduped_uid_reasons: dict[int, str] = {}
+        self.synthetic_deduped_uid_sources: dict[int, int] = {}
+
+    async def run_competition(self) -> None:
+        """Run the independent, restart-safe competition scheduler task."""
+
+        if not self.competition_manager.enabled:
+            return
+        logger.info("Starting competition scheduler task")
+        await self.competition_manager.run(
+            before_finalization=self._finalize_competition_alpha_stake_eligibility,
+            after_tick=self._run_competition_tick_work,
+        )
+
+    async def close(self) -> None:
+        clients = (
+            self.score_client_upscaling,
+            self.score_client_compression,
+            self.score_client_upscaling_organics,
+            self.score_client_compression_organics,
+            self.competition_score_client,
+        )
+        for client in clients:
+            if client is not None:
+                await client.aclose()
+        if self.set_weights_executor is not None:
+            self.set_weights_executor.shutdown(wait=False, cancel_futures=True)
+        if self.competition_rewards_repository is not None:
+            self.competition_rewards_repository.engine.dispose()
+
+    async def _run_competition_tick_work(self) -> None:
+        await self._backup_completed_competition_databases()
+        await asyncio.to_thread(self.resync_metagraph)
+        await self._dispatch_competition_enrollment()
+        backup_ready = await self._backup_finalized_submission_artifacts()
+        if self.competition_execution_coordinator is not None:
+            if backup_ready:
+                await self.competition_execution_coordinator.run_once()
+
+    def resync_metagraph(self) -> bool:
+        """Refresh all metagraph vectors, including alpha stake, on one cadence."""
+
+        now = time.monotonic()
+        last_refresh = self._last_metagraph_refresh_monotonic
+        if (
+            last_refresh is not None
+            and now - last_refresh < METAGRAPH_REFRESH_INTERVAL_SECONDS
+        ):
+            return False
+        logger.info(
+            "Refreshing validator metagraph (interval={}s); this "
+            "refreshes alpha-stake values used for competition eligibility",
+            METAGRAPH_REFRESH_INTERVAL_SECONDS,
+        )
+        super().resync_metagraph()
+        self._last_metagraph_refresh_monotonic = time.monotonic()
+        return True
+
+    def _finalize_competition_alpha_stake_eligibility(
+        self, competition, now: datetime
+    ) -> None:
+        """Reject ineligible submissions immediately before finalisation."""
+
+        self.resync_metagraph()
+        manifest = CompetitionManifest.model_validate_json(competition.manifest_json)
+        alpha_stakes = {
+            str(hotkey): (uid, self._competition_alpha_stake(uid))
+            for uid, hotkey in enumerate(self.metagraph.hotkeys)
+        }
+        rejected = self.competition_repository.reject_ineligible_contenders(
+            competition.competition_id,
+            alpha_stakes,
+            manifest.minimum_alpha_stake,
+            now=now,
+        )
+        logger.info(
+            "Competition alpha-stake eligibility finalized: id={} rejected={}",
+            competition.competition_id,
+            rejected,
+        )
+
+    async def _backup_finalized_submission_artifacts(self) -> bool:
+        if (
+            self.competition_repository is None
+            or self.competition_artifact_backup is None
+        ):
+            return True
+        competitions = await asyncio.to_thread(
+            self.competition_repository.list_nonterminal
+        )
+        finalizing = [
+            competition
+            for competition in competitions
+            if competition.status
+            == CompetitionState.FINALIZING_SUBMISSIONS.value
+        ]
+        ready = True
+        for competition in finalizing:
+            if competition.submission_backup_status == "COMPLETED":
+                continue
+            try:
+                result = await asyncio.to_thread(
+                    self.competition_artifact_backup.backup,
+                    competition.competition_id,
+                )
+            except CompetitionArtifactBackupError as exc:
+                ready = False
+                logger.error(
+                    "Competition submission snapshot backup failed: id={} reason={}",
+                    competition.competition_id,
+                    str(exc),
+                )
+            else:
+                logger.info(
+                    "Competition private submission backup files: id={} "
+                    "archive={} inventory={} database_archive_path={}",
+                    competition.competition_id,
+                    result.archive_s3_uri,
+                    result.inventory_s3_uri,
+                    result.database_archive_path,
+                )
+        return ready
+
+    async def _backup_completed_competition_databases(self) -> None:
+        if (
+            self.competition_repository is None
+            or self.competition_artifact_backup is None
+        ):
+            return
+        competitions = await asyncio.to_thread(
+            self.competition_repository.list_completed_pending_database_backup
+        )
+        for competition in competitions:
+            try:
+                result = await asyncio.to_thread(
+                    self.competition_artifact_backup.backup_database,
+                    competition.competition_id,
+                )
+            except CompetitionDatabaseBackupError as exc:
+                logger.error(
+                    "Completed competition database backup failed: id={} reason={}",
+                    competition.competition_id,
+                    str(exc),
+                )
+            else:
+                logger.info(
+                    "Completed competition database backup path: id={} path={}",
+                    competition.competition_id,
+                    result.s3_uri,
+                )
+
+    async def _forward_competition_request(
+        self,
+        endpoint: CompetitionMinerEndpoint,
+        synapse: CompetitionInvitationProtocol | CompetitionSubmissionProtocol,
+        timeout_seconds: float,
+    ):
+        responses = await self.dendrite.forward(
+            axons=[endpoint.transport],
+            synapse=synapse,
+            timeout=timeout_seconds,
+        )
+        return responses[0] if responses else None
+
+    async def _dispatch_competition_enrollment(self) -> None:
+        if (
+            self.competition_repository is None
+            or self.competition_dispatcher is None
+        ):
+            return
+        competitions = await asyncio.to_thread(
+            self.competition_repository.list_nonterminal
+        )
+        enrolling = [
+            competition
+            for competition in competitions
+            if competition.status == CompetitionState.ENROLLING.value
+        ]
+        if not enrolling:
+            return
+        endpoints = self._competition_miner_endpoints()
+        for competition in enrolling:
+            await self.competition_dispatcher.run_once(competition, endpoints)
+
+    def _competition_miner_endpoints(self) -> list[CompetitionMinerEndpoint]:
+        """Snapshot registered, serving miner axons without touching inference state."""
+
+        endpoints: list[CompetitionMinerEndpoint] = []
+        min_stake = float(CONFIG.bandwidth.min_stake)
+        for uid, hotkey in enumerate(self.metagraph.hotkeys):
+            if uid == self.uid or uid >= len(self.metagraph.axons):
+                continue
+            try:
+                if float(self.metagraph.S[uid]) >= min_stake:
+                    continue
+            except (IndexError, TypeError, ValueError):
+                logger.warning(
+                    "Skipping competition invitation candidate UID {}: invalid stake snapshot",
+                    uid,
+                )
+                continue
+            axon = self.metagraph.axons[uid]
+            is_serving = getattr(axon, "is_serving", True)
+            if callable(is_serving):
+                try:
+                    is_serving = is_serving()
+                except Exception:
+                    is_serving = False
+            if not is_serving:
+                continue
+            endpoints.append(
+                CompetitionMinerEndpoint(
+                    uid=uid,
+                    hotkey=str(hotkey),
+                    coldkey=self._uid_coldkey(uid) or None,
+                    transport=axon,
+                    alpha_stake=self._competition_alpha_stake(uid),
+                )
+            )
+        logger.debug(
+            "Competition metagraph snapshot contains {} serving miner endpoint(s)",
+            len(endpoints),
+        )
+        return endpoints
+
+    def _competition_alpha_stake(self, uid: int) -> float | None:
+        for attribute in ("alpha_stake", "AS"):
+            values = getattr(self.metagraph, attribute, None)
+            if values is None:
+                continue
+            try:
+                value = values[uid]
+                tao = getattr(value, "tao", None)
+                value = (
+                    tao()
+                    if callable(tao)
+                    else (tao if tao is not None else value)
+                )
+                item = getattr(value, "item", None)
+                value = item() if callable(item) else value
+                stake = float(value)
+            except (IndexError, KeyError, TypeError, ValueError):
+                continue
+            return stake if math.isfinite(stake) and stake >= 0 else None
+        return None
 
     async def check_scheduler_ready(self) -> bool:
         """
@@ -190,9 +713,7 @@ class Validator(base.BaseValidator):
             start_time = time.time()  # Record start time
 
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(video_url, allow_redirects=False) as response:
-                    if response.status in (301, 302, 303, 307, 308):
-                        raise Exception(f"Redirect blocked: {response.status} -> {response.headers.get('Location')}") 
+                async with session.get(video_url, allow_redirects=True) as response:
                     if response.status != 200:
                         raise Exception(f"Failed to download video. HTTP status: {response.status}")
 
@@ -253,6 +774,7 @@ class Validator(base.BaseValidator):
             self.miner_manager.session.execute(delete_stmt)
 
         self.miner_manager.session.commit()
+        self.miner_manager.sync_miner_chain_metadata(miner_uids)
 
     async def start_synthetic_epoch(self):
         # Wait for scheduler to be ready first
@@ -263,6 +785,8 @@ class Validator(base.BaseValidator):
 
         miner_uids = self.filter_miners()
         logger.debug(f"Initialized {len(miner_uids)} subnet neurons of total {len(self.metagraph.S)} neurons")
+        deduped_uid_reasons = self.synthetic_deduped_uid_reasons.copy()
+        deduped_uid_sources = self.synthetic_deduped_uid_sources.copy()
 
         uids = self.miner_manager.consume(miner_uids)
 
@@ -327,6 +851,10 @@ class Validator(base.BaseValidator):
         upscaling_uids = [uid for _, uid in upscaling_miners]
         compression_uids = [uid for _, uid in compression_miners]
         all_uids = upscaling_uids + compression_uids
+        selected_task_types = {
+            **{uid: "upscaling" for uid in upscaling_uids},
+            **{uid: "compression" for uid in compression_uids},
+        }
         
         await self.refresh_miner_manager(all_uids)
         
@@ -343,6 +871,12 @@ class Validator(base.BaseValidator):
             logger.info("Synthetic epoch disabled by DISABLE_SYNTHETICS env var, only ran TaskWarrant requests to gauge miner task types necessary to execute organics, sleeping for 30 minutes before refreshing")
             await asyncio.sleep(1800)
             return
+
+        await self.score_deduplicated_synthetic_miners(
+            deduped_uid_reasons,
+            deduped_uid_sources,
+            selected_task_types,
+        )
 
         logger.info("Sleeping for 3 minutes before starting epoch")
         await asyncio.sleep(180)
@@ -410,12 +944,8 @@ class Validator(base.BaseValidator):
         epoch_processed_time = time.time() - epoch_start_time
         logger.info(f"Completed one epoch within {epoch_processed_time:.2f} seconds")
 
-        if epoch_processed_time < 60: # if epoch completed within 60 seconds in case of no miners requiring synth checking, sleep for 10 minutes
-            logger.info(f"Sleeping for 10 minutes before starting next cycle")
-            await asyncio.sleep(60 * 10)
-        else:
-            logger.info(f"Sleeping for 3 minutes before starting next cycle")
-            await asyncio.sleep(180) 
+        logger.info(f"Sleeping for 1-2 hours before starting next cycle")
+        await asyncio.sleep(random.randint(3600 * 1, 3600 * 2)) 
 
     #   --------------------------------------------------------------------------- #
     #  Helper – turn the raw list of (axon, uid) into a dict {uid: (axon, uid)}
@@ -603,6 +1133,63 @@ class Validator(base.BaseValidator):
                 "error": e,
                 "latency_ms": duration,
             }
+
+    def _response_video_urls(self, response, expected_count: int) -> list[str]:
+        miner_response = getattr(response, "miner_response", None)
+        if miner_response is None:
+            return [""] * expected_count
+
+        urls = list(getattr(miner_response, "optimized_video_urls", []) or [])
+        legacy_url = getattr(miner_response, "optimized_video_url", "")
+        if not urls and legacy_url:
+            urls = [legacy_url]
+
+        if len(urls) < expected_count:
+            urls.extend([""] * (expected_count - len(urls)))
+
+        return urls[:expected_count]
+
+    def _synthetic_response_url_key(self, url: str) -> str:
+        return (url or "").strip()
+
+    def _duplicate_synthetic_response_url_reasons(
+        self,
+        uids: list[int],
+        distorted_urls: list[str],
+        query_indices: list[int],
+        task_type: str,
+    ) -> dict[int, str]:
+        grouped_indices: dict[tuple[int, str], list[int]] = {}
+        for idx, (url, query_idx) in enumerate(zip(distorted_urls, query_indices)):
+            url_key = self._synthetic_response_url_key(url)
+            if not url_key or len(url_key) < 10:
+                continue
+            grouped_indices.setdefault((query_idx, url_key), []).append(idx)
+
+        duplicate_reasons: dict[int, str] = {}
+        for (query_idx, url), indices in grouped_indices.items():
+            if len(indices) <= 1:
+                continue
+
+            duplicate_uids = [uids[idx] for idx in indices]
+            logger.warning(
+                f"Zeroing all synthetic {task_type} responses with duplicate URL "
+                f"{url} for query {query_idx}: uids={duplicate_uids}"
+            )
+            for duplicate_idx in indices:
+                reason = (
+                    f"MINER FAILURE: duplicate synthetic {task_type} response URL "
+                    f"for query {query_idx}: {url} shared by UIDs {duplicate_uids}"
+                )
+                duplicate_reasons[duplicate_idx] = reason
+
+        if duplicate_reasons:
+            logger.info(
+                f"Zeroed {len(duplicate_reasons)} duplicate synthetic {task_type} "
+                f"response URLs before scoring"
+            )
+
+        return duplicate_reasons
     
     async def call_miner_polling(
         self,
@@ -685,8 +1272,12 @@ class Validator(base.BaseValidator):
             if resp.status == "completed":
                 # Shim result so all downstream code can access
                 # .miner_response.optimized_video_url unchanged.
+                response_urls = list(getattr(resp, "optimized_video_urls", []) or [])
+                legacy_url = getattr(resp, "optimized_video_url", "")
+                if not response_urls and legacy_url:
+                    response_urls = [legacy_url]
                 synapse_job.miner_response = MinerResponse(
-                    optimized_video_url=resp.optimized_video_url
+                    optimized_video_urls=response_urls
                 )
                 return {
                     "uid": uid,
@@ -705,68 +1296,173 @@ class Validator(base.BaseValidator):
         return _empty("polling timeout")
 
     async def process_upscaling_miners(self, upscaling_miners_with_lengths, version):
-        """Process upscaling miners in batches similar to the original implementation."""
-        batch_size = CONFIG.bandwidth.requests_per_synthetic_interval
-
+        """Process all upscaling miners concurrently with the same bundled challenge."""
         upscaling_miners = [(axon, uid) for axon, uid, _ in upscaling_miners_with_lengths]
         upscaling_content_lengths = {uid: length for _, uid, length in upscaling_miners_with_lengths}
 
-        miner_batches = await self.create_miner_batches(upscaling_miners, batch_size, task_type="upscaling")
+        num_miners = len(upscaling_miners)
+        if num_miners == 0:
+            return
 
-        logger.info(f"Created {len(miner_batches)} upscaling batches of size {batch_size}")
+        miner_scores = {uid: miner.accumulate_score for uid, miner in self.miner_manager.query([uid for _, uid in upscaling_miners]).items()}
+        upscaling_miners.sort(key=lambda miner: miner_scores.get(miner[1], float("-inf")), reverse=True)
 
-        for batch_idx, batch in enumerate(miner_batches):
-            batch_start_time = time.time()
-            logger.info(f"🧩 Processing upscaling batch {batch_idx + 1}/{len(miner_batches)} 🧩")
-            
-            uids = []
-            axons = []
-            content_lengths = []
-            for recent_count, miner in batch:
-                content_lengths.append(upscaling_content_lengths[miner[1]])
-                uids.append(miner[1])
-                axons.append(miner[0])
-            
-            round_id = str(uuid.uuid4())
-            payload_urls, video_ids, uploaded_object_names, synapses, task_types = await self.challenge_synthesizer.build_synthetic_protocol(content_lengths, version, round_id)
-            logger.info(f"Built upscaling challenge protocol: payload URLs: {payload_urls}\nvideo IDs: {video_ids}")
+        query_count = SYNTHETIC_QUERIES_PER_MINER
+        shared_content_length = min(upscaling_content_lengths.values()) if upscaling_content_lengths else 5
+        content_lengths = [shared_content_length] * query_count
+        uids = [uid for _, uid in upscaling_miners]
+        axons = [axon for axon, _ in upscaling_miners]
 
-            timestamp = datetime.now(timezone.utc).isoformat()
+        logger.info(
+            f"🧩 Processing {num_miners} upscaling miners concurrently with "
+            f"{query_count} shared synthetic queries 🧩"
+        )
+        batch_start_time = time.time()
+        round_id = str(uuid.uuid4())
 
-            forward_tasks = [
-                self.call_miner(axon, synapse, uid, timeout=90)
-                for uid, axon, synapse in zip(uids, axons, synapses)
-            ]
-            raw_responses = await asyncio.gather(*forward_tasks)
-            responses = [response['result'] for response in raw_responses]
+        payload_urls, video_ids, uploaded_object_names, synapses, task_types = await self.challenge_synthesizer.build_synthetic_protocol(
+            content_lengths, version, round_id, bundle_protocols=True
+        )
+        query_count = len(payload_urls)
+        logger.info(f"Built upscaling challenge protocol: payload URLs: {payload_urls}\nvideo IDs: {video_ids}")
 
-            logger.info(f"🎲 Received {len(responses)} upscaling responses from miners 🎲")
+        timestamp = datetime.now(timezone.utc).isoformat()
+        responses = await self.call_miner_batch(
+            axons,
+            synapses[0],
+            num_miners,
+            timeout=135
+        )
 
-            reference_video_paths = []
-            for video_id in video_ids:
-                reference_video_path = get_trim_video_path(video_id)
-                if not os.path.exists(reference_video_path):
-                    logger.warning(f"⚠️ Reference video file missing for video_id {video_id}: {reference_video_path}")
-                reference_video_paths.append(reference_video_path)
-            
-            await self.score_upscalings(uids, responses, payload_urls, reference_video_paths, timestamp, video_ids, uploaded_object_names, content_lengths, task_types, round_id)
+        logger.info(f"🎲 Received {len(responses)} upscaling responses from miners 🎲")
 
-            batch_processed_time = time.time() - batch_start_time
-            
-            # sleep_time = random.uniform(SLEEP_TIME_LOW, SLEEP_TIME_HIGH) - batch_processed_time
-            logger.info(f"Completed upscaling batch within {batch_processed_time:.2f} seconds")
-            logger.info(f"Scored {batch_idx * batch_size + len(batch)} upscaling miners")
-            # logger.info(f"Sleeping for 5-6 minutes before next upscaling batch")
-            
-            # await asyncio.sleep(sleep_time)
+        reference_video_paths = []
+        for video_id in video_ids:
+            reference_video_path = get_trim_video_path(video_id)
+            if not os.path.exists(reference_video_path):
+                logger.warning(f"⚠️ Reference video file missing for video_id {video_id}: {reference_video_path}")
+            reference_video_paths.append(reference_video_path)
+
+        flat_uids = []
+        flat_distorted_urls = []
+        flat_payload_urls = []
+        flat_reference_paths = []
+        flat_video_ids = []
+        flat_uploaded_object_names = []
+        flat_content_lengths = []
+        flat_task_types = []
+        flat_query_indices = []
+
+        for response_idx, uid in enumerate(uids):
+            response = responses[response_idx] if response_idx < len(responses) else None
+            response_urls = self._response_video_urls(response, query_count)
+            for query_idx, distorted_url in enumerate(response_urls):
+                flat_uids.append(uid)
+                flat_distorted_urls.append(distorted_url)
+                flat_payload_urls.append(payload_urls[query_idx])
+                flat_reference_paths.append(reference_video_paths[query_idx])
+                flat_video_ids.append(video_ids[query_idx])
+                flat_uploaded_object_names.append(uploaded_object_names[query_idx])
+                flat_content_lengths.append(content_lengths[query_idx])
+                flat_task_types.append(task_types[query_idx])
+                flat_query_indices.append(query_idx)
+
+        duplicate_url_reasons = self._duplicate_synthetic_response_url_reasons(
+            flat_uids,
+            flat_distorted_urls,
+            flat_query_indices,
+            "upscaling",
+        )
+
+        total_scoring_responses = len(flat_uids)
+        scoring_batch_size = UPSCALING_SCORING_BATCH_SIZE
+        scoring_batch_count = (total_scoring_responses + scoring_batch_size - 1) // scoring_batch_size
+        logger.info(
+            f"Scoring {total_scoring_responses} upscaling query responses from "
+            f"{num_miners} miners in {scoring_batch_count} batches of up to {scoring_batch_size}"
+        )
+
+        deferred_scoring_results = []
+        for batch_idx, batch_start in enumerate(range(0, total_scoring_responses, scoring_batch_size), start=1):
+            batch_end = min(batch_start + scoring_batch_size, total_scoring_responses)
+            batch_uids = flat_uids[batch_start:batch_end]
+            batch_timer = time.time()
+            logger.info(
+                f"Scoring upscaling batch {batch_idx}/{scoring_batch_count}: "
+                f"responses {batch_start + 1}-{batch_end}/{total_scoring_responses}, "
+                f"uids={batch_uids}"
+            )
+
+            batch_duplicate_url_reasons = {
+                idx - batch_start: reason
+                for idx, reason in duplicate_url_reasons.items()
+                if batch_start <= idx < batch_end
+            }
+
+            scoring_result = await self.score_upscalings(
+                batch_uids,
+                [],
+                flat_payload_urls[batch_start:batch_end],
+                flat_reference_paths[batch_start:batch_end],
+                timestamp,
+                flat_video_ids[batch_start:batch_end],
+                flat_uploaded_object_names[batch_start:batch_end],
+                flat_content_lengths[batch_start:batch_end],
+                flat_task_types[batch_start:batch_end],
+                round_id,
+                distorted_urls=flat_distorted_urls[batch_start:batch_end],
+                duplicate_url_reasons=batch_duplicate_url_reasons,
+                commit_scores=False,
+            )
+            deferred_scoring_results.append(scoring_result)
+
+            logger.info(
+                f"Completed upscaling scoring batch {batch_idx}/{scoring_batch_count} "
+                f"in {time.time() - batch_timer:.2f} seconds"
+            )
+
+        self._commit_upscaling_scores(deferred_scoring_results)
+
+        # These collections do not necessarily have the same length, so clean
+        # each kind of resource independently.
+        for ref_path in reference_video_paths:
+            if ref_path and os.path.exists(ref_path):
+                try:
+                    os.unlink(ref_path)
+                except Exception as e:
+                    logger.error(f"Error deleting reference video file {ref_path}: {e}")
+
+        for payload_path in payload_urls:
+            if payload_path and os.path.exists(payload_path):
+                try:
+                    os.unlink(payload_path)
+                except Exception as e:
+                    logger.error(f"Error deleting payload video file {payload_path}: {e}")
+
+        for uploaded_object_name in uploaded_object_names:
+            try:
+                await storage_client.delete_file(uploaded_object_name)
+            except Exception as e:
+                logger.error(f"Error deleting uploaded object {uploaded_object_name}: {e}")
+
+        batch_processed_time = time.time() - batch_start_time
+        logger.info(f"Completed upscaling batch within {batch_processed_time:.2f} seconds")
+        logger.info(f"Scored {total_scoring_responses} upscaling query responses from {num_miners} miners")
 
     async def process_compression_miners(self, compression_miners, version):
-        """Process all compression miners concurrently, and score them in batches of 5."""
+        """Process all compression miners concurrently with the same bundled challenge."""
         num_miners = len(compression_miners)
         if num_miners == 0:
             return
 
-        logger.info(f"🧩 Processing {num_miners} compression miners concurrently with same challenge broadcasted 🧩")
+        miner_scores = {uid: miner.accumulate_score for uid, miner in self.miner_manager.query([uid for _, uid in compression_miners]).items()}
+        compression_miners = sorted(compression_miners, key=lambda miner: miner_scores.get(miner[1], float("-inf")), reverse=True)
+
+        query_count = SYNTHETIC_QUERIES_PER_MINER
+        logger.info(
+            f"🧩 Processing {num_miners} compression miners concurrently with "
+            f"{query_count} shared synthetic queries 🧩"
+        )
         
         round_id = str(uuid.uuid4())
 
@@ -776,14 +1472,28 @@ class Validator(base.BaseValidator):
             uids.append(uid)
             axons.append(axon)
 
-        vmaf_thresholds = [random.choice(list(VMAF_QUALITY_THRESHOLD))] * num_miners
+        vmaf_threshold = random.choice(list(VMAF_QUALITY_THRESHOLD))
+        vmaf_thresholds = [vmaf_threshold] * query_count
         target_codec = random.choice(TARGET_CODECS)
         codec_mode = random.choice(CODEC_MODES)
         target_bitrate = random.choice(TARGET_BITRATES)
 
         payload_urls, video_ids, uploaded_object_names, synapses = await self.challenge_synthesizer.build_compression_protocol(
-            vmaf_thresholds, num_miners, version, round_id, target_codec, codec_mode, target_bitrate, broadcast_single_chunk=True)
-        logger.warning(f"Built compression challenge protocol for {num_miners} miners, VMAF threshold {vmaf_thresholds[0]}, codec {target_codec}, mode {codec_mode}, bitrate {target_bitrate} Mbps")
+            vmaf_thresholds,
+            query_count,
+            version,
+            round_id,
+            target_codec,
+            codec_mode,
+            target_bitrate,
+            bundle_protocols=True,
+        )
+        query_count = len(payload_urls)
+        logger.warning(
+            f"Built compression challenge protocol for {num_miners} miners, "
+            f"{query_count} queries, VMAF threshold {vmaf_thresholds[0]}, codec {target_codec}, "
+            f"mode {codec_mode}, bitrate {target_bitrate} Mbps"
+        )
 
         timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -791,7 +1501,12 @@ class Validator(base.BaseValidator):
         
         batch_start_time = time.time()
         
-        responses = await self.call_miner_batch(axons, synapses[0], num_miners, timeout=135)
+        responses = await self.call_miner_batch(
+            axons,
+            synapses[0],
+            num_miners,
+            timeout=180,
+        )
 
         logger.info(f"🎲 Received {len(responses)} compression responses from miners 🎲")
 
@@ -801,6 +1516,35 @@ class Validator(base.BaseValidator):
             if not os.path.exists(reference_video_path):
                 logger.warning(f"⚠️ Reference video file missing for video_id {video_id}: {reference_video_path}")
             reference_video_paths.append(reference_video_path)
+
+        flat_uids = []
+        flat_distorted_urls = []
+        flat_payload_urls = []
+        flat_reference_paths = []
+        flat_video_ids = []
+        flat_uploaded_object_names = []
+        flat_vmaf_thresholds = []
+        flat_query_indices = []
+
+        for response_idx, uid in enumerate(uids):
+            response = responses[response_idx] if response_idx < len(responses) else None
+            response_urls = self._response_video_urls(response, query_count)
+            for query_idx, distorted_url in enumerate(response_urls):
+                flat_uids.append(uid)
+                flat_distorted_urls.append(distorted_url)
+                flat_payload_urls.append(payload_urls[query_idx])
+                flat_reference_paths.append(reference_video_paths[query_idx])
+                flat_video_ids.append(video_ids[query_idx])
+                flat_uploaded_object_names.append(uploaded_object_names[query_idx])
+                flat_vmaf_thresholds.append(getattr(vmaf_thresholds[query_idx], "value", vmaf_thresholds[query_idx]))
+                flat_query_indices.append(query_idx)
+
+        duplicate_url_reasons = self._duplicate_synthetic_response_url_reasons(
+            flat_uids,
+            flat_distorted_urls,
+            flat_query_indices,
+            "compression",
+        )
 
         
         # Concurrently start all downloads that have valid URLs,
@@ -817,9 +1561,14 @@ class Validator(base.BaseValidator):
                     return e
 
         download_tasks = []
-        for uid_val, response in zip(uids, responses):
-            url = response.miner_response.optimized_video_url
-            if not url or len(url) < 10:
+        for idx, (uid_val, url) in enumerate(zip(flat_uids, flat_distorted_urls)):
+            if idx in duplicate_url_reasons:
+                logger.warning(
+                    f"UID {uid_val}: skipping distorted video download because "
+                    f"response URL was deduplicated before compression scoring"
+                )
+                download_tasks.append(asyncio.create_task(asyncio.sleep(0, result=None)))
+            elif not url or len(url) < 10:
                 logger.error(f"UID {uid_val}: invalid or missing distorted video download URL: {url}")
                 # Create a task that simply returns None
                 download_tasks.append(asyncio.create_task(asyncio.sleep(0, result=None)))
@@ -833,7 +1582,7 @@ class Validator(base.BaseValidator):
         
         # Process the results, handling any exceptions
         distorted_file_paths = []
-        for uid_val, url, result in zip(uids, [r.miner_response.optimized_video_url for r in responses], download_results):
+        for uid_val, url, result in zip(flat_uids, flat_distorted_urls, download_results):
             if isinstance(result, Exception):
                 logger.error(f"UID {uid_val}: Failed to download distorted video from {url} - {str(result)}")
                 distorted_file_paths.append(None)
@@ -850,53 +1599,89 @@ class Validator(base.BaseValidator):
         batch_processed_time = time.time() - batch_start_time
         logger.info(f"Completed compression gathering and downloading within {batch_processed_time:.2f} seconds")
 
-        # Score in batches of 5
-        score_batch_size = 5
-        logger.info(f"Scoring {num_miners} compression miners in batches of {score_batch_size}")
-        
-        for i in range(0, num_miners, score_batch_size):
-            batch_uids = uids[i:i+score_batch_size]
-            batch_responses = responses[i:i+score_batch_size]
-            batch_distorted_file_paths = distorted_file_paths[i:i+score_batch_size]
-            batch_payload_urls = payload_urls[i:i+score_batch_size]
-            batch_reference_paths = reference_video_paths[i:i+score_batch_size]
-            batch_video_ids = video_ids[i:i+score_batch_size]
-            batch_uploaded_object_names = uploaded_object_names[i:i+score_batch_size]
-            batch_vmaf_thresholds = vmaf_thresholds[i:i+score_batch_size]
-            
-            await self.score_compressions(
-                batch_uids, 
-                batch_responses,
-                batch_distorted_file_paths,
-                batch_payload_urls, 
-                batch_reference_paths, 
-                timestamp, 
-                batch_video_ids, 
-                batch_uploaded_object_names, 
-                batch_vmaf_thresholds, 
-                target_codec, 
-                codec_mode, 
-                target_bitrate, 
-                round_id
-            )
-            
-            # Cleanup downloaded distorted videos after scoring the batch
-            for path in batch_distorted_file_paths:
-                if path and os.path.exists(path):
-                    try:
-                        os.unlink(path)
-                    except Exception as e:
-                        logger.error(f"Error deleting distorted video file {path}: {e}")
-            
-            logger.info(f"Completed scoring compression batch {batch_uids} within {batch_processed_time:.2f} seconds")
-            logger.info(f"Scored {i + len(batch_uids)} of {num_miners} compression miners")
-            # await asyncio.sleep(sleep_time)
+        total_scoring_responses = len(flat_uids)
+        scoring_batch_size = COMPRESSION_SCORING_BATCH_SIZE
+        scoring_batch_count = (total_scoring_responses + scoring_batch_size - 1) // scoring_batch_size
+        logger.info(
+            f"Scoring {total_scoring_responses} compression query responses from "
+            f"{num_miners} miners in {scoring_batch_count} batches of up to {scoring_batch_size}"
+        )
 
-        try:
-            if os.path.exists(reference_video_paths[0]):
-                os.unlink(reference_video_paths[0])
-        except Exception as e:
-            logger.error(f"Error deleting reference video file: {e}")
+        compression_score_cache: CompressionScoreCache = {}
+        deferred_scoring_results = []
+        for batch_idx, batch_start in enumerate(range(0, total_scoring_responses, scoring_batch_size), start=1):
+            batch_end = min(batch_start + scoring_batch_size, total_scoring_responses)
+            batch_uids = flat_uids[batch_start:batch_end]
+            batch_timer = time.time()
+            logger.info(
+                f"Scoring compression batch {batch_idx}/{scoring_batch_count}: "
+                f"responses {batch_start + 1}-{batch_end}/{total_scoring_responses}, "
+                f"uids={batch_uids}"
+            )
+
+            batch_duplicate_url_reasons = {
+                idx - batch_start: reason
+                for idx, reason in duplicate_url_reasons.items()
+                if batch_start <= idx < batch_end
+            }
+
+            scoring_result = await self.score_compressions(
+                batch_uids,
+                [],
+                distorted_file_paths[batch_start:batch_end],
+                flat_payload_urls[batch_start:batch_end],
+                flat_reference_paths[batch_start:batch_end],
+                timestamp,
+                flat_video_ids[batch_start:batch_end],
+                flat_uploaded_object_names[batch_start:batch_end],
+                flat_vmaf_thresholds[batch_start:batch_end],
+                target_codec,
+                codec_mode,
+                target_bitrate,
+                round_id,
+                distorted_urls=flat_distorted_urls[batch_start:batch_end],
+                duplicate_url_reasons=batch_duplicate_url_reasons,
+                compression_score_cache=compression_score_cache,
+                commit_scores=False,
+            )
+            deferred_scoring_results.append(scoring_result)
+
+            logger.info(
+                f"Completed compression scoring batch {batch_idx}/{scoring_batch_count} "
+                f"in {time.time() - batch_timer:.2f} seconds"
+            )
+
+        self._commit_compression_scores(deferred_scoring_results)
+
+        # There is one distorted file per miner response, but only one reference
+        # and uploaded object per query.  Zipping these lists would stop after the
+        # query count and leak the remaining distorted files.
+        for dist_path in distorted_file_paths:
+            if dist_path and os.path.exists(dist_path):
+                try:
+                    os.unlink(dist_path)
+                except Exception as e:
+                    logger.error(f"Error deleting distorted video file {dist_path}: {e}")
+
+        for ref_path in reference_video_paths:
+            if ref_path and os.path.exists(ref_path):
+                try:
+                    os.unlink(ref_path)
+                except Exception as e:
+                    logger.error(f"Error deleting reference video file {ref_path}: {e}")
+
+        for payload_path in payload_urls:
+            if payload_path and os.path.exists(payload_path):
+                try:
+                    os.unlink(payload_path)
+                except Exception as e:
+                    logger.error(f"Error deleting payload video file {payload_path}: {e}")
+
+        for uploaded_object_name in uploaded_object_names:
+            try:
+                await storage_client.delete_file(uploaded_object_name)
+            except Exception as e:
+                logger.error(f"Error deleting uploaded object {uploaded_object_name}: {e}")
 
     async def start_organic_loop(self):
         """Start organic processing loop for both upscaling and compression tasks asynchronously."""
@@ -941,39 +1726,126 @@ class Validator(base.BaseValidator):
         uploaded_object_names: list[str], 
         content_lengths: list[int], 
         task_types: list[str],
-        round_id: str
+        round_id: str,
+        distorted_urls: list[str] | None = None,
+        duplicate_url_reasons: dict[int, str] | None = None,
+        commit_scores: bool = True,
     ):
-        distorted_urls = []
-        for uid, response in zip(uids, responses):
-            distorted_urls.append(response.miner_response.optimized_video_url)
+        if distorted_urls is None:
+            distorted_urls = []
+            for uid, response in zip(uids, responses):
+                distorted_urls.append(response.miner_response.optimized_video_url)
 
         logger.info(f"payloads: {payload_urls}\nresponses: {distorted_urls}")
 
-        score_response = await self.score_client_upscaling.post(
-            "/score_upscaling_synthetics",
-            json = {
-                "uids": uids,
-                "payload_urls": payload_urls,
-                "distorted_urls": distorted_urls,
-                "reference_paths": reference_video_paths,
-                "video_ids": video_ids,
-                "uploaded_object_names": uploaded_object_names,
-                "content_lengths": content_lengths,
-                "task_types": task_types
-            },
-            timeout=600
+        duplicate_url_reasons = duplicate_url_reasons or {}
+        scoring_indices = [
+            idx for idx in range(len(uids)) if idx not in duplicate_url_reasons
+        ]
+
+        if duplicate_url_reasons:
+            logger.info(
+                f"Sending {len(scoring_indices)}/{len(uids)} upscaling responses "
+                f"to scorer after exact URL deduplication"
+            )
+
+        if scoring_indices:
+            score_response = await self.score_client_upscaling.post(
+                "/score_upscaling_synthetics",
+                json = {
+                    "uids": [uids[idx] for idx in scoring_indices],
+                    "payload_urls": [payload_urls[idx] for idx in scoring_indices],
+                    "distorted_urls": [distorted_urls[idx] for idx in scoring_indices],
+                    "reference_paths": [reference_video_paths[idx] for idx in scoring_indices],
+                    "video_ids": [video_ids[idx] for idx in scoring_indices],
+                    "uploaded_object_names": [uploaded_object_names[idx] for idx in scoring_indices],
+                    "content_lengths": [content_lengths[idx] for idx in scoring_indices],
+                    "task_types": [task_types[idx] for idx in scoring_indices]
+                },
+                timeout=600
+            )
+            response_data = score_response.json()
+        else:
+            response_data = {}
+
+        scored_quality_scores = response_data.get("quality_scores", [])
+        scored_length_scores = response_data.get("length_scores", [])
+        scored_final_scores = response_data.get("final_scores", [])
+        scored_vmaf_scores = response_data.get("vmaf_scores", [])
+        scored_pieapp_scores = response_data.get("pieapp_scores", [])
+        scored_reasons = response_data.get("reasons", [])
+
+        def merge_scored_values(scored_values, duplicate_default, missing_default):
+            merged_values = []
+            scored_pos = 0
+            for idx in range(len(uids)):
+                if idx in duplicate_url_reasons:
+                    merged_values.append(duplicate_default(idx))
+                    continue
+                if scored_pos < len(scored_values):
+                    merged_values.append(scored_values[scored_pos])
+                else:
+                    merged_values.append(missing_default)
+                scored_pos += 1
+            return merged_values
+
+        quality_scores = merge_scored_values(scored_quality_scores, lambda _idx: 0.0, 0.0)
+        length_scores = merge_scored_values(scored_length_scores, lambda _idx: 0.0, 0.0)
+        final_scores = merge_scored_values(scored_final_scores, lambda _idx: 0.0, 0.0)
+        vmaf_scores = merge_scored_values(scored_vmaf_scores, lambda _idx: 0.0, 0.0)
+        pieapp_scores = merge_scored_values(scored_pieapp_scores, lambda _idx: 0.0, 0.0)
+        reasons = merge_scored_values(
+            scored_reasons,
+            lambda idx: duplicate_url_reasons[idx],
+            "No reason provided",
         )
 
-        response_data = score_response.json()
+        scoring_result = {
+            "round_id": round_id,
+            "uids": uids,
+            "vmaf_scores": vmaf_scores,
+            "pieapp_scores": pieapp_scores,
+            "quality_scores": quality_scores,
+            "length_scores": length_scores,
+            "final_scores": final_scores,
+            "reasons": reasons,
+            "content_lengths": content_lengths,
+            "payload_urls": payload_urls,
+            "distorted_urls": distorted_urls,
+            "timestamp": timestamp,
+        }
+        if commit_scores:
+            self._commit_upscaling_scores([scoring_result])
+        return scoring_result
 
-        quality_scores = response_data.get("quality_scores", [])
-        length_scores = response_data.get("length_scores", [])
-        final_scores = response_data.get("final_scores", [])
-        vmaf_scores = response_data.get("vmaf_scores", [])
-        pieapp_scores = response_data.get("pieapp_scores", [])
-        reasons = response_data.get("reasons", [])
-        
-        logger.info(f"Updating miner manager with {len(quality_scores)} miner scores after synthetic requests processing")
+    def _commit_upscaling_scores(self, scoring_results):
+        if not scoring_results:
+            return
+
+        round_id = scoring_results[0]["round_id"]
+        if any(result["round_id"] != round_id for result in scoring_results):
+            raise ValueError("Cannot commit upscaling scores from different rounds")
+
+        def combine(key):
+            return [
+                value
+                for result in scoring_results
+                for value in result[key]
+            ]
+
+        uids = combine("uids")
+        vmaf_scores = combine("vmaf_scores")
+        pieapp_scores = combine("pieapp_scores")
+        quality_scores = combine("quality_scores")
+        length_scores = combine("length_scores")
+        final_scores = combine("final_scores")
+        reasons = combine("reasons")
+        content_lengths = combine("content_lengths")
+        payload_urls = combine("payload_urls")
+        distorted_urls = combine("distorted_urls")
+        timestamp = scoring_results[0]["timestamp"]
+
+        logger.info(f"Updating miner manager with {len(quality_scores)} upscaling scores after synthetic requests processing")
 
         miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
         
@@ -1003,7 +1875,7 @@ class Validator(base.BaseValidator):
         content_lengths.extend([0.0] * (max_length - len(content_lengths)))
         applied_multipliers.extend([0.0] * (max_length - len(applied_multipliers)))
 
-        logger.info(f"Synthetic scoring results for {len(uids)} miners")
+        logger.info(f"Synthetic upscaling scoring results for {len(uids)} query responses")
         logger.info(f"Uids: {uids}")
 
         for uid, vmaf_score, pieapp_score, quality_score, length_score, final_score, reason, content_length, applied_multiplier in zip(
@@ -1054,37 +1926,156 @@ class Validator(base.BaseValidator):
         target_codec: str,
         codec_mode: str,
         target_bitrate: float,
-        round_id: str
+        round_id: str,
+        distorted_urls: list[str] | None = None,
+        duplicate_url_reasons: dict[int, str] | None = None,
+        compression_score_cache: CompressionScoreCache | None = None,
+        commit_scores: bool = True,
     ):
-        distorted_urls = []
-        for uid, response in zip(uids, responses):
-            distorted_urls.append(response.miner_response.optimized_video_url)
+        if distorted_urls is None:
+            distorted_urls = []
+            for uid, response in zip(uids, responses):
+                distorted_urls.append(response.miner_response.optimized_video_url)
 
-        logger.info(f"payload: {payload_urls[0]}\nresponses: {distorted_urls}")
+        logger.info(f"payload: {payload_urls[:SYNTHETIC_QUERIES_PER_MINER]}\nresponses: {distorted_urls}")
 
-        score_response = await self.score_client_compression.post(
-            "/score_compression_synthetics",
-            json = {
-                "uids": uids,
-                "distorted_file_paths": distorted_file_paths,
-                "reference_paths": reference_video_paths,
-                "video_ids": video_ids,
-                "uploaded_object_names": uploaded_object_names,
-                "vmaf_thresholds": vmaf_thresholds,
-                "target_codec": target_codec,
-                "codec_mode": codec_mode,
-                "target_bitrate": target_bitrate
-            },
-            timeout=600
+        duplicate_url_reasons = duplicate_url_reasons or {}
+        scoring_indices = [
+            idx for idx in range(len(uids)) if idx not in duplicate_url_reasons
+        ]
+
+        if duplicate_url_reasons:
+            logger.info(
+                f"Sending {len(scoring_indices)}/{len(uids)} compression responses "
+                f"to scorer after exact URL deduplication"
+            )
+
+        if scoring_indices:
+            score_response = await self.score_client_compression.post(
+                "/score_compression_synthetics",
+                json = {
+                    "uids": [uids[idx] for idx in scoring_indices],
+                    "distorted_file_paths": [distorted_file_paths[idx] for idx in scoring_indices],
+                    "reference_paths": [reference_video_paths[idx] for idx in scoring_indices],
+                    "video_ids": [video_ids[idx] for idx in scoring_indices],
+                    "uploaded_object_names": [uploaded_object_names[idx] for idx in scoring_indices],
+                    "vmaf_thresholds": [vmaf_thresholds[idx] for idx in scoring_indices],
+                    "distorted_urls": [distorted_urls[idx] for idx in scoring_indices],
+                    "target_codec": target_codec,
+                    "codec_mode": codec_mode,
+                    "target_bitrate": target_bitrate
+                },
+                timeout=600
+            )
+            response_data = score_response.json()
+        else:
+            response_data = {}
+
+        scored_compression_rates = response_data.get("compression_rates", [])
+        scored_final_scores = response_data.get("final_scores", [])
+        scored_vmaf_scores = response_data.get("vmaf_scores", [])
+        scored_base_vmaf_scores = response_data.get("base_vmaf_scores") or []
+        scored_reasons = response_data.get("reasons", [])
+
+        def merge_scored_values(scored_values, duplicate_default, missing_default):
+            merged_values = []
+            scored_pos = 0
+            for idx in range(len(uids)):
+                if idx in duplicate_url_reasons:
+                    merged_values.append(duplicate_default(idx))
+                    continue
+                if scored_pos < len(scored_values):
+                    merged_values.append(scored_values[scored_pos])
+                else:
+                    merged_values.append(missing_default)
+                scored_pos += 1
+            return merged_values
+
+        compression_rates = merge_scored_values(
+            scored_compression_rates, lambda _idx: 0.9999, 0.5
+        )
+        final_scores = merge_scored_values(scored_final_scores, lambda _idx: 0.0, 0.0)
+        vmaf_scores = merge_scored_values(scored_vmaf_scores, lambda _idx: 0.0, 0.0)
+        base_vmaf_scores = merge_scored_values(scored_base_vmaf_scores, lambda _idx: None, None)
+        reasons = merge_scored_values(
+            scored_reasons,
+            lambda idx: duplicate_url_reasons[idx],
+            "No reason provided",
         )
 
-        response_data = score_response.json()
+        if compression_score_cache is None:
+            compression_score_cache = {}
 
-        compression_rates = response_data.get("compression_rates", [])
-        final_scores = response_data.get("final_scores", [])
-        vmaf_scores = response_data.get("vmaf_scores", [])
-        reasons = response_data.get("reasons", [])
-        
+        duplicate_score_owners = find_duplicate_compression_scores(
+            uids,
+            video_ids,
+            vmaf_scores,
+            base_vmaf_scores,
+            vmaf_thresholds,
+            compression_rates,
+            final_scores,
+            compression_score_cache,
+        )
+        for idx, first_uid in duplicate_score_owners.items():
+            duplicate_reason = (
+                "MINER FAILURE: duplicate synthetic compression score metrics "
+                f"for input {video_ids[idx]}; matches earlier UID {first_uid}"
+            )
+            logger.warning(
+                f"UID {uids[idx]}: {duplicate_reason}. Assigning score of 0."
+            )
+            final_scores[idx] = 0.0
+            reasons[idx] = f"{duplicate_reason}; original scorer result: {reasons[idx]}"
+
+        if duplicate_score_owners:
+            logger.info(
+                f"Zeroed {len(duplicate_score_owners)} duplicate synthetic "
+                "compression results based on normalized primary scoring metrics"
+            )
+
+        scoring_result = {
+            "round_id": round_id,
+            "uids": uids,
+            "vmaf_scores": vmaf_scores,
+            "base_vmaf_scores": base_vmaf_scores,
+            "final_scores": final_scores,
+            "reasons": reasons,
+            "compression_rates": compression_rates,
+            "vmaf_thresholds": vmaf_thresholds,
+            "payload_urls": payload_urls,
+            "distorted_urls": distorted_urls,
+            "timestamp": timestamp,
+        }
+        if commit_scores:
+            self._commit_compression_scores([scoring_result])
+        return scoring_result
+
+    def _commit_compression_scores(self, scoring_results):
+        if not scoring_results:
+            return
+
+        round_id = scoring_results[0]["round_id"]
+        if any(result["round_id"] != round_id for result in scoring_results):
+            raise ValueError("Cannot commit compression scores from different rounds")
+
+        def combine(key):
+            return [
+                value
+                for result in scoring_results
+                for value in result[key]
+            ]
+
+        uids = combine("uids")
+        vmaf_scores = combine("vmaf_scores")
+        base_vmaf_scores = combine("base_vmaf_scores")
+        final_scores = combine("final_scores")
+        reasons = combine("reasons")
+        compression_rates = combine("compression_rates")
+        vmaf_thresholds = combine("vmaf_thresholds")
+        payload_urls = combine("payload_urls")
+        distorted_urls = combine("distorted_urls")
+        timestamp = scoring_results[0]["timestamp"]
+
         logger.info(f"Updating miner manager with {len(compression_rates)} compression miner scores after synthetic requests processing")
 
         miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
@@ -1101,12 +2092,14 @@ class Validator(base.BaseValidator):
             len(uids),
             len(final_scores),
             len(vmaf_scores),
+            len(base_vmaf_scores),
             len(reasons),
             len(applied_multipliers),
             len(accumulate_scores),
         )
 
         vmaf_scores.extend([0.0] * (max_length - len(vmaf_scores)))
+        base_vmaf_scores.extend([None] * (max_length - len(base_vmaf_scores)))
         final_scores.extend([0.0] * (max_length - len(final_scores)))
         reasons.extend(["No reason provided"] * (max_length - len(reasons)))
         compression_rates.extend([0.5] * (max_length - len(compression_rates)))
@@ -1116,11 +2109,12 @@ class Validator(base.BaseValidator):
         logger.info(f"Synthetic compression scoring results for {len(uids)} miners")
         logger.info(f"Uids: {uids}")
 
-        for uid, vmaf_score, final_score, reason, compression_rate, applied_multiplier, vmaf_threshold in zip(
-            uids, vmaf_scores, final_scores, reasons, compression_rates, applied_multipliers, vmaf_thresholds
+        for uid, vmaf_score, base_vmaf_score, final_score, reason, compression_rate, applied_multiplier, vmaf_threshold in zip(
+            uids, vmaf_scores, base_vmaf_scores, final_scores, reasons, compression_rates, applied_multipliers, vmaf_thresholds
         ):
+            base_vmaf_display = f"{base_vmaf_score:.2f}" if base_vmaf_score is not None else "N/A"
             logger.info(
-                f"{uid} ** VMAF: {vmaf_score:.2f} "
+                f"{uid} ** VMAF NEG: {vmaf_score:.2f} ** VMAF: {base_vmaf_display} "
                 f"** VMAF Threshold: {vmaf_threshold} ** Compression Rate: {compression_rate:.4f} ** Final: {final_score:.4f} || {reason}"
             )
 
@@ -1149,11 +2143,23 @@ class Validator(base.BaseValidator):
         else:
             logger.info("Failed to send compression data to dashboard")
 
-    async def score_organics_upscaling(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: list[str], task_types: list[str], timestamp: str):
+    async def score_organics_upscaling(
+        self,
+        uids: list[int],
+        responses: list[protocol.Synapse],
+        reference_urls: list[str],
+        task_types: list[str],
+        timestamp: str,
+        distorted_urls: list[str] | None = None,
+    ):
         """Score organic upscaling tasks."""
-        distorted_urls = [response.miner_response.optimized_video_url for response in responses]
+        if distorted_urls is None:
+            distorted_urls = [response.miner_response.optimized_video_url for response in responses]
 
         combined = list(zip(uids, distorted_urls, reference_urls, task_types))
+        if not combined:
+            logger.warning("No organic upscaling responses available for scoring")
+            return
         random.shuffle(combined)
         uids, distorted_urls, reference_urls, task_types = map(list, zip(*combined))
 
@@ -1186,7 +2192,7 @@ class Validator(base.BaseValidator):
         length_scores = response_data.get("length_scores", [])
         reasons = response_data.get("reasons", [])
 
-        max_length = max(len(uids), len(scores), len(vmaf_scores), len(pieapp_scores), len(reasons))
+        max_length = max(len(selected_uids), len(scores), len(vmaf_scores), len(pieapp_scores), len(reasons))
         scores.extend([0.0] * (max_length - len(scores)))
         vmaf_scores.extend([0.0] * (max_length - len(vmaf_scores)))
         pieapp_scores.extend([0.0] * (max_length - len(pieapp_scores)))
@@ -1232,11 +2238,26 @@ class Validator(base.BaseValidator):
         else:
             logger.info("Failed to send data to dashboard")
 
-    async def score_organics_compression(self, uids: list[int], responses: list[protocol.Synapse], reference_urls: list[str], vmaf_thresholds: list[float], target_codecs: list[str], codec_modes: list[str], target_bitrates: list[float], timestamp: str):
+    async def score_organics_compression(
+        self,
+        uids: list[int],
+        responses: list[protocol.Synapse],
+        reference_urls: list[str],
+        vmaf_thresholds: list[float],
+        target_codecs: list[str],
+        codec_modes: list[str],
+        target_bitrates: list[float],
+        timestamp: str,
+        distorted_urls: list[str] | None = None,
+    ):
         """Score organic compression tasks."""
-        distorted_urls = [response.miner_response.optimized_video_url for response in responses]
+        if distorted_urls is None:
+            distorted_urls = [response.miner_response.optimized_video_url for response in responses]
 
         combined = list(zip(uids, distorted_urls, reference_urls, vmaf_thresholds, target_codecs, codec_modes, target_bitrates))
+        if not combined:
+            logger.warning("No organic compression responses available for scoring")
+            return
         random.shuffle(combined)
         uids, distorted_urls, reference_urls, vmaf_thresholds, target_codecs, codec_modes, target_bitrates = map(list, zip(*combined))
 
@@ -1270,12 +2291,14 @@ class Validator(base.BaseValidator):
         response_data = score_response.json()
         scores = response_data.get("final_scores", [])
         vmaf_scores = response_data.get("vmaf_scores", [])
+        base_vmaf_scores = response_data.get("base_vmaf_scores") or []
         compression_rates = response_data.get("compression_rates", [])
         reasons = response_data.get("reasons", [])
 
-        max_length = max(len(selected_uids), len(scores), len(vmaf_scores), len(compression_rates), len(reasons))
+        max_length = max(len(selected_uids), len(scores), len(vmaf_scores), len(base_vmaf_scores), len(compression_rates), len(reasons))
         scores.extend([0.0] * (max_length - len(scores)))
         vmaf_scores.extend([0.0] * (max_length - len(vmaf_scores)))
+        base_vmaf_scores.extend([None] * (max_length - len(base_vmaf_scores)))
         compression_rates.extend([0.5] * (max_length - len(compression_rates)))
         reasons.extend(["no reason provided"] * (max_length - len(reasons)))
 
@@ -1286,11 +2309,12 @@ class Validator(base.BaseValidator):
 
         logger.info(f"organic compression scoring results for {len(selected_uids)} miners")
         logger.info(f"uids: {selected_uids}")
-        for uid, vmaf_score, final_score, reason, compression_rate, applied_multiplier, vmaf_threshold in zip(
-            selected_uids, vmaf_scores, scores, reasons, compression_rates, applied_multipliers, selected_vmaf_thresholds
+        for uid, vmaf_score, base_vmaf_score, final_score, reason, compression_rate, applied_multiplier, vmaf_threshold in zip(
+            selected_uids, vmaf_scores, base_vmaf_scores, scores, reasons, compression_rates, applied_multipliers, selected_vmaf_thresholds
         ):
+            base_vmaf_display = f"{base_vmaf_score:.2f}" if base_vmaf_score is not None else "N/A"
             logger.info(
-                f"{uid} ** VMAF: {vmaf_score:.2f} "
+                f"{uid} ** VMAF NEG: {vmaf_score:.2f} ** VMAF: {base_vmaf_display} "
                 f"** VMAF Threshold: {vmaf_threshold} ** Compression Rate: {compression_rate:.4f} ** Final: {final_score:.4f} || {reason}"
             )
 
@@ -1326,7 +2350,219 @@ class Validator(base.BaseValidator):
         stake_array = self.metagraph.S
         miner_uids = [i for i, stake in enumerate(stake_array) if stake < min_stake]
 
-        return miner_uids
+        selected_uids, deduped_uid_reasons, deduped_uid_sources = self._deduplicate_uids_by_ip(
+            miner_uids,
+            "synthetic miner filter",
+        )
+        self.synthetic_deduped_uid_reasons = deduped_uid_reasons
+        self.synthetic_deduped_uid_sources = deduped_uid_sources
+        return selected_uids
+
+    def _axon_ip_address(self, uid: int) -> str:
+        axon = self.metagraph.axons[uid]
+        ip_value = None
+        for attr in ("ip_str", "external_ip", "ip"):
+            candidate = getattr(axon, attr, None)
+            if callable(candidate):
+                try:
+                    candidate = candidate()
+                except Exception as e:
+                    logger.debug(f"Unable to resolve axon {attr}: {e}")
+                    candidate = None
+
+            if candidate is not None and candidate != "":
+                ip_value = candidate
+                break
+
+        if ip_value is None:
+            return ""
+        if isinstance(ip_value, int):
+            try:
+                return str(ipaddress.ip_address(ip_value))
+            except ValueError:
+                return str(ip_value)
+
+        ip_text = str(ip_value).strip()
+        if ip_text.startswith("/ipv"):
+            parts = ip_text.split("/", 2)
+            if len(parts) == 3:
+                ip_text = parts[2]
+
+        if ip_text.startswith("["):
+            closing_bracket = ip_text.find("]")
+            if closing_bracket != -1:
+                return ip_text[1:closing_bracket]
+
+        try:
+            return str(ipaddress.ip_address(ip_text))
+        except ValueError:
+            host, separator, port = ip_text.rpartition(":")
+            if separator and port.isdigit():
+                return host
+            return ip_text
+
+    def _uid_coldkey(self, uid: int) -> str:
+        coldkey = ""
+        coldkeys = getattr(self.metagraph, "coldkeys", [])
+
+        try:
+            if uid < len(coldkeys):
+                coldkey = coldkeys[uid]
+        except Exception as e:
+            logger.debug(f"Unable to resolve metagraph coldkey for UID {uid}: {e}")
+
+        if not coldkey:
+            try:
+                coldkey = getattr(self.metagraph.axons[uid], "coldkey", "")
+            except Exception as e:
+                logger.debug(f"Unable to resolve axon coldkey for UID {uid}: {e}")
+                coldkey = ""
+
+        return str(coldkey or "").strip()
+
+    def _deduplication_reason(self, uid: int, key_type: str, key_value: str, existing_uid: int) -> str:
+        return (
+            f"MINER FAILURE: UID {uid} assigned score 0 because it was removed "
+            f"by synthetic miner deduplication; duplicate {key_type} {key_value} "
+            f"already used by UID {existing_uid}"
+        )
+
+    def _deduplicate_uids_by_ip(self, uids: list[int], context: str) -> tuple[list[int], dict[int, str], dict[int, int]]:
+        seen_ips: dict[str, int] = {}
+        seen_coldkeys: dict[str, int] = {}
+        deduped_uid_reasons: dict[int, str] = {}
+        deduped_uid_sources: dict[int, int] = {}
+        selected = []
+
+        for uid in uids:
+            ip_address = self._axon_ip_address(uid)
+            if ip_address and ip_address in seen_ips:
+                existing_uid = seen_ips[ip_address]
+                logger.warning(
+                    f"Skipping UID {uid} during {context}: duplicate IP {ip_address} "
+                    f"already used by UID {existing_uid}"
+                )
+                deduped_uid_reasons[uid] = self._deduplication_reason(
+                    uid, "IP", ip_address, existing_uid
+                )
+                deduped_uid_sources[uid] = existing_uid
+                continue
+
+            coldkey = self._uid_coldkey(uid)
+            if coldkey and coldkey in seen_coldkeys:
+                existing_uid = seen_coldkeys[coldkey]
+                logger.warning(
+                    f"Skipping UID {uid} during {context}: duplicate coldkey {coldkey} "
+                    f"already used by UID {existing_uid}"
+                )
+                deduped_uid_reasons[uid] = self._deduplication_reason(
+                    uid, "coldkey", coldkey, existing_uid
+                )
+                deduped_uid_sources[uid] = existing_uid
+                continue
+
+            if ip_address:
+                seen_ips[ip_address] = uid
+            if coldkey:
+                seen_coldkeys[coldkey] = uid
+            selected.append(uid)
+
+        removed = len(uids) - len(selected)
+        if removed:
+            logger.info(f"Removed {removed} duplicate-IP/coldkey UIDs during {context}")
+
+        return selected, deduped_uid_reasons, deduped_uid_sources
+
+    async def score_deduplicated_synthetic_miners(
+        self,
+        deduped_uid_reasons: dict[int, str],
+        deduped_uid_sources: dict[int, int],
+        selected_task_types: dict[int, str],
+    ) -> None:
+        if not deduped_uid_reasons:
+            return
+
+        task_lookup_uids = list({*deduped_uid_reasons.keys(), *deduped_uid_sources.values()})
+        db_task_types = self.miner_manager.get_miner_processing_task_types(task_lookup_uids)
+        grouped_uids: dict[str, list[int]] = {"upscaling": [], "compression": []}
+
+        for uid in deduped_uid_reasons:
+            source_uid = deduped_uid_sources.get(uid)
+            task_type = (
+                db_task_types.get(uid)
+                or selected_task_types.get(source_uid)
+                or db_task_types.get(source_uid)
+                or "upscaling"
+            )
+            if task_type not in grouped_uids:
+                logger.warning(
+                    f"UID {uid} deduplicated with unknown task_type={task_type}; "
+                    "recording zero score as upscaling"
+                )
+                task_type = "upscaling"
+            grouped_uids[task_type].append(uid)
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+
+        for task_type, task_uids in grouped_uids.items():
+            if not task_uids:
+                continue
+
+            score_uids = [
+                uid
+                for uid in task_uids
+                for _query_idx in range(SYNTHETIC_QUERIES_PER_MINER)
+            ]
+            duplicate_reasons = {
+                idx: deduped_uid_reasons[uid]
+                for idx, uid in enumerate(score_uids)
+            }
+            round_id = f"deduplicated_{task_type}_{uuid.uuid4()}"
+            empty_urls = [""] * len(score_uids)
+            video_ids = [
+                f"deduplicated_uid_{uid}_query_{query_idx}"
+                for uid in task_uids
+                for query_idx in range(SYNTHETIC_QUERIES_PER_MINER)
+            ]
+
+            logger.info(
+                f"Recording {len(score_uids)} score-0 rows for "
+                f"{len(task_uids)} deduplicated synthetic {task_type} miners"
+            )
+
+            if task_type == "compression":
+                await self.score_compressions(
+                    score_uids,
+                    [],
+                    [None] * len(score_uids),
+                    empty_urls,
+                    empty_urls,
+                    timestamp,
+                    video_ids,
+                    empty_urls,
+                    [0.0] * len(score_uids),
+                    target_codec="deduplicated",
+                    codec_mode="deduplicated",
+                    target_bitrate=0.0,
+                    round_id=round_id,
+                    distorted_urls=empty_urls,
+                    duplicate_url_reasons=duplicate_reasons,
+                )
+            else:
+                await self.score_upscalings(
+                    score_uids,
+                    [],
+                    empty_urls,
+                    empty_urls,
+                    timestamp,
+                    video_ids,
+                    empty_urls,
+                    [0] * len(score_uids),
+                    ["deduplicated"] * len(score_uids),
+                    round_id,
+                    distorted_urls=empty_urls,
+                    duplicate_url_reasons=duplicate_reasons,
+                )
 
     async def should_process_organic_upscaling(self):
         """Check if organic upscaling tasks should be processed."""
@@ -1355,24 +2591,40 @@ class Validator(base.BaseValidator):
         organic_start_time = time.time() 
 
         needed = min(CONFIG.bandwidth.requests_per_organic_interval, num_organic_chunks)
-        
-        logger.info(f"☘️ | UPSCALING | Start processing organic upscaling query. need {needed} miners ☘️")
+        batch_size = ORGANIC_QUERIES_PER_MINER
+        miner_count_needed = (needed + batch_size - 1) // batch_size
 
-        forward_uids = get_organic_forward_uids(self, needed, "upscaling", CONFIG.bandwidth.min_stake)
+        logger.info(
+            f"☘️ | UPSCALING | Start processing {needed} organic chunks "
+            f"with up to {batch_size} chunks per miner ☘️"
+        )
 
-        if len(forward_uids) < needed:
-            logger.info(f"There are just {len(forward_uids)} miners available for organic upscaling, handling {len(forward_uids)} chunks")
-            needed = len(forward_uids)
+        forward_uids = get_organic_forward_uids(self, miner_count_needed, "upscaling", CONFIG.bandwidth.min_stake)
 
-        axon_list = [self.metagraph.axons[uid] for uid in forward_uids]
+        if len(forward_uids) < miner_count_needed:
+            needed = min(needed, len(forward_uids) * batch_size)
+            logger.info(
+                f"There are just {len(forward_uids)} miners available for organic upscaling, "
+                f"handling {needed} chunks"
+            )
 
-        task_ids, original_urls, task_types, synapses = await self.challenge_synthesizer.build_organic_upscaling_protocol(needed)
+        if needed <= 0 or len(forward_uids) == 0:
+            logger.warning("No available miners for organic upscaling")
+            return
 
-        if len(task_ids) != needed or len(synapses) != needed:
+        task_ids, original_urls, task_types, synapses = await self.challenge_synthesizer.build_organic_upscaling_protocol(
+            needed, bundle_size=batch_size
+        )
+
+        if len(task_ids) != needed or len(synapses) > len(forward_uids):
             logger.error(
-                f"Mismatch in organic upscaling synapses after building organic protocol: {len(task_ids)} != {needed} or {len(synapses)} != {needed}"
+                f"Mismatch in organic upscaling synapses after building organic protocol: "
+                f"task_ids={len(task_ids)}, needed={needed}, synapses={len(synapses)}, uids={len(forward_uids)}"
             )
             return
+
+        forward_uids = forward_uids[:len(synapses)]
+        axon_list = [self.metagraph.axons[uid] for uid in forward_uids]
 
         logger.info("Updating task status to 'processing' for upscaling")
         for task_id, original_url in zip(task_ids, original_urls):
@@ -1388,7 +2640,14 @@ class Validator(base.BaseValidator):
         raw_responses = await asyncio.gather(*forward_tasks)
         responses = [response['result'] for response in raw_responses]
 
-        processed_urls = [response.miner_response.optimized_video_url for response in responses]
+        flat_uids = []
+        processed_urls = []
+        for batch_idx, response in enumerate(responses):
+            query_count = len(synapses[batch_idx].miner_payload.reference_video_urls)
+            response_urls = self._response_video_urls(response, query_count)
+            for processed_url in response_urls:
+                flat_uids.append(int(forward_uids[batch_idx]))
+                processed_urls.append(processed_url)
 
         logger.info(f"Processing organic upscaling chunks with uids: {forward_uids.tolist()}")
         logger.info("Updating task status to 'completed' and pushing results for upscaling")
@@ -1396,7 +2655,16 @@ class Validator(base.BaseValidator):
             await self.update_task_status(task_id, original_url, "completed")
             await self.push_result(task_id, original_url, processed_url)
 
-        asyncio.create_task(self.score_organics_upscaling(forward_uids.tolist(), responses, original_urls, task_types, timestamp))
+        asyncio.create_task(
+            self.score_organics_upscaling(
+                flat_uids,
+                [],
+                original_urls,
+                task_types,
+                timestamp,
+                distorted_urls=processed_urls,
+            )
+        )
 
         end_time = time.time()
         total_time = end_time - organic_start_time
@@ -1407,24 +2675,48 @@ class Validator(base.BaseValidator):
         organic_start_time = time.time() 
 
         needed = min(CONFIG.bandwidth.requests_per_organic_interval, num_organic_chunks)
-        
-        logger.info(f"☘️ | COMPRESSION | Start processing organic compression query. need {needed} miners ☘️")
+        batch_size = ORGANIC_QUERIES_PER_MINER
+        miner_count_needed = (needed + batch_size - 1) // batch_size
 
-        forward_uids = get_organic_forward_uids(self, needed, "compression", CONFIG.bandwidth.min_stake)
+        logger.info(
+            f"☘️ | COMPRESSION | Start processing {needed} organic chunks "
+            f"with up to {batch_size} chunks per miner ☘️"
+        )
 
-        if len(forward_uids) < needed:
-            logger.info(f"There are just {len(forward_uids)} miners available for organic compression, handling {len(forward_uids)} chunks")
-            needed = len(forward_uids)
+        forward_uids = get_organic_forward_uids(self, miner_count_needed, "compression", CONFIG.bandwidth.min_stake)
 
-        axon_list = [self.metagraph.axons[uid] for uid in forward_uids]
+        if len(forward_uids) < miner_count_needed:
+            needed = min(needed, len(forward_uids) * batch_size)
+            logger.info(
+                f"There are just {len(forward_uids)} miners available for organic compression, "
+                f"handling {needed} chunks"
+            )
 
-        task_ids, original_urls, vmaf_thresholds, synapses = await self.challenge_synthesizer.build_organic_compression_protocol(needed)
+        if needed <= 0 or len(forward_uids) == 0:
+            logger.warning("No available miners for organic compression")
+            return
 
-        if len(task_ids) != needed or len(synapses) != needed:
+        (
+            task_ids,
+            original_urls,
+            vmaf_thresholds,
+            target_codecs,
+            codec_modes,
+            target_bitrates,
+            synapses,
+        ) = await self.challenge_synthesizer.build_organic_compression_protocol(
+            needed, bundle_size=batch_size
+        )
+
+        if len(task_ids) != needed or len(synapses) > len(forward_uids):
             logger.error(
-                f"Mismatch in organic compression synapses after building organic protocol: {len(task_ids)} != {needed} or {len(synapses)} != {needed}"
+                f"Mismatch in organic compression synapses after building organic protocol: "
+                f"task_ids={len(task_ids)}, needed={needed}, synapses={len(synapses)}, uids={len(forward_uids)}"
             )
             return
+
+        forward_uids = forward_uids[:len(synapses)]
+        axon_list = [self.metagraph.axons[uid] for uid in forward_uids]
 
         logger.info(f"Processing organic compression chunks with uids: {forward_uids.tolist()}")
         logger.info("Updating task status to 'processing' for compression")
@@ -1442,19 +2734,33 @@ class Validator(base.BaseValidator):
         raw_responses = await asyncio.gather(*forward_tasks)
         responses = [response['result'] for response in raw_responses]
 
-        processed_urls = [response.miner_response.optimized_video_url for response in responses]
-
-        # Extract compression parameters from synapses
-        target_codecs = [synapse.miner_payload.target_codec for synapse in synapses]
-        codec_modes = [synapse.miner_payload.codec_mode for synapse in synapses]
-        target_bitrates = [synapse.miner_payload.target_bitrate for synapse in synapses]
+        flat_uids = []
+        processed_urls = []
+        for batch_idx, response in enumerate(responses):
+            query_count = len(synapses[batch_idx].miner_payload.reference_video_urls)
+            response_urls = self._response_video_urls(response, query_count)
+            for processed_url in response_urls:
+                flat_uids.append(int(forward_uids[batch_idx]))
+                processed_urls.append(processed_url)
 
         logger.info("Updating task status to 'completed' and pushing results for compression")
         for task_id, original_url, processed_url in zip(task_ids, original_urls, processed_urls):
             await self.update_task_status(task_id, original_url, "completed")
             await self.push_result(task_id, original_url, processed_url)
 
-        asyncio.create_task(self.score_organics_compression(forward_uids.tolist(), responses, original_urls, vmaf_thresholds, target_codecs, codec_modes, target_bitrates, timestamp))
+        asyncio.create_task(
+            self.score_organics_compression(
+                flat_uids,
+                [],
+                original_urls,
+                vmaf_thresholds,
+                target_codecs,
+                codec_modes,
+                target_bitrates,
+                timestamp,
+                distorted_urls=processed_urls,
+            )
+        )
 
         end_time = time.time()
         total_time = end_time - organic_start_time
@@ -1554,32 +2860,42 @@ class WeightSynthesizer:
                     await self.validator.set_weights()
             except Exception as e:
                 logger.error(f"Error in WeightSynthesizer: {e}", exc_info=True)
-            await asyncio.sleep(1200)  
+            await asyncio.sleep(60 * 72) # 72 minutes  
 
 
 if __name__ == "__main__":
     validator = Validator()
-    weight_synthesizer = WeightSynthesizer(validator)
-    dev_mode = os.getenv("DEV_MODE", "False").lower() == "true"
-    time.sleep(10 if dev_mode else 1300) # wait till the video scheduler is ready
-
-    set_scheduler_ready(validator.redis_conn, False)
-    logger.info("Set scheduler readiness flag to False")
 
     async def main():
-        validator_synthetic_task = asyncio.create_task(validator.run_synthetic())
-        validator_organic_task = asyncio.create_task(validator.run_organic())
-        weight_setter = asyncio.create_task(weight_synthesizer.run())
-        wandb_maintenance_task = asyncio.create_task(
-            validator.wandb_manager.run_maintenance()
-        )
+        try:
+            if validator.validator_mode is ValidatorMode.COMPETITION:
+                if not validator.competition_manager.enabled:
+                    logger.warning(
+                        "Competition process is idle because "
+                        "COMPETITION_MODE_ENABLED=false"
+                    )
+                    competition_task = asyncio.Event().wait()
+                else:
+                    competition_task = validator.run_competition()
+                await asyncio.gather(
+                    competition_task,
+                    validator.wandb_manager.run_maintenance(),
+                )
+                return
 
-        await asyncio.gather(
-            validator_synthetic_task,
-            validator_organic_task,
-            weight_setter,
-            wandb_maintenance_task,
-        )
+            weight_synthesizer = WeightSynthesizer(validator)
+            dev_mode = os.getenv("DEV_MODE", "False").lower() == "true"
+            await asyncio.sleep(10 if dev_mode else 1300)
+            set_scheduler_ready(validator.redis_conn, False)
+            logger.info("Set scheduler readiness flag to False")
+            await asyncio.gather(
+                validator.run_synthetic(),
+                validator.run_organic(),
+                weight_synthesizer.run(),
+                validator.wandb_manager.run_maintenance(),
+            )
+        finally:
+            await validator.close()
 
     try:
         asyncio.run(main())
@@ -1588,4 +2904,5 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Unhandled exception: {e}", exc_info=True)
     finally:
-        validator.wandb_manager.finish()
+        if validator.wandb_manager is not None:
+            validator.wandb_manager.finish()

@@ -1,0 +1,9 @@
+{
+  "competition_type": "COMPRESSION",
+  "entrypoint": "miner/modal_workers.py",
+  "local_path_io": true,
+  "preflight": "miner/common_preflight.py",
+  "routes": ["/health", "/compress"],
+  "schema_version": 2,
+  "sdk": "miner/competition_sdk.py"
+}

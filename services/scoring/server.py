@@ -1,6 +1,7 @@
 import os
 import cv2
 import glob
+import hashlib
 import json
 import time
 import torch
@@ -11,8 +12,10 @@ from loguru import logger
 import tempfile
 import subprocess
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 from pydantic import BaseModel
 from typing import Optional, List
+from collections import defaultdict
 from firerequests import FireRequests
 from vidaio_subnet_core import CONFIG
 from torchvision.models import resnet50
@@ -22,18 +25,39 @@ from pieapp_metric import calculate_pieapp_score
 from vidaio_subnet_core.utilities.storage_client import storage_client
 from vmaf_metric import calculate_vmaf, convert_mp4_to_y4m, trim_video, trim_video_select, vmaf_metric_ffmpeg, is_vmaf_ffmpeg_available
 from services.video_scheduler.video_utils import get_trim_video_path, delete_videos_with_fileid
-from scoring_function import calculate_compression_score
+from services.scoring.scoring_function import calculate_compression_score
 from upscaling_scoring import (
     calculate_final_score,
     calculate_length_score,
     calculate_preliminary_score,
     calculate_quality_score,
 )
+from vidaio_subnet_core.competition.dataset import DatasetError, ModalVolumeStore
+from vidaio_subnet_core.competition.media_contracts import CompetitionScoringMedia
+from vidaio_subnet_core.competition.scoring import (
+    CompetitionItemScorer,
+    ItemScoringError,
+    compute_aggregates,
+)
+from vidaio_subnet_core.competition.scoring_api import (
+    CompetitionAggregatePayload,
+    CompetitionAggregateRequest,
+    CompetitionAggregateResponse,
+    CompetitionHistoryComponent,
+    CompetitionScoredItemPayload,
+    CompetitionScoringBatchRequest,
+    CompetitionScoringBatchResponse,
+    CompetitionScoringBatchResult,
+)
 
 # Compression scoring constants
 COMPRESSION_RATE_WEIGHT = 0.7  # w_c
 COMPRESSION_VMAF_WEIGHT = 0.3  # w_vmaf
 SOFT_THRESHOLD_MARGIN = 5.0  # Margin below VMAF threshold for soft scoring zone
+MAX_VMAF_MODEL_DELTA = 3.0
+TONE_CHECK_SAMPLE_COUNT = 5
+TONE_CHECK_EXTRACTION_TIMEOUT = 6.5
+_TONE_SAMPLE_SALT = os.urandom(16)
 
 FRAME_TOLERANCE = 5  # Tolerance in frames for fast ffprobe frame count read
 UPSCALING_FILE_SIZE_MULTIPLIERS = {
@@ -57,6 +81,147 @@ ORGANIC_PROXY_API_KEY = os.getenv("ORGANIC_PROXY_API_KEY", "")
 
 # Check if vmaf_ffmpeg Docker image with libvmaf_cuda is available
 VMAF_FFMPEG_AVAILABLE = is_vmaf_ffmpeg_available()
+
+import numpy as np
+from PIL import Image
+
+
+def detect_tone_manipulation(ref_png, dist_png):
+    """Detect affine, nonlinear, local, and chroma tone manipulation on one frame."""
+    size = (320, 180)
+    with Image.open(ref_png) as ref_img, Image.open(dist_png) as dist_img:
+        ref_rgb = np.asarray(ref_img.convert("RGB").resize(size, Image.BILINEAR), float)
+        dist_rgb = np.asarray(dist_img.convert("RGB").resize(size, Image.BILINEAR), float)
+
+    # Match PIL's grayscale conversion closely while retaining color for the
+    # chroma checks below. Inputs are already small, so this analysis is cheap.
+    ref_y = 0.299 * ref_rgb[..., 0] + 0.587 * ref_rgb[..., 1] + 0.114 * ref_rgb[..., 2]
+    dist_y = 0.299 * dist_rgb[..., 0] + 0.587 * dist_rgb[..., 1] + 0.114 * dist_rgb[..., 2]
+    r = ref_y.ravel()
+    d = dist_y.ravel()
+
+    # Drop near-clipped codes where the relationship saturates and biases slope.
+    m = (r > 6) & (r < 249)
+    if m.sum() < 500 or r[m].std() < 1.0:
+        return {
+            "slope": 1.0,
+            "offset": 0.0,
+            "detected": False,
+            "severity": "unknown",
+            "reason": "too little usable signal",
+            "reliable": False,
+        }
+
+    rm, dm = r[m], d[m]
+    corr = float(np.corrcoef(rm, dm)[0, 1])
+    slope, offset = (float(v) for v in np.polyfit(rm, dm, 1))
+
+    # Low correlation or implausible slope means mismatched frames, not a tone transform.
+    if corr < 0.9 or not (0.5 < slope < 1.6):
+        return {
+            "slope": round(slope, 4),
+            "offset": round(offset, 2),
+            "detected": False,
+            "severity": "unreliable",
+            "reason": f"frames don't correspond (corr={corr:.2f}, slope={slope:.3f})",
+            "reliable": False,
+        }
+
+    dev = abs(slope - 1.0)
+
+    # A global fit can hide an S-curve whose positive and negative changes
+    # cancel. Measure the median residual in luminance bins, including the
+    # shadows/highlights excluded from the affine fit.
+    predicted_y = slope * r + offset
+    bin_residuals = []
+    raw_bin_deltas = []
+    for low in range(0, 256, 16):
+        bin_mask = (r >= low) & (r < low + 16)
+        if bin_mask.sum() >= 100:
+            bin_residuals.append(float(np.median(d[bin_mask] - predicted_y[bin_mask])))
+            raw_bin_deltas.append(float(np.median(d[bin_mask] - r[bin_mask])))
+    max_nonlinear_delta = max((abs(value) for value in bin_residuals), default=0.0)
+    max_tone_curve_delta = max((abs(value) for value in raw_bin_deltas), default=0.0)
+
+    # Detect spatially selective adjustments that disappear in the whole-frame
+    # regression. Requiring two affected tiles filters isolated codec errors.
+    local_alerts = 0
+    global_residual = dist_y - (slope * ref_y + offset)
+    for tile_y in np.array_split(global_residual, 4, axis=0):
+        for tile in np.array_split(tile_y, 4, axis=1):
+            if abs(float(np.median(tile))) >= 2.0:
+                local_alerts += 1
+
+    # Compare chroma vectors directly. This catches saturation and hue changes
+    # that preserve grayscale luminance and therefore evade the slope check.
+    def chroma_vectors(rgb):
+        y = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
+        cb = (rgb[..., 2] - y) * 0.564
+        cr = (rgb[..., 0] - y) * 0.713
+        return cb.ravel(), cr.ravel()
+
+    ref_cb, ref_cr = chroma_vectors(ref_rgb)
+    dist_cb, dist_cr = chroma_vectors(dist_rgb)
+    ref_energy = float(np.mean(ref_cb**2 + ref_cr**2))
+    dist_energy = float(np.mean(dist_cb**2 + dist_cr**2))
+    saturation_ratio = (dist_energy / ref_energy) ** 0.5 if ref_energy >= 4.0 else 1.0
+    dot = float(np.sum(ref_cb * dist_cb + ref_cr * dist_cr))
+    cross = float(np.sum(ref_cb * dist_cr - ref_cr * dist_cb))
+    hue_shift_degrees = float(np.degrees(np.arctan2(cross, dot))) if ref_energy >= 4.0 else 0.0
+    chroma_mean_shift = float(np.hypot(np.mean(dist_cb - ref_cb), np.mean(dist_cr - ref_cr)))
+
+    affine_alert = dev >= 0.012 or abs(offset) >= 2.0
+    # These are per-frame candidate thresholds. The batch aggregator requires
+    # the signal on at least two frames unless it is twice as strong, which
+    # keeps ordinary codec noise from becoming a rejection.
+    nonlinear_alert = max_nonlinear_delta >= 1.0 or max_tone_curve_delta >= 2.0
+    local_alert = local_alerts >= 2
+    chroma_alert = (
+        abs(saturation_ratio - 1.0) >= 0.08
+        or abs(hue_shift_degrees) >= 2.0
+        or chroma_mean_shift >= 2.0
+    )
+    detected = affine_alert or nonlinear_alert or local_alert or chroma_alert
+
+    signals = []
+    if affine_alert:
+        signals.append(f"affine={slope:.3f}*ref{offset:+.1f}")
+    if nonlinear_alert:
+        signals.append(f"nonlinear_delta={max_nonlinear_delta:.2f}")
+    if local_alert:
+        signals.append(f"local_tiles={local_alerts}/16")
+    if chroma_alert:
+        signals.append(
+            f"chroma(sat={saturation_ratio:.3f}, hue={hue_shift_degrees:+.2f}deg, "
+            f"mean_shift={chroma_mean_shift:.2f})"
+        )
+
+    if detected:
+        sev = "alert"
+        reason = "tone manipulation signals: " + ", ".join(signals)
+    elif dev >= 0.005 or abs(offset) >= 1.0:
+        sev = "info"
+        reason = f"mild levels shift: {slope:.3f}*ref {offset:+.1f}"
+    else:
+        sev = "good"
+        reason = f"levels preserved: {slope:.3f}*ref {offset:+.1f}"
+
+    return {
+        "slope": round(slope, 4),
+        "offset": round(offset, 2),
+        "detected": detected,
+        "severity": sev,
+        "reason": reason,
+        "reliable": True,
+        "correlation": round(corr, 4),
+        "nonlinear_delta": round(max_nonlinear_delta, 2),
+        "tone_curve_delta": round(max_tone_curve_delta, 2),
+        "local_alert_tiles": local_alerts,
+        "saturation_ratio": round(saturation_ratio, 4),
+        "hue_shift_degrees": round(hue_shift_degrees, 2),
+        "chroma_mean_shift": round(chroma_mean_shift, 2),
+    }
+
 
 def validate_upscaling_file_size(reference_path, distorted_path, scale_factor):
     """Validate that an upscaled video stays within the allowed file size."""
@@ -95,6 +260,7 @@ class CompressionScoringRequest(BaseModel):
     Request model for compression scoring. Contains paths for distorted videos and the reference video path.
     """
     distorted_file_paths: List[Optional[str]]
+    distorted_urls: Optional[List[str]] = None
     reference_paths: List[str]
     uids: List[int]
     video_ids: List[str]
@@ -154,6 +320,7 @@ class CompressionScoringResponse(BaseModel):
     Response model for compression scoring. Contains the list of calculated scores for each distorted video.
     """
     vmaf_scores: List[float]
+    base_vmaf_scores: Optional[List[Optional[float]]] = None
     compression_rates: List[float]
     final_scores: List[float]
     reasons: List[str]
@@ -174,9 +341,147 @@ class OrganicsCompressionScoringResponse(BaseModel):
     Response model for organics scoring. Contains the list of calculated scores for each distorted video.
     """
     vmaf_scores: List[float]
+    base_vmaf_scores: Optional[List[Optional[float]]] = None
     compression_rates: List[float]
     final_scores: List[float]
     reasons: List[str]
+
+
+@app.post(
+    "/score_compression_competition",
+    response_model=CompetitionScoringBatchResponse,
+)
+async def score_compression_competition(
+    request: CompetitionScoringBatchRequest,
+) -> CompetitionScoringBatchResponse:
+    """Read and score one trusted competition batch outside the validator."""
+
+    logger.info(
+        "Starting competition compression scoring batch: competition_id={} "
+        "items={} output_volume={}",
+        request.manifest.competition_id,
+        [value.item.evaluation_id for value in request.items],
+        request.output_volume_name,
+    )
+    store = ModalVolumeStore(environment_name=request.modal_environment)
+    scorer = CompetitionItemScorer()
+    results = []
+    for batch_item in request.items:
+        evaluation_id = batch_item.item.evaluation_id
+        try:
+            source_bytes, output_bytes = await asyncio.gather(
+                asyncio.to_thread(
+                    store.read_bytes,
+                    request.input_volume_name,
+                    batch_item.item.source_path,
+                ),
+                asyncio.to_thread(
+                    store.read_bytes,
+                    request.output_volume_name,
+                    batch_item.output_path,
+                ),
+            )
+            metrics = await asyncio.to_thread(
+                scorer.score_media,
+                request.manifest,
+                batch_item.item,
+                CompetitionScoringMedia.compression(source_bytes, output_bytes),
+                runtime_seconds=batch_item.runtime_seconds,
+                allocated_gpu_type=batch_item.allocated_gpu_type,
+                allocated_gpu_count=batch_item.allocated_gpu_count,
+                allocated_cpu_cores=batch_item.allocated_cpu_cores,
+            )
+            results.append(
+                CompetitionScoringBatchResult(
+                    evaluation_id=evaluation_id,
+                    status="SCORED",
+                    metrics=CompetitionScoredItemPayload.from_scored_item(metrics),
+                )
+            )
+        except DatasetError as exc:
+            logger.error(
+                "Competition scoring Volume read failed: competition_id={} "
+                "evaluation_id={} reason={}",
+                request.manifest.competition_id,
+                evaluation_id,
+                str(exc),
+            )
+            results.append(
+                CompetitionScoringBatchResult(
+                    evaluation_id=evaluation_id,
+                    status="FAILED",
+                    reason_code="VOLUME_READ_FAILED",
+                )
+            )
+        except ItemScoringError as exc:
+            results.append(
+                CompetitionScoringBatchResult(
+                    evaluation_id=evaluation_id,
+                    status="FAILED",
+                    reason_code=exc.reason_code,
+                    metrics=(
+                        CompetitionScoredItemPayload.from_scored_item(exc.metrics)
+                        if exc.metrics is not None
+                        else None
+                    ),
+                )
+            )
+        except Exception as exc:
+            logger.exception(
+                "Competition scoring infrastructure failure: competition_id={} "
+                "evaluation_id={} reason={}",
+                request.manifest.competition_id,
+                evaluation_id,
+                str(exc),
+            )
+            results.append(
+                CompetitionScoringBatchResult(
+                    evaluation_id=evaluation_id,
+                    status="FAILED",
+                    reason_code="EVALUATION_INFRASTRUCTURE_ERROR",
+                )
+            )
+
+    logger.info(
+        "Completed competition compression scoring batch: competition_id={} "
+        "statuses={}",
+        request.manifest.competition_id,
+        [value.status for value in results],
+    )
+    return CompetitionScoringBatchResponse(results=tuple(results))
+
+
+@app.post(
+    "/score_compression_competition_aggregates",
+    response_model=CompetitionAggregateResponse,
+)
+async def score_compression_competition_aggregates(
+    request: CompetitionAggregateRequest,
+) -> CompetitionAggregateResponse:
+    """Compute final contender and per-history components as one batch."""
+
+    aggregates, components = await asyncio.to_thread(
+        compute_aggregates,
+        request.manifest,
+        request.histories,
+    )
+    return CompetitionAggregateResponse(
+        aggregates=tuple(
+            CompetitionAggregatePayload.from_aggregate(value)
+            for value in aggregates
+        ),
+        components=tuple(
+            CompetitionHistoryComponent(
+                history_id=history_id,
+                media_score=values[0],
+                compression=values[1],
+                vmaf_quality=values[2],
+                cost_efficiency=values[3],
+                completion=values[4],
+            )
+            for history_id, values in sorted(components.items())
+        ),
+    )
 
 # Load pre-trained model for feature extraction
 def load_quality_model():
@@ -197,6 +502,269 @@ async def get_shared_session() -> aiohttp.ClientSession:
         connector = aiohttp.TCPConnector(limit=50)  # Adjust concurrency limit as needed
         _shared_session = aiohttp.ClientSession(timeout=timeout, connector=connector)
     return _shared_session
+
+def calculate_base_vmaf(
+    ref_y4m_path: str,
+    dist_y4m_path: str,
+    neg_model: bool = False,
+) -> Optional[float]:
+    """Calculate VMAF with GPU-accelerated libvmaf for Y4M inputs."""
+    model_label = "VMAF NEG v0.6.1" if neg_model else "VMAF v0.6.1"
+    try:
+        vmaf_score = vmaf_metric_ffmpeg(
+            dist_path=dist_y4m_path,
+            ref_path=ref_y4m_path,
+            neg_model=neg_model,
+        )
+        logger.info(
+            f"{model_label} score (Y4M, ffmpeg/docker): {vmaf_score}"
+        )
+        return vmaf_score
+    except Exception as vmaf_err:
+        logger.warning(
+            f"{model_label} calculation failed in Y4M ffmpeg/docker path; "
+            f"VMAF model delta check is unavailable: {vmaf_err}"
+        )
+        return None
+
+
+def _tone_sample_timestamps(
+    duration_seconds: Optional[float],
+    sample_key: Optional[str],
+    fallback_timestamp: float,
+    sample_count: int = TONE_CHECK_SAMPLE_COUNT,
+) -> List[float]:
+    """Choose unpredictable, repeatable, stratified timestamps for one source video."""
+    duration = float(duration_seconds or 0.0)
+    if duration <= 0.0 or sample_count <= 1:
+        return [max(0.0, float(fallback_timestamp or 0.0))]
+
+    # The process-local salt prevents miners from predicting the exact samples.
+    # sample_key keeps timestamps identical when different miners encode the
+    # same source on this scoring worker.
+    key = str(sample_key or f"duration:{duration:.6f}").encode("utf-8")
+    seed = int.from_bytes(hashlib.sha256(_TONE_SAMPLE_SALT + key).digest()[:8], "big")
+    rng = random.Random(seed)
+    latest_safe_timestamp = max(0.0, duration - (1.0 / 30.0))
+    timestamps = []
+    for index in range(sample_count):
+        # Keep away from exact stratum boundaries and randomly jitter within
+        # each fifth of the video.
+        fraction = (index + rng.uniform(0.15, 0.85)) / sample_count
+        timestamps.append(min(latest_safe_timestamp, fraction * duration))
+    return timestamps
+
+
+def _extract_tone_check_frames(
+    video_path: str,
+    timestamps_seconds: List[float],
+    output_paths: List[str],
+):
+    """Extract several random-access frames with one FFmpeg process."""
+    if len(timestamps_seconds) != len(output_paths) or not output_paths:
+        raise ValueError("tone-check timestamps and outputs must have the same non-zero length")
+
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+    ]
+    for timestamp_seconds in timestamps_seconds:
+        cmd.extend(["-ss", f"{timestamp_seconds:.6f}", "-i", video_path])
+    for input_index, output_path in enumerate(output_paths):
+        cmd.extend(
+            [
+                "-map",
+                f"{input_index}:v:0",
+                "-frames:v",
+                "1",
+                "-vf",
+                "scale=320:180:flags=bilinear",
+                "-compression_level",
+                "1",
+                output_path,
+            ]
+        )
+
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=TONE_CHECK_EXTRACTION_TIMEOUT,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "ffmpeg frame extraction failed")
+    missing_outputs = [
+        output_path
+        for output_path in output_paths
+        if not os.path.exists(output_path) or os.path.getsize(output_path) == 0
+    ]
+    if missing_outputs:
+        raise RuntimeError(f"ffmpeg did not produce {len(missing_outputs)} tone-check frame(s)")
+
+
+def _extract_tone_check_frame(video_path: str, timestamp_seconds: float, output_path: str):
+    """Backward-compatible single-frame wrapper."""
+    _extract_tone_check_frames(video_path, [timestamp_seconds], [output_path])
+
+
+def _aggregate_tone_results(frame_results: List[dict], timestamps: List[float]) -> dict:
+    """Combine frame evidence while resisting isolated codec artifacts."""
+    reliable_results = [result for result in frame_results if result.get("reliable") is True]
+    unreliable_count = len(frame_results) - len(reliable_results)
+    alert_results = [result for result in reliable_results if result.get("detected") is True]
+
+    def is_strong_alert(result):
+        return (
+            abs(float(result.get("slope", 1.0)) - 1.0) >= 0.024
+            or abs(float(result.get("offset", 0.0))) >= 4.0
+            or float(result.get("nonlinear_delta", 0.0)) >= 3.0
+            or float(result.get("tone_curve_delta", 0.0)) >= 6.0
+            or int(result.get("local_alert_tiles", 0)) >= 4
+            or abs(float(result.get("saturation_ratio", 1.0)) - 1.0) >= 0.16
+            or abs(float(result.get("hue_shift_degrees", 0.0))) >= 4.0
+            or float(result.get("chroma_mean_shift", 0.0)) >= 4.0
+        )
+
+    strong_alerts = sum(is_strong_alert(result) for result in alert_results)
+    verification_failed = unreliable_count > len(frame_results) // 2
+    detected = len(alert_results) >= 2 or strong_alerts >= 1 or verification_failed
+
+    slopes = [float(result.get("slope", 1.0)) for result in reliable_results] or [1.0]
+    offsets = [float(result.get("offset", 0.0)) for result in reliable_results] or [0.0]
+    slope = float(np.median(slopes))
+    offset = float(np.median(offsets))
+    max_nonlinear_delta = max(
+        (float(result.get("nonlinear_delta", 0.0)) for result in reliable_results),
+        default=0.0,
+    )
+    max_tone_curve_delta = max(
+        (float(result.get("tone_curve_delta", 0.0)) for result in reliable_results),
+        default=0.0,
+    )
+    max_hue_shift = max(
+        (abs(float(result.get("hue_shift_degrees", 0.0))) for result in reliable_results),
+        default=0.0,
+    )
+    max_saturation_deviation = max(
+        (abs(float(result.get("saturation_ratio", 1.0)) - 1.0) for result in reliable_results),
+        default=0.0,
+    )
+
+    if verification_failed:
+        severity = "alert"
+        reason = (
+            f"tone verification unreliable on {unreliable_count}/{len(frame_results)} frames"
+        )
+    elif detected:
+        severity = "alert"
+        reason = (
+            f"tone manipulation detected on {len(alert_results)}/{len(frame_results)} frames; "
+            f"strong_alerts={strong_alerts}; max_nonlinear_delta={max_nonlinear_delta:.2f}; "
+            f"max_hue_shift={max_hue_shift:.2f}deg"
+        )
+    elif alert_results:
+        severity = "info"
+        reason = (
+            f"isolated tone signal on 1/{len(frame_results)} frames; "
+            f"median levels preserved: {slope:.3f}*ref {offset:+.1f}"
+        )
+    else:
+        severity = "good" if reliable_results else "unknown"
+        reason = (
+            f"levels preserved across {len(reliable_results)}/{len(frame_results)} frames: "
+            f"median {slope:.3f}*ref {offset:+.1f}"
+        )
+
+    return {
+        "slope": round(slope, 4),
+        "offset": round(offset, 2),
+        "detected": detected,
+        "severity": severity,
+        "reason": reason,
+        "sample_count": len(frame_results),
+        "reliable_samples": len(reliable_results),
+        "alert_samples": len(alert_results),
+        "strong_alerts": strong_alerts,
+        "max_nonlinear_delta": round(max_nonlinear_delta, 2),
+        "max_tone_curve_delta": round(max_tone_curve_delta, 2),
+        "max_hue_shift_degrees": round(max_hue_shift, 2),
+        "max_saturation_deviation": round(max_saturation_deviation, 4),
+        "timestamps": [round(timestamp, 3) for timestamp in timestamps],
+    }
+
+
+def check_tone_manipulation_for_compression(
+    ref_path: str,
+    dist_path: str,
+    timestamp_seconds: float,
+    uid: Optional[int] = None,
+    context: str = "compression",
+    duration_seconds: Optional[float] = None,
+    sample_key: Optional[str] = None,
+) -> Optional[dict]:
+    """Detect and log multi-frame tone/levels manipulation for compression scoring."""
+    uid_label = f" UID {uid}" if uid is not None else ""
+    check_started = time.monotonic()
+    try:
+        timestamp_seconds = max(0.0, float(timestamp_seconds or 0.0))
+        timestamps = _tone_sample_timestamps(
+            duration_seconds,
+            sample_key,
+            timestamp_seconds,
+        )
+        with tempfile.TemporaryDirectory(prefix="tone_check_") as temp_dir:
+            ref_pngs = [
+                os.path.join(temp_dir, f"ref_{index}.png")
+                for index in range(len(timestamps))
+            ]
+            dist_pngs = [
+                os.path.join(temp_dir, f"dist_{index}.png")
+                for index in range(len(timestamps))
+            ]
+
+            # Reference and distorted seeks are independent. Running the two
+            # batched commands concurrently keeps five-frame sampling near the
+            # latency of the previous two sequential single-frame commands.
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                ref_future = executor.submit(
+                    _extract_tone_check_frames,
+                    ref_path,
+                    timestamps,
+                    ref_pngs,
+                )
+                dist_future = executor.submit(
+                    _extract_tone_check_frames,
+                    dist_path,
+                    timestamps,
+                    dist_pngs,
+                )
+                ref_future.result()
+                dist_future.result()
+
+            frame_results = [
+                detect_tone_manipulation(ref_png, dist_png)
+                for ref_png, dist_png in zip(ref_pngs, dist_pngs)
+            ]
+            tone_result = _aggregate_tone_results(frame_results, timestamps)
+
+        elapsed = time.monotonic() - check_started
+        tone_result["elapsed_seconds"] = round(elapsed, 3)
+        logger.info(
+            f"Tone manipulation check{uid_label} [{context}] "
+            f"across {len(timestamps)} frames in {elapsed:.3f}s: {tone_result}"
+        )
+        return tone_result
+    except Exception as e:
+        elapsed = time.monotonic() - check_started
+        logger.warning(
+            f"Tone manipulation check failed{uid_label} "
+            f"[{context}] after {elapsed:.3f}s: {e}"
+        )
+        return None
+
 
 async def verify_organic_proxy_download(video_url: str, session: Optional[aiohttp.ClientSession] = None) -> bool:
     """Check whether the organic proxy can download a miner's output URL."""
@@ -231,7 +799,12 @@ async def verify_organic_proxy_download(video_url: str, session: Optional[aiohtt
 
         return downloadable
 
-async def download_video(video_url: str, verbose: bool, session: Optional[aiohttp.ClientSession] = None) -> tuple[str, float]:
+async def download_video(
+    video_url: str,
+    verbose: bool,
+    session: Optional[aiohttp.ClientSession] = None,
+    return_final_url: bool = False,
+) -> tuple[str, float] | tuple[str, float, str]:
     """
     Download a video from the given URL and save it to a temporary file.
     Supports retries, connection pooling, partial download resumes, and tuned timeouts.
@@ -255,6 +828,7 @@ async def download_video(video_url: str, verbose: bool, session: Optional[aiohtt
     start_time = time.time()  # Record start time
 
     dl_session = session or await get_shared_session()
+    final_url = video_url
 
     for attempt in range(max_retries + 1):
         try:
@@ -271,6 +845,7 @@ async def download_video(video_url: str, verbose: bool, session: Optional[aiohtt
                     logger.info(f"Downloading video from {video_url} to {file_path} (Attempt {attempt + 1}/{max_retries + 1})")
 
             async with dl_session.get(video_url, headers=headers) as response:
+                final_url = str(response.url)
                 if response.status == 416:  # Range Not Satisfiable
                     # The file might be fully downloaded already, or the server rejected the range.
                     # We truncate the file and retry from scratch to be safe.
@@ -298,6 +873,8 @@ async def download_video(video_url: str, verbose: bool, session: Optional[aiohtt
                 logger.info(f"File successfully downloaded to: {file_path}")
                 logger.info(f"Download time: {download_time:.2f} seconds")
 
+            if return_final_url:
+                return file_path, download_time, final_url
             return file_path, download_time
         except aiohttp.ServerTimeoutError:
             if attempt == max_retries:
@@ -323,6 +900,101 @@ async def download_video(video_url: str, verbose: bool, session: Optional[aiohtt
             if verbose:
                 logger.warning(f"Download failed: {str(e)}. Retrying {attempt + 1}/{max_retries}...")
             await asyncio.sleep(2 ** attempt)
+
+def _normalize_duplicate_url(url: Optional[str]) -> str:
+    return (url or "").strip()
+
+async def _resolve_final_url(video_url: str) -> str:
+    if not video_url or len(video_url) < 10:
+        return ""
+
+    timeout = aiohttp.ClientTimeout(sock_connect=10, total=30)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            try:
+                async with session.head(video_url, allow_redirects=True) as response:
+                    if response.status < 400:
+                        return str(response.url)
+            except Exception:
+                pass
+
+            async with session.get(
+                video_url,
+                allow_redirects=True,
+                headers={"Range": "bytes=0-0"},
+            ) as response:
+                if response.status < 400:
+                    return str(response.url)
+    except Exception as e:
+        logger.warning(f"Failed to resolve final URL for duplicate detection: {video_url} | {e}")
+
+    return video_url
+
+async def _resolve_final_urls(video_urls: List[str]) -> List[str]:
+    return await asyncio.gather(
+        *[_resolve_final_url(url) for url in video_urls],
+        return_exceptions=False,
+    )
+
+def _mark_duplicate_groups(
+    duplicate_reasons: dict[int, list[str]],
+    label: str,
+    values: List[object],
+    uids: List[int],
+) -> None:
+    groups = defaultdict(list)
+    for idx, value in enumerate(values):
+        if value in (None, ""):
+            continue
+        groups[value].append(idx)
+
+    for value, indices in groups.items():
+        if len(indices) <= 1:
+            continue
+        uid_list = [uids[idx] for idx in indices]
+        reason = (
+            f"duplicate miner response by {label}: {value} shared by "
+            f"indices={indices}, uids={uid_list}"
+        )
+        logger.warning(reason)
+        for idx in indices:
+            duplicate_reasons[idx].append(reason)
+
+def _duplicate_response_reasons(
+    uids: List[int],
+    submitted_urls: List[str],
+    downloaded_paths: List[Optional[str]],
+    final_urls: Optional[List[str]] = None,
+) -> dict[int, str]:
+    duplicate_reasons: dict[int, list[str]] = defaultdict(list)
+
+    _mark_duplicate_groups(
+        duplicate_reasons,
+        "submitted URL",
+        [_normalize_duplicate_url(url) for url in submitted_urls],
+        uids,
+    )
+
+    if final_urls is not None:
+        _mark_duplicate_groups(
+            duplicate_reasons,
+            "redirected URL",
+            [_normalize_duplicate_url(url) for url in final_urls],
+            uids,
+        )
+
+    file_sizes = []
+    for path in downloaded_paths:
+        if path and os.path.exists(path):
+            file_sizes.append(os.path.getsize(path))
+        else:
+            file_sizes.append(None)
+    _mark_duplicate_groups(duplicate_reasons, "downloaded file size", file_sizes, uids)
+
+    return {
+        idx: "MINER FAILURE: " + " | ".join(reasons)
+        for idx, reasons in duplicate_reasons.items()
+    }
 
 # Function to get ClipIQA+ score programmatically
 def get_clipiqa_score(video_path, num_frames=3):
@@ -1364,8 +2036,8 @@ def validate_dist_encoding_settings(dist_path: str, ref_path: str, task: str, ta
         if task == "compression":
             if detected_codec_family != expected_codec_family:
                 errors.append(f"Codec must be {expected_codec_family} (got {codec} which normalizes to {detected_codec_family})")
-        elif task == "upscaling" and detected_codec_family != "hevc":
-            errors.append(f"Codec must be hevc for upscaling, got {codec}")
+        elif task == "upscaling" and detected_codec_family not in ["hevc", "av1"]:
+            errors.append(f"Codec must be hevc or av1 for upscaling, got {codec}")
         if "ivf" in container.lower():
             errors.append("Container must be MP4, got IVF (incompatible for concatenation)")
         if container not in ["mov,mp4,m4a,3gp,3g2,mj2", "mp4", "isom"]:
@@ -1692,6 +2364,54 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             detail="Number of payload URLs must match number of distorted URLs"
         )
 
+    semaphore = asyncio.Semaphore(15)
+
+    async def _download_distorted_for_duplicate_check(idx: int, uid: int, dist_url: str):
+        if not dist_url or len(dist_url) < 10:
+            return {"path": None, "final_url": dist_url, "error": "invalid or missing distorted video URL"}
+        async with semaphore:
+            try:
+                path, download_time, final_url = await download_video(
+                    dist_url,
+                    request.verbose,
+                    return_final_url=True,
+                )
+                logger.info(
+                    f"UID {uid}: downloaded distorted video for duplicate check "
+                    f"in {download_time:.2f}s | final_url={final_url}"
+                )
+                return {"path": path, "final_url": final_url, "error": None}
+            except Exception as e:
+                return {"path": None, "final_url": dist_url, "error": str(e)}
+
+    download_tasks = [
+        asyncio.create_task(_download_distorted_for_duplicate_check(idx, uid, dist_url))
+        for idx, (uid, dist_url) in enumerate(zip(request.uids, request.distorted_urls))
+    ]
+    download_results = await asyncio.gather(*download_tasks, return_exceptions=True)
+    distorted_download_paths = []
+    final_distorted_urls = []
+    distorted_download_errors = {}
+
+    for idx, result in enumerate(download_results):
+        if isinstance(result, Exception):
+            distorted_download_paths.append(None)
+            final_distorted_urls.append(request.distorted_urls[idx])
+            distorted_download_errors[idx] = str(result)
+            continue
+
+        distorted_download_paths.append(result["path"])
+        final_distorted_urls.append(result["final_url"])
+        if result["error"]:
+            distorted_download_errors[idx] = result["error"]
+
+    duplicate_reasons = _duplicate_response_reasons(
+        request.uids,
+        request.distorted_urls,
+        distorted_download_paths,
+        final_distorted_urls,
+    )
+
     for idx, (ref_path, dist_url, payload_url, uid, video_id, uploaded_object_name, content_length, task_type) in enumerate(zip(
         request.reference_paths, 
         request.distorted_urls, 
@@ -1708,8 +2428,30 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
             uid_start_time = time.time()  # Start time for this UID
 
             ref_y4m_path = None
-            dist_path = None
+            dist_path = distorted_download_paths[idx] if idx < len(distorted_download_paths) else None
             payload_path = None
+
+            if idx in duplicate_reasons:
+                reason = duplicate_reasons[idx]
+                logger.error(f"UID {uid}: {reason}. Assigning score of 0.")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(0.0)
+                reasons.append(reason)
+                continue
+
+            if idx in distorted_download_errors:
+                error_msg = f"Failed to download distorted video from {dist_url}: {distorted_download_errors[idx]}"
+                logger.error(f"{error_msg}. Assigning score of 0.")
+                vmaf_scores.append(0.0)
+                pieapp_scores.append(0.0)
+                quality_scores.append(0.0)
+                length_scores.append(0.0)
+                final_scores.append(0.0)
+                reasons.append(error_msg)
+                continue
 
             scale_factor = 2
             if task_type == "SD24K":
@@ -1735,19 +2477,6 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 length_scores.append(0.0)
                 final_scores.append(-100)
                 reasons.append(f"error opening reference video file: {ref_path} (exists: {file_exists}, size: {file_size})")
-                continue
-            
-            try:
-                dist_path, download_time = await download_video(dist_url, request.verbose)
-            except Exception as e:
-                error_msg = f"Failed to download distorted video from {dist_url}: {str(e)}"
-                logger.error(f"{error_msg}. Assigning score of 0.")
-                vmaf_scores.append(0.0)
-                pieapp_scores.append(0.0)
-                quality_scores.append(0.0)
-                length_scores.append(0.0)
-                final_scores.append(0.0)
-                reasons.append(error_msg)
                 continue
 
             try:
@@ -2046,15 +2775,6 @@ async def score_upscaling_synthetics(request: UpscalingScoringRequest) -> Upscal
                 os.unlink(ref_y4m_path)
             if dist_path and os.path.exists(dist_path):
                 os.unlink(dist_path)
-            if payload_path and os.path.exists(payload_path):
-                os.unlink(payload_path)
-
-            # Delete the uploaded object
-            storage_client.delete_file(uploaded_object_name)
-
-    for ref_path in request.reference_paths:
-        if os.path.exists(ref_path):
-            os.unlink(ref_path)
 
     # tmp_directory = "/tmp"
     # try:
@@ -2088,7 +2808,12 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
     compression_rates = []
     final_scores = []
     vmaf_scores = []
+    base_vmaf_scores = []
     reasons = []
+
+    def append_vmaf_scores(vmaf_score, base_vmaf_score=None):
+        vmaf_scores.append(vmaf_score)
+        base_vmaf_scores.append(base_vmaf_score)
 
     if len(request.reference_paths) != len(request.distorted_file_paths):
         raise HTTPException(
@@ -2101,6 +2826,21 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             status_code=400, 
             detail="Number of UIDs must match number of distorted file paths"
         )
+
+    distorted_urls = request.distorted_urls or [""] * len(request.distorted_file_paths)
+    if len(distorted_urls) != len(request.distorted_file_paths):
+        raise HTTPException(
+            status_code=400,
+            detail="Number of distorted URLs must match number of distorted file paths",
+        )
+
+    final_distorted_urls = await _resolve_final_urls(distorted_urls)
+    duplicate_reasons = _duplicate_response_reasons(
+        request.uids,
+        distorted_urls,
+        request.distorted_file_paths,
+        final_distorted_urls,
+    )
 
     for idx, (ref_path, dist_path, uid, video_id, uploaded_object_name) in enumerate(zip(
         request.reference_paths, 
@@ -2118,6 +2858,15 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             ref_y4m_path = None
             dist_y4m_path = None
 
+            if idx in duplicate_reasons:
+                reason = duplicate_reasons[idx]
+                logger.error(f"UID {uid}: {reason}. Assigning score of 0.")
+                append_vmaf_scores(0.0)
+                compression_rates.append(0.9999)
+                final_scores.append(0.0)
+                reasons.append(reason)
+                continue
+
             # Validate reference video using ffprobe (avoids AV1 warnings)
             if not is_valid_video(ref_path):
                 # Add diagnostic information
@@ -2130,7 +2879,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 logger.info(f"  Current working directory: {os.getcwd()}")
                 logger.info(f"  Assigning score of 0.")
                 
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)   # No compression achieved
                 final_scores.append(-100)
                 reasons.append(f"error opening reference video file: {ref_path} (exists: {file_exists}, size: {file_size})")
@@ -2146,7 +2895,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
 
             if ref_total_frames < 10:
                 logger.error(f"Video must contain at least 10 frames. Assigning score of 0.")
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)   # No compression achieved
                 final_scores.append(-100)
                 reasons.append("reference video has fewer than 10 frames")
@@ -2158,7 +2907,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
 
             if not dist_path or not os.path.exists(dist_path):
                 logger.error(f"Distorted file path is missing or invalid: {dist_path}. Assigning score of 0.")
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)   # No compression achieved
                 final_scores.append(0.0)
                 reasons.append(f"Invalid or missing distorted video file")
@@ -2170,7 +2919,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             # Validate video using ffprobe (avoids AV1 warnings)
             if not is_valid_video(dist_path):
                 logger.error(f"Error opening distorted video file from {dist_path}. Assigning score of 0.")
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)   # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("error opening distorted video file")
@@ -2191,7 +2940,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             if not is_valid_encoding:
                 logger.error(f"Invalid encoding settings for distorted video {dist_path}: {encoding_msg}")
                 logger.info(f"  Required: {target_codec} codec family, proper profile, yuv420p, MP4 container, 1:1 SAR")
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999) 
                 final_scores.append(0.0)
                 reasons.append(f"invalid encoding settings: {encoding_msg}")
@@ -2212,7 +2961,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 logger.error(
                     f"Video length mismatch for pair {idx+1}: ref({ref_total_frames}) != dist({dist_total_frames}) & frame_tolerance({FRAME_TOLERANCE}). Assigning score of 0."
                 )
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)   # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("video length mismatch")
@@ -2242,6 +2991,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
             try:
                 vmaf_start = time.time()
                 vmaf_score = None
+                base_vmaf_score = None
 
                 # Trim 1-second clips for VMAF calculation (frame-accurate)
                 ref_fps_val = get_video_fps(ref_path) or 30.0
@@ -2256,18 +3006,23 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 if VMAF_FFMPEG_AVAILABLE:
                     try:
                         logger.info("Attempting Docker-based VMAF calculation (libvmaf_cuda)...")
-                        vmaf_score = vmaf_metric_ffmpeg(
+                        vmaf_score, base_vmaf_score = vmaf_metric_ffmpeg(
                             dist_path=dist_path,
                             ref_path=ref_path,
                             neg_model=True,
+                            return_base_model_score=True,
                             # skip_frames=np.random.randint(0, ref_fps_val),
                             # n_subsample=np.random.randint(20, 30),
                         )
-                        logger.info(f"Docker VMAF calculation succeeded: {vmaf_score}")
+                        logger.info(
+                            f"Docker VMAF NEG calculation succeeded: {vmaf_score}; "
+                            f"base VMAF: {base_vmaf_score}"
+                        )
                         used_docker_vmaf = True
                     except Exception as docker_err:
                         logger.warning(f"Docker VMAF failed, falling back to Y4M: {docker_err}")
                         vmaf_score = None
+                        base_vmaf_score = None
 
                 if vmaf_score is None:
                     # Fallback: Y4M-based VMAF calculation
@@ -2276,6 +3031,8 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                     ref_y4m_path = convert_mp4_to_y4m(ref_path, random_frames)
                     logger.info("The reference video has been successfully converted to Y4M format.")
                     vmaf_score, dist_y4m_path = calculate_vmaf(ref_y4m_path, dist_path, random_frames, neg_model=True, return_y4m_path=True)
+                    if vmaf_score is not None and dist_y4m_path:
+                        base_vmaf_score = calculate_base_vmaf(ref_y4m_path, dist_y4m_path)
 
                 vmaf_calc_time = time.time() - vmaf_start
                 logger.info(f"☣️☣️ VMAF calculation took {vmaf_calc_time:.2f} seconds.")
@@ -2284,13 +3041,16 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 logger.info(f"♎️ 8. Completed VMAF calculation in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
                 if vmaf_score is not None:
-                    vmaf_scores.append(vmaf_score)
+                    append_vmaf_scores(vmaf_score, base_vmaf_score)
                 else:
                     vmaf_score = 0.0
-                    vmaf_scores.append(vmaf_score)
-                logger.info(f"🎾 VMAF score is {vmaf_score} , Threshold: {vmaf_threshold}, Diff: {vmaf_score - vmaf_threshold}")
+                    append_vmaf_scores(vmaf_score, base_vmaf_score)
+                logger.info(
+                    f"🎾 VMAF NEG score is {vmaf_score} , Base VMAF: {base_vmaf_score}, "
+                    f"Threshold: {vmaf_threshold}, Diff: {vmaf_score - vmaf_threshold}"
+                )
             except Exception as e:
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)   # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("failed to calculate VMAF score due to video dimension mismatch")
@@ -2305,6 +3065,40 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 #     os.unlink(ref_clip_vmaf_path)
                 # if dist_clip_vmaf_path and os.path.exists(dist_clip_vmaf_path):
                 #     os.unlink(dist_clip_vmaf_path)
+
+            if base_vmaf_score is not None:
+                vmaf_model_delta = abs(base_vmaf_score - vmaf_score)
+                logger.info(
+                    f"VMAF model delta: {vmaf_model_delta:.4f} "
+                    f"(maximum allowed: {MAX_VMAF_MODEL_DELTA:.4f})"
+                )
+                if vmaf_model_delta > MAX_VMAF_MODEL_DELTA:
+                    delta_reason = (
+                        f"VMAF model delta {vmaf_model_delta:.4f} exceeds maximum "
+                        f"{MAX_VMAF_MODEL_DELTA:.4f}"
+                    )
+                    logger.error(f"UID {uid}: {delta_reason}. Assigning score of 0.")
+                    compression_rates.append(compression_rate)
+                    final_scores.append(0.0)
+                    reasons.append(f"{delta_reason}; {encoding_msg}")
+                    continue
+
+            tone_result = check_tone_manipulation_for_compression(
+                ref_path=ref_path,
+                dist_path=dist_path,
+                timestamp_seconds=(vmaf_start_frame / ref_fps_val) if ref_fps_val else 0.0,
+                uid=uid,
+                context="synthetics compression",
+                duration_seconds=((ref_total_frames - 1) / ref_fps_val) if ref_fps_val else None,
+                sample_key=video_id,
+            )
+            if tone_result and tone_result.get("detected") is True:
+                tone_reason = f"Tone manipulation detected: {tone_result['reason']}"
+                logger.error(f"UID {uid}: {tone_reason}. Assigning score of 0.")
+                compression_rates.append(compression_rate)
+                final_scores.append(0.0)
+                reasons.append(f"{tone_reason}; {encoding_msg}")
+                continue
 
             # === COLOR / CHROMA VALIDATION ===
             if used_docker_vmaf:
@@ -2415,7 +3209,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
         except Exception as e:
             error_msg = f"Failed to process video from {dist_path}: {str(e)}"
             logger.error(f"{error_msg}. Assigning score of 0.")
-            vmaf_scores.append(0.0)
+            append_vmaf_scores(0.0)
             compression_rates.append(0.9999)   # No compression achieved
             final_scores.append(0.0)
             reasons.append("failed to process video")
@@ -2427,9 +3221,6 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
                 os.unlink(ref_y4m_path)
             if dist_y4m_path and os.path.exists(dist_y4m_path):
                 os.unlink(dist_y4m_path)
-
-            # Delete the uploaded object
-            storage_client.delete_file(uploaded_object_name)
 
     # tmp_directory = "/tmp"
     # try:
@@ -2449,6 +3240,7 @@ async def score_compression_synthetics(request: CompressionScoringRequest) -> Co
     
     return CompressionScoringResponse(
         vmaf_scores=vmaf_scores,
+        base_vmaf_scores=base_vmaf_scores,
         compression_rates=compression_rates,
         final_scores=final_scores,
         reasons=reasons
@@ -2864,9 +3656,14 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
     logger.info("#################### 🤖 start scoring ####################")
     start_time = time.time()
     vmaf_scores = []
+    base_vmaf_scores = []
     compression_rates = []
     final_scores = []
     reasons = []
+
+    def append_vmaf_scores(vmaf_score, base_vmaf_score=None):
+        vmaf_scores.append(vmaf_score)
+        base_vmaf_scores.append(base_vmaf_score)
 
     proxy_downloadable_results = []
     distorted_video_paths = []
@@ -2918,7 +3715,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             # download reference video
             if len(ref_url) < 10:
                 logger.info(f"invalid reference download url: {ref_url}. skipping scoring")
-                vmaf_scores.append(-1)
+                append_vmaf_scores(-1)
                 compression_rates.append(-1)
                 reasons.append("invalid reference url - skipped")
                 final_scores.append(-1)  # -1 means skip, don't penalize
@@ -2936,7 +3733,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 logger.info(f"  File exists: {file_exists}")
                 logger.info(f"  File size: {file_size} bytes")
                 
-                vmaf_scores.append(-1)
+                append_vmaf_scores(-1)
                 compression_rates.append(-1)
                 reasons.append("corrupted reference video - skipped")
                 final_scores.append(-1)  # -1 means skip, don't penalize
@@ -2950,7 +3747,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
 
             if ref_total_frames < 10:
                 logger.info(f"reference video too short (<10 frames). skipping scoring")
-                vmaf_scores.append(-1)
+                append_vmaf_scores(-1)
                 compression_rates.append(-1)
                 reasons.append("reference video too short - skipped")
                 final_scores.append(-1)  # -1 means skip, don't penalize
@@ -2958,7 +3755,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
 
         except Exception as e:
             logger.error(f"system error processing reference video: {e}. skipping scoring")
-            vmaf_scores.append(-1)
+            append_vmaf_scores(-1)
             compression_rates.append(-1)
             reasons.append("system error with reference - skipped")
             final_scores.append(-1)  # -1 means skip, don't penalize
@@ -2975,16 +3772,16 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
 
             if not proxy_downloadable:
                 logger.error(f"organic proxy failed to download distorted video for uid {uid}. penalizing miner.")
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)
-                reasons.append("MINER FAILURE: distorted video is not downloadable through organic proxy")
+                reasons.append(f"MINER FAILURE: distorted video is not downloadable through organic proxy via endpoint: {ORGANIC_PROXY_VERIFY_DOWNLOAD_ENDPOINT}, miner is recommended to whitelist organic proxy IP in S3 compatible storage")
                 final_scores.append(0.0)
                 continue
 
             # check if distorted video failed to download
             if dist_path is None:
                 logger.error(f"failed to download distorted video for uid {uid}. penalizing miner.")
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)
                 reasons.append("MINER FAILURE: failed to download distorted video, invalid url")
                 final_scores.append(0.0)  # 0 = miner penalty
@@ -2993,7 +3790,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             # Check if miner's output can be opened (using ffprobe to avoid AV1 warnings)
             if not is_valid_video(dist_path):
                 logger.error(f"error opening distorted video from {dist_path}. penalizing miner.")
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)
                 reasons.append("MINER FAILURE: corrupted output video")
                 final_scores.append(0.0)  # 0 = miner penalty
@@ -3006,7 +3803,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             if not is_valid_encoding:
                 logger.error(f"Invalid encoding settings for distorted video {dist_path}: {encoding_msg}")
                 logger.info(f"  Required: {target_codec} codec family, proper profile, yuv420p, MP4 container, 1:1 SAR, {codec_mode} mode")
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)
                 final_scores.append(0.0)
                 reasons.append(f"invalid encoding settings: {encoding_msg}")
@@ -3023,7 +3820,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 logger.error(
                     f"Video length mismatch for pair {idx+1}: ref({ref_total_frames}) != dist({dist_total_frames}) & frame_tolerance({FRAME_TOLERANCE}). Assigning score of 0."
                 )
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)  # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("video length mismatch")
@@ -3064,21 +3861,27 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
             try:
                 vmaf_start = time.time()
                 vmaf_score = None
+                base_vmaf_score = None
 
                 if VMAF_FFMPEG_AVAILABLE:
                     try:
                         logger.info("Attempting Docker-based VMAF calculation (libvmaf_cuda)...")
-                        vmaf_score = vmaf_metric_ffmpeg(
+                        vmaf_score, base_vmaf_score = vmaf_metric_ffmpeg(
                             dist_path=dist_path,
                             ref_path=ref_path,
                             skip_frames=0,
                             n_subsample=1,
                             neg_model=True,
+                            return_base_model_score=True,
                         )
-                        logger.info(f"Docker VMAF calculation succeeded: {vmaf_score}")
+                        logger.info(
+                            f"Docker VMAF NEG calculation succeeded: {vmaf_score}; "
+                            f"base VMAF: {base_vmaf_score}"
+                        )
                     except Exception as docker_err:
                         logger.warning(f"Docker VMAF failed, falling back to Y4M: {docker_err}")
                         vmaf_score = None
+                        base_vmaf_score = None
 
                 if vmaf_score is None:
                     # Fallback: Y4M-based VMAF calculation
@@ -3088,6 +3891,8 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                     step_time = time.time() - uid_start_time
                     logger.info(f"♎️ 9. Converted full reference video to Y4M in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
                     vmaf_score, dist_y4m_path = calculate_vmaf(ref_y4m_path, dist_path, None, neg_model=True, return_y4m_path=True)
+                    if vmaf_score is not None and dist_y4m_path:
+                        base_vmaf_score = calculate_base_vmaf(ref_y4m_path, dist_y4m_path)
 
                 vmaf_calc_time = time.time() - vmaf_start
                 logger.info(f"☣️☣️ VMAF calculation took {vmaf_calc_time:.2f} seconds.")
@@ -3096,19 +3901,53 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
                 logger.info(f"♎️ 10. Completed VMAF calculation in {step_time:.2f} seconds. Total time: {step_time:.2f} seconds.")
 
                 if vmaf_score is not None:
-                    vmaf_scores.append(vmaf_score)
+                    append_vmaf_scores(vmaf_score, base_vmaf_score)
                 else:
                     vmaf_score = 0.0
-                    vmaf_scores.append(vmaf_score)
-                logger.info(f"🎾 VMAF score is {vmaf_score}")
+                    append_vmaf_scores(vmaf_score, base_vmaf_score)
+                logger.info(f"🎾 VMAF NEG score is {vmaf_score}; Base VMAF: {base_vmaf_score}")
             except Exception as e:
-                vmaf_scores.append(0.0)
+                append_vmaf_scores(0.0)
                 compression_rates.append(0.9999)   # No compression achieved
                 final_scores.append(0.0)
                 reasons.append("failed to calculate VMAF score due to video dimension mismatch")
                 logger.error(f"Error calculating VMAF score: {e}")
                 if dist_y4m_path and os.path.exists(dist_y4m_path):
                     os.unlink(dist_y4m_path)
+                continue
+
+            if base_vmaf_score is not None:
+                vmaf_model_delta = abs(base_vmaf_score - vmaf_score)
+                logger.info(
+                    f"VMAF model delta: {vmaf_model_delta:.4f} "
+                    f"(maximum allowed: {MAX_VMAF_MODEL_DELTA:.4f})"
+                )
+                if vmaf_model_delta > MAX_VMAF_MODEL_DELTA:
+                    delta_reason = (
+                        f"VMAF model delta {vmaf_model_delta:.4f} exceeds maximum "
+                        f"{MAX_VMAF_MODEL_DELTA:.4f}"
+                    )
+                    logger.error(f"UID {uid}: {delta_reason}. Assigning score of 0.")
+                    compression_rates.append(compression_rate)
+                    final_scores.append(0.0)
+                    reasons.append(f"{delta_reason}; {encoding_msg}")
+                    continue
+
+            tone_result = check_tone_manipulation_for_compression(
+                ref_path=ref_path,
+                dist_path=dist_path,
+                timestamp_seconds=(color_check_start_frame / ref_fps) if ref_fps else 0.0,
+                uid=uid,
+                context="organics compression",
+                duration_seconds=((ref_total_frames - 1) / ref_fps) if ref_fps else None,
+                sample_key=ref_url,
+            )
+            if tone_result and tone_result.get("detected") is True:
+                tone_reason = f"Tone manipulation detected: {tone_result['reason']}"
+                logger.error(f"UID {uid}: {tone_reason}. Assigning score of 0.")
+                compression_rates.append(compression_rate)
+                final_scores.append(0.0)
+                reasons.append(f"{tone_reason}; {encoding_msg}")
                 continue
 
             # === COLOR / CHROMA VALIDATION ===
@@ -3182,7 +4021,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
         except Exception as e:
             error_msg = f"Failed to process video from {dist_url}: {str(e)}"
             logger.error(f"{error_msg}. Assigning score of 0.")
-            vmaf_scores.append(0.0)
+            append_vmaf_scores(0.0)
             compression_rates.append(0.9999)   # No compression achieved
             final_scores.append(0.0)
             reasons.append("failed to process video")
@@ -3202,6 +4041,7 @@ async def score_organics_compression(request: OrganicsCompressionScoringRequest)
 
     return OrganicsCompressionScoringResponse(
         vmaf_scores=vmaf_scores,
+        base_vmaf_scores=base_vmaf_scores,
         compression_rates=compression_rates,
         final_scores=final_scores,
         reasons=reasons

@@ -5,7 +5,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     build-essential ninja-build nasm perl g++ cmake wget unzip \
     nvidia-cuda-dev nvidia-cuda-toolkit pkg-config \
     libx264-dev libx265-dev libvpx-dev \
-    git python3-pip python3-venv curl \
+    git python-is-python3 python3-pip python3-venv curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install meson (needed for dav1d build)
