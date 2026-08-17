@@ -114,6 +114,24 @@ chmod 777 /tmp/vidaio-miner-video-tmp
 
 ## Start Processing Services
 
+Before starting a service, choose which inference task this miner will advertise
+to validators. In `neurons/miner.py`, use:
+
+```python
+warrant_task = TaskType.UPSCALING
+```
+
+for upscaling, or:
+
+```python
+warrant_task = TaskType.COMPRESSION
+```
+
+for compression. Starting the compression container does **not** select
+compression inference automatically. `MINER_MODES` must also include
+`inference`. Use the full
+[`miner_inference_checklist.md`](miner_inference_checklist.md) before going live.
+
 Run Docker Compose commands from the `miner` directory:
 
 ```bash
@@ -257,6 +275,10 @@ pm2 stop video-miner
 
 ## Additional Notes
 
+- For ordinary validator inference, complete
+  [`miner_inference_checklist.md`](miner_inference_checklist.md). Compression
+  miners must advertise `TaskType.COMPRESSION` through `warrant_task` in
+  `neurons/miner.py`.
 - For a new compression competition, complete
   [`miner_competition_checklist.md`](miner_competition_checklist.md). The full
   competition contract is in [`competitions.md`](competitions.md).
