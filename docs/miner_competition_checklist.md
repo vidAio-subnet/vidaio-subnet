@@ -68,6 +68,10 @@ must not assume that a batch contains repeated versions of one source video.
   target subnet.
 - [ ] Confirm the miner process is running from the repository root and inference
   mode still works if it remains enabled.
+- [ ] If ordinary inference remains enabled, complete
+  [`miner_inference_checklist.md`](miner_inference_checklist.md) and set
+  `warrant_task` in `neurons/miner.py` to the inference cohort this miner should
+  advertise. Competition type configuration does not select the inference task.
 - [ ] Confirm competition requests are accepted only from the current on-chain
   subnet-owner hotkey. Do not enable the development bypass in production.
 
