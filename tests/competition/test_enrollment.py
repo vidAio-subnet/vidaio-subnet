@@ -287,7 +287,9 @@ class EnrollmentDispatcherTests(unittest.TestCase):
         endpoint = self.endpoints()[1]
         forwarder = FakeForwarder(
             participating_hotkeys=set(),
-            refusal_reason="competition mode unavailable",
+            refusal_reason=(
+                "competition mode unavailable on upscaling inference miner"
+            ),
         )
         dispatcher = CompetitionEnrollmentDispatcher(
             self.repository,
@@ -321,7 +323,9 @@ class EnrollmentDispatcherTests(unittest.TestCase):
         endpoints = self.endpoints()
         forwarder = FakeForwarder(
             participating_hotkeys=set(),
-            refusal_reason="competition mode unavailable",
+            refusal_reason=(
+                "competition mode unavailable on upscaling inference miner"
+            ),
         )
         dispatcher = CompetitionEnrollmentDispatcher(
             self.repository,
