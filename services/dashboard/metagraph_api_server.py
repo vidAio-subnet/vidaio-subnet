@@ -8,6 +8,9 @@ from fastapi import FastAPI
 from typing import Dict, Optional, Tuple
 from contextlib import contextmanager
 from vidaio_subnet_core import CONFIG
+from vidaio_subnet_core.utilities.bittensor_compat import (
+    apply_single_field_composite_encoding_patch,
+)
 from services.dashboard.model import MinerInfo
 from loguru import logger
 
@@ -38,6 +41,7 @@ class MetagraphCache:
 
     def _refresh(self):
         try:
+            apply_single_field_composite_encoding_patch()
             subtensor = bt.Subtensor()
             metagraph = subtensor.metagraph(netuid=self._netuid)
             with self._lock:
