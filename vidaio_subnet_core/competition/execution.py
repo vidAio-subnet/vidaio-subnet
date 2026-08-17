@@ -1109,20 +1109,29 @@ class CompetitionExecutionCoordinator:
                             )
                         )
         except SandboxRunnerError as exc:
+            outcome_reason = (
+                "CONTENDER_OUTPUT_MISSING"
+                if exc.reason_code
+                in {"SANDBOX_EXEC_FAILED", "SANDBOX_EXEC_TIMEOUT"}
+                else exc.reason_code
+            )
             logger.error(
-                "Competition Sandbox batch failed terminally: competition_id={} "
-                "hotkey={} batch_id={} reason_code={} detail={}",
+                "Competition contender batch request failed terminally: "
+                "competition_id={} "
+                "hotkey={} batch_id={} runner_reason_code={} "
+                "outcome_reason_code={} detail={}",
                 manifest.competition_id,
                 claimed.hotkey,
                 claimed.batch_id,
                 exc.reason_code,
+                outcome_reason,
                 LOG_REDACTOR.redact_text(str(exc)),
             )
             outcomes = [
                 AttemptOutcome(
                     evaluation.history_id,
                     "FAILED",
-                    exc.reason_code,
+                    outcome_reason,
                 )
                 for evaluation in claimed.evaluations
             ]
