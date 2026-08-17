@@ -5,6 +5,26 @@ This project includes three miner services:
 - `upscaling-ffmpeg`: Upscaling service using FFmpeg directly.
 - `compression`: Compression microservice.
 
+## Select the Inference Task
+
+For ordinary inference, the miner advertises one task to validators through the
+module-level setting in `neurons/miner.py`. Keep this for upscaling:
+
+```python
+warrant_task = TaskType.UPSCALING
+```
+
+To mine for compression, change it to:
+
+```python
+warrant_task = TaskType.COMPRESSION
+```
+
+Starting the compression service or setting `MINER_MODES=inference` does not
+make that change automatically. Restart the miner process after editing the
+setting. See the full
+[`miner_inference_checklist.md`](../docs/miner_inference_checklist.md).
+
 ## Prerequisites
 - Run `sudo apt update`
 - Docker + Docker Compose
@@ -127,6 +147,10 @@ Caveats:
    ```
 
 ## Compression Miner
+
+First set `warrant_task = TaskType.COMPRESSION` in `neurons/miner.py`, then
+start the service:
+
 ```bash
 docker compose up -d compression
 ```
