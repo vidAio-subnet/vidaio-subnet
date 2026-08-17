@@ -88,15 +88,25 @@ class FakeIntake:
 
 
 class FakeForwarder:
-    def __init__(self, *, wrong_hotkey: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        wrong_hotkey: bool = False,
+        participating_hotkeys: set[str] | None = None,
+    ) -> None:
         self.calls: list[tuple[str, str]] = []
         self.responses = []
         self.wrong_hotkey = wrong_hotkey
+        self.participating_hotkeys = (
+            {"participating-hotkey"}
+            if participating_hotkeys is None
+            else participating_hotkeys
+        )
 
     async def __call__(self, endpoint, synapse, _timeout_seconds):
         if isinstance(synapse, protocol.CompetitionInvitationProtocol):
             self.calls.append(("invitation", endpoint.hotkey))
-            participating = endpoint.hotkey == "participating-hotkey"
+            participating = endpoint.hotkey in self.participating_hotkeys
             synapse.invitation_response = protocol.CompetitionInvitationResponse(
                 competition_id=synapse.competition_id,
                 echo_nonce=synapse.invitation_nonce,
@@ -268,8 +278,39 @@ class EnrollmentDispatcherTests(unittest.TestCase):
             forwarder.calls[-1], ("submission", "participating-hotkey")
         )
         self.assertEqual(
-            len([call for call in forwarder.calls if call[0] == "invitation"]), 2
+            len([call for call in forwarder.calls if call[0] == "invitation"]), 3
         )
+
+    def test_declined_miner_is_reinvited_after_enabling_competition(self) -> None:
+        endpoint = self.endpoints()[1]
+        forwarder = FakeForwarder(participating_hotkeys=set())
+        dispatcher = CompetitionEnrollmentDispatcher(
+            self.repository,
+            FakeIntake(),
+            forwarder,
+            owner_id="test-validator",
+            clock=self.clock,
+        )
+
+        asyncio.run(dispatcher.run_once(self.competition, [endpoint]))
+
+        contender = self.repository.get_contender(
+            self.manifest.competition_id, endpoint.hotkey
+        )
+        self.assertEqual(contender.status, ContenderState.REJECTED.value)
+        self.assertEqual(contender.reason_code, "INVITATION_DECLINED")
+
+        forwarder.participating_hotkeys.add(endpoint.hotkey)
+        self.clock.now += self.manifest.contender_ping_interval
+        asyncio.run(dispatcher.run_once(self.competition, [endpoint]))
+
+        contender = self.repository.get_contender(
+            self.manifest.competition_id, endpoint.hotkey
+        )
+        self.assertEqual(contender.status, ContenderState.PARTICIPATING.value)
+        self.assertIsNone(contender.reason_code)
+        self.assertEqual(contender.invitation_attempts, 2)
+        self.assertIn(("submission", endpoint.hotkey), forwarder.calls)
 
     def test_below_minimum_alpha_stake_is_retried_until_miner_qualifies(self) -> None:
         self.competition.manifest_json = self.manifest.model_copy(
