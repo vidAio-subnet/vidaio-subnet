@@ -179,6 +179,14 @@ or another immutable live-competition input changes.
 
 ## 4. Authenticate and probe Modal
 
+- [ ] Confirm the Python interpreter used to launch `run.sh` can import the
+  Modal SDK. Installing the `modal` CLI or running `modal setup` does not install
+  the SDK into a different virtual environment:
+
+  ```bash
+  python3 -c 'import modal; print(modal.__file__)'
+  ```
+
 - [ ] Authenticate the OS user that runs the competition process:
 
   ```bash
@@ -324,7 +332,8 @@ or another immutable live-competition input changes.
 - [ ] Confirm the scheduler clock is UTC-synchronized.
 - [ ] Confirm operator dashboards/log collection redact raw PATs and submission
   payloads.
-- [ ] Start/restart both PM2 validator processes with their final environment.
+- [ ] Start/restart both PM2 validator processes and the competition scoring
+  endpoint with their final environment (`--update-env`).
 
 ## 7. Monitor enrollment and submission finalisation
 

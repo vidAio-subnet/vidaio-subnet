@@ -84,7 +84,7 @@ ensure_process() {
         echo "Process '$name' already running."
         if [[ "$restart_flag" == "true" ]]; then
             echo "Reloading $name..."
-            pm2 reload "$name"
+            pm2 reload "$name" --update-env
         fi
     else
         echo "Starting $name..."
