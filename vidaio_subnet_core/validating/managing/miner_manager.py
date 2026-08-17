@@ -52,7 +52,7 @@ class MinerManager:
         # Task allocations and rank-based distribution within each task pool.
         self.compression_emission_allocation = 0.80
         self.upscaling_emission_allocation = 0.20
-        self.competition_emission_allocation = 0.20
+        self.competition_emission_allocation = 0.60
         self.emission_rank_shares = [0.20, 0.20, 0.20, 0.20, 0.20]
         self.alpha_stake_weigh_factor = CONFIG.score.alpha_stake_weigh_factor
         self.emission_liquidation_weigh_factor = (
