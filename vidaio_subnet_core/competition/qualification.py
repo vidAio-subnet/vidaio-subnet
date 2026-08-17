@@ -42,6 +42,7 @@ class MediaInfo:
     frame_count: int | None = None
     audio_stream_count: int = 0
     audio_fingerprint: str | None = None
+    bit_rate_bps: int | None = None
 
 
 class FfprobeMediaInspector:
@@ -105,8 +106,8 @@ class FfprobeMediaInspector:
                 "-count_frames",
                 "-show_entries",
                 "stream=codec_type,codec_name,width,height,pix_fmt,"
-                "sample_aspect_ratio,duration,nb_read_frames,nb_frames:"
-                "format=format_name,duration",
+                "sample_aspect_ratio,duration,nb_read_frames,nb_frames,bit_rate:"
+                "format=format_name,duration,bit_rate",
                 "-of",
                 "json",
                 str(path),
@@ -127,6 +128,14 @@ class FfprobeMediaInspector:
                 item.get("codec_type") == "audio" for item in payload["streams"]
             )
             duration = stream.get("duration") or payload["format"].get("duration")
+            raw_bit_rate = stream.get("bit_rate") or payload["format"].get(
+                "bit_rate"
+            )
+            bit_rate_bps = (
+                int(raw_bit_rate)
+                if raw_bit_rate not in (None, "", "N/A")
+                else None
+            )
             return MediaInfo(
                 width=int(stream["width"]),
                 height=int(stream["height"]),
@@ -143,6 +152,7 @@ class FfprobeMediaInspector:
                 audio_fingerprint=(
                     self._audio_fingerprint(path) if audio_stream_count else None
                 ),
+                bit_rate_bps=bit_rate_bps,
             )
         except (
             KeyError,

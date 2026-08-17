@@ -327,6 +327,7 @@ column requires an explicit schema migration.
 | `vmaf_sample_count` | Deterministic scoring sample configuration. |
 | `minimum_compression_ratio` | Minimum valid source/output size ratio. |
 | `scoring_seed` | Deterministic dataset query and scoring selections. |
+| `scoring_version` | Stable scoring-contract identifier. Version `4` adds trusted VBR bitrate enforcement. |
 | `scoring_factors` | Manifest-selected weights for absolute media score (legacy key `quality`), contender-relative cost efficiency, and completion coverage. `runtime` is reserved and must remain zero. |
 | `cost_floor_usd` | Positive floor used in cost-efficiency division. |
 | `score_precision` | Normalization precision used for ranking and exact ties. |
@@ -625,6 +626,8 @@ A result must:
 - preserve the source audio streams, dimensions, duration, frame count, pixel
   format constraints, and sample aspect ratio within allowed tolerances;
 - match the immutable source checksum and evaluation metadata;
+- for VBR items, report a video-stream bitrate (falling back to container
+  bitrate) no greater than 110% of the requested target;
 - receive a positive absolute media score and meet the manifest's minimum
   compression ratio.
 
@@ -668,6 +671,14 @@ below the item target up to the target occupy a quadratic soft-recovery zone.
 At or above the target, VMAF contributes from 0.7 at the target to 1 at VMAF
 100. A zero media score fails the item and therefore gives zero for every
 component.
+
+VBR validation follows the synthetic-compression encoding contract. Missing
+bitrate metadata fails the item. The requested bitrate is an upper target, so
+the 10% tolerance is enforced only as a ceiling: an achieved bitrate below the
+target remains valid and is then scored by the same compression/VMAF media
+curve as CRF. A rejected VBR item records zero media, compression, and VMAF
+components with `OUTPUT_BITRATE_MISSING` or
+`OUTPUT_BITRATE_EXCEEDS_TARGET` as its reason.
 
 Invalid items receive zero components and are excluded from the minimum-cost
 reference so a cheap invalid output cannot reduce valid contenders' scores. An

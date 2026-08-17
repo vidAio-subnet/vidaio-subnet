@@ -25,6 +25,9 @@ from .qualification import FfprobeMediaInspector, QualificationError
 
 
 OUTPUT_AUDIO_NOT_PRESERVED = "OUTPUT_AUDIO_NOT_PRESERVED"
+OUTPUT_BITRATE_EXCEEDS_TARGET = "OUTPUT_BITRATE_EXCEEDS_TARGET"
+OUTPUT_BITRATE_MISSING = "OUTPUT_BITRATE_MISSING"
+VBR_BITRATE_TOLERANCE = 0.10
 
 
 class ItemScoringError(RuntimeError):
@@ -277,6 +280,44 @@ class CompetitionItemScorer:
                     media_vmaf_component=0.0,
                     media_score_reason=OUTPUT_AUDIO_NOT_PRESERVED,
                 )
+
+            codec_mode = str(getattr(item, "codec_mode", "CRF")).upper()
+            if codec_mode == "VBR":
+                target_bitrate = getattr(item, "target_bitrate", None)
+                if target_bitrate is None:
+                    reject(
+                        OUTPUT_BITRATE_MISSING,
+                        "VBR competition item does not define a target bitrate",
+                        media_score=0.0,
+                        media_compression_component=0.0,
+                        media_vmaf_component=0.0,
+                        media_score_reason=OUTPUT_BITRATE_MISSING,
+                    )
+                if output_media.bit_rate_bps is None:
+                    reject(
+                        OUTPUT_BITRATE_MISSING,
+                        "output does not report video or container bitrate "
+                        "for VBR validation",
+                        media_score=0.0,
+                        media_compression_component=0.0,
+                        media_vmaf_component=0.0,
+                        media_score_reason=OUTPUT_BITRATE_MISSING,
+                    )
+                maximum_bitrate = int(
+                    target_bitrate * (1 + VBR_BITRATE_TOLERANCE)
+                )
+                if output_media.bit_rate_bps > maximum_bitrate:
+                    reject(
+                        OUTPUT_BITRATE_EXCEEDS_TARGET,
+                        f"output bitrate {output_media.bit_rate_bps} bps exceeds "
+                        f"VBR target {target_bitrate} bps plus "
+                        f"{VBR_BITRATE_TOLERANCE:.0%} tolerance "
+                        f"({maximum_bitrate} bps maximum)",
+                        media_score=0.0,
+                        media_compression_component=0.0,
+                        media_vmaf_component=0.0,
+                        media_score_reason=OUTPUT_BITRATE_EXCEEDS_TARGET,
+                    )
 
             violations: list[tuple[str, str]] = []
             if len(output_bytes) >= len(source_bytes):
@@ -544,8 +585,11 @@ __all__ = [
     "GPU_PRICE_PER_SECOND_USD",
     "ItemScoringError",
     "OUTPUT_AUDIO_NOT_PRESERVED",
+    "OUTPUT_BITRATE_EXCEEDS_TARGET",
+    "OUTPUT_BITRATE_MISSING",
     "SANDBOX_CPU_PRICE_PER_CORE_SECOND_USD",
     "ScoredItem",
+    "VBR_BITRATE_TOLERANCE",
     "compute_aggregates",
     "estimate_item_cost",
     "length_weight",

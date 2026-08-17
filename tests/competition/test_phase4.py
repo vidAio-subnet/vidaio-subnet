@@ -68,7 +68,11 @@ from vidaio_subnet_core.competition.repository import (
     DeferredBatchResult,
     INFRASTRUCTURE_FAILURE_REASON_CODES,
 )
-from vidaio_subnet_core.competition.qualification import MediaInfo, QualificationError
+from vidaio_subnet_core.competition.qualification import (
+    FfprobeMediaInspector,
+    MediaInfo,
+    QualificationError,
+)
 from vidaio_subnet_core.competition.pricing import (
     GPU_PRICE_PER_SECOND_USD,
     SANDBOX_CPU_PRICE_PER_CORE_SECOND_USD,
@@ -78,7 +82,10 @@ from vidaio_subnet_core.competition.pricing import (
 from vidaio_subnet_core.competition.scoring import (
     CompetitionItemScorer,
     ItemScoringError,
+    OUTPUT_BITRATE_EXCEEDS_TARGET,
+    OUTPUT_BITRATE_MISSING,
     ScoredItem,
+    VBR_BITRATE_TOLERANCE,
     _default_vmaf,
     compute_aggregates,
     length_weight,
@@ -2248,6 +2255,7 @@ class FakeInspector:
         output_audio_streams: int = 0,
         source_audio_fingerprint: str | None = None,
         output_audio_fingerprint: str | None = None,
+        output_bit_rate_bps: int | None = None,
     ):
         self.output_frames = output_frames
         self.output_sar = output_sar
@@ -2255,6 +2263,7 @@ class FakeInspector:
         self.output_audio_streams = output_audio_streams
         self.source_audio_fingerprint = source_audio_fingerprint
         self.output_audio_fingerprint = output_audio_fingerprint
+        self.output_bit_rate_bps = output_bit_rate_bps
 
     def inspect(self, path: Path) -> MediaInfo:
         output = path.name == "output.mp4"
@@ -2276,10 +2285,47 @@ class FakeInspector:
                 if output
                 else self.source_audio_fingerprint
             ),
+            bit_rate_bps=self.output_bit_rate_bps if output else None,
         )
 
 
 class Phase4ScoringTests(unittest.TestCase):
+    def test_ffprobe_inspector_prefers_video_stream_bitrate(self) -> None:
+        payload = {
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "codec_name": "av1",
+                    "width": 1280,
+                    "height": 720,
+                    "pix_fmt": "yuv420p",
+                    "sample_aspect_ratio": "1:1",
+                    "duration": "10.0",
+                    "nb_read_frames": "300",
+                    "bit_rate": "8000000",
+                }
+            ],
+            "format": {
+                "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+                "duration": "10.0",
+                "bit_rate": "8200000",
+            },
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            media_path = Path(temp) / "output.mp4"
+            media_path.write_bytes(b"media")
+            with patch(
+                "vidaio_subnet_core.competition.qualification.subprocess.run",
+                return_value=SimpleNamespace(
+                    returncode=0,
+                    stdout=json.dumps(payload),
+                    stderr="",
+                ),
+            ):
+                media = FfprobeMediaInspector().inspect(media_path)
+
+        self.assertEqual(media.bit_rate_bps, 8_000_000)
+
     @patch("services.scoring.vmaf_metric.vmaf_metric_ffmpeg", return_value=97.25)
     def test_default_vmaf_scores_every_frame(self, vmaf_metric) -> None:
         score = _default_vmaf(
@@ -2631,6 +2677,100 @@ class Phase4ScoringTests(unittest.TestCase):
         )
         self.assertGreater(soft_result.media_score, 0)
         self.assertLess(soft_result.media_score, result.media_score)
+
+    def test_vbr_output_at_or_below_upper_tolerance_is_scored(self) -> None:
+        variant = CompressionEvaluationIndexItem(
+            **self.item.model_dump(),
+            codec_mode="VBR",
+            vmaf_threshold=89,
+            target_bitrate=8_000_000,
+        )
+        maximum_bitrate = int(
+            variant.target_bitrate * (1 + VBR_BITRATE_TOLERANCE)
+        )
+
+        for output_bitrate in (1_000_000, maximum_bitrate):
+            with self.subTest(output_bitrate=output_bitrate):
+                result = CompetitionItemScorer(
+                    inspector=FakeInspector(output_bit_rate_bps=output_bitrate),
+                    vmaf=lambda *_args: 96.5,
+                ).score(
+                    self.manifest,
+                    variant,
+                    self.source,
+                    self.output,
+                    runtime_seconds=1,
+                    **ALLOCATED_RESOURCES,
+                )
+
+                self.assertGreater(result.media_score, 0)
+
+    def test_vbr_output_above_upper_tolerance_gets_zero_media_score(self) -> None:
+        variant = CompressionEvaluationIndexItem(
+            **self.item.model_dump(),
+            codec_mode="VBR",
+            vmaf_threshold=89,
+            target_bitrate=8_000_000,
+        )
+        maximum_bitrate = int(
+            variant.target_bitrate * (1 + VBR_BITRATE_TOLERANCE)
+        )
+        vmaf_calls = []
+        scorer = CompetitionItemScorer(
+            inspector=FakeInspector(output_bit_rate_bps=maximum_bitrate + 1),
+            vmaf=lambda *_args: vmaf_calls.append(True),
+        )
+
+        with self.assertRaises(ItemScoringError) as captured:
+            scorer.score(
+                self.manifest,
+                variant,
+                self.source,
+                self.output,
+                runtime_seconds=1,
+                **ALLOCATED_RESOURCES,
+            )
+
+        self.assertEqual(
+            captured.exception.reason_code,
+            OUTPUT_BITRATE_EXCEEDS_TARGET,
+        )
+        self.assertEqual(captured.exception.metrics.media_score, 0)
+        self.assertEqual(captured.exception.metrics.media_compression_component, 0)
+        self.assertEqual(captured.exception.metrics.media_vmaf_component, 0)
+        self.assertEqual(
+            captured.exception.metrics.media_score_reason,
+            OUTPUT_BITRATE_EXCEEDS_TARGET,
+        )
+        self.assertEqual(vmaf_calls, [])
+
+    def test_vbr_output_without_reported_bitrate_gets_zero_media_score(self) -> None:
+        variant = CompressionEvaluationIndexItem(
+            **self.item.model_dump(),
+            codec_mode="VBR",
+            vmaf_threshold=89,
+            target_bitrate=8_000_000,
+        )
+
+        with self.assertRaises(ItemScoringError) as captured:
+            CompetitionItemScorer(
+                inspector=FakeInspector(),
+                vmaf=lambda *_args: 96.5,
+            ).score(
+                self.manifest,
+                variant,
+                self.source,
+                self.output,
+                runtime_seconds=1,
+                **ALLOCATED_RESOURCES,
+            )
+
+        self.assertEqual(captured.exception.reason_code, OUTPUT_BITRATE_MISSING)
+        self.assertEqual(captured.exception.metrics.media_score, 0)
+        self.assertEqual(
+            captured.exception.metrics.media_score_reason,
+            OUTPUT_BITRATE_MISSING,
+        )
 
     def test_manifest_exponent_gives_thirty_minutes_ten_times_the_weight(
         self,
