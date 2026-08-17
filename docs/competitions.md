@@ -120,6 +120,12 @@ Likewise, a miner that declines because competition mode or the requested
 competition type is unavailable is reinvited at `contender_ping_interval` while
 enrollment remains open, allowing it to restart with corrected configuration.
 
+For an exceptional, explicitly consented recovery, the validator may temporarily
+set `COMPETITION_INVITATION_CONSENT_OVERRIDE_HOTKEY` to a comma-separated list
+of miner hotkeys. The override applies only to the `competition mode
+unavailable` refusal. Remove the setting after admission. It only begins
+submission polling and cannot supply credentials withheld by the miner.
+
 ### Execution resources and safety
 
 | Field | Meaning |

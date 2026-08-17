@@ -93,6 +93,7 @@ class FakeForwarder:
         *,
         wrong_hotkey: bool = False,
         participating_hotkeys: set[str] | None = None,
+        refusal_reason: str = "not configured",
     ) -> None:
         self.calls: list[tuple[str, str]] = []
         self.responses = []
@@ -102,6 +103,7 @@ class FakeForwarder:
             if participating_hotkeys is None
             else participating_hotkeys
         )
+        self.refusal_reason = refusal_reason
 
     async def __call__(self, endpoint, synapse, _timeout_seconds):
         if isinstance(synapse, protocol.CompetitionInvitationProtocol):
@@ -114,7 +116,7 @@ class FakeForwarder:
                 supported_competition_type=(
                     protocol.CompetitionType.COMPRESSION if participating else None
                 ),
-                refusal_reason=None if participating else "not configured",
+                refusal_reason=None if participating else self.refusal_reason,
             )
         else:
             self.calls.append(("submission", endpoint.hotkey))
@@ -283,7 +285,10 @@ class EnrollmentDispatcherTests(unittest.TestCase):
 
     def test_declined_miner_is_reinvited_after_enabling_competition(self) -> None:
         endpoint = self.endpoints()[1]
-        forwarder = FakeForwarder(participating_hotkeys=set())
+        forwarder = FakeForwarder(
+            participating_hotkeys=set(),
+            refusal_reason="competition mode unavailable",
+        )
         dispatcher = CompetitionEnrollmentDispatcher(
             self.repository,
             FakeIntake(),
@@ -311,6 +316,32 @@ class EnrollmentDispatcherTests(unittest.TestCase):
         self.assertIsNone(contender.reason_code)
         self.assertEqual(contender.invitation_attempts, 2)
         self.assertIn(("submission", endpoint.hotkey), forwarder.calls)
+
+    def test_consent_override_accepts_multiple_unintentional_declines(self) -> None:
+        endpoints = self.endpoints()
+        forwarder = FakeForwarder(
+            participating_hotkeys=set(),
+            refusal_reason="competition mode unavailable",
+        )
+        dispatcher = CompetitionEnrollmentDispatcher(
+            self.repository,
+            FakeIntake(),
+            forwarder,
+            owner_id="test-validator",
+            invitation_consent_override_hotkeys=frozenset(
+                endpoint.hotkey for endpoint in endpoints
+            ),
+            clock=self.clock,
+        )
+        asyncio.run(dispatcher.run_once(self.competition, endpoints))
+
+        for endpoint in endpoints:
+            contender = self.repository.get_contender(
+                self.manifest.competition_id, endpoint.hotkey
+            )
+            self.assertEqual(contender.status, ContenderState.PARTICIPATING.value)
+            self.assertEqual(contender.invitation_attempts, 1)
+            self.assertIn(("submission", endpoint.hotkey), forwarder.calls)
 
     def test_below_minimum_alpha_stake_is_retried_until_miner_qualifies(self) -> None:
         self.competition.manifest_json = self.manifest.model_copy(

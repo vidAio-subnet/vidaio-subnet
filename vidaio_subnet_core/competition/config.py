@@ -379,6 +379,7 @@ class CompetitionConfig(BaseSettings):
     lease_ttl_seconds: int = Field(default=120, ge=10, le=3600)
     network_timeout_seconds: float = Field(default=30, gt=0, le=120)
     max_concurrent_requests: int = Field(default=32, ge=1, le=256)
+    invitation_consent_override_hotkey: str = ""
     artifact_backup_bucket: str = Field(
         default_factory=lambda: os.getenv("BUCKET_NAME", "").strip()
     )
