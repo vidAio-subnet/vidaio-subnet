@@ -66,6 +66,7 @@ from vidaio_subnet_core.competition.repository import (
     AttemptOutcome,
     CompetitionRepository,
     DeferredBatchResult,
+    INFRASTRUCTURE_FAILURE_REASON_CODES,
 )
 from vidaio_subnet_core.competition.qualification import MediaInfo, QualificationError
 from vidaio_subnet_core.competition.pricing import (
@@ -2734,7 +2735,27 @@ class Phase4ScoringTests(unittest.TestCase):
 
 
 class Phase4CoordinatorTests(unittest.TestCase):
-    def test_sandbox_forward_failure_is_persisted_as_terminal(self) -> None:
+    def test_sandbox_exec_failure_is_contender_owned_not_infrastructure(self) -> None:
+        self.assertTrue(
+            {"SANDBOX_EXEC_FAILED", "SANDBOX_EXEC_TIMEOUT"}.isdisjoint(
+                INFRASTRUCTURE_FAILURE_REASON_CODES
+            )
+        )
+        result = SimpleNamespace(
+            outcomes=(
+                AttemptOutcome(1, "FAILED", reason_code="SANDBOX_EXEC_FAILED"),
+                AttemptOutcome(2, "FAILED", reason_code="SANDBOX_EXEC_TIMEOUT"),
+            )
+        )
+        self.assertIsNone(
+            CompetitionExecutionCoordinator._deferred_infrastructure_blocker(
+                (result,)
+            )
+        )
+
+    def test_sandbox_forward_failure_is_persisted_as_missing_contender_output(
+        self,
+    ) -> None:
         manifest = load_manifest(
             ROOT / "competitions/manifests/examples/compression-competition.json"
         )
@@ -2790,7 +2811,7 @@ class Phase4CoordinatorTests(unittest.TestCase):
 
         outcome = repository.outcomes[0]
         self.assertEqual(outcome.status, "FAILED")
-        self.assertEqual(outcome.reason_code, "SANDBOX_EXEC_FAILED")
+        self.assertEqual(outcome.reason_code, "CONTENDER_OUTPUT_MISSING")
         self.assertFalse(outcome.retryable)
 
     def test_validator_scores_returned_output_and_owns_failure_reason(self) -> None:
