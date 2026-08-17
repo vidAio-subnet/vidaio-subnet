@@ -1,4 +1,5 @@
 import os
+import argparse
 import time
 import uuid
 import httpx
@@ -10,12 +11,15 @@ import bittensor as bt
 import tempfile
 import aiohttp
 import ipaddress
+import math
 from loguru import logger
+from dotenv import load_dotenv
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from vidaio_subnet_core.utilities.version import get_version
 from vidaio_subnet_core.utilities.storage_client import storage_client
 from vidaio_subnet_core import validating, CONFIG, base, protocol
+from vidaio_subnet_core.base.config import add_common_config
 from vidaio_subnet_core.utilities.wandb_manager import WandbManager
 from services.video_scheduler.video_utils import get_trim_video_path, get_perumted_video_path
 from vidaio_subnet_core.utilities.uids import get_organic_forward_uids
@@ -28,7 +32,41 @@ from vidaio_subnet_core.protocol import (
     VideoUpscalingJobProtocol,
     VideoUpscalingPollProtocol,
     MinerResponse,
+    CompetitionInvitationProtocol,
+    CompetitionSubmissionProtocol,
 )
+from vidaio_subnet_core.competition.config import (
+    CompetitionConfig,
+    CompetitionManifest,
+)
+from vidaio_subnet_core.competition.artifact_backup import (
+    CompetitionArtifactBackupError,
+    CompetitionArtifactBackupService,
+    CompetitionDatabaseBackupError,
+)
+from vidaio_subnet_core.competition.build import (
+    CompetitionBuildService,
+    ModalImageBuildBackend,
+    ModalImageBuilder,
+)
+from vidaio_subnet_core.competition.enrollment import (
+    CompetitionEnrollmentDispatcher,
+    CompetitionMinerEndpoint,
+)
+from vidaio_subnet_core.competition.intake import (
+    CompetitionSubmissionIntakeService,
+    RepositoryIntake,
+)
+from vidaio_subnet_core.competition.manager import CompetitionManager
+from vidaio_subnet_core.competition.execution import CompetitionExecutionCoordinator
+from vidaio_subnet_core.competition.dataset import ModalVolumeStore
+from vidaio_subnet_core.competition.scoring_api import CompetitionScoringClient
+from vidaio_subnet_core.competition.modal_runner import (
+    CompetitionModalRunner,
+    ModalSandboxBackend,
+)
+from vidaio_subnet_core.competition.repository import CompetitionRepository
+from vidaio_subnet_core.competition.state import CompetitionState
 from vidaio_subnet_core.validating.managing.sql_schemas import MinerMetadata, MinerPerformanceHistory, Base
 from sqlalchemy import desc, asc, func, select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,6 +76,7 @@ from services.scoring.compression_score_cache import (
     CompressionScoreCache,
     find_duplicate_compression_scores,
 )
+from services.scoring.artifact_cleanup import cleanup_compression_artifacts
 from services.video_scheduler.redis_utils import (
     get_redis_connection, 
     get_organic_upscaling_queue_size, 
@@ -45,7 +84,15 @@ from services.video_scheduler.redis_utils import (
     set_scheduler_ready
 )
 from typing import List, Tuple, Any
-from enum import IntEnum
+from enum import Enum, IntEnum
+
+
+load_dotenv()
+
+
+METAGRAPH_REFRESH_INTERVAL_SECONDS = float(
+    os.getenv("METAGRAPH_REFRESH_INTERVAL_SECONDS", 30 * 60)
+)
 
 
 class VMAF_QUALITY_THRESHOLD(IntEnum):
@@ -95,20 +142,228 @@ except ValueError:
     logger.warning("Invalid ORGANIC_QUERIES_PER_MINER value, defaulting to SYNTHETIC_QUERIES_PER_MINER")
     ORGANIC_QUERIES_PER_MINER = SYNTHETIC_QUERIES_PER_MINER
 
+class ValidatorMode(str, Enum):
+    INFERENCE = "inference"
+    COMPETITION = "competition"
+
+
 class Validator(base.BaseValidator):
+    def get_config(self):
+        parser = add_common_config(argparse.ArgumentParser())
+        parser.add_argument(
+            "--validator-mode",
+            choices=[mode.value for mode in ValidatorMode],
+            default=ValidatorMode.INFERENCE.value,
+            help="Run only inference loops or only the competition scheduler.",
+        )
+        config = bt.Config(parser)
+        config.full_path = os.path.expanduser(
+            os.path.join(
+                config.logging.logging_dir,
+                config.wallet.name,
+                config.wallet.hotkey,
+                f"netuid{config.netuid}",
+                "validator",
+                config.validator_mode,
+            )
+        )
+        os.makedirs(config.full_path, exist_ok=True)
+        return config
+
+    def setup_axon(self):
+        if self.config.validator_mode == ValidatorMode.COMPETITION.value:
+            self.axon = None
+            logger.info("Competition process does not start a validator Axon")
+            return
+        super().setup_axon()
+
     def __init__(self):
+        self._last_metagraph_refresh_monotonic: float | None = None
         super().__init__()
+        self.validator_mode = ValidatorMode(self.config.validator_mode)
+        logger.info("Starting validator in {} mode", self.validator_mode.value)
+
+        self.miner_manager = None
+        self.challenge_synthesizer = None
+        self.score_client_upscaling = None
+        self.score_client_compression = None
+        self.score_client_upscaling_organics = None
+        self.score_client_compression_organics = None
+        self.set_weights_executor = None
+        self.redis_conn = None
+        self.wandb_manager = None
+        self.competition_score_client: CompetitionScoringClient | None = None
+        self.competition_config = (
+            CompetitionConfig()
+            if self.validator_mode is ValidatorMode.COMPETITION
+            else CompetitionConfig(
+                mode_enabled=False,
+                execution_enabled=False,
+                build_backend="disabled",
+            )
+        )
+        self.competition_rewards_repository: CompetitionRepository | None = None
+
+        if self.validator_mode is ValidatorMode.INFERENCE:
+            competition_database_url = os.getenv(
+                "COMPETITION_DATABASE_URL", ""
+            ).strip()
+            if competition_database_url:
+                self.competition_rewards_repository = CompetitionRepository(
+                    competition_database_url
+                )
+                logger.info(
+                    "Inference weights will read competition rankings from {}",
+                    competition_database_url,
+                )
+            else:
+                logger.info(
+                    "Competition rewards disabled in inference mode: "
+                    "COMPETITION_DATABASE_URL is not set"
+                )
+            self._initialize_inference_services()
+        else:
+            self.wandb_manager = WandbManager(
+                validator=self,
+                run_suffix="-competition",
+            )
+            logger.info("🔑 Initialized competition Wandb Manager 🔑")
+
+        self.competition_repository: CompetitionRepository | None = None
+        self.competition_dispatcher: CompetitionEnrollmentDispatcher | None = None
+        self.competition_execution_coordinator: (
+            CompetitionExecutionCoordinator | None
+        ) = None
+        self.competition_artifact_backup: (
+            CompetitionArtifactBackupService | None
+        ) = None
+        if self.competition_config.mode_enabled:
+            competition_repository = CompetitionRepository(
+                self.competition_config.database_url
+            )
+            self.competition_repository = competition_repository
+            self.competition_manager = CompetitionManager(
+                self.competition_config,
+                competition_repository,
+            )
+            logger.info(
+                "Competition mode enabled: scheduler_interval={}s manifest_glob={!r} "
+                "artifact_root={} network_timeout={}s max_concurrent_requests={}",
+                self.competition_config.scheduler_interval_seconds,
+                self.competition_config.manifest_glob,
+                self.competition_config.artifact_root,
+                self.competition_config.network_timeout_seconds,
+                self.competition_config.max_concurrent_requests,
+            )
+        else:
+            self.competition_manager = CompetitionManager(self.competition_config)
+            logger.info("Competition scheduler disabled (COMPETITION_MODE_ENABLED=false)")
+        if self.competition_repository is not None:
+            self.competition_artifact_backup = CompetitionArtifactBackupService(
+                self.competition_repository,
+                artifact_root=self.competition_config.artifact_root,
+                bucket=self.competition_config.artifact_backup_bucket,
+                key_prefix=self.competition_config.artifact_backup_prefix,
+                region_name=self.competition_config.artifact_backup_region,
+                endpoint_url=self.competition_config.artifact_backup_endpoint_url,
+                access_key_id=(
+                    self.competition_config.artifact_backup_access_key_id
+                ),
+                secret_access_key=(
+                    self.competition_config.artifact_backup_secret_access_key
+                ),
+                database_url=self.competition_config.database_url,
+                actor=self.competition_config.owner_id,
+            )
+            self.competition_artifact_backup.preflight_privacy()
+            competition_intake = CompetitionSubmissionIntakeService(
+                RepositoryIntake(self.competition_config.artifact_root),
+                self.competition_repository,
+            )
+            self.competition_dispatcher = CompetitionEnrollmentDispatcher(
+                self.competition_repository,
+                competition_intake,
+                self._forward_competition_request,
+                owner_id=self.competition_config.owner_id,
+                timeout_seconds=self.competition_config.network_timeout_seconds,
+                max_concurrent_requests=(
+                    self.competition_config.max_concurrent_requests
+                ),
+            )
+            logger.info(
+                "Competition enrollment dispatcher initialized: timeout={}s "
+                "max_concurrent_requests={}",
+                self.competition_config.network_timeout_seconds,
+                self.competition_config.max_concurrent_requests,
+            )
+            if self.competition_config.execution_enabled:
+                accepted_build_statuses = frozenset(
+                    {"MODAL_ACCEPTED", "DEVELOPMENT_ACCEPTED"}
+                )
+                modal_build_backend = ModalImageBuildBackend(
+                    environment_name=self.competition_config.modal_environment
+                )
+                build_service = CompetitionBuildService(
+                    self.competition_repository,
+                    ModalImageBuilder(modal_build_backend),
+                    actor=self.competition_config.owner_id,
+                    accepted_build_status="MODAL_ACCEPTED",
+                )
+                sandbox_runner = CompetitionModalRunner(
+                    self.competition_repository,
+                    ModalSandboxBackend(
+                        environment_name=self.competition_config.modal_environment
+                    ),
+                    actor=self.competition_config.owner_id,
+                    accepted_build_statuses=accepted_build_statuses,
+                )
+                competition_score_url = (
+                    f"http://{CONFIG.score.host}:"
+                    f"{CONFIG.score.compression_competition_score_port}"
+                )
+                self.competition_score_client = CompetitionScoringClient(
+                    competition_score_url,
+                    modal_environment=self.competition_config.modal_environment,
+                )
+                self.competition_execution_coordinator = (
+                    CompetitionExecutionCoordinator(
+                        self.competition_manager,
+                        self.competition_repository,
+                        build_service,
+                        sandbox_runner,
+                        artifact_root=self.competition_config.artifact_root,
+                        actor=self.competition_config.owner_id,
+                        accepted_build_statuses=accepted_build_statuses,
+                        dataset_store=ModalVolumeStore(
+                            environment_name=(
+                                self.competition_config.modal_environment
+                            )
+                        ),
+                        item_scorer=self.competition_score_client,
+                        defer_round_commit=True,
+                    )
+                )
+                logger.warning(
+                    "Competition execution enabled with direct Modal builds: "
+                    "environment={} operator acknowledged that Modal does not "
+                    "attest the 25 GB final-image size limit; scoring_endpoint={}",
+                    self.competition_config.modal_environment,
+                    competition_score_url,
+                )
+
+    def _initialize_inference_services(self) -> None:
         self.miner_manager = validating.managing.MinerManager(
-            uid=self.uid, config=self.config, wallet=self.wallet, metagraph=self.metagraph
+            uid=self.uid,
+            config=self.config,
+            wallet=self.wallet,
+            metagraph=self.metagraph,
+            subtensor=self.subtensor,
+            competition_repository=self.competition_rewards_repository,
         )
         logger.info("💧 Initialized miner manager 💧")
-        
         self.challenge_synthesizer = validating.synthesizing.Synthesizer()
         logger.info("💧 Initialized challenge synthesizer 💧")
-        
-        self.dendrite = bt.Dendrite(wallet=self.wallet)
-        logger.info("💧 Initialized dendrite 💧")
-        
+
         self.score_client_upscaling = httpx.AsyncClient(
             base_url=f"http://{CONFIG.score.host}:{CONFIG.score.upscaling_score_port}"
         )
@@ -153,6 +408,249 @@ class Validator(base.BaseValidator):
         self.scheduler_ready_endpoint = f"http://{CONFIG.video_scheduler.host}:{CONFIG.video_scheduler.port}/api/scheduler_ready"
         self.synthetic_deduped_uid_reasons: dict[int, str] = {}
         self.synthetic_deduped_uid_sources: dict[int, int] = {}
+
+    async def run_competition(self) -> None:
+        """Run the independent, restart-safe competition scheduler task."""
+
+        if not self.competition_manager.enabled:
+            return
+        logger.info("Starting competition scheduler task")
+        await self.competition_manager.run(
+            before_finalization=self._finalize_competition_alpha_stake_eligibility,
+            after_tick=self._run_competition_tick_work,
+        )
+
+    async def close(self) -> None:
+        clients = (
+            self.score_client_upscaling,
+            self.score_client_compression,
+            self.score_client_upscaling_organics,
+            self.score_client_compression_organics,
+            self.competition_score_client,
+        )
+        for client in clients:
+            if client is not None:
+                await client.aclose()
+        if self.set_weights_executor is not None:
+            self.set_weights_executor.shutdown(wait=False, cancel_futures=True)
+        if self.competition_rewards_repository is not None:
+            self.competition_rewards_repository.engine.dispose()
+
+    async def _run_competition_tick_work(self) -> None:
+        await self._backup_completed_competition_databases()
+        await asyncio.to_thread(self.resync_metagraph)
+        await self._dispatch_competition_enrollment()
+        backup_ready = await self._backup_finalized_submission_artifacts()
+        if self.competition_execution_coordinator is not None:
+            if backup_ready:
+                await self.competition_execution_coordinator.run_once()
+
+    def resync_metagraph(self) -> bool:
+        """Refresh all metagraph vectors, including alpha stake, on one cadence."""
+
+        now = time.monotonic()
+        last_refresh = self._last_metagraph_refresh_monotonic
+        if (
+            last_refresh is not None
+            and now - last_refresh < METAGRAPH_REFRESH_INTERVAL_SECONDS
+        ):
+            return False
+        logger.info(
+            "Refreshing validator metagraph (interval={}s); this "
+            "refreshes alpha-stake values used for competition eligibility",
+            METAGRAPH_REFRESH_INTERVAL_SECONDS,
+        )
+        super().resync_metagraph()
+        self._last_metagraph_refresh_monotonic = time.monotonic()
+        return True
+
+    def _finalize_competition_alpha_stake_eligibility(
+        self, competition, now: datetime
+    ) -> None:
+        """Reject ineligible submissions immediately before finalisation."""
+
+        self.resync_metagraph()
+        manifest = CompetitionManifest.model_validate_json(competition.manifest_json)
+        alpha_stakes = {
+            str(hotkey): (uid, self._competition_alpha_stake(uid))
+            for uid, hotkey in enumerate(self.metagraph.hotkeys)
+        }
+        rejected = self.competition_repository.reject_ineligible_contenders(
+            competition.competition_id,
+            alpha_stakes,
+            manifest.minimum_alpha_stake,
+            now=now,
+        )
+        logger.info(
+            "Competition alpha-stake eligibility finalized: id={} rejected={}",
+            competition.competition_id,
+            rejected,
+        )
+
+    async def _backup_finalized_submission_artifacts(self) -> bool:
+        if (
+            self.competition_repository is None
+            or self.competition_artifact_backup is None
+        ):
+            return True
+        competitions = await asyncio.to_thread(
+            self.competition_repository.list_nonterminal
+        )
+        finalizing = [
+            competition
+            for competition in competitions
+            if competition.status
+            == CompetitionState.FINALIZING_SUBMISSIONS.value
+        ]
+        ready = True
+        for competition in finalizing:
+            if competition.submission_backup_status == "COMPLETED":
+                continue
+            try:
+                result = await asyncio.to_thread(
+                    self.competition_artifact_backup.backup,
+                    competition.competition_id,
+                )
+            except CompetitionArtifactBackupError as exc:
+                ready = False
+                logger.error(
+                    "Competition submission snapshot backup failed: id={} reason={}",
+                    competition.competition_id,
+                    str(exc),
+                )
+            else:
+                logger.info(
+                    "Competition private submission backup files: id={} "
+                    "archive={} inventory={} database_archive_path={}",
+                    competition.competition_id,
+                    result.archive_s3_uri,
+                    result.inventory_s3_uri,
+                    result.database_archive_path,
+                )
+        return ready
+
+    async def _backup_completed_competition_databases(self) -> None:
+        if (
+            self.competition_repository is None
+            or self.competition_artifact_backup is None
+        ):
+            return
+        competitions = await asyncio.to_thread(
+            self.competition_repository.list_completed_pending_database_backup
+        )
+        for competition in competitions:
+            try:
+                result = await asyncio.to_thread(
+                    self.competition_artifact_backup.backup_database,
+                    competition.competition_id,
+                )
+            except CompetitionDatabaseBackupError as exc:
+                logger.error(
+                    "Completed competition database backup failed: id={} reason={}",
+                    competition.competition_id,
+                    str(exc),
+                )
+            else:
+                logger.info(
+                    "Completed competition database backup path: id={} path={}",
+                    competition.competition_id,
+                    result.s3_uri,
+                )
+
+    async def _forward_competition_request(
+        self,
+        endpoint: CompetitionMinerEndpoint,
+        synapse: CompetitionInvitationProtocol | CompetitionSubmissionProtocol,
+        timeout_seconds: float,
+    ):
+        responses = await self.dendrite.forward(
+            axons=[endpoint.transport],
+            synapse=synapse,
+            timeout=timeout_seconds,
+        )
+        return responses[0] if responses else None
+
+    async def _dispatch_competition_enrollment(self) -> None:
+        if (
+            self.competition_repository is None
+            or self.competition_dispatcher is None
+        ):
+            return
+        competitions = await asyncio.to_thread(
+            self.competition_repository.list_nonterminal
+        )
+        enrolling = [
+            competition
+            for competition in competitions
+            if competition.status == CompetitionState.ENROLLING.value
+        ]
+        if not enrolling:
+            return
+        endpoints = self._competition_miner_endpoints()
+        for competition in enrolling:
+            await self.competition_dispatcher.run_once(competition, endpoints)
+
+    def _competition_miner_endpoints(self) -> list[CompetitionMinerEndpoint]:
+        """Snapshot registered, serving miner axons without touching inference state."""
+
+        endpoints: list[CompetitionMinerEndpoint] = []
+        min_stake = float(CONFIG.bandwidth.min_stake)
+        for uid, hotkey in enumerate(self.metagraph.hotkeys):
+            if uid == self.uid or uid >= len(self.metagraph.axons):
+                continue
+            try:
+                if float(self.metagraph.S[uid]) >= min_stake:
+                    continue
+            except (IndexError, TypeError, ValueError):
+                logger.warning(
+                    "Skipping competition invitation candidate UID {}: invalid stake snapshot",
+                    uid,
+                )
+                continue
+            axon = self.metagraph.axons[uid]
+            is_serving = getattr(axon, "is_serving", True)
+            if callable(is_serving):
+                try:
+                    is_serving = is_serving()
+                except Exception:
+                    is_serving = False
+            if not is_serving:
+                continue
+            endpoints.append(
+                CompetitionMinerEndpoint(
+                    uid=uid,
+                    hotkey=str(hotkey),
+                    coldkey=self._uid_coldkey(uid) or None,
+                    transport=axon,
+                    alpha_stake=self._competition_alpha_stake(uid),
+                )
+            )
+        logger.debug(
+            "Competition metagraph snapshot contains {} serving miner endpoint(s)",
+            len(endpoints),
+        )
+        return endpoints
+
+    def _competition_alpha_stake(self, uid: int) -> float | None:
+        for attribute in ("alpha_stake", "AS"):
+            values = getattr(self.metagraph, attribute, None)
+            if values is None:
+                continue
+            try:
+                value = values[uid]
+                tao = getattr(value, "tao", None)
+                value = (
+                    tao()
+                    if callable(tao)
+                    else (tao if tao is not None else value)
+                )
+                item = getattr(value, "item", None)
+                value = item() if callable(item) else value
+                stake = float(value)
+            except (IndexError, KeyError, TypeError, ValueError):
+                continue
+            return stake if math.isfinite(stake) and stake >= 0 else None
+        return None
 
     async def check_scheduler_ready(self) -> bool:
         """
@@ -884,6 +1382,7 @@ class Validator(base.BaseValidator):
             f"{num_miners} miners in {scoring_batch_count} batches of up to {scoring_batch_size}"
         )
 
+        deferred_scoring_results = []
         for batch_idx, batch_start in enumerate(range(0, total_scoring_responses, scoring_batch_size), start=1):
             batch_end = min(batch_start + scoring_batch_size, total_scoring_responses)
             batch_uids = flat_uids[batch_start:batch_end]
@@ -900,7 +1399,7 @@ class Validator(base.BaseValidator):
                 if batch_start <= idx < batch_end
             }
 
-            await self.score_upscalings(
+            scoring_result = await self.score_upscalings(
                 batch_uids,
                 [],
                 flat_payload_urls[batch_start:batch_end],
@@ -913,20 +1412,38 @@ class Validator(base.BaseValidator):
                 round_id,
                 distorted_urls=flat_distorted_urls[batch_start:batch_end],
                 duplicate_url_reasons=batch_duplicate_url_reasons,
+                commit_scores=False,
             )
+            deferred_scoring_results.append(scoring_result)
 
             logger.info(
                 f"Completed upscaling scoring batch {batch_idx}/{scoring_batch_count} "
                 f"in {time.time() - batch_timer:.2f} seconds"
             )
 
-        for ref_path, payload_path, uploaded_object_name in zip(reference_video_paths, payload_urls, uploaded_object_names):
-            if os.path.exists(ref_path):
-                os.unlink(ref_path)
+        self._commit_upscaling_scores(deferred_scoring_results)
+
+        # These collections do not necessarily have the same length, so clean
+        # each kind of resource independently.
+        for ref_path in reference_video_paths:
+            if ref_path and os.path.exists(ref_path):
+                try:
+                    os.unlink(ref_path)
+                except Exception as e:
+                    logger.error(f"Error deleting reference video file {ref_path}: {e}")
+
+        for payload_path in payload_urls:
             if payload_path and os.path.exists(payload_path):
-                os.unlink(payload_path)
-            # Delete the uploaded object
-            await storage_client.delete_file(uploaded_object_name)
+                try:
+                    os.unlink(payload_path)
+                except Exception as e:
+                    logger.error(f"Error deleting payload video file {payload_path}: {e}")
+
+        for uploaded_object_name in uploaded_object_names:
+            try:
+                await storage_client.delete_file(uploaded_object_name)
+            except Exception as e:
+                logger.error(f"Error deleting uploaded object {uploaded_object_name}: {e}")
 
         batch_processed_time = time.time() - batch_start_time
         logger.info(f"Completed upscaling batch within {batch_processed_time:.2f} seconds")
@@ -1091,6 +1608,7 @@ class Validator(base.BaseValidator):
         )
 
         compression_score_cache: CompressionScoreCache = {}
+        deferred_scoring_results = []
         for batch_idx, batch_start in enumerate(range(0, total_scoring_responses, scoring_batch_size), start=1):
             batch_end = min(batch_start + scoring_batch_size, total_scoring_responses)
             batch_uids = flat_uids[batch_start:batch_end]
@@ -1107,7 +1625,7 @@ class Validator(base.BaseValidator):
                 if batch_start <= idx < batch_end
             }
 
-            await self.score_compressions(
+            scoring_result = await self.score_compressions(
                 batch_uids,
                 [],
                 distorted_file_paths[batch_start:batch_end],
@@ -1124,24 +1642,46 @@ class Validator(base.BaseValidator):
                 distorted_urls=flat_distorted_urls[batch_start:batch_end],
                 duplicate_url_reasons=batch_duplicate_url_reasons,
                 compression_score_cache=compression_score_cache,
+                commit_scores=False,
             )
+            deferred_scoring_results.append(scoring_result)
 
             logger.info(
                 f"Completed compression scoring batch {batch_idx}/{scoring_batch_count} "
                 f"in {time.time() - batch_timer:.2f} seconds"
             )
 
-        for dist_path, ref_path, uploaded_object_name in zip(distorted_file_paths, reference_video_paths, uploaded_object_names):
+        self._commit_compression_scores(deferred_scoring_results)
+
+        # There is one distorted file per miner response, but only one reference
+        # and uploaded object per query.  Zipping these lists would stop after the
+        # query count and leak the remaining distorted files.
+        for dist_path in distorted_file_paths:
             if dist_path and os.path.exists(dist_path):
                 try:
                     os.unlink(dist_path)
                 except Exception as e:
                     logger.error(f"Error deleting distorted video file {dist_path}: {e}")
-            if os.path.exists(ref_path):
-                os.unlink(ref_path)
 
-            # Delete the uploaded object
-            await storage_client.delete_file(uploaded_object_name)
+        for ref_path in reference_video_paths:
+            if ref_path and os.path.exists(ref_path):
+                try:
+                    os.unlink(ref_path)
+                except Exception as e:
+                    logger.error(f"Error deleting reference video file {ref_path}: {e}")
+
+        for payload_path in payload_urls:
+            if payload_path and os.path.exists(payload_path):
+                try:
+                    os.unlink(payload_path)
+                except Exception as e:
+                    logger.error(f"Error deleting payload video file {payload_path}: {e}")
+
+        for uploaded_object_name in uploaded_object_names:
+            try:
+                await storage_client.delete_file(uploaded_object_name)
+            except Exception as e:
+                logger.error(f"Error deleting uploaded object {uploaded_object_name}: {e}")
 
     async def start_organic_loop(self):
         """Start organic processing loop for both upscaling and compression tasks asynchronously."""
@@ -1189,6 +1729,7 @@ class Validator(base.BaseValidator):
         round_id: str,
         distorted_urls: list[str] | None = None,
         duplicate_url_reasons: dict[int, str] | None = None,
+        commit_scores: bool = True,
     ):
         if distorted_urls is None:
             distorted_urls = []
@@ -1258,7 +1799,52 @@ class Validator(base.BaseValidator):
             lambda idx: duplicate_url_reasons[idx],
             "No reason provided",
         )
-        
+
+        scoring_result = {
+            "round_id": round_id,
+            "uids": uids,
+            "vmaf_scores": vmaf_scores,
+            "pieapp_scores": pieapp_scores,
+            "quality_scores": quality_scores,
+            "length_scores": length_scores,
+            "final_scores": final_scores,
+            "reasons": reasons,
+            "content_lengths": content_lengths,
+            "payload_urls": payload_urls,
+            "distorted_urls": distorted_urls,
+            "timestamp": timestamp,
+        }
+        if commit_scores:
+            self._commit_upscaling_scores([scoring_result])
+        return scoring_result
+
+    def _commit_upscaling_scores(self, scoring_results):
+        if not scoring_results:
+            return
+
+        round_id = scoring_results[0]["round_id"]
+        if any(result["round_id"] != round_id for result in scoring_results):
+            raise ValueError("Cannot commit upscaling scores from different rounds")
+
+        def combine(key):
+            return [
+                value
+                for result in scoring_results
+                for value in result[key]
+            ]
+
+        uids = combine("uids")
+        vmaf_scores = combine("vmaf_scores")
+        pieapp_scores = combine("pieapp_scores")
+        quality_scores = combine("quality_scores")
+        length_scores = combine("length_scores")
+        final_scores = combine("final_scores")
+        reasons = combine("reasons")
+        content_lengths = combine("content_lengths")
+        payload_urls = combine("payload_urls")
+        distorted_urls = combine("distorted_urls")
+        timestamp = scoring_results[0]["timestamp"]
+
         logger.info(f"Updating miner manager with {len(quality_scores)} upscaling scores after synthetic requests processing")
 
         miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
@@ -1344,6 +1930,7 @@ class Validator(base.BaseValidator):
         distorted_urls: list[str] | None = None,
         duplicate_url_reasons: dict[int, str] | None = None,
         compression_score_cache: CompressionScoreCache | None = None,
+        commit_scores: bool = True,
     ):
         if distorted_urls is None:
             distorted_urls = []
@@ -1445,7 +2032,50 @@ class Validator(base.BaseValidator):
                 f"Zeroed {len(duplicate_score_owners)} duplicate synthetic "
                 "compression results based on normalized primary scoring metrics"
             )
-        
+
+        scoring_result = {
+            "round_id": round_id,
+            "uids": uids,
+            "vmaf_scores": vmaf_scores,
+            "base_vmaf_scores": base_vmaf_scores,
+            "final_scores": final_scores,
+            "reasons": reasons,
+            "compression_rates": compression_rates,
+            "vmaf_thresholds": vmaf_thresholds,
+            "payload_urls": payload_urls,
+            "distorted_urls": distorted_urls,
+            "timestamp": timestamp,
+        }
+        if commit_scores:
+            self._commit_compression_scores([scoring_result])
+        return scoring_result
+
+    def _commit_compression_scores(self, scoring_results):
+        if not scoring_results:
+            return
+
+        round_id = scoring_results[0]["round_id"]
+        if any(result["round_id"] != round_id for result in scoring_results):
+            raise ValueError("Cannot commit compression scores from different rounds")
+
+        def combine(key):
+            return [
+                value
+                for result in scoring_results
+                for value in result[key]
+            ]
+
+        uids = combine("uids")
+        vmaf_scores = combine("vmaf_scores")
+        base_vmaf_scores = combine("base_vmaf_scores")
+        final_scores = combine("final_scores")
+        reasons = combine("reasons")
+        compression_rates = combine("compression_rates")
+        vmaf_thresholds = combine("vmaf_thresholds")
+        payload_urls = combine("payload_urls")
+        distorted_urls = combine("distorted_urls")
+        timestamp = scoring_results[0]["timestamp"]
+
         logger.info(f"Updating miner manager with {len(compression_rates)} compression miner scores after synthetic requests processing")
 
         miner_hotkeys = [self.metagraph.hotkeys[uid] for uid in uids]
@@ -2235,27 +2865,37 @@ class WeightSynthesizer:
 
 if __name__ == "__main__":
     validator = Validator()
-    weight_synthesizer = WeightSynthesizer(validator)
-    dev_mode = os.getenv("DEV_MODE", "False").lower() == "true"
-    time.sleep(10 if dev_mode else 1300) # wait till the video scheduler is ready
-
-    set_scheduler_ready(validator.redis_conn, False)
-    logger.info("Set scheduler readiness flag to False")
 
     async def main():
-        validator_synthetic_task = asyncio.create_task(validator.run_synthetic())
-        validator_organic_task = asyncio.create_task(validator.run_organic())
-        weight_setter = asyncio.create_task(weight_synthesizer.run())
-        wandb_maintenance_task = asyncio.create_task(
-            validator.wandb_manager.run_maintenance()
-        )
+        try:
+            if validator.validator_mode is ValidatorMode.COMPETITION:
+                if not validator.competition_manager.enabled:
+                    logger.warning(
+                        "Competition process is idle because "
+                        "COMPETITION_MODE_ENABLED=false"
+                    )
+                    competition_task = asyncio.Event().wait()
+                else:
+                    competition_task = validator.run_competition()
+                await asyncio.gather(
+                    competition_task,
+                    validator.wandb_manager.run_maintenance(),
+                )
+                return
 
-        await asyncio.gather(
-            validator_synthetic_task,
-            validator_organic_task,
-            weight_setter,
-            wandb_maintenance_task,
-        )
+            weight_synthesizer = WeightSynthesizer(validator)
+            dev_mode = os.getenv("DEV_MODE", "False").lower() == "true"
+            await asyncio.sleep(10 if dev_mode else 1300)
+            set_scheduler_ready(validator.redis_conn, False)
+            logger.info("Set scheduler readiness flag to False")
+            await asyncio.gather(
+                validator.run_synthetic(),
+                validator.run_organic(),
+                weight_synthesizer.run(),
+                validator.wandb_manager.run_maintenance(),
+            )
+        finally:
+            await validator.close()
 
     try:
         asyncio.run(main())
@@ -2264,4 +2904,5 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Unhandled exception: {e}", exc_info=True)
     finally:
-        validator.wandb_manager.finish()
+        if validator.wandb_manager is not None:
+            validator.wandb_manager.finish()

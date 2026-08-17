@@ -166,6 +166,7 @@ def main() -> int:
         config=config,
         wallet=wallet,
         metagraph=metagraph,
+        subtensor=subtensor,
     )
     logger.info(
         "MinerManager initialized; miner_metadata and "

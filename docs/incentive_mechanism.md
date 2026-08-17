@@ -630,9 +630,32 @@ The final incentive layer is implemented in `vidaio_subnet_core/validating/manag
 
 ### Eligible Miner Set
 
-Only miners with a valid `accumulate_score` and a recognized `processing_task_type` participate in the emission calculation. Validators, identified by metagraph `validator_permit`, and miners with `accumulate_score == -1` are excluded before ranking.
+Only rows with a valid `accumulate_score` and a recognized
+`processing_task_type` participate in the inference emission calculation;
+miners with `accumulate_score == -1` are excluded before ranking. The current
+implementation treats every row in `miner_metadata` as a miner. A metagraph
+`validator_permit` is not an exclusion criterion because the chain may assign
+one to a miner based on its alpha stake.
 
-Eligible miners are separated by task type and ranked by `accumulate_score` in descending order inside their own task pools. Compression receives 80% of the pre-burn miner pool and upscaling receives 20%.
+Eligible miners are separated by task type and ranked by `accumulate_score` in descending order inside their own task pools. Before any competition has finalized, compression receives 80% of the pre-burn miner pool and upscaling receives 20%.
+
+After a competition finalizes, 20% becomes the competition pool. The inference
+split becomes 60% compression and 20% upscaling, while the latest finalized
+podium divides the competition pool as follows:
+
+| Competition rank | Share of competition pool | Effective total allocation |
+|------------------|---------------------------|----------------------------|
+| Winner | 70% | 14% |
+| Runner-up | 20% | 4% |
+| Third place | 10% | 2% |
+
+Podium hotkeys are resolved against the current metagraph. If the winner is no
+longer registered, the system falls back to the pre-competition 80%
+compression / 20% upscaling split. A validator permit does not exclude a miner
+from competition rewards. Missing lower podium recipients return their
+unclaimed allocation to compression inference. When a podium miner also
+receives an inference allocation, both contributions are merged into one UID
+before weights are emitted.
 
 The miner metadata table also stores each miner UID's current `alpha_stake`. This value is synced from the Bittensor metagraph `alpha_stake` vector, exposed by the SDK as `metagraph.alpha_stake` / `metagraph.AS`, alongside the existing hotkey, coldkey, IP, and port metadata.
 
@@ -653,7 +676,8 @@ Each task pool starts from an equal split among its top five miners:
 
 Rank determines eligibility. When both optional weigh factors are `0.0`, all five eligible ranks receive the same share. Miners ranked 6 or lower in their task pool receive zero miner-side emission weight for that round.
 
-Before burn, this produces the following task-specific allocations:
+Before burn and before a competition podium exists, this produces the following
+task-specific allocations:
 
 | Bucket | Rank 1 | Rank 2 | Rank 3 | Rank 4 | Rank 5 | Rank 6+ |
 |--------|--------|--------|--------|--------|--------|---------|
@@ -662,13 +686,15 @@ Before burn, this produces the following task-specific allocations:
 
 ### Alpha Stake Weighing
 
-After the base top-five allocation, the miner manager can optionally weigh miner-side allocations according to each non-validator miner's alpha stake proportion inside the same task pool. This behavior is controlled by:
+After the base top-five allocation, the miner manager can optionally weigh each
+top-five metadata recipient's miner-side allocation according to its alpha
+stake proportion inside the same task pool. This behavior is controlled by:
 
 ```python
 alpha_stake_weigh_factor = CONFIG.score.alpha_stake_weigh_factor
 ```
 
-The current default is `0.0`, so this layer is disabled by default and the equal top-five split is preserved exactly. When the factor is greater than zero, only miners that already have a non-zero base allocation participate in the alpha stake weighing. In practice, this means only the top five compression miners and top five upscaling miners are eligible. Validators are excluded before this calculation, and miners ranked 6 or lower keep zero emission weight even if they have alpha stake.
+The current default is `0.0`, so this layer is disabled by default and the equal top-five split is preserved exactly. When the factor is greater than zero, only miners that already have a non-zero base allocation participate in the alpha stake weighing. In practice, this means only the top five compression miners and top five upscaling miners are eligible. A validator permit does not remove a miner from this set, and miners ranked 6 or lower keep zero emission weight even if they have alpha stake.
 
 For each task pool, the weighing calculation uses alpha stake proportions among that task pool's non-zero recipients:
 
@@ -703,7 +729,8 @@ emission_liquidation_window_epochs = CONFIG.score.emission_liquidation_window_ep
 
 The window defaults to 10 retained tempo-epoch snapshots. Epoch boundaries use `metagraph.tempo` when available, falling back to `CONFIG.SUBNET_TEMPO`. The first retained snapshot is used as the alpha stake baseline, so a 10-snapshot window provides up to 9 comparable settled emission intervals. The weigh factor defaults to `5.0`. Setting the factor to `0.0` disables this liquidation weighing layer.
 
-For each top-five non-validator recipient in a task pool, the miner manager reads up to the latest 10 `miner_emission_epoch_snapshots` rows and estimates:
+For each top-five metadata recipient in a task pool, the miner manager reads up
+to the latest 10 `miner_emission_epoch_snapshots` rows and estimates:
 
 ```text
 first_excluded_emission_i = first_snapshot.emission
@@ -767,7 +794,10 @@ miner_weight_i = pre_burn_weight_i * (1 - burn_proportion)
 burn_weight = burn_proportion * sum(pre_burn_weights)
 ```
 
-With `burn_proportion = 0.0`, `alpha_stake_weigh_factor = 0.0`, and `emission_liquidation_weigh_factor = 0.0`, the effective on-chain distribution is:
+Before a competition podium exists, with `burn_proportion = 0.0`,
+`alpha_stake_weigh_factor = 0.0`, and
+`emission_liquidation_weigh_factor = 0.0`, the effective on-chain distribution
+is:
 
 | Recipient bucket | Effective final allocation |
 |------------------|----------------------------|
@@ -843,10 +873,11 @@ The task allocation, base top-five split, optional alpha stake weighing, and opt
 | **Quality Weight (W1)** | 0.5 | 0.0 - 1.0 | Fixed in current scoring service |
 | **Length Weight (W2)** | 0.5 | 0.0 - 1.0 | Fixed in current scoring service |
 | **Emission Burn Proportion** | 0.0 | Miner manager setting | No miner emissions are burned by default |
-| **Compression Emission Allocation** | 80% | Miner manager setting | Compression pool before burn and top-five split |
+| **Compression Emission Allocation** | 80% before a podium; 60% with a complete podium | Miner manager setting | Unclaimed competition rewards return to this pool |
 | **Upscaling Emission Allocation** | 20% | Miner manager setting | Upscaling pool before burn and top-five split |
+| **Competition Emission Allocation** | 20% | Miner manager setting | Latest finalized podium receives 70% / 20% / 10%, equal to 14% / 4% / 2% of total emissions |
 | **Emission Rank Shares** | 20%, 20%, 20%, 20%, 20% | Miner manager setting | Base shares applied separately inside compression and upscaling; only ranks 1-5 in each task pool receive non-zero miner-side emission weight |
-| **Alpha Stake Weigh Factor** | 0.0 | `CONFIG.score.alpha_stake_weigh_factor` | Disabled by default; optional task-pool-local weighing for non-validator top-five miners, normalized to preserve each task pool's total allocation |
+| **Alpha Stake Weigh Factor** | 0.0 | `CONFIG.score.alpha_stake_weigh_factor` | Disabled by default; optional task-pool-local weighing for top-five metadata recipients, normalized to preserve each task pool's total allocation |
 | **Emission Liquidation Weigh Factor** | 5.0 | `CONFIG.score.emission_liquidation_weigh_factor` | Optional task-pool-local weighing toward miners with lower estimated recent liquidation and higher retained emission proportion |
 | **Emission Liquidation Window** | 10 snapshots | `CONFIG.score.emission_liquidation_window_epochs` | Number of recent tempo-epoch snapshots retained in `miner_emission_epoch_snapshots`; the first retained snapshot is the alpha baseline, so 10 snapshots provide up to 9 comparable emission intervals |
 

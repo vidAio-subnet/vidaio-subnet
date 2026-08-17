@@ -13,6 +13,8 @@ from vidaio_subnet_core.protocol import (
     VideoCompressionPollProtocol,
     VideoUpscalingJobProtocol,
     VideoUpscalingPollProtocol,
+    CompetitionInvitationProtocol,
+    CompetitionSubmissionProtocol,
 )
 import argparse
 from .config import add_common_config
@@ -38,39 +40,34 @@ class BaseMiner(ABC):
         self.axon = bt.Axon(config=self.config)
         self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
         logger.info(f"Running Miner with UID {self.uid}")
-        self.axon.attach(
-            forward_fn=self.forward_upscaling_requests,
-            blacklist_fn=self.blacklist_upscaling_requests,
-            priority_fn=self.priority_upscaling_requests,
-        ).attach(
-            forward_fn=self.forward_length_check_requests,
-            blacklist_fn=self.blacklist_length_check_requests,
-            priority_fn=self.priority_length_check_requests,
-        ).attach(
-            forward_fn=self.forward_compression_requests,
-            blacklist_fn=self.blacklist_compression_requests,
-            priority_fn=self.priority_compression_requests,
-        ).attach(
-            forward_fn=self.forward_task_warrant_requests,
-            blacklist_fn=self.blacklist_task_warrant_requests,
-            priority_fn=self.priority_task_warrant_requests,
-        ).attach(
-            forward_fn=self.forward_compression_job_requests,
-            blacklist_fn=self.blacklist_compression_job_requests,
-            priority_fn=self.priority_compression_job_requests,
-        ).attach(
-            forward_fn=self.forward_compression_poll_requests,
-            blacklist_fn=self.blacklist_compression_poll_requests,
-            priority_fn=self.priority_compression_poll_requests,
-        ).attach(
-            forward_fn=self.forward_upscaling_job_requests,
-            blacklist_fn=self.blacklist_upscaling_job_requests,
-            priority_fn=self.priority_upscaling_job_requests,
-        ).attach(
-            forward_fn=self.forward_upscaling_poll_requests,
-            blacklist_fn=self.blacklist_upscaling_poll_requests,
-            priority_fn=self.priority_upscaling_poll_requests,
-        )
+        modes = self.enabled_miner_modes()
+        if "inference" in modes:
+            inference_handlers = (
+                (self.forward_upscaling_requests, self.blacklist_upscaling_requests, self.priority_upscaling_requests),
+                (self.forward_length_check_requests, self.blacklist_length_check_requests, self.priority_length_check_requests),
+                (self.forward_compression_requests, self.blacklist_compression_requests, self.priority_compression_requests),
+                (self.forward_task_warrant_requests, self.blacklist_task_warrant_requests, self.priority_task_warrant_requests),
+                (self.forward_compression_job_requests, self.blacklist_compression_job_requests, self.priority_compression_job_requests),
+                (self.forward_compression_poll_requests, self.blacklist_compression_poll_requests, self.priority_compression_poll_requests),
+                (self.forward_upscaling_job_requests, self.blacklist_upscaling_job_requests, self.priority_upscaling_job_requests),
+                (self.forward_upscaling_poll_requests, self.blacklist_upscaling_poll_requests, self.priority_upscaling_poll_requests),
+            )
+            for forward_fn, blacklist_fn, priority_fn in inference_handlers:
+                self.axon.attach(
+                    forward_fn=forward_fn,
+                    blacklist_fn=blacklist_fn,
+                    priority_fn=priority_fn,
+                )
+        if "competition" in modes:
+            self.axon.attach(
+                forward_fn=self.forward_competition_invitation,
+                blacklist_fn=self.blacklist_competition_invitation,
+                priority_fn=self.priority_competition_invitation,
+            ).attach(
+                forward_fn=self.forward_competition_submission,
+                blacklist_fn=self.blacklist_competition_submission,
+                priority_fn=self.priority_competition_submission,
+            )
 
         self.check_registered()
         self.block = self.subtensor.get_current_block()
@@ -81,6 +78,11 @@ class BaseMiner(ABC):
         self.should_exit: bool = False
         self.is_running: bool = False
         self.step = 0
+
+    def enabled_miner_modes(self) -> frozenset[str]:
+        """Existing subclasses remain inference-only unless they explicitly opt in."""
+
+        return frozenset({"inference"})
     
     def get_config(self):
         parser = argparse.ArgumentParser()
@@ -182,6 +184,36 @@ class BaseMiner(ABC):
 
     @abstractmethod
     async def priority_upscaling_poll_requests(self, synapse: VideoUpscalingPollProtocol) -> float: ...
+
+    @abstractmethod
+    async def forward_competition_invitation(
+        self, synapse: CompetitionInvitationProtocol
+    ) -> CompetitionInvitationProtocol: ...
+
+    @abstractmethod
+    async def blacklist_competition_invitation(
+        self, synapse: CompetitionInvitationProtocol
+    ) -> bool: ...
+
+    @abstractmethod
+    async def priority_competition_invitation(
+        self, synapse: CompetitionInvitationProtocol
+    ) -> float: ...
+
+    @abstractmethod
+    async def forward_competition_submission(
+        self, synapse: CompetitionSubmissionProtocol
+    ) -> CompetitionSubmissionProtocol: ...
+
+    @abstractmethod
+    async def blacklist_competition_submission(
+        self, synapse: CompetitionSubmissionProtocol
+    ) -> bool: ...
+
+    @abstractmethod
+    async def priority_competition_submission(
+        self, synapse: CompetitionSubmissionProtocol
+    ) -> float: ...
 
     def run(self):
         """
