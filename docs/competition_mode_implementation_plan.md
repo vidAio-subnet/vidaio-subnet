@@ -244,7 +244,7 @@ Proposed initial manifest:
 
 ```yaml
 schema_version: 2
-scoring_version: "3"
+scoring_version: "4"
 competition_id: compression-2026-w29
 competition_type: COMPRESSION
 competition_start_time: 2026-07-16T00:00:00Z
@@ -600,7 +600,7 @@ cost_efficiency_i =
 completed_i = 1 for a valid scored result, otherwise 0
 ```
 
-The absolute media curve is shared directly with inference scoring and is locked by `scoring_version`: 70% compression and 30% VMAF, a five-point VMAF soft zone, a compression component reaching 1 at 20x, a logarithmic bonus above 20x, and a combined score normalized and capped at 1. A zero media score makes the item failed and zeroes every component.
+The absolute media curve is shared directly with inference scoring and is locked by `scoring_version`: 70% compression and 30% VMAF, a five-point VMAF soft zone, a compression component reaching 1 at 20x, a logarithmic bonus above 20x, and a combined score normalized and capped at 1. Scoring version 4 additionally requires VBR output bitrate metadata and rejects an output above 110% of its item target. A zero media score makes the item failed and zeroes every component.
 
 Use reconciled per-item cost when available by the finalization cutoff;
 otherwise use the locked estimated cost. Apply the configured cost floor before

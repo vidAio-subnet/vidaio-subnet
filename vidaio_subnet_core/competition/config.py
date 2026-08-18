@@ -179,7 +179,7 @@ class CompetitionManifest(BaseModel):
 
     schema_version: Literal[2] = 2
     scoring_version: str = Field(
-        default="3",
+        default="4",
         min_length=1,
         max_length=32,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
