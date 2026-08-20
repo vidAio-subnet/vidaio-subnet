@@ -7,7 +7,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any
+from typing import Any, Iterable
 
 from sqlalchemy import (
     Engine,
@@ -3337,6 +3337,33 @@ class CompetitionRepository:
                     ContenderMetadata.hotkey == hotkey,
                 )
             )
+
+    def find_invitation_response_hotkeys(
+        self, hotkeys: Iterable[str]
+    ) -> set[str]:
+        """Find miners with a recorded competition invitation response."""
+
+        requested_hotkeys = {str(hotkey) for hotkey in hotkeys if hotkey}
+        if not requested_hotkeys:
+            return set()
+
+        with self._sessions() as session:
+            payloads = session.scalars(
+                select(CompetitionEvent.payload_json).where(
+                    CompetitionEvent.event_type
+                    == "CONTENDER_INVITATION_RESPONSE"
+                )
+            ).all()
+
+        responding_hotkeys: set[str] = set()
+        for payload_json in payloads:
+            try:
+                hotkey = str(json.loads(payload_json).get("hotkey", ""))
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if hotkey in requested_hotkeys:
+                responding_hotkeys.add(hotkey)
+        return responding_hotkeys
 
     def list_contenders(self, competition_id: str) -> list[ContenderMetadata]:
         with self._sessions() as session:

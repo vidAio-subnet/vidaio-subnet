@@ -242,6 +242,16 @@ class EnrollmentDispatcherTests(unittest.TestCase):
         self.assertEqual(participating.invitation_attempts, 1)
         self.assertEqual(participating.submission_poll_attempts, 1)
         self.assertEqual(declining.status, ContenderState.REJECTED.value)
+        self.assertEqual(
+            self.repository.find_invitation_response_hotkeys(
+                {
+                    "participating-hotkey",
+                    "declining-hotkey",
+                    "never-invited-hotkey",
+                }
+            ),
+            {"participating-hotkey", "declining-hotkey"},
+        )
         self.assertCountEqual(
             forwarder.calls[:2],
             [
