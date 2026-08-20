@@ -68,6 +68,7 @@ from vidaio_subnet_core.competition.modal_runner import (
 from vidaio_subnet_core.competition.repository import CompetitionRepository
 from vidaio_subnet_core.competition.state import CompetitionState
 from vidaio_subnet_core.validating.managing.sql_schemas import MinerMetadata, MinerPerformanceHistory, Base
+from vidaio_subnet_core.validating.task_warrants import resolve_failed_task_warrant
 from sqlalchemy import desc, asc, func, select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta
@@ -828,25 +829,70 @@ class Validator(base.BaseValidator):
             db_task_types = self.miner_manager.get_miner_processing_task_types(unknown_task_miners)
             
             resolved_from_db = []
-            defaulted_to_upscaling = []
+            unresolved_uids = []
             
-            for i, uid in enumerate(unknown_task_miners):
+            for uid in unknown_task_miners:
                 axon = axons[random_uids.index(uid)]
-                
-                if uid in db_task_types:
-                    db_task_type = db_task_types[uid]
-                    if db_task_type == "upscaling":
-                        upscaling_miners.append((axon, uid))
-                        resolved_from_db.append(f"{uid}(upscaling)")
-                    elif db_task_type == "compression":
-                        compression_miners.append((axon, uid))
-                        resolved_from_db.append(f"{uid}(compression)")
-                    else:
-                        upscaling_miners.append((axon, uid))
-                        defaulted_to_upscaling.append(f"{uid}(unknown_db_value:{db_task_type})")
-                else:
+
+                resolved_task_type = resolve_failed_task_warrant(
+                    db_task_types.get(uid)
+                )
+                if resolved_task_type == "upscaling":
                     upscaling_miners.append((axon, uid))
-                    defaulted_to_upscaling.append(f"{uid}(no_db_record)")
+                    resolved_from_db.append(f"{uid}(upscaling)")
+                elif resolved_task_type == "compression":
+                    compression_miners.append((axon, uid))
+                    resolved_from_db.append(f"{uid}(compression)")
+                else:
+                    unresolved_uids.append(uid)
+
+            if resolved_from_db:
+                logger.info(
+                    f"🗃️ Resolved failed task warrants from database: {resolved_from_db}"
+                )
+            if unresolved_uids:
+                unresolved_hotkeys_by_uid = {
+                    uid: str(self.metagraph.hotkeys[uid])
+                    for uid in unresolved_uids
+                }
+                invitation_response_hotkeys: set[str] = set()
+                if self.competition_rewards_repository is not None:
+                    try:
+                        competition_repository = self.competition_rewards_repository
+                        invitation_response_hotkeys = await asyncio.to_thread(
+                            competition_repository.find_invitation_response_hotkeys,
+                            unresolved_hotkeys_by_uid.values(),
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Competition invitation response database lookup failed: {}",
+                            exc,
+                        )
+
+                competition_capable_uids = [
+                    uid
+                    for uid, hotkey in unresolved_hotkeys_by_uid.items()
+                    if hotkey in invitation_response_hotkeys
+                ]
+                competition_capable_uid_set = set(competition_capable_uids)
+                still_unresolved_uids = [
+                    uid
+                    for uid in unresolved_uids
+                    if uid not in competition_capable_uid_set
+                ]
+
+                if competition_capable_uids:
+                    logger.info(
+                        "🏆 Competition invitation responders found in "
+                        "COMPETITION_DATABASE_URL; skipping miners with no known "
+                        f"inference task type: {competition_capable_uids}"
+                    )
+                if still_unresolved_uids:
+                    logger.info(
+                        "⏭️ Skipping miners with no TaskWarrant response, stored "
+                        "inference type, or recorded competition invitation response: "
+                        f"{still_unresolved_uids}"
+                    )
             
         upscaling_uids = [uid for _, uid in upscaling_miners]
         compression_uids = [uid for _, uid in compression_miners]
